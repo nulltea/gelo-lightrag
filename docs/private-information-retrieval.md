@@ -22,6 +22,8 @@ Even if the embedding is perturbed, a server observing access patterns over time
 https://dl.acm.org/doi/10.1145/3600006.3613134
 **Henzinger, Dauterman, Corrigan-Gibbs, Zeldovich | CCS 2023 | 23 citations**
 
+**Target:** Dense (embedding/ANN) — semantic nearest-neighbor search over text, image, audio, and code embeddings.
+
 **Approach:**
 Reduces private full-text search to private nearest-neighbor search over semantic embeddings. The client computes a query embedding locally; a new high-throughput **linearly homomorphic encryption (LHE)** protocol — a single-server PIR primitive based on LWE — performs private ANN search. The server never learns which embedding or document was matched. Supports text, text-to-image, audio, and code search with the same underlying protocol.
 
@@ -43,29 +45,38 @@ Cryptography-only. No hardware enclaves, no non-colluding server assumption. Sin
 
 ---
 
-### 2. Painter / Fanther — Private ANN, Single-Server Setting
-*(local corpus)*
+### 2. Panther — Private ANN, Single-Server Setting
+https://doi.org/10.1145/3719027.3765190
+**Li, Huang, Zhang, Cheng, Liu, Tao | ACM 2025**
+
+**Target:** Dense (embedding/ANN) — private approximate nearest-neighbor search in a single-server deployment with no non-colluding assumption.
 
 **Approach:**
-Private Approximate Nearest Neighbor Search (ANNS) in the **single-server setting** via a novel **shared-cloud framework**. Protocol P_privApprox uses a coarse IVF-style clustering index combined with a PIR layer. A comparison table with SANNS (two-server) covers data/computation and point retrieval capabilities.
+Private ANNS in the **single-server setting** via novel co-designs of **PIR, secret-sharing, garbled circuits, and homomorphic encryption**. Prior single-server private ANNS (Chen et al., USENIX Security 2020) suffered from high communication; prior efficient approaches (SANNS, SP 2022) required two non-colluding servers. Panther achieves competitive performance under the harder single-server assumption.
 
 **Privacy/security model:**
-Single-server computational PIR. Client query hidden from server. Server learns neither the query vector nor the retrieved document index. Stronger assumption than two-server (no non-colluding requirement) but heavier computation.
+Single-server computational PIR + MPC hybrid. Client query hidden from server. Server learns neither the query vector nor which documents were retrieved. No non-colluding server assumption — stronger than SANNS's 2-server model.
 
 **Performance:**
-- Benchmarked on GIST and GISTM datasets across N_list and T_proc configurations
-- Capability comparison with SANNS on data vs computation axes
-- Concrete latency/communication figures not available in surveyed content
+- Corpus: **10 million points**, four public datasets (GIST, GISTM, and others)
+- Latency: **18 seconds** per query
+- Communication: **284 MB** per query
+- vs Chen et al. (prior single-server SOTA): **7.8× faster**, **20× less communication**
+- vs SANNS (two-server): competitive, with strictly stronger security assumption
 
 **Tradeoffs:**
-- Single-server assumption avoids non-colluding deployment complexity but raises per-query cost
-- ANN approximation means top-k is not exact — some false negatives vs exact PIR
+- 18s latency is still impractical for interactive RAG; suited for batch or offline retrieval
+- Single-server assumption is stronger but heavier — 2-server (p²RAG, SANNS) remains faster
+- 284 MB per query is high for cloud deployments; network becomes the bottleneck on slow links
+- ANN approximation means top-k is not exact — recall depends on index configuration
 
 ---
 
 ### 3. PrivANN — Practical Private ANN via TEE + ORAM
 https://doi.org/10.1109/trustcom66490.2025.00140
 **Chen, Cui, Liu, Sun, Lai | IEEE TrustCom 2025**
+
+**Target:** Dense (embedding/ANN) — fully oblivious vector similarity search in large-scale databases.
 
 **Approach:**
 Fully oblivious ANN search using **Trusted Execution Environments (TEEs)** with a read-optimized **Oblivious RAM (ORAM)** protocol to defend against memory access side-channel leakage. Three core contributions: (1) ORAM protocol for oblivious index traversal, (2) shuffling mechanism decoupling expensive offline preparation from fast online queries, (3) oblivious Top-k selection algorithm. Formally proven security guarantees.
@@ -74,10 +85,11 @@ Fully oblivious ANN search using **Trusted Execution Environments (TEEs)** with 
 TEE (hardware trust) + ORAM (cryptographic access-pattern hiding). Defends against an honest-but-curious adversary with full memory read access to the untrusted device. Server learns neither query content nor which vectors are retrieved. Formal security proof provided.
 
 **Performance:**
-- Throughput: **2.4× over state-of-the-art FHE-based systems**
-- Client-side communication: **kilobytes** (vs gigabytes for PIR-based approaches)
+- Throughput: **2.4× over state-of-the-art FHE-based systems** (IEEE TrustCom 2025; no arXiv preprint)
+- Client-side communication: **kilobytes** per query (vs gigabytes for PIR-based approaches)
 - Search quality: superior to FHE-based systems — no polynomial approximation degradation
 - Offline/online separation: expensive shuffling is offline; online queries are fast
+- Absolute query latency not available from public sources (IEEE-gated paper)
 
 **Tradeoffs:**
 - TEE hardware dependency (Intel SGX/TDX or equivalent)
@@ -90,6 +102,8 @@ TEE (hardware trust) + ORAM (cryptographic access-pattern hiding). Defends again
 ### 4. RemoteRAG — (n,ε)-DistanceDP for Private RAG Query
 https://arxiv.org/abs/2412.12775
 **Cheng, Zhang, Wang, Yuan, Yao | ACL Findings 2025 | 6 citations**
+
+**Target:** Dense (embedding/ANN) — private top-k document retrieval in cloud RAG services; requires client-side embedding model.
 
 **Approach:**
 Client embeds query locally, adds calibrated Gamma-distribution noise satisfying **(n,ε)-DistanceDP**, and sends the perturbed embedding to the cloud for retrieval. A range-limiting theorem (Theorem 1) guarantees that the true top-k documents are contained in a small candidate set retrieved by the perturbed query. Partially Homomorphic Encryption (PHE) + optional Oblivious Transfer (OT) protect the fine-grained retrieval within that candidate set.
@@ -115,7 +129,9 @@ Client embeds query locally, adds calibrated Gamma-distribution noise satisfying
 ## B. Full RAG System Privacy (Hybrid Retrieval)
 
 ### 5. RAGtime-PIANO — FHE-Based Private Hybrid RAG
-*(local corpus, doc 8412e27d)*
+*(local corpus; no arXiv preprint found)*
+
+**Target:** Hybrid (dense + sparse) — FHE-protected embedding similarity search combined with keyword matching; full end-to-end RAG pipeline.
 
 **Approach:**
 End-to-end private RAG combining **dense and sparse retrieval** under **Fully Homomorphic Encryption**. Two-stage architecture to amortize FHE cost:
@@ -131,7 +147,7 @@ FHE (CKKS/BFV). Both the user query and the vector database contents remain encr
 - Dedicated accuracy/latency benchmark (§5.3) and comparison with prior art (§5.4)
 - Hybrid dense+sparse retrieval — both embedding similarity and keyword matching handled privately
 - NDCG and Precision benchmarks on IR datasets; pre-query phase amortizes per-query FHE overhead
-- Concrete absolute latency numbers not available from surveyed content
+- Concrete absolute latency numbers not publicly available (paper not on arXiv; full PDF in local library)
 
 **Tradeoffs:**
 - FHE overhead remains significant even with two-stage cluster reduction
@@ -142,7 +158,10 @@ FHE (CKKS/BFV). Both the user query and the vector database contents remain encr
 ---
 
 ### 6. prRAG + CAPRISE — Distance-Preserving Encrypted Vector RAG
-*(local corpus, doc e5a7cebf)*
+https://arxiv.org/abs/2601.12331
+**Ye et al. | 2026**
+
+**Target:** Dense (embedding/ANN) — encrypted vector search for private RAG; both document corpus and query hidden from cloud.
 
 **Approach:**
 **CAPRISE** is a privacy-preserving framework for encrypted vector search that stores embeddings in a *distance-preserving encrypted* form in an untrusted cloud. **prRAG** builds a full RAG pipeline on CAPRISE:
@@ -155,7 +174,12 @@ An extended service model uses **Oblivious Transfer (OT)** for direct remote ret
 CAPRISE provides encrypted ANN search (functional encryption or inner-product preserving encryption variant). Server holds only ciphertexts of embeddings and document content. Client retains decryption keys. OT variant also hides access patterns.
 
 **Performance:**
-- Detailed performance data not available from surveyed content
+- Hardware: NVIDIA A100 GPU; dataset: MS MARCO; embedding model: gtr-t5-base
+- CAPRISE encryption throughput: **2,339 vectors/second** at 768-dim (9× faster than homomorphic encryption baselines)
+- Encryption overhead: **15 ms per 128 queries** (<19% overhead relative to embedding generation time)
+- Vec2Text inversion defense: BLEU drops from **83.0 → 12.4**; Precision 0.947 → 0.482; Recall 0.950 → 0.498
+- Retrieval expansion at privacy radius r=0.033: k=5 needs k'=258 candidates (52× expansion); k=20 needs k'=928 (46×)
+- End-to-end query latency not reported; encryption is preprocessing, not per-query
 
 **Tradeoffs:**
 - Distance-preserving encryption leaks some information about relative embedding distances — an adversary can infer document clusters and relative topic similarity even without decryption
@@ -165,7 +189,10 @@ CAPRISE provides encrypted ANN search (functional encryption or inner-product pr
 ---
 
 ### 7. PIR-RAG — Classical PIR Integrated into RAG
-*(local corpus, doc 09517a6b)*
+https://arxiv.org/abs/2509.21325
+**Wang et al. | 2025**
+
+**Target:** Dense (embedding/ANN) — classical PIR adapted to dense passage retrieval; benchmarked on MS MARCO.
 
 **Approach:**
 Systematic integration of classical single-server and multi-server **PIR protocols into the RAG retrieval pipeline**. Covers the full privacy gap analysis of standard RAG (§2.1), a survey of PIR advances applicable to retrieval (§2.2), and private search architectures (§2.3). Evaluates end-to-end query time vs search quality tradeoffs on MS MARCO passage retrieval (NDCG, Precision, Hit@10, MRR@10).
@@ -173,10 +200,14 @@ Systematic integration of classical single-server and multi-server **PIR protoco
 **Privacy/security model:**
 PIR-based: server learns neither which document is requested nor (in oblivious variants) the access pattern across queries. Covers both query-privacy and access-pattern-hiding threat models. Distinguishes PIR (hides which record) from OIR (also hides query intent).
 
-**Performance:**
-- Benchmarked on MS MARCO passage retrieval: NDCG, Precision, Hit@10, MRR@10
-- End-to-end query time for retrieval phase measured and plotted
-- Concrete numbers not available from surveyed content
+**Performance (MS MARCO, 5,000-document corpus):**
+- PIR-RAG query latency: **16.84 seconds**
+- Graph-PIR (baseline): **12.99 seconds** (best latency)
+- Tiptoe-style (baseline): **23.82 seconds** (worst latency)
+- Corpus setup time: Graph-PIR ~20s; PIR-RAG and Tiptoe-style substantially faster
+- Uplink per query: **2.4 KB – 24 KB** (PIR-RAG); Graph-PIR and Tiptoe-style similar
+- Downlink per query: ~**475 MB** (PIR-RAG); Graph-PIR/Tiptoe-style "few hundred KB"
+- Search quality: NDCG@10 = **0.799**, Precision@10 = 0.710 (PIR-RAG); Graph-PIR 0.901; Tiptoe-style 0.513
 
 **Tradeoffs:**
 - Single-server PIR communication scales as O(√N)–O(N) with corpus size
@@ -189,16 +220,22 @@ PIR-based: server learns neither which document is requested nor (in oblivious v
 https://arxiv.org/abs/2603.14778
 **Ming, Wang, Yang, Wang, Jia | arXiv 2026**
 
+**Target:** Dense (embedding/ANN) — private top-k retrieval from a secret-shared vector corpus; supports arbitrary k at query time, suited for long-context LLMs.
+
 **Approach:**
 Two-server **secret sharing (SS)** RAG supporting **arbitrary top-k retrieval** without fixing k at deployment time. Prior systems using sorting required fixed k at index build time; p²RAG uses an **interactive bisection method** to determine the top-k set dynamically. Two semi-honest non-colluding servers hold SS shares of the document corpus and user query embedding. Includes restrictions and verification mechanisms to defend against malicious users and formally bound corpus leakage.
 
 **Privacy/security model:**
 Semi-honest 2-server non-colluding secret sharing. Database contents and query hidden from each individual server. Bounds on leakage of the database formally established. Malicious user resistance via verification layer.
 
-**Performance:**
-- **3–300× faster than PRAG** (prior state-of-the-art) for k = 16–1024
-- Speedup increases with k — bisection scales better than sorting-based approaches
-- Enables modern long-context LLMs that benefit from large retrieval sets (k = 64–1024)
+**Performance (BEIR trec-covid, 171K docs, 1024-dim embeddings):**
+- **3–300× faster than PRAG** for k = 16–1024 (speedup grows with k)
+- User↔server communication at N=2¹⁷ (131K docs): **2.168 MB** (k'=16), **2.156 MB** (k'=128)
+- User↔server communication at N=2²⁰ (1M docs): **16.86 MB** (k'=16)
+- Intra-server communication: **35.65 MB** at N=2¹⁷ k'=16; **335.5 MB** at N=2²⁰ k'=16
+- Round trips: **14 RTTs** (N=2¹⁷, k'=16); **17 RTTs** (N=2²⁰, k'=16)
+- **Perfect recall (1.0)** for all tested k' = 16–1024
+- Relevance scores exceed 1.0 for k'≤300, confirming retrieved docs are relevant
 
 **Tradeoffs:**
 - Requires two non-colluding servers — real operational burden (independent cloud deployments)
@@ -208,30 +245,38 @@ Semi-honest 2-server non-colluding secret sharing. Database contents and query h
 
 ---
 
-## C. Sparse / Keyword Retrieval Privacy
+## C. Graph-Based and Sparse Retrieval Privacy
 
-### 9. Graph-PIR — Private Keyword RAG (PACMANN-Inspired)
-*(local corpus)*
+### 9. GraSS — Graph-Based Similarity Search on Encrypted Query
+*(local corpus; Kim et al.)*
+
+**Target:** Dense (embedding/ANN) — private approximate nearest-neighbor search using a graph-based index (HNSW-style) where the query is encrypted.
 
 **Approach:**
-Private keyword/sparse retrieval for RAG inspired by **PACMANN**. Combines graph-based document indexing (HNSW-style) with a PIR layer for access-pattern hiding during sparse/keyword-based retrieval. Evaluated on search quality and performance in comparison tables.
+Graph-based ANN search (similar to HNSW) adapted for **encrypted queries**. Uses a graph-structured index over document embeddings to enable efficient similarity search while hiding the query vector from the server. The graph traversal is integrated with a PIR-style protocol to prevent the server from learning which nodes were visited.
 
 **Privacy/security model:**
-PIR-based access-pattern hiding for keyword retrieval. Query terms hidden from server. Server learns neither which keyword was searched nor which documents matched.
+Encrypted query — server does not see the plaintext query vector. Access pattern during graph traversal is partially hidden via PIR-style masking. Server holds plaintext document index; corpus contents are not hidden.
 
-**Performance:**
-- Comparison with PACMANN baseline on search quality and performance metrics
-- Detailed numbers not available from surveyed content
+**Performance (from PIR-RAG comparison, MS MARCO, 5,000 documents):**
+- Corpus setup time: ~**20 seconds**
+- Query latency: **12.99 seconds** (best among three systems compared)
+- Downlink per query: **few hundred kilobytes**
+- NDCG@10: **0.901** (best quality among compared systems)
+- Precision@10: **0.850**
 
 **Tradeoffs:**
-- Graph-based PIR is more efficient than naive inverted-index PIR but still requires O(depth × branching) PIR calls per query
-- HNSW approximation compounds with PIR approximation — imperfect recall
-- Keyword privacy is harder than vector privacy: inverted index leaks term frequency statistics even with PIR
+- Graph traversal leaks partial access pattern even with PIR masking — depth of traversal reveals approximate query region
+- HNSW approximation means recall < 100% even without privacy constraints
+- Downlink communication is low (KBs) — advantage over single-server PIR approaches
+- 13s latency is impractical for interactive use; suited for batch or background retrieval
 
 ---
 
 ### 10. ZKIFV — Zero-Knowledge Inverted File Indexing
-*(local corpus)*
+*(local corpus; no arXiv preprint found)*
+
+**Target:** Sparse (keyword/inverted index) — verifiable correctness of keyword search results; does not hide the query, only proves result integrity.
 
 **Approach:**
 Zero-knowledge proof system over **inverted file indexes** for verifiable sparse search. Proves that the server returned the correct and complete set of keyword-matched documents from a committed corpus, without revealing which internal index entries the server accessed to generate the proof.
@@ -240,7 +285,7 @@ Zero-knowledge proof system over **inverted file indexes** for verifiable sparse
 Verifiability model (not query privacy): client receives a ZK proof that results are correct and complete w.r.t. a committed index snapshot. Server cannot return false negatives or tamper with results without detection. Query terms are known to the server (no query hiding).
 
 **Performance:**
-- Not available from surveyed content
+- Not available from public sources (paper not found on arXiv; full PDF in local library)
 
 **Tradeoffs:**
 - Addresses *verifiability* rather than query privacy — orthogonal to PIR
@@ -252,7 +297,10 @@ Verifiability model (not query privacy): client receives a ZK proof that results
 ## D. Verifiable Vector Search
 
 ### 11. V3DB — Audit-on-Demand Verifiable Vector Search
-*(local corpus)*
+https://arxiv.org/abs/2603.03065
+**Qiu et al. | 2026**
+
+**Target:** Dense (embedding/ANN) — verifiable correctness of ANN/vector search results against a committed corpus snapshot; audit-on-demand rather than per-query.
 
 **Approach:**
 ZK proof system for **verifiable ANN search over committed corpus snapshots**. The server commits to a database snapshot; on audit request, generates a ZK proof that the top-k results returned were correct and complete w.r.t. that commitment. "Audit-on-demand" design: proofs generated lazily on request rather than per-query, amortizing proof cost.
@@ -260,9 +308,16 @@ ZK proof system for **verifiable ANN search over committed corpus snapshots**. T
 **Privacy/security model:**
 Verifiability model: client can verify result correctness against a committed database state. Does not hide which document was retrieved (not PIR). Addresses server-side tampering, selective omission, and false negatives.
 
-**Performance:**
-- Audit-on-demand design amortizes proof cost over query batches
-- Concrete numbers not available from surveyed content
+**Performance (SIFT1M and GIST1M benchmarks):**
+- ZK proof generation: **up to 22× faster** than circuit-only baseline (multiset-based design)
+- Peak memory: **up to 40% lower** than circuit-only baseline
+- Verification time: **millisecond-level** per proof
+- ZK-friendly index construction overhead vs standard FAISS:
+  - SIFT1M (D=128, high-acc): 95s → **207s** (2.2× overhead)
+  - GIST1M (D=960, high-acc): 341s → **4,542s** (13.3× overhead — scales with dimension)
+- Recall degradation from ZK-friendly preprocessing: negligible (<0.5% on SIFT1M; ~1.5% on GIST1M)
+  - SIFT1M Recall@1: 0.503 (std) vs 0.504 (zk); Recall@100: 0.953 vs 0.957
+  - GIST1M Recall@1: 0.190 (std) vs 0.188 (zk)
 
 **Tradeoffs:**
 - Verifiability ≠ privacy: server still observes query in plaintext
@@ -277,27 +332,27 @@ All entries assume a semi-honest (honest-but-curious) server unless noted.
 
 | System | Type | Scheme | Query hidden? | Access pattern hidden? | Corpus hidden? | Verifiable? | Latency | Comm |
 |---|---|---|---|---|---|---|---|---|
-| **Tiptoe** | Dense | LHE / LWE PIR | ✓ | ✓ | ✗ | ✗ | 2.7s | 56.9 MiB |
-| **Painter/Fanther** | Dense | Single-server PIR | ✓ | ✓ | ✗ | ✗ | — | — |
-| **PrivANN** | Dense | TEE + ORAM | ✓ | ✓ | ✗ | ✗ | 2.4× FHE | KB |
-| **RemoteRAG** | Dense | (n,ε)-DistanceDP + PHE | ✓ (DP) | ✗ | ✗ | ✗ | 0.67s | 46.66 KB |
-| **RAGtime-PIANO** | Hybrid dense+sparse | FHE | ✓ | ✓ | ✓ | ✗ | — | — |
-| **prRAG / CAPRISE** | Dense | Dist-preserving enc + OT | ✓ | Partial (OT variant) | ✓ | ✗ | — | — |
-| **PIR-RAG** | Dense | PIR | ✓ | ✓ | ✗ | ✗ | — | — |
-| **p²RAG** | Dense | 2-server SS | ✓ | ✓ | ✓ | Partial | 3–300× vs PRAG | — |
-| **Graph-PIR** | Sparse | PIR + graph index | ✓ | ✓ | ✗ | ✗ | — | — |
-| **ZKIFV** | Sparse | ZK proofs | ✗ | ✗ | ✗ | ✓ | — | — |
-| **V3DB** | Dense | ZK proofs | ✗ | ✗ | ✗ | ✓ | audit-on-demand | — |
+| **Tiptoe** | Dense | LHE / LWE PIR | ✓ | ✓ | ✗ | ✗ | 2.7s / 360M pages | 56.9 MiB |
+| **Panther** | Dense | PIR + SS + GC + HE | ✓ | ✓ | ✗ | ✗ | 18s / 10M points | 284 MB |
+| **PrivANN** | Dense | TEE + ORAM | ✓ | ✓ | ✗ | ✗ | 2.4× over FHE (abs. n/a) | KB |
+| **RemoteRAG** | Dense | (n,ε)-DistanceDP + PHE | ✓ (DP) | ✗ | ✗ | ✗ | 0.67s / 100K docs | 46.66 KB |
+| **RAGtime-PIANO** | Hybrid | FHE (CKKS+BFV) | ✓ | ✓ | ✓ | ✗ | n/a (paper not public) | — |
+| **prRAG / CAPRISE** | Dense | Dist-preserving enc + OT | ✓ | Partial (OT) | ✓ | ✗ | enc: 15ms/128 queries | enc: low |
+| **PIR-RAG** | Dense | PIR | ✓ | ✓ | ✗ | ✗ | 16.84s / 5K docs | ↑2.4–24 KB ↓475 MB |
+| **p²RAG** | Dense | 2-server SS | ✓ | ✓ | ✓ | Partial | 3–300× vs PRAG | 2.2–17 MB (N=131K–1M) |
+| **GraSS** | Dense | Graph + PIR | ✓ | Partial | ✗ | ✗ | 12.99s / 5K docs | few hundred KB |
+| **ZKIFV** | Sparse | ZK proofs | ✗ | ✗ | ✗ | ✓ | n/a (paper not public) | — |
+| **V3DB** | Dense | ZK proofs (multiset) | ✗ | ✗ | ✗ | ✓ | verify: ms; prove: 22× speedup | — |
 
 ---
 
 ## Key Observations
 
 **1. Dense retrieval is the better-studied problem.**
-Tiptoe, PrivANN, Painter, p²RAG, and RemoteRAG all target private ANN/dense search. The cryptographic approaches (Tiptoe/LHE, Painter/PIR) provide the strongest guarantees. TEE + ORAM (PrivANN) is the current practical frontier: KB-scale communication, 2.4× over FHE, no polynomial approximation degradation.
+Tiptoe, PrivANN, Panther, p²RAG, and RemoteRAG all target private ANN/dense search. The cryptographic approaches (Tiptoe/LHE, Panther/PIR) provide the strongest guarantees. TEE + ORAM (PrivANN) is the current practical frontier: KB-scale communication, 2.4× over FHE, no polynomial approximation degradation.
 
 **2. Sparse / keyword retrieval privacy is significantly understudied.**
-Private BM25/TF-IDF at scale remains an open problem. Graph-PIR and ZKIFV address it but concrete performance data is absent. No system achieves practical private sparse retrieval at web scale. The structural leakage from inverted index access patterns (term frequency, co-occurrence) is harder to hide than ANN access patterns.
+Private BM25/TF-IDF at scale remains an open problem. Only ZKIFV addresses it (verifiability only); no system achieves practical private *keyword* retrieval at web scale. GraSS uses a graph-based index but targets dense vector search, not sparse keyword search. The structural leakage from inverted index access patterns (term frequency, co-occurrence) is harder to hide than ANN access patterns.
 
 **3. Hybrid RAG with full cryptographic privacy is essentially unsolved.**
 RAGtime-PIANO is the only paper attempting FHE-based hybrid dense+sparse retrieval. The two-stage cluster approach is architecturally sound but FHE overhead for hybrid workloads likely puts per-query latency in the seconds-to-minutes range. No production-ready system exists.
