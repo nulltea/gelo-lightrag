@@ -86,10 +86,13 @@ TEE (hardware trust) + ORAM (cryptographic access-pattern hiding). Defends again
 
 **Performance:**
 - Throughput: **2.4× over state-of-the-art FHE-based systems** (IEEE TrustCom 2025; no arXiv preprint)
-- Client-side communication: **kilobytes** per query (vs gigabytes for PIR-based approaches)
-- Search quality: superior to FHE-based systems — no polynomial approximation degradation
-- Offline/online separation: expensive shuffling is offline; online queries are fast
-- Absolute query latency not available from public sources (IEEE-gated paper)
+- Client-side communication: **kilobytes** per query
+- Absolute query latency: not available from public sources (IEEE-gated paper)
+
+**Implications:**
+- KB-scale comm vs GB for PIR-based approaches — practical for cloud deployment without bandwidth bottleneck
+- No polynomial approximation degradation (unlike FHE): search quality is not compromised by approximation error
+- Offline/online separation: expensive ORAM shuffling is done once offline; online query path is fast
 
 **Tradeoffs:**
 - TEE hardware dependency (Intel SGX/TDX or equivalent)
@@ -144,16 +147,18 @@ End-to-end private RAG combining **dense and sparse retrieval** under **Fully Ho
 FHE (CKKS/BFV). Both the user query and the vector database contents remain encrypted on the cloud server at all times. No hardware trust required. Server processes only ciphertexts. Security sections cover formal security definition (§3.1) and threat/adversary models (§3.2).
 
 **Performance:**
-- Dedicated accuracy/latency benchmark (§5.3) and comparison with prior art (§5.4)
-- Hybrid dense+sparse retrieval — both embedding similarity and keyword matching handled privately
-- NDCG and Precision benchmarks on IR datasets; pre-query phase amortizes per-query FHE overhead
+- Benchmarks reported: NDCG and Precision on IR datasets (§5.3); comparison with prior art (§5.4)
 - Concrete absolute latency numbers not publicly available (paper not on arXiv; full PDF in local library)
+
+**Implications:**
+- Pre-query offline phase is designed to amortize per-query FHE overhead — but FHE cost still dominates at query time
+- Likely seconds–minutes per query at research scale; no production deployment known
 
 **Tradeoffs:**
 - FHE overhead remains significant even with two-stage cluster reduction
 - Offline pre-processing must be re-run if corpus changes
 - Polynomial approximations of ranking functions introduce accuracy error that compounds across stages
-- FHE-based hybrid retrieval is the most cryptographically ambitious system in this survey — likely research-stage latency (seconds–minutes per query)
+- FHE-based hybrid retrieval is the most cryptographically ambitious system in this survey
 
 ---
 
@@ -175,11 +180,17 @@ CAPRISE provides encrypted ANN search (functional encryption or inner-product pr
 
 **Performance:**
 - Hardware: NVIDIA A100 GPU; dataset: MS MARCO; embedding model: gtr-t5-base
-- CAPRISE encryption throughput: **2,339 vectors/second** at 768-dim (9× faster than homomorphic encryption baselines)
-- Encryption overhead: **15 ms per 128 queries** (<19% overhead relative to embedding generation time)
-- Vec2Text inversion defense: BLEU drops from **83.0 → 12.4**; Precision 0.947 → 0.482; Recall 0.950 → 0.498
-- Retrieval expansion at privacy radius r=0.033: k=5 needs k'=258 candidates (52× expansion); k=20 needs k'=928 (46×)
-- End-to-end query latency not reported; encryption is preprocessing, not per-query
+- CAPRISE encryption throughput: **2,339 vectors/second** at 768-dim
+- Encryption overhead: **15 ms per 128 queries**
+- Vec2Text attack resistance (attacker reconstruction quality — lower = better privacy): BLEU 83.0 → **12.4**; token-precision 0.947 → **0.482**; token-recall 0.950 → **0.498**
+- Retrieval expansion required to guarantee true top-k at privacy radius r=0.033: k=5 → k'=258; k=20 → k'=928
+- End-to-end query latency: not reported
+
+**Implications:**
+- 9× faster than homomorphic encryption baselines — encryption is not a bottleneck at indexing time
+- <19% overhead over embedding generation — CAPRISE adds minimal cost to the upload pipeline
+- At r=0.033, server returns 52× more candidates than needed; the true top-k is recovered by client-side re-ranking, but the expansion size itself is visible to the server
+- Distance-preserving encryption preserves nearest-neighbor ordering; quality loss comes from the DP expansion layer, not from the encryption itself
 
 **Tradeoffs:**
 - Distance-preserving encryption leaks some information about relative embedding distances — an adversary can infer document clusters and relative topic similarity even without decryption
@@ -201,13 +212,17 @@ Systematic integration of classical single-server and multi-server **PIR protoco
 PIR-based: server learns neither which document is requested nor (in oblivious variants) the access pattern across queries. Covers both query-privacy and access-pattern-hiding threat models. Distinguishes PIR (hides which record) from OIR (also hides query intent).
 
 **Performance (MS MARCO, 5,000-document corpus):**
-- PIR-RAG query latency: **16.84 seconds**
-- Graph-PIR (baseline): **12.99 seconds** (best latency)
-- Tiptoe-style (baseline): **23.82 seconds** (worst latency)
-- Corpus setup time: Graph-PIR ~20s; PIR-RAG and Tiptoe-style substantially faster
-- Uplink per query: **2.4 KB – 24 KB** (PIR-RAG); Graph-PIR and Tiptoe-style similar
-- Downlink per query: ~**475 MB** (PIR-RAG); Graph-PIR/Tiptoe-style "few hundred KB"
-- Search quality: NDCG@10 = **0.799**, Precision@10 = 0.710 (PIR-RAG); Graph-PIR 0.901; Tiptoe-style 0.513
+- Query latency — PIR-RAG: **16.84s**; Graph-PIR: **12.99s**; Tiptoe-style: **23.82s**
+- Corpus setup — Graph-PIR: ~**20s**; PIR-RAG and Tiptoe-style: faster (not quantified)
+- Uplink per query: **2.4 – 24 KB** (PIR-RAG); similar for others
+- Downlink per query: ~**475 MB** (PIR-RAG); Graph-PIR / Tiptoe-style: "few hundred KB"
+- NDCG@10: PIR-RAG **0.799**; Graph-PIR **0.901**; Tiptoe-style **0.513**
+- Precision@10: PIR-RAG **0.710**
+
+**Implications:**
+- Graph-PIR has both best latency and best retrieval quality among the three; PIR-RAG trades some quality for simpler architecture; Tiptoe-style is slowest with weakest quality
+- PIR-RAG's 475 MB downlink is ~1,000× worse than Graph-PIR's few-hundred-KB — single-server PIR must return O(N) data to hide which record was fetched; graph-based approaches only traverse a subgraph
+- All three approaches (13–24s at 5K docs) are too slow for interactive use at current scale
 
 **Tradeoffs:**
 - Single-server PIR communication scales as O(√N)–O(N) with corpus size
@@ -229,13 +244,17 @@ Two-server **secret sharing (SS)** RAG supporting **arbitrary top-k retrieval** 
 Semi-honest 2-server non-colluding secret sharing. Database contents and query hidden from each individual server. Bounds on leakage of the database formally established. Malicious user resistance via verification layer.
 
 **Performance (BEIR trec-covid, 171K docs, 1024-dim embeddings):**
-- **3–300× faster than PRAG** for k = 16–1024 (speedup grows with k)
-- User↔server communication at N=2¹⁷ (131K docs): **2.168 MB** (k'=16), **2.156 MB** (k'=128)
-- User↔server communication at N=2²⁰ (1M docs): **16.86 MB** (k'=16)
-- Intra-server communication: **35.65 MB** at N=2¹⁷ k'=16; **335.5 MB** at N=2²⁰ k'=16
+- **3–300× faster than PRAG** for k = 16–1024
+- User↔server communication: **2.168 MB** (N=2¹⁷, k'=16); **2.156 MB** (N=2¹⁷, k'=128); **16.86 MB** (N=2²⁰, k'=16)
+- Intra-server communication: **35.65 MB** (N=2¹⁷, k'=16); **335.5 MB** (N=2²⁰, k'=16)
 - Round trips: **14 RTTs** (N=2¹⁷, k'=16); **17 RTTs** (N=2²⁰, k'=16)
-- **Perfect recall (1.0)** for all tested k' = 16–1024
-- Relevance scores exceed 1.0 for k'≤300, confirming retrieved docs are relevant
+- Recall: **1.0** for all tested k' = 16–1024
+- Relevance scores: >1.0 for k'≤300
+
+**Implications:**
+- Speedup grows with k — bisection scales better than sorting for large retrieval sets; the larger the k, the more p²RAG's approach dominates
+- Perfect recall guarantees the bisection always finds the true top-k; no approximation sacrifice for privacy
+- 14–17 RTTs per query means latency is dominated by network round-trip time; unsuitable for high-latency WAN without batching
 
 **Tradeoffs:**
 - Requires two non-colluding servers — real operational burden (independent cloud deployments)
@@ -260,10 +279,14 @@ Encrypted query — server does not see the plaintext query vector. Access patte
 
 **Performance (from PIR-RAG comparison, MS MARCO, 5,000 documents):**
 - Corpus setup time: ~**20 seconds**
-- Query latency: **12.99 seconds** (best among three systems compared)
+- Query latency: **12.99 seconds**
 - Downlink per query: **few hundred kilobytes**
-- NDCG@10: **0.901** (best quality among compared systems)
+- NDCG@10: **0.901**
 - Precision@10: **0.850**
+
+**Implications:**
+- Best latency and best retrieval quality of the three systems in PIR-RAG's comparison (vs PIR-RAG: 16.84s / 0.799; Tiptoe-style: 23.82s / 0.513)
+- Few-hundred-KB downlink is ~1,000× more efficient than PIR-RAG's 475 MB — graph traversal only fetches nodes along the search path, not the full corpus response
 
 **Tradeoffs:**
 - Graph traversal leaks partial access pattern even with PIR masking — depth of traversal reveals approximate query region
@@ -309,15 +332,20 @@ ZK proof system for **verifiable ANN search over committed corpus snapshots**. T
 Verifiability model: client can verify result correctness against a committed database state. Does not hide which document was retrieved (not PIR). Addresses server-side tampering, selective omission, and false negatives.
 
 **Performance (SIFT1M and GIST1M benchmarks):**
-- ZK proof generation: **up to 22× faster** than circuit-only baseline (multiset-based design)
-- Peak memory: **up to 40% lower** than circuit-only baseline
+- ZK proof generation: **up to 22× faster** than circuit-only baseline
+- Peak memory during proving: **up to 40% lower** than circuit-only baseline
 - Verification time: **millisecond-level** per proof
-- ZK-friendly index construction overhead vs standard FAISS:
-  - SIFT1M (D=128, high-acc): 95s → **207s** (2.2× overhead)
-  - GIST1M (D=960, high-acc): 341s → **4,542s** (13.3× overhead — scales with dimension)
-- Recall degradation from ZK-friendly preprocessing: negligible (<0.5% on SIFT1M; ~1.5% on GIST1M)
-  - SIFT1M Recall@1: 0.503 (std) vs 0.504 (zk); Recall@100: 0.953 vs 0.957
-  - GIST1M Recall@1: 0.190 (std) vs 0.188 (zk)
+- ZK-friendly index construction vs standard FAISS:
+  - SIFT1M (D=128, high-acc): 95s → **207s**
+  - GIST1M (D=960, high-acc): 341s → **4,542s**
+- Recall with ZK-friendly preprocessing vs standard:
+  - SIFT1M Recall@1: 0.503 → 0.504; Recall@100: 0.953 → 0.957
+  - GIST1M Recall@1: 0.190 → 0.188; Recall@100: 0.531 → 0.523
+
+**Implications:**
+- 2.2× index overhead on SIFT1M (D=128) is acceptable; 13.3× on GIST1M (D=960) is prohibitive — ZK preprocessing cost scales sharply with embedding dimension
+- Recall impact is negligible on low-dim vectors; small but present on high-dim (GIST1M ~1.5% Recall@1 drop)
+- Millisecond verification means proof checking is essentially free for the client
 
 **Tradeoffs:**
 - Verifiability ≠ privacy: server still observes query in plaintext
