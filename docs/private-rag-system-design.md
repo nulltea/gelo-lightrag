@@ -366,13 +366,23 @@ Approaches 1 and 3 require clients to run a local embedding model (150MB–1.5GB
 
 2. **Session setup / attestation:** Before sending any plaintext, client performs remote attestation of the Embedding TEE (Intel TDX DCAP or AMD SEV-SNP attestation report). Client verifies: (a) TEE runs the expected embedding model and version; (b) TEE runs the expected CAPRISE implementation; (c) CAPRISE key derivation matches the chosen key model (step 4). Client establishes RATLS channel to TEE. TLS 1.3 ECDHE ensures past sessions cannot be decrypted if the TLS certificate is later compromised.
 
-3. **Embedding (TEE-side):** Two variants with the same privacy outcome and different TCB tradeoffs:
+3. **Embedding (TEE-side):** Three variants with the same privacy outcome and different TCB / compute tradeoffs:
 
    **Primary — full embedding model in TEE:** Client sends plaintext text chunks over RATLS to Embedding TEE. TEE runs the full embedding model (e.g., Jina v2 768-dim, ~150MB; fits in TDX VM memory). TEE outputs the final embedding vector, applies CAPRISE encryption (key model per step 4), and sends ciphertext to storage server. Storage server receives only ciphertexts — never plaintext text or plaintext embeddings.
 
-   **GELO-encoder variant (reduced TEE memory footprint):** Client holds the token embedding lookup table (vocab × D matrix, public model weights, ~90MB for 768-dim) and generates a per-session random invertible matrix A. Client tokenizes the chunk, runs the embedding lookup, and obfuscates: `H̃ = A · H`. Client sends `H̃` to TEE over RATLS. TEE holds `A⁻¹` (established at session setup), runs transformer linear projections on `H̃`, applies `A⁻¹` before each non-linear op (GELU, LayerNorm, Softmax), re-obfuscates after, and produces the final embedding. TEE applies CAPRISE encryption. This is GELO applied to an encoder model: the embedding lookup stays on client, shrinking enclave memory; TEE never sees raw token embeddings.
+   **ObfuscaTune-encoder variant (TEE holds boundary layers; GPU runs bulk compute):** TEE holds the embedding lookup layer and the final mean-pooling layer. Client sends text to TEE over RATLS; TEE tokenizes and runs the embedding lookup, then obfuscates activations (orthogonal random matrix Q, QR-decomposed) before passing to GPU. GPU runs all transformer blocks on obfuscated hidden states. TEE receives GPU output, applies Q⁻¹, runs mean-pooling, applies CAPRISE encryption. Directly analogous to ObfuscaTune applied to a BERT-style encoder: TEE footprint is two lightweight layers (embedding table + pooling), GPU handles the expensive linear projections. TEE sees raw input tokens; GPU sees only obfuscated activations throughout. Requires co-located TEE+GPU (same machine).
 
-   *Why split-without-obfuscation is not viable:* sending unobfuscated intermediate activations to TEE does not protect privacy — early transformer layer activations can be inverted to recover input tokens via representation inversion attacks. The obfuscation matrix A is required.
+   **GELO-encoder variant (client holds embedding lookup; TEE runs linear projections):** Client holds the token embedding lookup table (vocab × D, public model weights, ~90MB for 768-dim) and generates a per-session random invertible matrix A. Client tokenizes the chunk, runs the embedding lookup, and obfuscates: `H̃ = A · H`. Client sends `H̃` to TEE over RATLS. TEE holds `A⁻¹` (established at session setup), runs transformer linear projections on `H̃`, applies `A⁻¹` before each non-linear op (GELU, LayerNorm, Softmax), re-obfuscates after, and produces the final embedding. TEE applies CAPRISE encryption. TEE never sees raw token embeddings; client holds the embedding lookup locally.
+
+   | | Primary | ObfuscaTune-encoder | GELO-encoder |
+   |---|---|---|---|
+   | Embedding lookup | TEE | TEE | Client |
+   | Transformer blocks | TEE | GPU (obfuscated) | TEE (obfuscated) |
+   | TEE memory | Full model (~150MB) | Embedding table + pooling (~90MB + tiny) | Linear layers + A⁻¹ |
+   | Client holds | Nothing | Nothing | Embedding table + matrix A |
+   | Co-located TEE+GPU required | No | Yes | No |
+
+   *Why split-without-obfuscation is not viable:* sending unobfuscated intermediate activations to any external compute does not protect privacy — early transformer layer activations can be inverted to recover input tokens via representation inversion attacks. The obfuscation (matrix A or orthogonal Q) is required in all split variants.
 
 4. **Storage — CAPRISE key management:**
 
@@ -429,11 +439,22 @@ Approaches 1 and 3 require clients to run a local embedding model (150MB–1.5GB
 
    *Interaction with CAPRISE:* Complementary. CAPRISE protects stored embedding values (prevents document content recovery from stored ciphertexts). DistanceDP masks query intent (prevents access-pattern inference from retrieval logs). Both should be applied together.
 
-9. **Answer generation (research-deferred):** Private generation via ObfuscaTune or GELO+OSNIP. Core concern: cloud LLM returns plaintext — if the cloud operator can read LLM output, retrieved context leaks at generation time regardless of retrieval privacy.
+9. **Reranking / filtering (deferred):** Cross-encoder reranking, metadata filtering, and MMR diversity operate on decrypted plaintext chunks. Path: client or TEE decrypts top-k' candidates (per step 7), applies reranker, produces final top-k for generation. Deferred: implementing a cross-encoder inside TEE adds model-hosting complexity; client-side reranking requires client to receive plaintext chunks before generation, changing the handoff boundary.
 
-   ObfuscaTune (Frikha et al. 2024) is the strongest viable option: TEE handles the input embedding layer and output lm_head (~5% of model parameters); GPU runs linear projections on obfuscated activations. Both input and output text remain inside TEE. RAG is explicitly deferred in the paper as future work. GELO protects intermediate activations only — plaintext output remains visible to cloud operator, requiring a full generation TEE (Petridish/CVM) for complete output privacy.
+10. **Answer generation:** Client assembles the decrypted top-k chunks + query into a prompt and sends to the generation layer. Two private options:
 
-   **Marked research-deferred:** no production implementation of ObfuscaTune or GELO+OSNIP for RAG exists. For immediate deployment, generation falls back to local LLM (Approach 1 model) or CVM-hosted LLM (Approach 2 model).
+    **Option A — ObfuscaTune (full input+output privacy):** TEE holds the LLM's input embedding layer and output lm_head (~5% of parameters for Llama-class models). Client sends assembled prompt to TEE over RATLS. TEE tokenizes, runs embedding lookup, obfuscates activations (orthogonal Q). GPU runs all transformer blocks on obfuscated hidden states. TEE receives output, applies Q⁻¹, runs lm_head to decode tokens — plaintext output stays inside TEE, returned to client over RATLS. Cloud operator sees only obfuscated activations; neither input text nor output text is visible. Requires open-source LLM with public weights (Llama, Mistral, Qwen). Requires co-located TEE+GPU.
+
+    **Option B — GELO+OSNIP (reduced TEE; plaintext output on cloud):** OSNIP applies a learned null-space projection to the assembled prompt token embeddings (0.96ms overhead; KNN attack success 0.000) before sending to cloud LLM. GELO wraps the cloud LLM's linear projections: TEE holds random invertible matrix A and non-linear ops; GPU runs A·H projections. Cloud LLM processes obfuscated activations throughout. **Output is decoded as plaintext by cloud LLM and returned in plaintext** — cloud operator can read the response. Acceptable when the answer itself is not sensitive, but the query and context must not be reconstructable. Requires open-source LLM for GELO; OSNIP can target open-source or API models with known embedding space.
+
+    | | Option A (ObfuscaTune) | Option B (GELO+OSNIP) |
+    |---|---|---|
+    | Input (prompt) privacy | TEE — not visible to cloud | OSNIP null-space — computational |
+    | Intermediate activations | Obfuscated (Q) | Obfuscated (A·H) |
+    | Output privacy | TEE — not visible to cloud | **Plaintext on cloud** |
+    | TEE footprint | Embedding layer + lm_head | Matrix A + non-linear ops (tiny) |
+    | LLM requirement | Open-source with public weights | Open-source (GELO) or API (OSNIP only) |
+    | Co-located TEE+GPU | Yes | Yes (GELO) / No (OSNIP only) |
 
 ---
 
@@ -441,16 +462,16 @@ Approaches 1 and 3 require clients to run a local embedding model (150MB–1.5GB
 
 | Dimension | Assessment |
 |---|---|
-| Privacy guarantees | **TEE-anchored crypto stack.** Embedding TEE: hardware trust for embedding and key management. Storage: CAPRISE crypto (same as Approaches 1/3). Generation: deferred (ObfuscaTune/GELO/TEE/local). Storage operator never sees plaintext text, embeddings, queries, or document content. |
-| Trust assumptions | Embedding: hardware trust (TDX/SEV-SNP). CAPRISE key model determines ongoing trust scope: Option 1 requires indefinite TEE trust; Options 2/3 limit trust to session windows. Generation (deferred): hardware trust for output privacy. |
+| Privacy guarantees | **TEE-anchored crypto stack.** Embedding TEE: hardware trust for embedding and key management. Storage: CAPRISE crypto (same as Approaches 1/3). Generation Option A (ObfuscaTune): input and output private; Option B (GELO+OSNIP): input private, output plaintext on cloud. Storage operator never sees plaintext text, embeddings, queries, or document content. |
+| Trust assumptions | Embedding: hardware trust (TDX/SEV-SNP). CAPRISE key model determines ongoing trust scope: Option 1 requires indefinite TEE trust; Options 2/3 limit trust to session windows. Generation Option A: co-located TEE+GPU; Option B: TEE for GELO matrix ops only. |
 | Forward security | Option 1: none. Option 2: full (client key, TEE never holds it). Option 3: TEE-break-only safe; simultaneous TEE + client compromise collapses security. |
 | Performance / latency | RATLS setup: ~10–50ms amortized per session. Embedding TEE: ~0% overhead (TDX VM is a full encrypted VM; no SGX EPC limit). Retrieval: 0.67s (DP path). Option 2 adds one extra round trip at ingestion. |
 | Client requirements | **Lowest of all approaches.** Chunking only (primary path). No embedding model, no CAPRISE library, no local LLM. True thin-client: mobile SDK, browser WASM. GELO-encoder variant adds embedding lookup table (~90MB) and obfuscation model. |
 | Retrieval quality | Same as Approaches 1/3: CAPRISE is distance-preserving (no encryption overhead on quality); DP recall 100% at ε∈{0.03–0.1} on benchmark. Decrypted chunks are exact plaintext. |
 | Cost | Small CVM with TDX or SEV-SNP. 150MB embedding model fits in standard TDX VM memory. Fraction of the cost of a generation TEE. |
 | Implementation complexity | **High.** RATLS attestation is the primary engineering challenge. Per-tenant key management inside TEE (Options 1/3) or client-side CAPRISE key lifecycle (Option 2). AES key handoff for chunk decryption must prevent TEE+storage-server collusion. |
-| Deployment feasibility | **Medium.** CVM hosting available (Scaleway/Azure/GCP Confidential VMs). RATLS libraries available (Intel TDX DCAP, AMD SEV-SNP SDK). CAPRISE research-stage but implementable. Generation step deferred. |
-| Product completeness | Retrieval and embedding: full thin-client support. Generation: requires local LLM or additional TEE infrastructure (deferred). |
+| Deployment feasibility | **Medium.** CVM hosting available (Scaleway/Azure/GCP Confidential VMs). RATLS libraries available (Intel TDX DCAP, AMD SEV-SNP SDK). CAPRISE research-stage but implementable. ObfuscaTune requires co-located TEE+GPU (H100 CC or TDX+GPU passthrough). |
+| Product completeness | **Full thin-client support.** Chunking-only client. Generation Option A (ObfuscaTune) provides complete end-to-end privacy. Option B (GELO+OSNIP) is sufficient when answer content is not sensitive. |
 | Major open risks | (1) Attestation correctness: incorrect RATLS implementation nullifies all TEE guarantees — the most common deployment pitfall. (2) Key model selection: wrong choice among Options 1/2/3 for the threat model leaves forward security gaps. (3) Generation output privacy: cloud LLM plaintext output requires ObfuscaTune TEE or on-premise generation for full privacy. (4) CAPRISE inter-embedding distance leakage (inherited from all CAPRISE-based approaches). |
 
 **When this approach is the right choice**
@@ -473,12 +494,12 @@ Approaches 1 and 3 require clients to run a local embedding model (150MB–1.5GB
 | **Embedding trust** | None (fully local) | Full TEE | None (fully local) | TEE (hardware, TDX/SEV-SNP) |
 | **Storage privacy** | CAPRISE (crypto) | AES + TEE memory | CAPRISE (crypto) | CAPRISE (crypto, key model Options 1/2/3) |
 | **Retrieval privacy** | DistanceDP (formal) | TEE + ORAM | DistanceDP (formal) | DistanceDP (formal) |
-| **Generation** | Local only | TEE-hosted | GELO / OSNIP / TEE | Deferred (ObfuscaTune / GELO / local) |
+| **Generation** | Local only | TEE-hosted | GELO / OSNIP / TEE | ObfuscaTune (full privacy) / GELO+OSNIP (input only) |
 | **Hardware trust required** | None | Full pipeline | Generation only (small TEE) | Embedding TEE |
 | **TEE enclave size** | — | Full model pipeline | Matrix + non-linear ops | Full embedding model (~150MB) primary; linear layers only (GELO variant) |
 | **Crypto-only path** | Yes (the baseline) | No | No | 2PC sub-option (slow) |
 | **Retrieval latency** | 0.67s | ~1s (TEE+ORAM) | 0.67s | 0.67s |
-| **Generation latency** | Client hardware | 4–8% TEE overhead | 4–8% (CVM) / 0.96ms (OSNIP) | Deferred |
+| **Generation latency** | Client hardware | 4–8% TEE overhead | 4–8% (CVM) / 0.96ms (OSNIP) | ObfuscaTune: ~5% overhead; GELO+OSNIP: 20–30% + 0.96ms |
 | **Forward security** | N/A (client key) | N/A | N/A | Option 1: none; Option 2: full; Option 3: TEE-break-only safe |
 | **Implementation complexity** | Medium | Medium | Medium-high | High (RATLS + key mgmt) |
 | **Strongest privacy stage** | Storage + retrieval | Full pipeline | Storage + retrieval | Storage + retrieval |
