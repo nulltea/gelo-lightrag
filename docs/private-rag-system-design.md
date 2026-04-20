@@ -200,7 +200,7 @@ The server is a private retrieval service only. It stores encrypted document emb
 | Privacy guarantees | **Strongest coherent model.** No plaintext on server at any stage. DP or SS for query; DPE or SS for storage; local generation. |
 | Trust assumptions | Minimal. Crypto only (no hardware trust) if using p²RAG. CAPRISE + DP: client must trust the DP noise is sufficient. p²RAG: non-colluding server assumption. |
 | Performance / latency | Retrieval: 0.67s (DP path) or ~seconds (p²RAG at 171K docs). Generation: depends on client hardware (7B model: ~20 tok/s on M-series Mac; 70B: ~5 tok/s with quantization). |
-| Retrieval quality | DP path: 100% recall demonstrated. CAPRISE: distance-preserving, no quality loss from encryption. p²RAG: recall 1.0. |
+| Retrieval quality | DP noise affects *which* chunks are returned, not their content — decrypted chunks are exact, no post-processing needed. Noise shifts the query vector; the server finds neighbors of `Q_noisy`, not `Q`. CAPRISE is distance-preserving, so encryption itself causes no quality loss. p²RAG: recall 1.0. **ε tradeoff:** smaller ε (stronger privacy) = larger noise = higher recall loss. RemoteRAG shows 100% recall at ε∈{0.03–0.1} on their benchmark, but high-dimensional spaces are robust to small perturbations. Main risk: rare/specific queries near cluster boundaries — noise can push the query into the wrong cluster, dropping relevant documents from top-k entirely. |
 | Cost | Client needs hardware for embedding + LLM. Server cost is standard vector DB hosting on encrypted data. |
 | Implementation complexity | Medium. Client SDK (embed + encrypt + generate); server is a modified vector DB accepting encrypted queries. |
 | Deployment feasibility | **High.** CAPRISE and RemoteRAG are implementable with current libraries. Local LLMs are production-ready (Ollama, llama.cpp). IronCore DCPE is already a commercial product. |
@@ -339,6 +339,174 @@ Cryptographic privacy for data storage and retrieval (the tractable problem). TE
 
 ---
 
+## Approach 4: Thin-Client Private RAG with Server-Side Private Embedding
+
+**Security tier:** 3.5 — CAPRISE-based storage/retrieval; embedding outsourced to a trust-anchored TEE; generation via ObfuscaTune/GELO (deferred). The distinguishing characteristic: **no embedding capability required on the client.**
+
+**Summary**
+
+Approaches 1 and 3 require clients to run a local embedding model (150MB–1.5GB) and hold the CAPRISE key. This blocks thin clients (mobile, browser) and complicates multi-tenant SaaS deployment. Approach 4 routes all embedding through a lightweight **Embedding TEE** — a CVM (TDX/SEV-SNP) running the embedding model, verified by remote attestation before any data is sent. Three CAPRISE key management models are offered with different trust and forward-security tradeoffs.
+
+---
+
+**Approaches used**
+
+- **Petridish / CVM** (Li et al. 2024, arXiv:2409.19134) — CVM architecture for hosting the embedding model; the Embedding TEE
+- **CAPRISE** (Ye et al. 2026) — distance-preserving encryption; key model varies per storage option
+- **GELO** (Belikova et al. 2026) — GELO-encoder split variant: client holds embedding lookup + obfuscation matrix A; TEE runs linear projections on obfuscated activations
+- **RemoteRAG DistanceDP** (Cheng et al. 2025) — DP noise applied at query submission
+- **ObfuscaTune** (Frikha et al. 2024) — generation layer: TEE holds input embedding layer + lm_head; GPU runs linear projections on obfuscated activations; input and output text stay inside TEE (deferred)
+- **GELO + OSNIP** — alternative generation layer: GELO for activation protection, OSNIP for null-space projection before cloud LLM (deferred)
+
+---
+
+**Specification**
+
+1. **Ingestion / Chunking:** Client-side. Client reads documents, applies chunking strategy, produces text chunks. Client AES-encrypts chunks with a per-tenant symmetric key (held only by client) and uploads to storage server. **No embedding model required on client.**
+
+2. **Session setup / attestation:** Before sending any plaintext, client performs remote attestation of the Embedding TEE (Intel TDX DCAP or AMD SEV-SNP attestation report). Client verifies: (a) TEE runs the expected embedding model and version; (b) TEE runs the expected CAPRISE implementation; (c) CAPRISE key derivation matches the chosen key model (step 4). Client establishes RATLS channel to TEE. TLS 1.3 ECDHE ensures past sessions cannot be decrypted if the TLS certificate is later compromised.
+
+3. **Embedding (TEE-side):** Two variants with the same privacy outcome and different TCB tradeoffs:
+
+   **Primary — full embedding model in TEE:** Client sends plaintext text chunks over RATLS to Embedding TEE. TEE runs the full embedding model (e.g., Jina v2 768-dim, ~150MB; fits in TDX VM memory). TEE outputs the final embedding vector, applies CAPRISE encryption (key model per step 4), and sends ciphertext to storage server. Storage server receives only ciphertexts — never plaintext text or plaintext embeddings.
+
+   **GELO-encoder variant (reduced TEE memory footprint):** Client holds the token embedding lookup table (vocab × D matrix, public model weights, ~90MB for 768-dim) and generates a per-session random invertible matrix A. Client tokenizes the chunk, runs the embedding lookup, and obfuscates: `H̃ = A · H`. Client sends `H̃` to TEE over RATLS. TEE holds `A⁻¹` (established at session setup), runs transformer linear projections on `H̃`, applies `A⁻¹` before each non-linear op (GELU, LayerNorm, Softmax), re-obfuscates after, and produces the final embedding. TEE applies CAPRISE encryption. This is GELO applied to an encoder model: the embedding lookup stays on client, shrinking enclave memory; TEE never sees raw token embeddings.
+
+   *Why split-without-obfuscation is not viable:* sending unobfuscated intermediate activations to TEE does not protect privacy — early transformer layer activations can be inverted to recover input tokens via representation inversion attacks. The obfuscation matrix A is required.
+
+4. **Storage — CAPRISE key management:**
+
+   Three options with different trust models and forward-security properties:
+
+   **Option 1 — TEE-held key (most performant):**
+   TEE generates and seals the CAPRISE key inside the enclave. TEE CAPRISE-encrypts embeddings and sends ciphertexts to storage server. Minimum round trips; no key material on client.
+   - *Forward security:* None — TEE compromise exposes the sealed CAPRISE key; all stored embeddings become decryptable.
+   - *Trust required:* TEE trusted indefinitely.
+
+   **Option 2 — Client-held key (best forward security):**
+   TEE produces plaintext embedding, sends to client over RATLS (TLS 1.3 ECDHE, forward-secret). Client CAPRISE-encrypts with its own key and uploads to storage server.
+   - *Forward security:* Full — future TEE compromise cannot recover the client's CAPRISE key (never stored in TEE). Past ingestion sessions remain private even after TEE is later broken.
+   - *Cost:* One extra hop (TEE → client → storage). Client must be online during ingestion.
+   - *Trust required:* TEE trusted only for the duration of each attested session.
+
+   **Option 3 — Two-party KDF (HKDF; forward-secure against TEE-only compromise):**
+   During the attested session, client transmits `user_x_sk` to TEE over the RATLS channel (TLS 1.3 ECDHE — recording traffic then later compromising the TLS certificate cannot decrypt past sessions). TEE holds `tee_user_x_sk` sealed to the enclave. TEE computes:
+   ```
+   caprise_key = HKDF-SHA256(user_x_sk ∥ tee_user_x_sk)
+   ```
+   TEE CAPRISE-encrypts embeddings, sends ciphertexts to storage server, then immediately discards `user_x_sk` (not persisted in enclave storage).
+   - *Forward security:* Attacker who breaks the TEE seal recovers `tee_user_x_sk` but not `user_x_sk` — it was never persisted, and the TLS session that carried it is forward-secret. Recovering `caprise_key` requires compromising **both** the TEE seal **and** the client endpoint simultaneously.
+   - *Retrieval:* Client re-sends `user_x_sk` over a fresh attested RATLS session. TEE re-derives the same `caprise_key` deterministically.
+   - *Trust required:* TEE code must be auditable via attestation (must not log or persist `user_x_sk`). An actively malicious TEE exfiltrating `user_x_sk` during a live session defeats this — attestation binds code identity, not runtime behavior. Same caveat as all TEE-based schemes.
+   - *Round trips:* Same as Option 1. Better security than Option 1 for the TEE-break-only scenario.
+
+   | | Option 1 | Option 2 | Option 3 |
+   |---|---|---|---|
+   | TEE compromise alone | Breaks all storage | Safe | Safe |
+   | TEE + client compromise | Breaks all | Breaks all | Breaks all |
+   | Round trips (ingestion) | Minimum | +1 hop | Minimum |
+   | Client online at ingestion | No | Yes | No |
+
+5. **Query submission:** Client sends query text over RATLS to Embedding TEE. TEE embeds the query (same path as step 3). Applies DistanceDP noise (ε configurable). CAPRISE-encrypts noisy query embedding per the chosen key model. Sends encrypted query to storage server.
+
+6. **Retrieval:** Storage server performs ANN similarity search over CAPRISE-encrypted embeddings. Returns top-k' CAPRISE-encrypted candidates + corresponding AES-encrypted document chunks. CAPRISE distance-preservation means ANN operates directly on ciphertexts — no server-side decryption required.
+
+7. **Decryption / handoff:** Depends on storage key model:
+   - **Option 1:** TEE CAPRISE-decrypts candidate embeddings and re-ranks. Client provisions AES key to TEE at session setup for chunk decryption, or retrieves AES-encrypted chunks directly from storage and decrypts locally.
+   - **Option 2:** Client CAPRISE-decrypts retrieved embeddings and re-ranks locally. Client AES-decrypts document chunks directly from storage server.
+   - **Option 3:** Client re-sends `user_x_sk` over fresh RATLS session; TEE re-derives `caprise_key`, CAPRISE-decrypts and re-ranks.
+
+8. **DistanceDP — defense-in-depth:**
+   Applied at query submission (step 5) only. Do not apply to ingestion — noise on stored embeddings permanently degrades all future retrieval with no compensating privacy benefit.
+
+   Query noise: `q̃ = q + Lap(0, Δf/ε)` where `Δf = 2` for unit-normalized embeddings. Protects against access-pattern inference: an adversary observing which documents are retrieved per query cannot infer the true query direction even if the encrypted query vector is visible.
+
+   | ε | Privacy strength | Recall impact (RemoteRAG benchmark) |
+   |---|---|---|
+   | 0.03–0.1 | Strong | ~0% degradation |
+   | 1.0 | Moderate | ~15–20% drop at top-5 |
+   | 5.0 | Weak | ~3–5% drop |
+
+   *Interaction with CAPRISE:* Complementary. CAPRISE protects stored embedding values (prevents document content recovery from stored ciphertexts). DistanceDP masks query intent (prevents access-pattern inference from retrieval logs). Both should be applied together.
+
+9. **Answer generation (research-deferred):** Private generation via ObfuscaTune or GELO+OSNIP. Core concern: cloud LLM returns plaintext — if the cloud operator can read LLM output, retrieved context leaks at generation time regardless of retrieval privacy.
+
+   ObfuscaTune (Frikha et al. 2024) is the strongest viable option: TEE handles the input embedding layer and output lm_head (~5% of model parameters); GPU runs linear projections on obfuscated activations. Both input and output text remain inside TEE. RAG is explicitly deferred in the paper as future work. GELO protects intermediate activations only — plaintext output remains visible to cloud operator, requiring a full generation TEE (Petridish/CVM) for complete output privacy.
+
+   **Marked research-deferred:** no production implementation of ObfuscaTune or GELO+OSNIP for RAG exists. For immediate deployment, generation falls back to local LLM (Approach 1 model) or CVM-hosted LLM (Approach 2 model).
+
+---
+
+**Tradeoffs**
+
+| Dimension | Assessment |
+|---|---|
+| Privacy guarantees | **TEE-anchored crypto stack.** Embedding TEE: hardware trust for embedding and key management. Storage: CAPRISE crypto (same as Approaches 1/3). Generation: deferred (ObfuscaTune/GELO/TEE/local). Storage operator never sees plaintext text, embeddings, queries, or document content. |
+| Trust assumptions | Embedding: hardware trust (TDX/SEV-SNP). CAPRISE key model determines ongoing trust scope: Option 1 requires indefinite TEE trust; Options 2/3 limit trust to session windows. Generation (deferred): hardware trust for output privacy. |
+| Forward security | Option 1: none. Option 2: full (client key, TEE never holds it). Option 3: TEE-break-only safe; simultaneous TEE + client compromise collapses security. |
+| Performance / latency | RATLS setup: ~10–50ms amortized per session. Embedding TEE: ~0% overhead (TDX VM is a full encrypted VM; no SGX EPC limit). Retrieval: 0.67s (DP path). Option 2 adds one extra round trip at ingestion. |
+| Client requirements | **Lowest of all approaches.** Chunking only (primary path). No embedding model, no CAPRISE library, no local LLM. True thin-client: mobile SDK, browser WASM. GELO-encoder variant adds embedding lookup table (~90MB) and obfuscation model. |
+| Retrieval quality | Same as Approaches 1/3: CAPRISE is distance-preserving (no encryption overhead on quality); DP recall 100% at ε∈{0.03–0.1} on benchmark. Decrypted chunks are exact plaintext. |
+| Cost | Small CVM with TDX or SEV-SNP. 150MB embedding model fits in standard TDX VM memory. Fraction of the cost of a generation TEE. |
+| Implementation complexity | **High.** RATLS attestation is the primary engineering challenge. Per-tenant key management inside TEE (Options 1/3) or client-side CAPRISE key lifecycle (Option 2). AES key handoff for chunk decryption must prevent TEE+storage-server collusion. |
+| Deployment feasibility | **Medium.** CVM hosting available (Scaleway/Azure/GCP Confidential VMs). RATLS libraries available (Intel TDX DCAP, AMD SEV-SNP SDK). CAPRISE research-stage but implementable. Generation step deferred. |
+| Product completeness | Retrieval and embedding: full thin-client support. Generation: requires local LLM or additional TEE infrastructure (deferred). |
+| Major open risks | (1) Attestation correctness: incorrect RATLS implementation nullifies all TEE guarantees — the most common deployment pitfall. (2) Key model selection: wrong choice among Options 1/2/3 for the threat model leaves forward security gaps. (3) Generation output privacy: cloud LLM plaintext output requires ObfuscaTune TEE or on-premise generation for full privacy. (4) CAPRISE inter-embedding distance leakage (inherited from all CAPRISE-based approaches). |
+
+**When this approach is the right choice**
+
+- Target users are thin clients (mobile, browser) unable to run embedding models locally
+- SaaS provider manages the embedding TEE on behalf of many tenants (single TEE, per-tenant CAPRISE keys)
+- Wanting Approach 3 privacy guarantees without client embedding infrastructure
+- Forward-secure key model required: use Option 2 (strongest) or Option 3 (performant)
+- Willing to invest in a small embedding TEE; generation infrastructure deferred or client-side
+
+
+## Cross-Approach Comparison
+
+### Design factor summary
+
+| Dimension | Approach 1 | Approach 2 | Approach 3 | Approach 4 |
+|---|---|---|---|---|
+| **Client requirement** | Embedding model + LLM | Embedding model | Embedding model | Chunking only |
+| **Thin client support** | No | No | No | Yes |
+| **Embedding trust** | None (fully local) | Full TEE | None (fully local) | TEE (hardware, TDX/SEV-SNP) |
+| **Storage privacy** | CAPRISE (crypto) | AES + TEE memory | CAPRISE (crypto) | CAPRISE (crypto, key model Options 1/2/3) |
+| **Retrieval privacy** | DistanceDP (formal) | TEE + ORAM | DistanceDP (formal) | DistanceDP (formal) |
+| **Generation** | Local only | TEE-hosted | GELO / OSNIP / TEE | Deferred (ObfuscaTune / GELO / local) |
+| **Hardware trust required** | None | Full pipeline | Generation only (small TEE) | Embedding TEE |
+| **TEE enclave size** | — | Full model pipeline | Matrix + non-linear ops | Full embedding model (~150MB) primary; linear layers only (GELO variant) |
+| **Crypto-only path** | Yes (the baseline) | No | No | 2PC sub-option (slow) |
+| **Retrieval latency** | 0.67s | ~1s (TEE+ORAM) | 0.67s | 0.67s |
+| **Generation latency** | Client hardware | 4–8% TEE overhead | 4–8% (CVM) / 0.96ms (OSNIP) | Deferred |
+| **Forward security** | N/A (client key) | N/A | N/A | Option 1: none; Option 2: full; Option 3: TEE-break-only safe |
+| **Implementation complexity** | Medium | Medium | Medium-high | High (RATLS + key mgmt) |
+| **Strongest privacy stage** | Storage + retrieval | Full pipeline | Storage + retrieval | Storage + retrieval |
+| **Weakest link** | Client endpoint | TEE hardware trust | Retrieval→generation handoff | Attestation correctness + generation output |
+| **Market differentiation** | Coherent crypto-only RAG | TEE RAG (exists today) | Layered crypto+TEE | Thin-client SaaS, configurable forward security |
+
+### Trust boundary progression
+
+```
+Approach 1: [Client: embed + encrypt + generate] → [Server: CAPRISE ciphertexts only]
+                                                    ↑ No hardware trust anywhere
+
+Approach 2: [Client: embed] → [Full TEE: retrieve + generate] → [Client: response]
+                               ↑ Full pipeline hardware trust
+
+Approach 3: [Client: embed + encrypt] → [Server: CAPRISE ciphertexts] → [Gen TEE: GELO/OSNIP]
+                           ↑ Crypto for storage/retrieval    ↑ Small TEE for generation
+
+Approach 4: [Client: chunk] → [Embed TEE: embed + CAPRISE-encrypt] → [Server: ciphertexts] → [Gen: deferred]
+                               ↑ Hardware TEE (TDX/SEV-SNP)           ↑ Crypto only
+            Key model: TEE-held (Opt 1) | client-held (Opt 2) | two-party KDF HKDF (Opt 3)
+            GELO-encoder variant: [Client: lookup + A·H] → [TEE: linear layers + A⁻¹]
+```
+
+TEE scope progression (smallest → largest): 3 (GELO matrix, few KB) < 4/GELO-variant (linear layers only) < 4/primary (full embedding model, ~150MB) < 2 (full pipeline).
+
+---
+
 ## Final Recommendation
 
 **Pursue Approach 1 (Retrieval-Only Private RAG with Client-Side Generation) first.**
@@ -359,7 +527,9 @@ Rationale:
 
 5. **Upgrade path.** Approach 1 naturally extends to Approach 3: add TEE-hosted generation as an optional feature for clients without local LLM capability. The retrieval infrastructure is identical.
 
-**Second priority:** Add TEE-hosted generation (Approach 3, Option A or B) as an optional feature for thin clients. This extends the market to mobile/browser users without changing the retrieval architecture.
+**Second priority:** Add TEE-hosted generation (Approach 3, Option A or B) as an optional feature for clients with embedding capability but no local LLM. This extends the market without changing the retrieval architecture.
+
+**Third priority (thin-client SaaS):** Approach 4 — move the embedding TEE server-side. Retrieval architecture stays identical; the new engineering investment is the RATLS attestation protocol and per-tenant CAPRISE key management inside the TEE. This unlocks mobile/browser clients and enables multi-tenant SaaS deployment.
 
 **Do not pursue Approach 2 (full TEE) as the primary architecture.** While it's the easiest to deploy today (commercial products exist), it offers no technical differentiation — Privatemode, Opaque, and Fortanix already ship it. The value of our work is in the crypto layer.
 
@@ -377,7 +547,7 @@ Rationale:
 | Stage | Primary sources | Key finding |
 |---|---|---|
 | **Ingestion** | No dedicated work | Must be client-side; no privacy-preserving outsourced chunking exists |
-| **Embedding** | private-embedding-research.md; NEXUS, SHAFT, PermLLM, OSNIP, GELO, SGT, DP-Forward, RemoteRAG | Local embedding solves it. MPC: 0.88s GPU (NEXUS) to 200s (PUMA). TEE: 4-8%. Obfuscation: 0.96ms (OSNIP) |
+| **Embedding** | private-embedding-research.md; NEXUS, SHAFT, PermLLM, OSNIP, GELO, SGT, DP-Forward, RemoteRAG, Petridish | Local solves it for Approaches 1/3. TEE-anchored embedding (Approach 4): ~0% overhead for 150MB models in TDX. GELO-encoder variant reduces TEE footprint. 2PC alternative: 3–47s/doc. |
 | **Storage** | fhe-encrypted-vector-db.md; CAPRISE, IronCore DCPE, Panther, RAGtime-PIANO, p²RAG, Compass, FRAG | DCPE deployed (IronCore). CAPRISE: 2339 vec/s. FHE: 18s at 10M (Panther). 18s gap between DCPE and full crypto |
 | **Retrieval** | private-information-retrieval.md; PIR-RAG, Tiptoe, Panther, RemoteRAG, p²RAG, GraSS, PrivANN | RemoteRAG 0.67s DP. p²RAG perfect recall 171K docs. Panther 18s single-server. PrivANN TEE+ORAM KB comm |
 | **Generation** | private-response-generation.md; PermLLM, PUMA, SIGMA, MERGE, BumbleBee, Petridish, GELO, OSNIP, SCX | MPC: 3s/tok (PermLLM 6B) to 200s/tok (PUMA 7B). TEE: 4-8%. GELO: 20-30%. OSNIP: 0.96ms |
