@@ -129,6 +129,58 @@ Client embeds query locally, adds calibrated Gamma-distribution noise satisfying
 
 ---
 
+### 12. Hiding Your Awful Online Choices / ReuseKNN — HE+MPC k-NN at 100M-entry Scale (Adjacent Primitive)
+https://arxiv.org/abs/2405.20483
+**Mukherjee, Walch, Meisingseth, Lex, Rechberger | arXiv 2024** — builds on **Müllner, Lex, Schedl, Kowald**, *"ReuseKNN: Neighborhood Reuse for Differentially Private KNN-Based Recommendations"*, ACM TOIST 14(5), 2023.
+
+**Target:** k-NN over a user × item rating matrix (MovieLens, Netflix) — a **collaborative-filtering recommender**, not dense-text retrieval. Included here because the underlying cryptographic primitive (secure k-NN via HE + MPC without trusted hardware) is the same primitive family used by SANNS (§A/benchmark section), and the paper sets the current scaling ceiling for HE+MPC k-NN at 100M entries.
+
+**Approach:**
+Two-layer design:
+1. **ReuseKNN** (Müllner et al. 2023) — an algorithmic optimization that reuses a *small fixed set* of neighbour users' ratings across many item predictions for the same target user, minimizing the total number of users whose data gets exposed. This is a DP-utility optimization, not a crypto primitive.
+2. **HE+MPC wrapper** (Mukherjee et al. 2024) — wraps ReuseKNN in homomorphic encryption + multi-party computation so the recommender runs on encrypted rating data with no trusted hardware. Client's query is the target user's (encrypted) rating vector; server holds the encrypted pre-built RecModel; output is the predicted item score.
+
+**Privacy/security model:**
+Pure cryptography (HE + MPC), no TEE. Client query (user's ratings) and server-held RecModel both protected. Accuracy is a DP-style quantity: the ReuseKNN neighbour-reuse policy reduces how many users' data influence a given recommendation, bounding per-user privacy loss.
+
+**Performance (single end-to-end private query, optimized approach):**
+| Dataset | SOC device | Standard CPU | RAM | Network |
+|---|---|---|---|---|
+| MovieLens 100K | 15 s | 4 s | 1.3 GB | 32 MB |
+| MovieLens 1M | 17 s | 6 s | 1.9 GB | 66 MB |
+| MovieLens 10M | 53 s | 14 s | 2.8 GB | 106 MB |
+| **Netflix 100M** | **103 s** | **17 s** | 4.2 GB + 2 GB eMMC swap | 146 MB |
+
+Time/memory improvement vs prior SANNS-style approach (same k-NN primitive, no ReuseKNN amortization):
+- MovieLens 100K: ×10 time, ×7 memory
+- MovieLens 10M: ×271 time, ×205 memory
+- **Netflix 100M: ×2235 time, ×1136 memory** (3-orders-of-magnitude speedup)
+
+Accuracy: 9-out-of-10 correct top-10 KNN recommendations (matches SANNS).
+
+**Implications:**
+- Demonstrates HE+MPC k-NN is feasible at 100M-entry corpus size on commodity hardware (~17 s on standard CPU, ~103 s on a memory-constrained SOC with 2 GB swap).
+- The 3-orders-of-magnitude speedup over SANNS comes from *algorithmic amortization* (reusing neighbours across many predictions for the same user), not from a new crypto primitive. The per-query-from-fresh numbers would look closer to SANNS.
+- No trusted hardware required — useful evidence that HE+MPC retrieval can avoid TEE for datasets in the RAG-typical 10⁴–10⁶ range, and can reach 10⁸ at recommender-workload amortization.
+
+**Relevance / non-relevance to RAG retrieval:**
+| Aspect | Mukherjee 2024 | Dense retrieval / reranking |
+|---|---|---|
+| **Input** | Sparse user × item rating matrix (integer ratings) | Dense text / embedding vectors |
+| **Similarity** | Between users (rows) on overlapping item sets | Between query and doc embeddings (cosine on 128–768-d) |
+| **Top-k is over** | Most similar **users** | Most relevant **documents** |
+| **Scoring function** | Weighted rating average across neighbours | `cos(q, d)` (bi-encoder) or cross-encoder |
+| **Score semantics** | Predicted rating for a target item | Relevance for a query |
+| **Crypto stack transfer** | HE+MPC k-NN | ✓ same primitive, different scoring fn plugged in |
+| **Algorithmic amortization transfer** | ReuseKNN-style neighbour reuse | ✗ one-shot queries — no target user to reuse across |
+
+**Tradeoffs:**
+- **Not a retrieval system** — included as a benchmark data point. The ReuseKNN amortization trick does not apply to ad-hoc RAG queries (each RAG query is one-shot, no stable "target user" to reuse neighbour embeddings across).
+- For dense RAG retrieval, **p²RAG** (§B.8), **PRAG** (Zyskind et al. 2024), and **Panther** (§A.2) are the direct SOTA — Mukherjee's approach does not beat them on RAG workloads because the dominant optimization (neighbour reuse) is CF-specific.
+- The per-query wall-clock numbers (17 s on standard CPU at Netflix 100M) remain the useful takeaway: they confirm HE+MPC k-NN is within one order of magnitude of being usable at RAG-typical scales today, without a TEE.
+
+---
+
 ## B. Full RAG System Privacy (Hybrid Retrieval)
 
 ### 5. RAGtime-PIANO — FHE-Based Private Hybrid RAG

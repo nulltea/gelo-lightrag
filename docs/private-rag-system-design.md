@@ -571,7 +571,7 @@ Rationale:
 | **Embedding** | private-embedding-research.md; NEXUS, SHAFT, PermLLM, OSNIP, GELO, SGT, DP-Forward, RemoteRAG, Petridish | Local solves it for Approaches 1/3. TEE-anchored embedding (Approach 4): ~0% overhead for 150MB models in TDX. GELO-encoder variant reduces TEE footprint. 2PC alternative: 3–47s/doc. |
 | **Storage** | fhe-encrypted-vector-db.md; CAPRISE, IronCore DCPE, Panther, RAGtime-PIANO, p²RAG, Compass, FRAG | DCPE deployed (IronCore). CAPRISE: 2339 vec/s. FHE: 18s at 10M (Panther). 18s gap between DCPE and full crypto |
 | **Retrieval** | private-information-retrieval.md; PIR-RAG, Tiptoe, Panther, RemoteRAG, p²RAG, GraSS, PrivANN | RemoteRAG 0.67s DP. p²RAG perfect recall 171K docs. Panther 18s single-server. PrivANN TEE+ORAM KB comm |
-| **Generation** | private-response-generation.md; PermLLM, PUMA, SIGMA, MERGE, BumbleBee, Petridish, GELO, OSNIP, SCX | MPC: 3s/tok (PermLLM 6B) to 200s/tok (PUMA 7B). TEE: 4-8%. GELO: 20-30%. OSNIP: 0.96ms |
+| **Generation** | private-inference.md; PermLLM, PUMA, SIGMA, MERGE, BumbleBee, Petridish, GELO, OSNIP, SCX | MPC: 3s/tok (PermLLM 6B) to 200s/tok (PUMA 7B). TEE: 4-8%. GELO: 20-30%. OSNIP: 0.96ms |
 | **Verification** | V3DB, ZKIFV, VLAH, ANNProof | V3DB: 22x faster ZK proofs. Privacy + verifiability combined: open gap |
 | **End-to-end** | Opal, RAGtime-PIANO, prRAG+CAPRISE, SoK (Bodea 2026) | No shipped end-to-end private RAG. Opal closest (TEE+ORAM). RAGtime-PIANO (full FHE, research-only) |
 | **Commercial** | IronCore, Privatemode, Opaque, Fortanix, CyborgDB, PrivateGPT | All TEE-based except IronCore (DCPE). No FHE/MPC product ships |

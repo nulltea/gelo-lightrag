@@ -1,8 +1,14 @@
-# Private Response Generation in RAG
+# Private Transformer Inference (Embedding, Reranking, Generation)
 
-> Research date: April 2026. Covers the final step of a private RAG pipeline: generating a response using an LLM while keeping the user query, retrieved context, and/or model weights private from an untrusted inference server.
+> Research date: 2026-04-21. Covers private/confidential inference for **any** transformer in a RAG pipeline — embedding generation, cross-encoder reranking, and LLM response generation — where the inference server cannot see the plaintext input, the model weights, or both.
 >
-> **Scope:** MPC-based transformer inference, FHE-based inference, TEE-based inference, obfuscation/lightweight approaches, and end-to-end systems that chain private retrieval with private generation.
+> **Scope:** MPC, FHE, TEE, obfuscation, TEE+GPU split-inference, and end-to-end RAG systems chaining private retrieval with private inference.
+>
+> **Cross-references:**
+> - `private-embedding-research.md` — embedding-specific applicability (Vec2Text threat, client-side vs server-side embedding)
+> - `private-reranking-research.md` — reranker-specific applicability (cross-encoder vs bi-encoder key management)
+> - `private-information-retrieval.md` — retrieval-stage (PIR, ORAM, DP-on-query) systems
+> - `fhe-encrypted-vector-db.md` — encrypted vector storage
 
 ---
 
@@ -395,7 +401,95 @@ Two-party secure inference (input holder vs model holder). Model weights protect
 
 ---
 
-### 13. CipherFormer — HE + GC, Low Round Complexity
+### 13a. NEXUS — Non-Interactive FHE Transformer Inference (NDSS 2025)
+https://doi.org/10.14722/ndss.2025.230868
+**Zhang, Yang, He, Chen, Lu, Wang, Hou, Liu, Ren, Yang | NDSS 2025**
+
+**Target:**
+- **Model:** BERT-Base (12 layers)
+- **Retrieval:** Not addressed
+- **Embedding:** Query encrypted under RNS-CKKS
+
+**Approach:**
+**First non-interactive** FHE protocol for secure transformer inference. Client sends one encrypted message; server computes; client decrypts. No back-and-forth. Novel primitives: SIMD ciphertext compression/decompression, SIMD slot folding, secure Argmax (improved from `O(m)` Phoenix to lower complexity for vocabulary-sized `m`).
+
+**Privacy/security model:**
+Single-server RNS-CKKS FHE. No hardware trust, no non-colluding assumption. Server sees only ciphertexts.
+
+**Performance (BERT-Base):**
+- **37.3 s CPU** / **0.88 s GPU** (42.3× GPU speedup)
+- Bandwidth: **164 MB** (single round)
+- vs BOLT (Oakland '24): **3.6× faster**, **372.5× less bandwidth** (59.6 GB → 164 MB)
+- vs BumbleBee (NDSS '25): **53.6× less bandwidth** (~8.8 GB → 164 MB)
+- Quality: comparable to plaintext
+
+**Tradeoffs:**
+- Non-interactive = no amortization across tokens; each inference independent
+- 37.3 s CPU still far from real-time for BERT-Base; GPU version (0.88 s) starts to be interactive
+- No LLaMA-class numbers; scales poorly past BERT-Base without hardware acceleration
+
+**Used in:** Baseline for Euston (below) and other non-interactive FHE work.
+
+---
+
+### 13b. Euston — Non-Interactive FHE with SVD-Preprocessed HMM (IEEE S&P 2026)
+**Gao, Fu, Liu, Liu, Luo, Wang | IEEE S&P 2026** (already in Edgequake) | [Code](https://github.com/FLL-Lab/Euston)
+
+**Not TEE split-inference.** Pure FHE, single-server, non-interactive — extends NEXUS.
+
+**Target:**
+- **Model:** BERT-Base, GPT2-1.5B, LLaMA-3-8B (tested on both CPU and GPU)
+- **Retrieval:** Not addressed
+- **Embedding:** Query encrypted under RNS-CKKS before single-round upload
+
+**Approach:**
+Two orthogonal innovations over NEXUS:
+1. **SVD-based preprocessing for Homomorphic Matrix Multiplication (HMM).** Mask matrix is SVD-decomposed; only the diagonal singular-value matrix is encrypted, shrinking transmitted ciphertext size drastically. Four HMM primitives (plaintext / ciphertext / batched-ciphertext) target column-packed, row-packed, diagonal-packed, and unpacked matrix formats — eliminating redundant homomorphic rotations and slashing user-side preprocessing cost.
+2. **Rotation-free Homomorphic Non-linear Evaluations (HNE).** Column- and diagonal-packed ciphertext formats chosen so that GELU, Softmax, and LayerNorm can be evaluated without inter-slot rotations. Depth-regulation strategies reduce multiplicative depth and speed up bootstrapping.
+
+**Privacy/security model:**
+Single-server RNS-CKKS FHE. Identical security model to NEXUS; changes are purely efficiency optimizations, same standard IND-CPA assumption under LWE/RLWE.
+
+**Performance (Figure 6 of the paper — amortized over a batch of 32 × 128-token inputs):**
+
+| Model | NEXUS-CPU | Euston-CPU | NEXUS-GPU | Euston-GPU | CPU speedup | GPU speedup |
+|---|---|---|---|---|---|---|
+| BERT-Base | 2,300 s | **648 s** | 98 s | **46 s** | 3.5× | 2.1× |
+| GPT-2-1.5B | 7,200 s | **1,300 s** | 340 s | **136 s** | 5.5× | 2.5× |
+| LLaMA-3-8B | 31,800 s (~8.8 h) | **~3,600 s (~60 min)** | 1,800 s (~30 min) | **~484 s (~8 min)** | 8.8× | 3.7× |
+
+Per-inference (single 128-token forward pass, Euston-only, amortized):
+
+| Model | CPU per inference | GPU per inference |
+|---|---|---|
+| BERT-Base | **~20.3 s** | **~1.44 s** |
+| GPT-2-1.5B | **~40.6 s** | **~4.25 s** |
+| LLaMA-3-8B | **~113 s (~1.9 min)** | **~15.1 s** |
+
+**Per-operation speedups vs NEXUS:** HMM 90×; GELU 17.7×; LayerNorm 27.7×; Softmax 165.7×; bootstrapping 1.25–1.3×.
+
+**User-side offline (preprocessing) improvements vs NEXUS:** **3100× shorter runtime**, **4.4× lower communication**, **2.2× less storage** — brings user-side setup from hour-scale down to seconds.
+
+**Communication:** ~2.8× less online communication than NEXUS (NEXUS was 164 MB for BERT-Base → Euston ~58 MB).
+
+**Important benchmark caveat.** Fig 6 totals are **prefill-only** (one forward pass on 128-token input), not autoregressive generation. For a RAG-style decoder workload with N generated response tokens, multiply the per-inference number by ~N — a LLaMA-3-8B generation of 200 response tokens on top of a 128-token prompt would be ~30+ minutes on GPU, ~6+ hours on CPU. **Not interactive at LLaMA scale.**
+
+**Implications:**
+- **Euston BERT-Base GPU at ~1.4 s per inference is the current fastest FHE transformer inference**, ~2× faster than NEXUS (0.88 s per single query → Euston amortizes to 1.44 s, but this is over a 32-query batch). For single-query latency, NEXUS's reported 0.88 s GPU on BERT-Base and Euston's matching number are in the same ballpark — the big win is throughput under batching, not single-query latency.
+- **LLaMA-3-8B under FHE is now tractable for batch / offline workloads** (minutes on GPU per query), but still 2–3 orders of magnitude from interactive.
+- 3100× user-side preprocessing reduction is the deployment-changing result — NEXUS's hour-scale client setup made it impractical; Euston's seconds-scale setup enables real deployment.
+
+**Tradeoffs:**
+- CPU LLaMA-3-8B at ~2 min per prefill query — still batch-only
+- Non-interactive FHE caps at polynomial-approximated GELU / Softmax / LayerNorm — small accuracy drift vs plaintext
+- Fig 6 numbers are amortized over batch-32; single-query latency is higher (NEXUS single-query CPU was 37.3 s BERT-Base — the Fig 6 per-query number of 20 s for Euston suggests Euston's per-single-query is similar or slightly better, not dramatically so)
+- Open-source C++/CUDA impl on GitHub (FLL-Lab/Euston); RNS-CKKS engineering cost applies
+
+**Used in:** Research (IEEE S&P 2026); positions Euston as the current non-interactive FHE SOTA.
+
+---
+
+### 13c. CipherFormer — HE + GC, Low Round Complexity
 https://arxiv.org/abs/2403.16860
 **Wang, Kuang | 2024**
 
@@ -521,7 +615,140 @@ The cloud server stores only encoded KV-caches; the plaintext context cannot be 
 
 ---
 
-## E. Obfuscation-Based Private Generation
+## E. TEE Split-Inference (TEE + GPU Asymmetric Decomposition)
+
+> Co-locates a TEE with a GPU and splits the transformer across the trust boundary. The TEE holds a small sensitive portion; the GPU runs the bulk of the compute on an obfuscated representation. Applicable to **any** transformer — embedding, reranker, generator — though the published works target either vision DNNs or decoder LLMs; encoder-only / reranker variants are extrapolations.
+
+### E.1 Delta / AsymML / 3LegRace — Low-rank / Residual Asymmetric Split
+**Niu, Zhang, Zhu, Yi 2022 (3LegRace, PoPETs 2022)**; **Niu et al. 2022 (AsymML)**; **Niu, Ali, Prakash, Avestimehr 2023 (Delta, arXiv 2312.05264, "All Rivers Run to the Sea")**
+
+**Target in the paper:** DNN **training** on **vision models** (AlexNet, VGG, ResNet) — not transformers, not inference. Delta adds a formal DP bound to the asymmetric flow.
+
+**Approach:** Every weight matrix `W = W_s + W_r` via SVD / rank-k truncation. TEE holds the low-rank sensitive factor `W_s`; GPU holds the high-rank residual `W_r`. Partial activations `W_s·x` + `W_r·x` are summed to reconstruct the full output. Privacy: `W_r` alone cannot reconstruct `W` without `W_s`; Delta adds DP noise on the residual path for a formal bound.
+
+**Privacy model:** Honest-but-curious GPU that sees `W_r·x` and partial activations. Delta's DP bound extends to colluding GPU side channels.
+
+**Performance:**
+- **7.6× training speedup** over pure-TEE training (3LegRace, on AlexNet / ResNet — image models)
+- No published transformer numbers; no reranker or embedding numbers
+- Inference overhead depends on rank-k per layer: low k = smaller TEE, weaker security; high k converges to pure-TEE
+
+**Applicability to RAG:**
+- **Generation:** in principle yes, but no published LLM split via this approach
+- **Embedding / reranker:** would require decomposing every BERT weight matrix (12 layers × 6 matrices = 72 decompositions) and post-factorization fine-tuning to recover NDCG@10 / MRR
+- DP budget compounds across layers — loose `ε` at aggregate
+
+**Status:** Research; published only for vision training. Transformer port is a research project, not drop-in.
+
+---
+
+### E.2 ObfuscaTune — Orthogonal Activation Obfuscation
+**Frikha et al. 2024** (already in Edgequake) | [Paper](https://arxiv.org/abs/2407.02960)
+
+**Target in the paper:** Decoder-only **LLM fine-tuning + inference** (GPT-2 family; extensible to Llama-class). Boundary layers in TEE, transformer blocks on GPU. RAG-reranking is listed as future work.
+
+**Approach:** Input embedding table + lm_head (~5% of parameters) stay in TEE. Per-batch random orthogonal matrix `Q` (via QR decomposition) drawn in TEE. Hidden state sent to GPU as `H̃ = Q·H`; GPU runs transformer blocks (attention, FFN) on `H̃`. TEE applies `Q⊤` to recover. Orthogonality preserves inner products through self-attention when `Q` is applied consistently to `Q, K, V`; LayerNorm and softmax require targeted fixes.
+
+**Privacy model:** Honest-but-curious GPU. Security argues that per-batch fresh `Q` defeats accumulation attacks (BSS/ICA). **No formal DP bound.**
+
+**Performance (from the paper):**
+- **1.5× (GPT2-small) to 4.3× (GPT2-XL)** inference slowdown vs unprotected baseline
+- Accuracy within 1–2pp of unprotected across WebQuestions / OpenBookQA / PIQA / SciQ
+- TEE footprint: **5.2% of GPT2-XL parameters** inside enclave
+
+**Applicability to RAG:**
+- **Generation:** the paper's primary target
+- **Embedding (encoder):** architectural pattern ports — TEE holds embedding table + pooling head, GPU runs encoder blocks on `Q·H`. No published encoder variant; would need LayerNorm/softmax-preservation work
+- **Reranker (cross-encoder BERT):** similar encoder-variant extrapolation — same boundary-layer split, small TEE footprint because no lm_head
+
+**Status:** Published for decoder LLMs; encoder / reranker variants are extrapolations.
+
+---
+
+### E.3 GELO — GPU-offloaded Encrypted Linear Operations
+**Belikova, Fedotov 2026** (already in Edgequake) | [Paper](https://arxiv.org/abs/2603.05035)
+
+See §F.17 below for the full entry. GELO belongs in this category: TEE holds a non-orthogonal per-batch invertible matrix `A`, GPU runs linear layers on `A·H`. Non-linear ops (GeLU, LayerNorm, Softmax) stay in TEE — larger TEE footprint than ObfuscaTune but no orthogonality constraint on the obfuscation matrix.
+
+---
+
+### E.4 Shredder — Learned Additive Noise at a Cut Layer
+**Mireshghallah, Taram, Jalali, Hashemi, Tullsen, Esmaeilzadeh 2020 (ASPLOS)**
+
+**Target in the paper:** **CNN image classification** (AlexNet, VGG on CIFAR / ImageNet) — not transformers.
+
+**Approach:** Vertical split at a chosen layer: layers 1..k in TEE / edge, k+1..N on GPU / cloud. At the cut, additive noise `η ~ learned-distribution` is injected. Noise distribution is trained (typically few epochs) to maximize mutual-information reduction between noisy activations and input, subject to a utility constraint. Model weights stay frozen.
+
+**Privacy model:** Honest-but-curious cloud. **Empirical MI reduction**, not a formal DP bound. Vulnerable to inversion attacks with auxiliary information or many correlated queries.
+
+**Performance (from the paper):**
+- **74% MI reduction** at **1.58% accuracy loss** (AlexNet / VGG on image classification)
+- Per-inference latency overhead: trivial (noise sampling only)
+- No transformer experiments
+
+**Applicability to RAG:**
+- **Generation:** transferable; cut-layer choice on a 32-layer LLM is unexplored
+- **Embedding / reranker:** cut layer on a 12-layer BERT is non-trivial — too early (after embeddings) leaks text; too late (final layer) means TEE does most of the work. Reasonable cut points: after layer 6 for embeddings; after final encoder block (before scoring head) for a reranker's `[CLS]` representation.
+
+**Status:** Published for vision; no transformer numbers. Straightforward to port since no model modification needed.
+
+---
+
+### E.5 Privacy-Aware Split Inference (arXiv 2026)
+[Paper: 2506.xxxxx]
+
+**Target in the paper:** Generic LLM split inference over WAN. Embedding layers + first N transformer layers local; middle layers cloud; final layers optionally local.
+
+**Approach:** Vertical split with no obfuscation applied at the cut — relies on the information-theoretic difficulty of inverting mid-network activations into tokens. Split depth chosen to trade off token-recovery risk against local-compute budget.
+
+**Privacy model:** Practical, not cryptographic. **35–59% of tokens recoverable** from mid-network activations via InversionNet / gradient-based attacks depending on split depth.
+
+**Performance:**
+- **8–9 tokens/s** on a 7B model over 80 ms WAN
+- **8 KB/token** transmitted (compressed activations)
+- Local compute scales with split depth — suitable for M-series Mac / edge hardware, not thin clients
+
+**Applicability to RAG:**
+- **Generation:** direct fit
+- **Embedding / reranker:** shallow models (12 layers) give fewer split points — cut after layer 6 transmits ~50% activation entropy
+
+**Status:** Published; practical privacy, no formal guarantee.
+
+---
+
+### E.6 Comparison of E.1–E.4 (TEE Split-Inference mechanisms)
+
+All three co-locate a TEE with a GPU and split a transformer across the trust boundary. They differ on **what gets placed where**, **what the obfuscation primitive is**, and **what kind of guarantee they deliver**.
+
+| | **Delta / AsymML / 3LegRace** | **ObfuscaTune** | **GELO** | **Shredder** |
+|---|---|---|---|---|
+| **Published on** | Vision training (AlexNet / ResNet) | Decoder LLM fine-tuning + inference (GPT-2) | Decoder LLM inference (Llama-2-7B) | Vision inference (AlexNet / VGG) |
+| **What splits** | Every weight matrix `W = W_s + W_r` | Layer-wise boundary: embedding + lm_head in TEE, transformer blocks on GPU | TEE holds non-linear ops + key `A`; GPU runs linear ops on `A·H` | Vertical cut at layer `k`; TEE runs 1..k, GPU runs k+1..N |
+| **TEE holds** | Low-rank sensitive factor of every matrix | Input embedding + output head (~5% params) | Key matrix `A` + non-linear ops (GeLU, LayerNorm, Softmax) | Layers 1..k of the model |
+| **GPU holds** | Residual factors (bulk of parameters) | All transformer blocks | Linear projections (76% of MACs) | Layers k+1..N in plaintext |
+| **What crosses the boundary** | Partial activations `W_s·x` + `W_r·x` | Obfuscated hidden states `H̃ = Q·H` (orthogonal Q) | Obfuscated hidden states `U = A·H` (non-orthogonal, invertible A) | Noised activations `h̃ = h + η` |
+| **Obfuscation primitive** | Matrix decomposition | Orthogonal linear transform | Non-orthogonal invertible linear transform | Additive learned noise |
+| **Formal privacy** | Delta: DP bound (3LegRace: heuristic low-rank) | Informational — argues per-batch Q defeats BSS/ICA accumulation | Informational — `<0.28` cosine ICA recovery, no DP | Empirical 74% MI reduction, no DP |
+| **Retraining needed** | Yes (post-factorization fine-tune) | No (Q sampled at inference) | No (A sampled at inference) | No model retrain; **noise distribution must be trained** |
+| **Headline overhead** | 7.6× training speedup (vision) | 1.5–4.3× inference slowdown (GPT-2 family) | **20–30%** inference overhead (Llama-2-7B) | **1.58% accuracy loss** at 74% MI reduction (vision) |
+| **Adversary it defends against** | Honest-but-curious GPU + DP for side channels | Honest-but-curious GPU; weak against batch-accumulation attacks | Honest-but-curious GPU with VRAM read access | Honest-but-curious cloud; weak against adversaries with auxiliary data |
+| **TEE must be co-located with GPU?** | Yes | Yes | Yes | Yes |
+| **Reranker-specific applicability** | Extrapolation; 72 decompositions for BERT | Extrapolation; small TEE (no lm_head) fits reranker well | Extrapolation; TEE must still run non-linear ops of the reranker | Extrapolation; cut after final encoder layer before scoring head |
+
+### E.7 Honest caveats on "X-reranker" framings
+
+None of these systems is published *specifically* for reranking. Any "ObfuscaTune-reranker", "Shredder-at-`[CLS]`", or "Delta-for-BGE" framing is an adaptation, not a cited result. The table above is descriptive; applicability claims to reranker / embedding workloads are extrapolations.
+
+The closest **published** transformer-specific split-inference systems are:
+- **ObfuscaTune** (decoder LLMs)
+- **GELO** (decoder LLMs, already in Edgequake)
+- **Privacy-Aware Split Inference** (generic LLM WAN split)
+
+For reranker-specific adaptation, the clean near-term options remain the ones in `private-reranking-research.md` §3 proper — TEE-hosted cross-encoder (Opal) or client-side reranker (HR+QDA / BGE).
+
+---
+
+## F. Obfuscation-Based Private Generation
 
 ### 17. GELO — Good-Enough LLM Obfuscation
 https://arxiv.org/abs/2603.05035
@@ -591,28 +818,36 @@ Defends against white-box adversaries with full model access and KNN retrieval /
 
 ---
 
-## F. Comparison Matrix
+## G. Comparison Matrix
 
-| System | Approach | Model scale | Latency overhead | Comm overhead | Quality loss | Retrieval connection | HW trust? |
-|---|---|---|---|---|---|---|---|
-| **Opal** | TEE | Any (via API) | Small (ORAM overhead) | Low | None | Full pipeline (TEE) | Yes (SGX/TDX) |
-| **RAGtime-PIANO** | FHE | Unknown LLM | Minutes/query | High | TBD | FHE end-to-end | No |
-| **RemoteRAG** | DP + cloud LLM | Any cloud LLM | 0.67s retrieval | 46 KB retrieval | None | DP retrieval only | No |
-| **prRAG+CAPRISE** | DPE + cloud LLM | Any | Enc: 15ms/128q | Low enc | BLEU 83→12 (privacy) | DPE retrieval only | No |
-| **PermLLM** | MPC (3-party) | ChatGLM-6B | **~3s/token** | 20 MB/token | None | Context secret-shared | No |
-| **PUMA** | MPC (3-party) | LLaMA-7B | **~200s/token** | 1.8 GB/token | ≤0.011 acc | Context secret-shared | No |
-| **SIGMA** | FSS (2-party) | LLaMA-13B | **~44s/token** | Reduced | Comparable | Context secret-shared | No |
-| **SHAFT** | MPC | BERT/RoBERTa | — (baseline) | — | <1 pp | Context secret-shared | No |
-| **SPRINT** | MPC + DP | RoBERTa | 1.6× faster than SHAFT | 1.6× less | <1 pp | Context secret-shared | No |
-| **MERGE** | MPC (NLG) | GPT-2-base (124M) | **~1.3 s/token** (7.75×↑ vs CrypTen; 10×↑ vs MPCFormer) | **121 GB**/128 tokens (62% ↓) | Small | Context secret-shared | No |
-| **THE-X** | FHE (CKKS) | BERT-Base/Large | High (not quantified) | Low | Negligible | Context encrypted | No |
-| **BumbleBee** | HE + GC | LLaMA-7B | **~8 min/token** | 80-95% less vs prior | TBD | Context encrypted | No |
-| **CipherFormer** | HE + GC | BERT-small | **5.15s/inference** | 74.5 MB total | ~5% acc drop | Context encrypted | No |
-| **Petridish** | CVM/TDX | Any (in CVM) | ~None (hardware) | None | None | Full context in CVM | Yes (TDX) |
-| **Portcullis** | TEE + PII mask | GPT-4o class | Minimal | None | Equal/better | Anonymized context | Yes |
-| **SCX** | KV-cache enc | LLaMA-7B | **36ms/step** | 85% less | None | Plaintext prefill, enc KV-cache | No |
-| **GELO** | Obfuscation + TEE | Llama-2-7B | **20–30%** | IPC bottleneck | 98.8–100% | Full context obfuscated | Yes (TEE for client) |
-| **OSNIP** | Null-space proj | Up to 32B | **0.96ms overhead** | None | 100.1% BLEU | Full context obfuscated | No |
+All entries normalized to per-inference or per-token numbers where reported; benchmark model indicated. LAN-1 Gbps unless noted.
+
+| System | Approach | Benchmark model | Latency | Comm per inference | Quality loss | HW trust? |
+|---|---|---|---|---|---|---|
+| **Opal** | TEE + ORAM | Any (via API) | Small ORAM overhead on retrieval | Low | None | Yes (SGX/TDX) |
+| **RAGtime-PIANO** | FHE end-to-end | Unspecified | Minutes–hours/query (estimated) | Not reported | Small (poly approx) | No |
+| **RemoteRAG** | DP query + cloud LLM | Any cloud LLM (retrieval only) | **0.67 s retrieval** @ 10⁵ docs | **46.66 KB** | None on generation | No |
+| **prRAG + CAPRISE** | Dist-preserving enc + cloud LLM | Any cloud LLM (retrieval only) | Enc: **15 ms / 128 queries**; gen: plaintext | Low enc; plaintext gen | Vec2Text BLEU 83→12.4 | No |
+| **PermLLM** | 3-party MPC (perm + SS + HE) | ChatGLM-6B | **~3 s/token LAN**, ~7 s/token WAN | **~20 MB/token** | None (identical to plaintext) | No |
+| **PUMA** | 3-party RSS-MPC | LLaMA-7B; BERT-Base | LLaMA-7B: **~200 s/token**; BERT-Base: **33.9 s / 128 tok**; GPT-2 Base: **15.5 s / 32 tok** | LLaMA-7B: **1.79 GB/token**; BERT-Base: **10.8 GB / 128 tok** | ≤0.011 GLUE acc drop | No |
+| **SIGMA** | 2-party FSS | LLaMA-2-13B; GPT-2 | LLaMA-2-13B: **~44 s/token**; GPT-2: **~1.6 s/token** | Reduced vs GC (exact MB/token not published) | Comparable | No |
+| **SHAFT** | 2-party MPC | BERT-Base (NLU) | Est. **~4.6 s LAN BERT-Base** (5.2× faster than BOLT's 25 s) | **~4.6 GB** (82% less than BOLT) | <1pp GLUE | No |
+| **SPRINT** | 2-party MPC + DP fine-tune | RoBERTa | **~2.9 s LAN** (1.6× faster than SHAFT) | ~2.9 GB (1.6× less than SHAFT) | <1pp GLUE | No |
+| **MERGE** | 2-party MPC (NLG) | GPT-2-base (124M); T5 (138M) | GPT-2 128-tok: **171 s** (~1.34 s/token); T5 128-tok: **144 s** (~1.12 s/token) | **121 GB / 128 tok** (GPT-2); **98 GB / 128 tok** (T5) | Small (poly approx) | No |
+| **THE-X** | Single-server FHE (CKKS) | BERT-Base, BERT-Large | Minutes/inference (paper: no absolute number) | Low (single ciphertext round) | Negligible GLUE | No |
+| **NEXUS** | Single-server FHE (non-interactive RNS-CKKS) | BERT-Base | **37.3 s CPU** / **0.88 s GPU** | **164 MB** | Comparable | No |
+| **Euston** | Single-server FHE (non-interactive RNS-CKKS + SVD) | BERT-Base; GPT2-1.5B; LLaMA-3-8B | Per 128-tok prefill, amortized batch-32: BERT-Base **~20.3 s CPU / ~1.44 s GPU**; GPT2-1.5B **~40.6 s / ~4.25 s**; **LLaMA-3-8B ~113 s CPU / ~15.1 s GPU** | ~58 MB BERT-Base (2.8× less than NEXUS); user-side preproc 3100× less | Comparable (CKKS poly approx) | No |
+| **BumbleBee** | 2-party HE + GC | LLaMA-7B | **~8 min/token** CPU | 80–95% less than prior HE+GC | Not specified | No |
+| **CipherFormer** | 2-party HE + GC | BERT-small (1–2 layers) | **5.15 s online** + 14.07 s offline (L=1–2) | **32 MB online, 42.5 MB offline** | ~5% on hard tasks | No |
+| **Petridish / CVM** | CVM (TDX/SEV-SNP) | Any LLM in CVM | **~4–8% overhead** (H100 CC); <10% CPU TEE | None | None | Yes (TDX/SEV) |
+| **Portcullis** | TEE-attested PII gateway | GPT-4o class | Minimal (gateway overhead) | None | Equal/better on Enron | Yes |
+| **SCX** | User-key KV-cache encoding | LLaMA-7B | **36 ms/autoregressive step** | 85% reduction with mgmt | None (identical output) | No (plaintext prefill) |
+| **GELO** | TEE + GPU (non-orthogonal A·H) | Llama-2-7B | **20–30% overhead** vs plaintext GPU | IPC-bound (81.4% of overhead is socket IPC) | 100% top-1 fp32; 98.8–99.8% bf16/fp16 | Yes (TEE for client) |
+| **ObfuscaTune** | TEE + GPU (orthogonal Q·H) | GPT-2 family | **1.5× (small) – 4.3× (XL) slowdown** | Not separately reported | Within 1–2pp baseline | Yes (TEE for client) |
+| **Delta / AsymML / 3LegRace** | TEE + GPU (SVD `W=W_s+W_r`) | Vision training (no transformer benchmarks) | 7.6× training speedup vs pure-TEE (vision) | Not reported for inference | Unknown for transformers | Yes (TEE + GPU) |
+| **Shredder** | Learned noise at cut layer | Vision (AlexNet/VGG) | Trivial noise overhead | Depends on cut point | **1.58% acc loss at 74% MI reduction** | Optional TEE |
+| **Privacy-Aware Split Inference** | Vertical split over WAN | Generic 7B LLM | **8–9 tokens/s** over 80 ms WAN | **8 KB/token** | 35–59% token recovery risk | No |
+| **OSNIP** | Null-space embedding projection | Up to Qwen3-32B | **+0.96 ms/prompt** | None extra | 100.1% BERTScore CNN/DailyMail | No |
 
 ---
 
