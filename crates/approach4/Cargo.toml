@@ -9,6 +9,8 @@ anyhow.workspace = true
 rag_core = { path = "../core", package = "core" }
 
 [dev-dependencies]
+gelo-embedder = { path = "../gelo-embedder" }
+gelo-protocol = { path = "../gelo-protocol" }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

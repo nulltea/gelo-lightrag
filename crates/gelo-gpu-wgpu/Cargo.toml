@@ -1,0 +1,26 @@
+[package]
+name = "gelo-gpu-wgpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bytemuck.workspace = true
+cubecl.workspace = true
+cubecl-common.workspace = true
+cubecl-core.workspace = true
+cubecl-matmul.workspace = true
+cubecl-runtime.workspace = true
+cubecl-std.workspace = true
+cubecl-wgpu.workspace = true
+gelo-protocol = { path = "../gelo-protocol" }
+ndarray.workspace = true
+wgpu.workspace = true
+
+[dev-dependencies]
+gelo-embedder = { path = "../gelo-embedder" }
+rag_core = { path = "../core", package = "core" }
+rand.workspace = true
+rand_chacha.workspace = true
+rand_distr.workspace = true

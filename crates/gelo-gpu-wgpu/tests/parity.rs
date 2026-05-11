@@ -1,0 +1,162 @@
+//! `WgpuVulkanEngine` parity vs the CPU reference engine.
+//!
+//! Tests skip themselves gracefully when no Vulkan-capable adapter is
+//! available (no GPU, no ICD installed, headless CI box), so checking the
+//! crate in is safe even in environments that can't actually run a Vulkan
+//! workload.
+
+use ndarray::Array2;
+use rand::SeedableRng;
+use rand_chacha::ChaCha20Rng;
+use rand_distr::{Distribution, StandardNormal};
+
+use gelo_gpu_wgpu::WgpuVulkanEngine;
+use gelo_protocol::{GpuOffloadEngine, RayonCpuEngine, WeightHandle, WeightKind};
+
+fn random_matrix(rows: usize, cols: usize, rng: &mut impl rand::RngCore) -> Array2<f32> {
+    let normal = StandardNormal;
+    Array2::from_shape_fn((rows, cols), |_| {
+        <StandardNormal as Distribution<f32>>::sample(&normal, rng)
+    })
+}
+
+fn open_engine() -> Option<WgpuVulkanEngine> {
+    match WgpuVulkanEngine::new() {
+        Ok(e) => {
+            let info = e.adapter_info();
+            eprintln!(
+                "wgpu adapter: backend={:?} name={:?} vendor=0x{:x} device=0x{:x} device_type={:?} driver={:?} driver_info={:?}",
+                info.backend,
+                info.name,
+                info.vendor,
+                info.device,
+                info.device_type,
+                info.driver,
+                info.driver_info,
+            );
+            Some(e)
+        }
+        Err(err) => {
+            eprintln!("skipping wgpu parity: no Vulkan adapter ({err})");
+            None
+        }
+    }
+}
+
+#[test]
+fn selects_real_gpu_hardware_not_software_rasterizer() {
+    let Some(engine) = open_engine() else {
+        return;
+    };
+    let info = engine.adapter_info();
+    assert_eq!(
+        info.backend,
+        wgpu::Backend::Vulkan,
+        "expected Vulkan backend, got {:?}",
+        info.backend
+    );
+    assert!(
+        engine.is_real_gpu(),
+        "wgpu selected a non-GPU adapter: {info:?} — this means we're falling back to a software Vulkan ICD (e.g. lavapipe / llvmpipe). Test must run on a real GPU.",
+    );
+    assert!(
+        !info.name.to_lowercase().contains("llvmpipe"),
+        "wgpu picked llvmpipe software rasterizer: {info:?}",
+    );
+    assert!(
+        !info.name.to_lowercase().contains("lavapipe"),
+        "wgpu picked lavapipe software rasterizer: {info:?}",
+    );
+}
+
+#[test]
+fn matmul_matches_cpu_engine() {
+    let Some(mut gpu) = open_engine() else {
+        return;
+    };
+    let mut cpu = RayonCpuEngine::new();
+
+    let mut rng = ChaCha20Rng::from_seed([11u8; 32]);
+    let m = 32;
+    let k = 24;
+    let n = 16;
+
+    let input = random_matrix(m, k, &mut rng);
+    let weight = random_matrix(k, n, &mut rng);
+    let handle = WeightHandle::new(0, WeightKind::Q);
+
+    cpu.register_weight(handle, weight.view()).unwrap();
+    gpu.register_weight(handle, weight.view()).unwrap();
+
+    let cpu_out = cpu.matmul(handle, input.view()).unwrap();
+    let gpu_out = gpu.matmul(handle, input.view()).unwrap();
+
+    assert_eq!(cpu_out.shape(), gpu_out.shape());
+    let mut max_abs = 0.0_f32;
+    for ((i, j), v) in cpu_out.indexed_iter() {
+        let diff = (v - gpu_out[[i, j]]).abs();
+        if diff > max_abs {
+            max_abs = diff;
+        }
+    }
+    assert!(
+        max_abs < 5e-4,
+        "GPU vs CPU max abs diff {max_abs} exceeds tolerance",
+    );
+}
+
+#[test]
+fn shape_dispatch_handles_non_multiples_of_workgroup() {
+    let Some(mut gpu) = open_engine() else {
+        return;
+    };
+    let mut cpu = RayonCpuEngine::new();
+
+    // 17×11 · 11×19 — none of these dimensions are multiples of 16, which
+    // exercises the workgroup-bounds-check branches in the WGSL kernel.
+    let mut rng = ChaCha20Rng::from_seed([29u8; 32]);
+    let input = random_matrix(17, 11, &mut rng);
+    let weight = random_matrix(11, 19, &mut rng);
+    let handle = WeightHandle::new(0, WeightKind::FfnUp);
+
+    cpu.register_weight(handle, weight.view()).unwrap();
+    gpu.register_weight(handle, weight.view()).unwrap();
+
+    let cpu_out = cpu.matmul(handle, input.view()).unwrap();
+    let gpu_out = gpu.matmul(handle, input.view()).unwrap();
+
+    assert_eq!(cpu_out.shape(), gpu_out.shape());
+    for ((i, j), v) in cpu_out.indexed_iter() {
+        let diff = (v - gpu_out[[i, j]]).abs();
+        assert!(diff < 5e-4, "({i},{j}): cpu={v} gpu={}", gpu_out[[i, j]]);
+    }
+}
+
+#[test]
+fn weight_buffer_is_cached_across_calls() {
+    // Functional check that register_weight uploads once and matmul reuses.
+    let Some(mut gpu) = open_engine() else {
+        return;
+    };
+    let mut rng = ChaCha20Rng::from_seed([37u8; 32]);
+    let weight = random_matrix(8, 8, &mut rng);
+    let handle = WeightHandle::new(3, WeightKind::O);
+    gpu.register_weight(handle, weight.view()).unwrap();
+
+    let mut prev = None;
+    for seed in 0u8..3 {
+        let mut r = ChaCha20Rng::from_seed([seed; 32]);
+        let input = random_matrix(8, 8, &mut r);
+        let out = gpu.matmul(handle, input.view()).unwrap();
+        let expected = input.dot(&weight);
+        for ((i, j), v) in expected.indexed_iter() {
+            assert!(
+                (v - out[[i, j]]).abs() < 5e-4,
+                "seed {seed} ({i},{j}): expected={v} got={}",
+                out[[i, j]]
+            );
+        }
+        prev = Some(out);
+    }
+    assert!(prev.is_some());
+}
