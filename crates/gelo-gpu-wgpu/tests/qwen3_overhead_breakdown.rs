@@ -6,14 +6,13 @@
 //! `gelo_protocol::profile` accumulator between runs. The categories cover
 //! every coarse step that contributes per-text time, separated into:
 //!
-//!   - `tee:*`       — pure TEE-side work (RMSNorm, RoPE, softmax+AV,
-//!                     SwiGLU activation, residual adds, attention)
-//!   - `engine:*`    — wgpu/Vulkan dispatches (matmul / matmul_dynamic)
-//!   - `gelo:*`      — GELO mask machinery (sample A, apply A·H,
-//!                     unapply Aᵀ·V, shield stack, shield strip)
-//!   - `outattn:*`   — TwinShield OutAttnMult bookkeeping (setup + stack
-//!                     2n-wide masked operands, recover Q·Kᵀ from the
-//!                     four partitions)
+//! - `tee:*` — pure TEE-side work (RMSNorm, RoPE, softmax+AV, SwiGLU
+//!   activation, residual adds, attention)
+//! - `engine:*` — wgpu/Vulkan dispatches (matmul / matmul_dynamic)
+//! - `gelo:*` — GELO mask machinery (sample A, apply A·H, unapply Aᵀ·V,
+//!   shield stack, shield strip)
+//! - `outattn:*` — TwinShield OutAttnMult bookkeeping (setup + stack
+//!   2n-wide masked operands, recover Q·Kᵀ from the four partitions)
 //!
 //! Comparing the two snapshots makes the +83% overhead source visible per
 //! category rather than as one opaque number.

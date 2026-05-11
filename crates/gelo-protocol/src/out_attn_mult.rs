@@ -24,7 +24,7 @@
 //! knowing `(R_Q, R_Kt, a, b, λ_Q, λ_K)` it cannot recover `Q` or `Kᵀ`.
 
 use anyhow::{Result, anyhow};
-use ndarray::{Array1, Array2, ArrayView2};
+use ndarray::{Array1, Array2, Array3, ArrayView2, ArrayView3, Axis};
 use rand::RngCore;
 use rand::seq::SliceRandom;
 use rand_distr::{Distribution, StandardNormal, Uniform};
@@ -117,6 +117,120 @@ pub fn offload_qkt<R: RngCore, E: GpuOffloadEngine + ?Sized>(
         let t4 = permed.slice(ndarray::s![n.., n..]).to_owned();
         let ab = a * b;
         &t1 - &(&t2 / b) - &(&t3 / a) + &(&t4 / ab)
+    });
+    Ok(qkt)
+}
+
+/// Batched OutAttnMult — one engine call covering every Q head of a layer.
+///
+/// Each head gets independent masks `R_Q[h]`, `R_Kt[h]`, scalars `a[h]`,
+/// `b[h]`, and row/column permutations `λ_Q[h]` / `λ_K[h]`. The 4-partition
+/// recovery is then done per-head against the batched output, so the
+/// privacy story is identical to running `offload_qkt` h times in
+/// sequence — only the engine sees the single fused batched matmul.
+///
+/// `q` shape: `(H, n, d_head)`. `kt` shape: `(H, d_head, n)`. Output:
+/// `(H, n, n)`.
+pub fn offload_qkt_batched<R: RngCore, E: GpuOffloadEngine + ?Sized>(
+    engine: &E,
+    rng: &mut R,
+    q: ArrayView3<'_, f32>,
+    kt: ArrayView3<'_, f32>,
+    n_verify_probes: usize,
+) -> Result<Array3<f32>> {
+    let h = q.shape()[0];
+    let n = q.shape()[1];
+    let d = q.shape()[2];
+    if kt.shape() != [h, d, n] {
+        return Err(anyhow!(
+            "offload_qkt_batched shape mismatch: q is ({h},{n},{d}) but kt is {:?}",
+            kt.shape()
+        ));
+    }
+
+    // 1-3. Per-head sampling + stacking. Collected into 3-D arrays so the
+    //      engine sees a single contiguous batched tensor on each side.
+    let mut stacked_q = Array3::<f32>::zeros((h, 2 * n, d));
+    let mut stacked_kt = Array3::<f32>::zeros((h, d, 2 * n));
+    let mut lambdas_q: Vec<Vec<usize>> = Vec::with_capacity(h);
+    let mut lambdas_k: Vec<Vec<usize>> = Vec::with_capacity(h);
+    let mut scalars: Vec<(f32, f32)> = Vec::with_capacity(h);
+
+    profile::time("outattn:setup_stack_batched", || {
+        for hi in 0..h {
+            let q_h = q.index_axis(Axis(0), hi);
+            let kt_h = kt.index_axis(Axis(0), hi);
+
+            let r_q = sample_normal(n, d, MASK_SIGMA, rng);
+            let r_kt = sample_normal(d, n, MASK_SIGMA, rng);
+            let a = sample_scalar(rng);
+            let b = sample_scalar(rng);
+
+            // Build the masked & filler rows for this head's stacked_Q.
+            let mut sq = Array2::<f32>::zeros((2 * n, d));
+            sq.slice_mut(ndarray::s![..n, ..]).assign(&(&q_h + &r_q));
+            sq.slice_mut(ndarray::s![n.., ..]).assign(&(&r_q * a));
+            let lambda_q = random_perm(2 * n, rng);
+            let sq = permute_rows(sq.view(), &lambda_q);
+            stacked_q.index_axis_mut(Axis(0), hi).assign(&sq);
+
+            // Same for stacked_Kt.
+            let mut skt = Array2::<f32>::zeros((d, 2 * n));
+            skt.slice_mut(ndarray::s![.., ..n]).assign(&(&kt_h + &r_kt));
+            skt.slice_mut(ndarray::s![.., n..]).assign(&(&r_kt * b));
+            let lambda_k = random_perm(2 * n, rng);
+            let skt = permute_cols(skt.view(), &lambda_k);
+            stacked_kt.index_axis_mut(Axis(0), hi).assign(&skt);
+
+            lambdas_q.push(lambda_q);
+            lambdas_k.push(lambda_k);
+            scalars.push((a, b));
+        }
+    });
+
+    // 4. One fused batched dispatch.
+    let tilde = profile::time("engine:matmul_dynamic_batched", || {
+        engine.matmul_dynamic_batched(stacked_q.view(), stacked_kt.view())
+    })?;
+
+    // 5. Per-head U-Verify on the engine's raw output. We probe the
+    //    individual 2-D batch slices rather than the full 3-D tensor so the
+    //    Wilkinson-style eps in `integrity::verify_offload` stays scaled
+    //    against per-head magnitudes.
+    if n_verify_probes > 0 {
+        profile::time("uverify:attn_qkt_batched", || -> Result<()> {
+            for hi in 0..h {
+                verify_offload(
+                    n_verify_probes,
+                    stacked_q.index_axis(Axis(0), hi),
+                    stacked_kt.index_axis(Axis(0), hi),
+                    tilde.index_axis(Axis(0), hi),
+                    rng,
+                )?;
+            }
+            Ok(())
+        })?;
+    }
+
+    // 6. Per-head depermute + algebraic recovery.
+    let qkt = profile::time("outattn:recover_batched", || {
+        let mut out = Array3::<f32>::zeros((h, n, n));
+        for hi in 0..h {
+            let permed = inverse_permute(
+                tilde.index_axis(Axis(0), hi),
+                &lambdas_q[hi],
+                &lambdas_k[hi],
+            );
+            let t1 = permed.slice(ndarray::s![..n, ..n]).to_owned();
+            let t2 = permed.slice(ndarray::s![..n, n..]).to_owned();
+            let t3 = permed.slice(ndarray::s![n.., ..n]).to_owned();
+            let t4 = permed.slice(ndarray::s![n.., n..]).to_owned();
+            let (a, b) = scalars[hi];
+            let ab = a * b;
+            let recovered = &t1 - &(&t2 / b) - &(&t3 / a) + &(&t4 / ab);
+            out.index_axis_mut(Axis(0), hi).assign(&recovered);
+        }
+        out
     });
     Ok(qkt)
 }
@@ -263,6 +377,64 @@ mod tests {
         let expected = q.dot(&kt);
         for ((i, j), e) in expected.indexed_iter() {
             assert!((e - got[[i, j]]).abs() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn out_attn_mult_batched_recovers_per_head_qkt() {
+        // 8 Q heads, each with independent random Q/K^T — confirm the
+        // batched path returns the same per-head Q·Kᵀ products as a CPU
+        // reference.
+        let mut rng = ChaCha20Rng::from_seed([0xAB; 32]);
+        let h = 8;
+        let n = 20;
+        let d = 12;
+
+        let mut q3 = Array3::<f32>::zeros((h, n, d));
+        let mut kt3 = Array3::<f32>::zeros((h, d, n));
+        for hi in 0..h {
+            q3.index_axis_mut(Axis(0), hi)
+                .assign(&rand2(n, d, &mut rng, 0.4));
+            kt3.index_axis_mut(Axis(0), hi)
+                .assign(&rand2(d, n, &mut rng, 0.4));
+        }
+
+        let engine = RayonCpuEngine::new();
+        let got = offload_qkt_batched(&engine, &mut rng, q3.view(), kt3.view(), 0).unwrap();
+
+        for hi in 0..h {
+            let expected = q3.index_axis(Axis(0), hi).dot(&kt3.index_axis(Axis(0), hi));
+            for ((i, j), e) in expected.indexed_iter() {
+                let g = got[[hi, i, j]];
+                assert!(
+                    (e - g).abs() < 1e-3,
+                    "batched OutAttnMult diverges at head={hi} ({i},{j}): expected={e}, got={g}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn out_attn_mult_batched_with_verify_accepts_honest_engine() {
+        let mut rng = ChaCha20Rng::from_seed([0xCD; 32]);
+        let h = 4;
+        let n = 16;
+        let d = 8;
+        let mut q3 = Array3::<f32>::zeros((h, n, d));
+        let mut kt3 = Array3::<f32>::zeros((h, d, n));
+        for hi in 0..h {
+            q3.index_axis_mut(Axis(0), hi)
+                .assign(&rand2(n, d, &mut rng, 0.3));
+            kt3.index_axis_mut(Axis(0), hi)
+                .assign(&rand2(d, n, &mut rng, 0.3));
+        }
+        let engine = RayonCpuEngine::new();
+        let got = offload_qkt_batched(&engine, &mut rng, q3.view(), kt3.view(), 8).unwrap();
+        for hi in 0..h {
+            let expected = q3.index_axis(Axis(0), hi).dot(&kt3.index_axis(Axis(0), hi));
+            for ((i, j), e) in expected.indexed_iter() {
+                assert!((e - got[[hi, i, j]]).abs() < 1e-3);
+            }
         }
     }
 }

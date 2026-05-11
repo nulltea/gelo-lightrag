@@ -161,6 +161,41 @@ fn matmul_dynamic_matches_cpu_engine() {
 }
 
 #[test]
+fn matmul_dynamic_batched_matches_cpu_engine() {
+    let Some(gpu) = open_engine() else {
+        return;
+    };
+    let cpu = RayonCpuEngine::new();
+
+    let mut rng = ChaCha20Rng::from_seed([67u8; 32]);
+    let b = 8;
+    let m = 20;
+    let k = 32;
+    let n = 12;
+
+    let mut lhs = ndarray::Array3::<f32>::zeros((b, m, k));
+    let mut rhs = ndarray::Array3::<f32>::zeros((b, k, n));
+    for bi in 0..b {
+        let nl = random_matrix(m, k, &mut rng);
+        let nr = random_matrix(k, n, &mut rng);
+        lhs.index_axis_mut(ndarray::Axis(0), bi).assign(&nl);
+        rhs.index_axis_mut(ndarray::Axis(0), bi).assign(&nr);
+    }
+
+    let cpu_out = cpu.matmul_dynamic_batched(lhs.view(), rhs.view()).unwrap();
+    let gpu_out = gpu.matmul_dynamic_batched(lhs.view(), rhs.view()).unwrap();
+
+    assert_eq!(cpu_out.shape(), gpu_out.shape());
+    for ((bi, i, j), v) in cpu_out.indexed_iter() {
+        assert!(
+            (v - gpu_out[[bi, i, j]]).abs() < 5e-4,
+            "batched matmul GPU vs CPU diverges at ({bi},{i},{j}): {v} vs {}",
+            gpu_out[[bi, i, j]]
+        );
+    }
+}
+
+#[test]
 fn weight_buffer_is_cached_across_calls() {
     // Functional check that register_weight uploads once and matmul reuses.
     let Some(mut gpu) = open_engine() else {

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use ndarray::{Array2, ArrayView2};
+use ndarray::{Array2, Array3, ArrayView2, Axis};
 
 use gelo_protocol::profile;
 use gelo_protocol::TrustedExecutor;
@@ -55,11 +55,12 @@ pub fn causal_gqa_attention(
     output
 }
 
-/// Same as [`causal_gqa_attention`] but routes each head's `Q · Kᵀ` matmul
-/// through [`TrustedExecutor::offload_attention_qkt`] — the TwinShield
-/// OutAttnMult path. Softmax, causal mask, and the `attn · V` follow-up
-/// matmul stay inside the TEE. The scale-by-`1/sqrt(head_dim)` is applied
-/// *after* the offloaded matmul comes back.
+/// Same as [`causal_gqa_attention`] but routes the per-head `Q · Kᵀ`
+/// matmuls through [`TrustedExecutor::offload_attention_qkt_batched`] —
+/// one fused OutAttnMult dispatch covering every Q head. Softmax, causal
+/// mask, and the `attn · V` follow-up matmul stay inside the TEE. The
+/// scale-by-`1/sqrt(head_dim)` is applied *after* the offloaded matmul
+/// comes back.
 pub fn causal_gqa_attention_with_offload(
     exec: &mut impl TrustedExecutor,
     q: ArrayView2<'_, f32>,
@@ -75,30 +76,46 @@ pub fn causal_gqa_attention_with_offload(
     let n = q.nrows();
     let scale = 1.0_f32 / (head_dim as f32).sqrt();
 
+    // Gather all Q heads into a (H, n, d_head) tensor and materialise the
+    // K-side as (H, d_head, n) — with GQA, each Q head's K is its
+    // KV-group head, replicated. This is a single per-layer allocation.
+    let (q_batched, kt_batched) = profile::time("tee:gqa_batch_pack", || {
+        let mut qb = Array3::<f32>::zeros((num_q_heads, n, head_dim));
+        let mut ktb = Array3::<f32>::zeros((num_q_heads, head_dim, n));
+        for qh in 0..num_q_heads {
+            let q_off = qh * head_dim;
+            let kvh = qh / group;
+            let kv_off = kvh * head_dim;
+            let q_view = q.slice(ndarray::s![.., q_off..q_off + head_dim]);
+            let k_view = k.slice(ndarray::s![.., kv_off..kv_off + head_dim]);
+            qb.index_axis_mut(Axis(0), qh).assign(&q_view);
+            ktb.index_axis_mut(Axis(0), qh).assign(&k_view.t());
+        }
+        (qb, ktb)
+    });
+
+    // One fused batched OutAttnMult dispatch.
+    let scores_batched = exec.offload_attention_qkt_batched(q_batched.view(), kt_batched.view())?;
+
+    // Per-head softmax + causal mask + V multiply, all in TEE.
     let mut output = Array2::<f32>::zeros((n, num_q_heads * head_dim));
+    profile::time("tee:softmax_av", || {
+        for qh in 0..num_q_heads {
+            let q_off = qh * head_dim;
+            let kvh = qh / group;
+            let kv_off = kvh * head_dim;
+            let vh_view = v.slice(ndarray::s![.., kv_off..kv_off + head_dim]);
 
-    for qh in 0..num_q_heads {
-        let kvh = qh / group;
-        let q_off = qh * head_dim;
-        let kv_off = kvh * head_dim;
-
-        let qh_view = q.slice(ndarray::s![.., q_off..q_off + head_dim]);
-        let kh_view = k.slice(ndarray::s![.., kv_off..kv_off + head_dim]);
-        let vh_view = v.slice(ndarray::s![.., kv_off..kv_off + head_dim]);
-
-        // Transpose to materialise K^T (the protocol's right operand). This
-        // is an n × d copy per head — small at typical head_dim (64-128).
-        let kht = profile::time("tee:k_transpose", || kh_view.t().to_owned());
-        let mut scores = exec.offload_attention_qkt(qh_view, kht.view())?;
-        profile::time("tee:softmax_av", || {
+            let mut scores = scores_batched.index_axis(Axis(0), qh).to_owned();
             scores *= scale;
             apply_causal_mask(&mut scores);
             softmax_inplace(&mut scores);
             let ctx = scores.dot(&vh_view);
-            let mut dst = output.slice_mut(ndarray::s![.., q_off..q_off + head_dim]);
-            dst.assign(&ctx);
-        });
-    }
+            output
+                .slice_mut(ndarray::s![.., q_off..q_off + head_dim])
+                .assign(&ctx);
+        }
+    });
     Ok(output)
 }
 

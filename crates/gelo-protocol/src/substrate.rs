@@ -1,5 +1,5 @@
 use anyhow::Result;
-use ndarray::{Array2, ArrayView2};
+use ndarray::{Array2, Array3, ArrayView2, ArrayView3, Axis};
 
 /// Identifies a specific projection weight inside a transformer encoder.
 /// The trusted side uses this both to address weights on the GPU and to
@@ -54,6 +54,41 @@ pub trait GpuOffloadEngine: Send {
         lhs: ArrayView2<f32>,
         rhs: ArrayView2<f32>,
     ) -> Result<Array2<f32>>;
+
+    /// Batched two-operand dynamic matmul. `lhs` is `(B, M, K)`, `rhs` is
+    /// `(B, K, N)`, result is `(B, M, N)`. Each batch element is an
+    /// independent GEMM — no cross-batch reduction. Used by OutAttnMult to
+    /// fuse all Q-heads of a layer into one GPU dispatch.
+    ///
+    /// Default impl loops over the batch axis calling `matmul_dynamic`, so
+    /// engines that haven't been upgraded still produce the right answer
+    /// (just without the dispatch saving). Wgpu/cubecl backends override
+    /// with one batched launch.
+    fn matmul_dynamic_batched(
+        &self,
+        lhs: ArrayView3<f32>,
+        rhs: ArrayView3<f32>,
+    ) -> Result<Array3<f32>> {
+        let b = lhs.shape()[0];
+        let m = lhs.shape()[1];
+        let k = lhs.shape()[2];
+        if rhs.shape()[0] != b || rhs.shape()[1] != k {
+            return Err(anyhow::anyhow!(
+                "matmul_dynamic_batched shape mismatch: lhs ({b},{m},{k}) vs rhs {:?}",
+                rhs.shape()
+            ));
+        }
+        let n = rhs.shape()[2];
+        let mut out = Array3::<f32>::zeros((b, m, n));
+        for i in 0..b {
+            let r = self.matmul_dynamic(
+                lhs.index_axis(Axis(0), i),
+                rhs.index_axis(Axis(0), i),
+            )?;
+            out.index_axis_mut(Axis(0), i).assign(&r);
+        }
+        Ok(out)
+    }
 }
 
 /// The trusted side of the split protocol.
@@ -106,5 +141,32 @@ pub trait TrustedExecutor {
         _kt: ArrayView2<f32>,
     ) -> Result<Array2<f32>> {
         unimplemented!("offload_attention_qkt not implemented for this executor")
+    }
+
+    /// Batched OutAttnMult — one GPU dispatch covering every Q head in a
+    /// layer. `q` is `(num_q_heads, n, d_head)`, `kt` is
+    /// `(num_q_heads, d_head, n)` (with K already repeated to match Q heads
+    /// for GQA), result is `(num_q_heads, n, n)`.
+    ///
+    /// Each head gets independent masks, scalars, and permutations — the
+    /// privacy story stays identical to the per-head form. Default impl
+    /// loops over the batch axis calling `offload_attention_qkt`; engines
+    /// implementing the batched engine primitive will override.
+    fn offload_attention_qkt_batched(
+        &mut self,
+        q: ArrayView3<f32>,
+        kt: ArrayView3<f32>,
+    ) -> Result<Array3<f32>> {
+        let h = q.shape()[0];
+        let n = q.shape()[1];
+        let mut out = Array3::<f32>::zeros((h, n, n));
+        for i in 0..h {
+            let r = self.offload_attention_qkt(
+                q.index_axis(Axis(0), i),
+                kt.index_axis(Axis(0), i),
+            )?;
+            out.index_axis_mut(Axis(0), i).assign(&r);
+        }
+        Ok(out)
     }
 }

@@ -24,7 +24,7 @@ use cubecl_matmul::MatmulInputHandleRef;
 use cubecl_matmul::Strategy;
 use cubecl_matmul::components::MatmulElems;
 use cubecl_wgpu::{AutoGraphicsApi, RuntimeOptions, WgpuDevice, WgpuRuntime, init_setup_async};
-use ndarray::{Array2, ArrayView2};
+use ndarray::{Array2, Array3, ArrayView2, ArrayView3};
 
 use gelo_protocol::{GpuOffloadEngine, WeightHandle};
 
@@ -231,6 +231,84 @@ impl GpuOffloadEngine for WgpuVulkanEngine {
         let out = Array2::from_shape_vec((m, n), floats.to_vec())
             .map_err(|e| anyhow!("shape build failed: {e}"))?;
         Ok(out)
+    }
+
+    fn matmul_dynamic_batched(
+        &self,
+        lhs: ArrayView3<'_, f32>,
+        rhs: ArrayView3<'_, f32>,
+    ) -> Result<Array3<f32>> {
+        let b = lhs.shape()[0];
+        let m = lhs.shape()[1];
+        let k = lhs.shape()[2];
+        if rhs.shape()[0] != b || rhs.shape()[1] != k {
+            return Err(anyhow!(
+                "matmul_dynamic_batched shape mismatch: lhs ({b},{m},{k}) vs rhs {:?}",
+                rhs.shape()
+            ));
+        }
+        let n = rhs.shape()[2];
+
+        let lhs_data: Vec<f32> = lhs.as_standard_layout().iter().copied().collect();
+        let rhs_data: Vec<f32> = rhs.as_standard_layout().iter().copied().collect();
+        let client = self.client();
+        let lhs_handle = client.create_from_slice(bytemuck::cast_slice(&lhs_data));
+        let rhs_handle = client.create_from_slice(bytemuck::cast_slice(&rhs_data));
+        let out_handle = client.empty(b * m * n * ELEM_SIZE);
+
+        let lhs_shape = [b, m, k];
+        let lhs_strides = [m * k, k, 1];
+        let rhs_shape = [b, k, n];
+        let rhs_strides = [k * n, n, 1];
+        let out_shape = [b, m, n];
+        let out_strides = [m * n, n, 1];
+
+        let dtype = f32::as_type_native_unchecked();
+
+        let lhs_ref = unsafe {
+            TensorHandleRef::<WgpuRuntime>::from_raw_parts(
+                &lhs_handle,
+                &lhs_strides,
+                &lhs_shape,
+                ELEM_SIZE,
+            )
+        };
+        let rhs_ref = unsafe {
+            TensorHandleRef::<WgpuRuntime>::from_raw_parts(
+                &rhs_handle,
+                &rhs_strides,
+                &rhs_shape,
+                ELEM_SIZE,
+            )
+        };
+        let out_ref = unsafe {
+            TensorHandleRef::<WgpuRuntime>::from_raw_parts(
+                &out_handle,
+                &out_strides,
+                &out_shape,
+                ELEM_SIZE,
+            )
+        };
+
+        let lhs_input = MatmulInputHandleRef::Normal(lhs_ref, dtype);
+        let rhs_input = MatmulInputHandleRef::Normal(rhs_ref, dtype);
+
+        let mut dtypes = MatmulElems::new::<f32>();
+
+        matmul::launch_ref::<WgpuRuntime>(
+            &Strategy::Auto,
+            client,
+            &lhs_input,
+            &rhs_input,
+            &out_ref,
+            &mut dtypes,
+        )
+        .map_err(|e| anyhow!("cubecl matmul_dynamic_batched launch failed: {e:?}"))?;
+
+        let bytes = client.read_one(out_handle);
+        let floats: &[f32] = bytemuck::cast_slice(&bytes);
+        Array3::from_shape_vec((b, m, n), floats.to_vec())
+            .map_err(|e| anyhow!("shape build failed: {e}"))
     }
 
     fn matmul_dynamic(

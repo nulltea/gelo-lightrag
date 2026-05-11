@@ -149,6 +149,39 @@ fn u_verify_catches_tampered_offload_attention_qkt() {
 }
 
 #[test]
+fn u_verify_catches_tampered_batched_attention_qkt() {
+    // Batched OutAttnMult: 4 Q heads in one engine call. The tampering
+    // engine perturbs each `matmul_dynamic_batched` output before the TEE
+    // recovers Q·K^T per head. U-Verify probes each head's slice; any
+    // tampered head should trip the check.
+    let mut rng = ChaCha20Rng::from_seed([35u8; 32]);
+    let h = 4;
+    let n = 16;
+    let d = 12;
+    let mut q3 = ndarray::Array3::<f32>::zeros((h, n, d));
+    let mut kt3 = ndarray::Array3::<f32>::zeros((h, d, n));
+    for hi in 0..h {
+        q3.index_axis_mut(ndarray::Axis(0), hi)
+            .assign(&rand_matrix(n, d, &mut rng, 0.4));
+        kt3.index_axis_mut(ndarray::Axis(0), hi)
+            .assign(&rand_matrix(d, n, &mut rng, 0.4));
+    }
+
+    let tampering = TamperingEngine::new(RayonCpuEngine::new(), 0.5, 0);
+    let mut exec =
+        InProcessTrustedExecutor::with_seed(tampering, MaskSeed::from_bytes([37u8; 32]))
+            .with_verify_probes(8);
+
+    let result = exec.offload_attention_qkt_batched(q3.view(), kt3.view());
+    assert!(
+        result.is_err(),
+        "U-Verify missed batched-OutAttnMult tampering",
+    );
+    let msg = format!("{}", result.unwrap_err());
+    assert!(msg.contains("U-Verify"));
+}
+
+#[test]
 fn u_verify_with_shield_still_catches_tampering() {
     // Shield expands the stacked matrix from (n, d) to (n+k, d). The probe
     // must still operate on the expanded matrix correctly.

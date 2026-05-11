@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::{Result, anyhow};
-use ndarray::{Array2, ArrayView2};
+use ndarray::{Array2, Array3, ArrayView2, ArrayView3};
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 
@@ -252,6 +252,20 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
     ) -> Result<Array2<f32>> {
         out_attn_mult::offload_qkt(&self.engine, &mut self.rng, q, kt, self.verify_probes)
     }
+
+    fn offload_attention_qkt_batched(
+        &mut self,
+        q: ArrayView3<f32>,
+        kt: ArrayView3<f32>,
+    ) -> Result<Array3<f32>> {
+        out_attn_mult::offload_qkt_batched(
+            &self.engine,
+            &mut self.rng,
+            q,
+            kt,
+            self.verify_probes,
+        )
+    }
 }
 
 /// Trusted executor that skips the mask entirely. Used as the parity baseline
@@ -292,6 +306,17 @@ impl<E: GpuOffloadEngine> TrustedExecutor for PlaintextExecutor<E> {
     ) -> Result<Array2<f32>> {
         // Parity baseline: no mask, just compute Q · K^T directly via the engine.
         profile::time("engine:matmul_dynamic", || self.engine.matmul_dynamic(q, kt))
+    }
+
+    fn offload_attention_qkt_batched(
+        &mut self,
+        q: ArrayView3<f32>,
+        kt: ArrayView3<f32>,
+    ) -> Result<Array3<f32>> {
+        // Parity baseline: no mask, one fused batched dispatch.
+        profile::time("engine:matmul_dynamic_batched", || {
+            self.engine.matmul_dynamic_batched(q, kt)
+        })
     }
 }
 
