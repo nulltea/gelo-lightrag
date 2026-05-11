@@ -12,6 +12,7 @@
 
 pub mod integrity;
 pub mod mask;
+pub mod out_attn_mult;
 pub mod rng;
 pub mod shield;
 pub mod sim;

@@ -133,6 +133,34 @@ fn shape_dispatch_handles_non_multiples_of_workgroup() {
 }
 
 #[test]
+fn matmul_dynamic_matches_cpu_engine() {
+    let Some(gpu) = open_engine() else {
+        return;
+    };
+    let cpu = RayonCpuEngine::new();
+
+    let mut rng = ChaCha20Rng::from_seed([57u8; 32]);
+    let m = 24;
+    let k = 16;
+    let n = 8;
+
+    let lhs = random_matrix(m, k, &mut rng);
+    let rhs = random_matrix(k, n, &mut rng);
+
+    let cpu_out = cpu.matmul_dynamic(lhs.view(), rhs.view()).unwrap();
+    let gpu_out = gpu.matmul_dynamic(lhs.view(), rhs.view()).unwrap();
+
+    assert_eq!(cpu_out.shape(), gpu_out.shape());
+    for ((i, j), v) in cpu_out.indexed_iter() {
+        assert!(
+            (v - gpu_out[[i, j]]).abs() < 5e-4,
+            "matmul_dynamic GPU vs CPU diverges at ({i},{j}): {v} vs {}",
+            gpu_out[[i, j]]
+        );
+    }
+}
+
+#[test]
 fn weight_buffer_is_cached_across_calls() {
     // Functional check that register_weight uploads once and matmul reuses.
     let Some(mut gpu) = open_engine() else {

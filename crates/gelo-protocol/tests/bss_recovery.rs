@@ -58,6 +58,14 @@ impl GpuOffloadEngine for SnoopingEngine {
         self.captured.lock().unwrap().push(input.to_owned());
         self.inner.matmul(handle, input)
     }
+
+    fn matmul_dynamic(
+        &self,
+        lhs: ArrayView2<'_, f32>,
+        rhs: ArrayView2<'_, f32>,
+    ) -> anyhow::Result<Array2<f32>> {
+        self.inner.matmul_dynamic(lhs, rhs)
+    }
 }
 
 fn frobenius_distance(a: ArrayView2<'_, f32>, b: ArrayView2<'_, f32>) -> f32 {

@@ -3,9 +3,9 @@ use ndarray::{Array1, Array2, ArrayView2};
 
 use gelo_protocol::{TrustedExecutor, WeightHandle, WeightKind};
 
-use crate::attention::multi_head_attention;
-use crate::config::BertConfig;
-use crate::weights::{BertLayerWeights, BertWeights};
+use super::attention::multi_head_attention;
+use super::config::BertConfig;
+use super::weights::{BertLayerWeights, BertWeights};
 
 /// Run the BERT encoder for a single sequence under the GELO protocol.
 ///

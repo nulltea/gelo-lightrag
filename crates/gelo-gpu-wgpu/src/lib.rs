@@ -10,7 +10,7 @@
 //! hardware vs. a software ICD (e.g. lavapipe).
 
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{Result, anyhow};
 use cubecl_common::future;
@@ -66,8 +66,14 @@ fn gpu_ctx() -> &'static GpuContext {
 
 /// CubeCL/wgpu-backed offload engine. Internally uses `cubecl-matmul`'s
 /// autotuned SGEMM (no hand-written kernel in this crate).
+///
+/// The engine's registered-weight cache is held behind an `Arc<Mutex<…>>`,
+/// so calling [`Self::clone_shared`] produces a second handle that points
+/// at the same weights — useful when several executors (e.g. one per bench
+/// configuration) need to talk to the same GPU buffers without re-uploading
+/// the model.
 pub struct WgpuVulkanEngine {
-    weights: Mutex<HashMap<WeightHandle, WeightBuffer>>,
+    weights: Arc<Mutex<HashMap<WeightHandle, WeightBuffer>>>,
 }
 
 impl WgpuVulkanEngine {
@@ -80,8 +86,19 @@ impl WgpuVulkanEngine {
     pub fn new() -> Result<Self> {
         let _ = gpu_ctx();
         Ok(Self {
-            weights: Mutex::new(HashMap::new()),
+            weights: Arc::new(Mutex::new(HashMap::new())),
         })
+    }
+
+    /// Produce a second engine handle that shares the registered-weight
+    /// cache with `self`. Both engines point at the same GPU buffers, so
+    /// `register_weight` on either is visible from the other. Use this when
+    /// a single set of model weights must back multiple executors (e.g. a
+    /// bench iterating different protocol configurations).
+    pub fn clone_shared(&self) -> Self {
+        Self {
+            weights: Arc::clone(&self.weights),
+        }
     }
 
     fn client(&self) -> &'static ComputeClient<WgpuRuntime> {
@@ -214,6 +231,83 @@ impl GpuOffloadEngine for WgpuVulkanEngine {
         let out = Array2::from_shape_vec((m, n), floats.to_vec())
             .map_err(|e| anyhow!("shape build failed: {e}"))?;
         Ok(out)
+    }
+
+    fn matmul_dynamic(
+        &self,
+        lhs: ArrayView2<'_, f32>,
+        rhs: ArrayView2<'_, f32>,
+    ) -> Result<Array2<f32>> {
+        let m = lhs.nrows();
+        let k = lhs.ncols();
+        let n = rhs.ncols();
+        if k != rhs.nrows() {
+            return Err(anyhow!(
+                "matmul_dynamic shape mismatch: lhs cols {k} != rhs rows {}",
+                rhs.nrows()
+            ));
+        }
+
+        let lhs_data: Vec<f32> = lhs.as_standard_layout().iter().copied().collect();
+        let rhs_data: Vec<f32> = rhs.as_standard_layout().iter().copied().collect();
+        let client = self.client();
+        let lhs_handle = client.create_from_slice(bytemuck::cast_slice(&lhs_data));
+        let rhs_handle = client.create_from_slice(bytemuck::cast_slice(&rhs_data));
+        let out_handle = client.empty(m * n * ELEM_SIZE);
+
+        let lhs_shape = [m, k];
+        let lhs_strides = row_major_strides(m, k);
+        let rhs_shape = [k, n];
+        let rhs_strides = row_major_strides(k, n);
+        let out_shape = [m, n];
+        let out_strides = row_major_strides(m, n);
+
+        let dtype = f32::as_type_native_unchecked();
+
+        let lhs_ref = unsafe {
+            TensorHandleRef::<WgpuRuntime>::from_raw_parts(
+                &lhs_handle,
+                &lhs_strides,
+                &lhs_shape,
+                ELEM_SIZE,
+            )
+        };
+        let rhs_ref = unsafe {
+            TensorHandleRef::<WgpuRuntime>::from_raw_parts(
+                &rhs_handle,
+                &rhs_strides,
+                &rhs_shape,
+                ELEM_SIZE,
+            )
+        };
+        let out_ref = unsafe {
+            TensorHandleRef::<WgpuRuntime>::from_raw_parts(
+                &out_handle,
+                &out_strides,
+                &out_shape,
+                ELEM_SIZE,
+            )
+        };
+
+        let lhs_input = MatmulInputHandleRef::Normal(lhs_ref, dtype);
+        let rhs_input = MatmulInputHandleRef::Normal(rhs_ref, dtype);
+
+        let mut dtypes = MatmulElems::new::<f32>();
+
+        matmul::launch_ref::<WgpuRuntime>(
+            &Strategy::Auto,
+            client,
+            &lhs_input,
+            &rhs_input,
+            &out_ref,
+            &mut dtypes,
+        )
+        .map_err(|e| anyhow!("cubecl matmul_dynamic launch failed: {e:?}"))?;
+
+        let bytes = client.read_one(out_handle);
+        let floats: &[f32] = bytemuck::cast_slice(&bytes);
+        Array2::from_shape_vec((m, n), floats.to_vec())
+            .map_err(|e| anyhow!("shape build failed: {e}"))
     }
 }
 

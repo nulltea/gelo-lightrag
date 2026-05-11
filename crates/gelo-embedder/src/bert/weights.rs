@@ -5,7 +5,7 @@ use ndarray::{Array1, Array2};
 use safetensors::SafeTensors;
 use safetensors::tensor::TensorView;
 
-use crate::config::BertConfig;
+use super::config::BertConfig;
 
 /// All weights needed for a BERT-class embedding forward pass.
 pub struct BertWeights {

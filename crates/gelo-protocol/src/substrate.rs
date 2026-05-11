@@ -43,6 +43,17 @@ pub trait GpuOffloadEngine: Send {
     /// `(n, out_features)`. The engine treats `input` as opaque bytes —
     /// masking is applied by the trusted side before the call.
     fn matmul(&self, handle: WeightHandle, input: ArrayView2<f32>) -> Result<Array2<f32>>;
+
+    /// Two-operand dynamic matmul where neither operand is a pre-registered
+    /// weight. Required by OutAttnMult (TwinShield §V-A): both `Q` and `Kᵀ`
+    /// are runtime values, so neither side can be uploaded ahead of time.
+    ///
+    /// `lhs` has shape `(m, k)`, `rhs` has shape `(k, n)`, result is `(m, n)`.
+    fn matmul_dynamic(
+        &self,
+        lhs: ArrayView2<f32>,
+        rhs: ArrayView2<f32>,
+    ) -> Result<Array2<f32>>;
 }
 
 /// The trusted side of the split protocol.
@@ -78,5 +89,22 @@ pub trait TrustedExecutor {
         let k = self.offload_linear(WeightHandle::new(layer, WeightKind::K), hidden)?;
         let v = self.offload_linear(WeightHandle::new(layer, WeightKind::V), hidden)?;
         Ok((q, k, v))
+    }
+
+    /// Offload the attention `Q · Kᵀ` matmul via the TwinShield OutAttnMult
+    /// 4-partition embedding (Xue et al. 2025 §V-A). Both `q` and `kt` are
+    /// runtime values; the trick lets the untrusted engine compute the
+    /// product without recovering either operand.
+    ///
+    /// `q` shape: `(n, d_head)`, `kt` shape: `(d_head, n)`, result `(n, n)`.
+    ///
+    /// Default impl just calls the engine's `matmul_dynamic` directly with
+    /// no masking, suitable for `PlaintextExecutor` parity baselines.
+    fn offload_attention_qkt(
+        &mut self,
+        _q: ArrayView2<f32>,
+        _kt: ArrayView2<f32>,
+    ) -> Result<Array2<f32>> {
+        unimplemented!("offload_attention_qkt not implemented for this executor")
     }
 }

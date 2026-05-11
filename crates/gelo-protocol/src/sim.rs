@@ -5,7 +5,9 @@ use ndarray::{Array2, ArrayView2};
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 
+use crate::integrity::verify_offload;
 use crate::mask::GeloMask;
+use crate::out_attn_mult;
 use crate::rng::MaskSeed;
 use crate::shield::{ShieldConfig, stack_shield};
 use crate::substrate::{GpuOffloadEngine, TrustedExecutor, WeightHandle, WeightKind};
@@ -43,11 +45,31 @@ impl GpuOffloadEngine for RayonCpuEngine {
         }
         Ok(input.dot(w))
     }
+
+    fn matmul_dynamic(
+        &self,
+        lhs: ArrayView2<f32>,
+        rhs: ArrayView2<f32>,
+    ) -> Result<Array2<f32>> {
+        if lhs.ncols() != rhs.nrows() {
+            return Err(anyhow!(
+                "matmul_dynamic shape mismatch: lhs cols {} != rhs rows {}",
+                lhs.ncols(),
+                rhs.nrows()
+            ));
+        }
+        Ok(lhs.dot(&rhs))
+    }
 }
 
 /// In-process trusted side. Owns the mask RNG, applies / removes the per-batch
 /// orthogonal `A`, optionally stacks shield rows, and delegates the GEMM
 /// itself to a [`GpuOffloadEngine`].
+///
+/// When `verify_probes > 0`, a Freivalds-style U-Verify check is run after
+/// every offload to detect byzantine tampering. The executor keeps its own
+/// copy of every provisioned weight so the probe can compute `B · r`
+/// independently of the engine.
 ///
 /// Useful for tests, parity benchmarks, and any deployment where the trusted
 /// boundary is logical rather than hardware-attested.
@@ -55,6 +77,8 @@ pub struct InProcessTrustedExecutor<E: GpuOffloadEngine> {
     engine: E,
     rng: ChaCha20Rng,
     shield: ShieldConfig,
+    verify_probes: usize,
+    weights: HashMap<WeightHandle, Array2<f32>>,
 }
 
 impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
@@ -69,6 +93,8 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             engine,
             rng: ChaCha20Rng::from_seed(seed.0),
             shield: ShieldConfig::NONE,
+            verify_probes: 0,
+            weights: HashMap::new(),
         }
     }
 
@@ -78,6 +104,8 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             engine,
             rng: ChaCha20Rng::from_seed(seed.0),
             shield,
+            verify_probes: 0,
+            weights: HashMap::new(),
         }
     }
 
@@ -86,12 +114,28 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
         self.shield = shield;
     }
 
+    /// Enable U-Verify with `k` Freivalds-style probes per offload.
+    /// `k = 0` disables the check. Soundness scales as `(2L)^-k`; `k = 8`
+    /// with the default `L = 3` is `≈ 2.4·10⁻⁷` undetected-tamper rate.
+    pub fn with_verify_probes(mut self, n: usize) -> Self {
+        self.verify_probes = n;
+        self
+    }
+
+    pub fn set_verify_probes(&mut self, n: usize) {
+        self.verify_probes = n;
+    }
+
     pub fn engine(&self) -> &E {
         &self.engine
     }
 
     pub fn shield_config(&self) -> ShieldConfig {
         self.shield
+    }
+
+    pub fn verify_probes(&self) -> usize {
+        self.verify_probes
     }
 
     /// Stack shield rows (if enabled) and sample a fresh mask sized to the
@@ -105,6 +149,11 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
 
 impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
     fn provision_weight(&mut self, handle: WeightHandle, weight: ArrayView2<f32>) -> Result<()> {
+        // Keep a TEE-local copy of the weight so the integrity probe can
+        // compute `B · r` independently of what the engine reports.
+        if self.verify_probes > 0 {
+            self.weights.insert(handle, weight.to_owned());
+        }
         self.engine.register_weight(handle, weight)
     }
 
@@ -116,6 +165,18 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         let (mask, stacked, n_data) = self.build_shielded(hidden);
         let masked = mask.apply(stacked.view());
         let masked_out = self.engine.matmul(handle, masked.view())?;
+        if self.verify_probes > 0 {
+            let weight = self.weights.get(&handle).ok_or_else(|| {
+                anyhow!("verify_probes>0 but weight {handle:?} not cached in TEE")
+            })?;
+            verify_offload(
+                self.verify_probes,
+                masked.view(),
+                weight.view(),
+                masked_out.view(),
+                &mut self.rng,
+            )?;
+        }
         let unmasked = mask.unapply(masked_out.view());
         Ok(unmasked.slice(ndarray::s![..n_data, ..]).to_owned())
     }
@@ -138,6 +199,24 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
             .engine
             .matmul(WeightHandle::new(layer, WeightKind::V), masked.view())?;
 
+        if self.verify_probes > 0 {
+            for (kind, observed) in
+                [(WeightKind::Q, &mq), (WeightKind::K, &mk), (WeightKind::V, &mv)]
+            {
+                let h = WeightHandle::new(layer, kind);
+                let w = self.weights.get(&h).ok_or_else(|| {
+                    anyhow!("verify_probes>0 but weight {h:?} not cached in TEE")
+                })?;
+                verify_offload(
+                    self.verify_probes,
+                    masked.view(),
+                    w.view(),
+                    observed.view(),
+                    &mut self.rng,
+                )?;
+            }
+        }
+
         let q = mask.unapply(mq.view());
         let k = mask.unapply(mk.view());
         let v = mask.unapply(mv.view());
@@ -148,6 +227,14 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
             k.slice(slice_n).to_owned(),
             v.slice(slice_n).to_owned(),
         ))
+    }
+
+    fn offload_attention_qkt(
+        &mut self,
+        q: ArrayView2<f32>,
+        kt: ArrayView2<f32>,
+    ) -> Result<Array2<f32>> {
+        out_attn_mult::offload_qkt(&self.engine, &mut self.rng, q, kt, self.verify_probes)
     }
 }
 
@@ -180,6 +267,15 @@ impl<E: GpuOffloadEngine> TrustedExecutor for PlaintextExecutor<E> {
         hidden: ArrayView2<f32>,
     ) -> Result<Array2<f32>> {
         self.engine.matmul(handle, hidden)
+    }
+
+    fn offload_attention_qkt(
+        &mut self,
+        q: ArrayView2<f32>,
+        kt: ArrayView2<f32>,
+    ) -> Result<Array2<f32>> {
+        // Parity baseline: no mask, just compute Q · K^T directly via the engine.
+        self.engine.matmul_dynamic(q, kt)
     }
 }
 

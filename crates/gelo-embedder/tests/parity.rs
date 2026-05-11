@@ -11,9 +11,9 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use rand_distr::{Distribution, StandardNormal};
 
-use gelo_embedder::config::BertConfig;
-use gelo_embedder::forward;
-use gelo_embedder::weights::{BertLayerWeights, BertWeights};
+use gelo_embedder::bert::config::BertConfig;
+use gelo_embedder::bert::forward;
+use gelo_embedder::bert::weights::{BertLayerWeights, BertWeights};
 use gelo_protocol::rng::MaskSeed;
 use gelo_protocol::{
     GpuOffloadEngine, InProcessTrustedExecutor, PlaintextExecutor, RayonCpuEngine, WeightHandle,

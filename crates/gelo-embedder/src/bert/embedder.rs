@@ -7,17 +7,17 @@ use hf_hub::api::sync::ApiBuilder;
 use gelo_protocol::{TrustedExecutor, WeightHandle, WeightKind};
 use rag_core::Embedder;
 
-use crate::config::BertConfig;
-use crate::forward;
-use crate::pooling;
-use crate::tokenizer::BertTokenizer;
-use crate::weights::BertWeights;
+use super::config::BertConfig;
+use super::forward;
+use super::weights::BertWeights;
+use crate::common::pool;
+use crate::common::tokenizer::HfTokenizer;
 
 /// A BERT-class embedding model whose Q/K/V/O + FFN GEMMs are routed
 /// through a GELO-style `TrustedExecutor`.
 pub struct GeloBertEmbedder<X: TrustedExecutor> {
     cfg: BertConfig,
-    tokenizer: BertTokenizer,
+    tokenizer: HfTokenizer,
     weights: Arc<BertWeights>,
     exec: X,
     max_len: usize,
@@ -27,7 +27,7 @@ impl<X: TrustedExecutor> GeloBertEmbedder<X> {
     /// Build from already-loaded artifacts.
     pub fn new(
         cfg: BertConfig,
-        tokenizer: BertTokenizer,
+        tokenizer: HfTokenizer,
         weights: Arc<BertWeights>,
         mut exec: X,
     ) -> Result<Self> {
@@ -89,7 +89,8 @@ impl<X: TrustedExecutor> GeloBertEmbedder<X> {
             std::fs::read(config_path).with_context(|| format!("reading {}", config_path.display()))?;
         let cfg: BertConfig =
             serde_json::from_slice(&cfg_bytes).context("parsing config.json")?;
-        let tokenizer = BertTokenizer::from_file(tokenizer_path)?;
+        // [SEP] = 102 in bert-base-uncased; BGE inherits that vocab.
+        let tokenizer = HfTokenizer::from_file(tokenizer_path)?.with_truncation_token(102);
         let weights = Arc::new(BertWeights::from_safetensors(safetensors_path, &cfg)?);
         Self::new(cfg, tokenizer, weights, exec)
     }
@@ -111,7 +112,7 @@ impl<X: TrustedExecutor> Embedder for GeloBertEmbedder<X> {
         for text in texts {
             let ids = self.tokenizer.encode(text, self.max_len)?;
             let hidden = forward::run(&self.cfg, &self.weights, &mut self.exec, &ids)?;
-            let pooled = pooling::mean_l2(hidden.view());
+            let pooled = pool::mean_l2(hidden.view());
             out.push(pooled.to_vec());
         }
         Ok(out)

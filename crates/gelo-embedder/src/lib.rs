@@ -1,19 +1,15 @@
-//! BERT-class sentence embedder driven through a [`gelo_protocol::TrustedExecutor`].
+//! BERT-class and decoder-LLM-class sentence embedders driven through a
+//! [`gelo_protocol::TrustedExecutor`].
 //!
-//! The encoder forward pass routes every Q/K/V/O and FFN GEMM through the
+//! The encoder forward pass routes every offloadable matmul through the
 //! executor so the protocol's per-batch token-axis mask is applied
-//! transparently. Non-linear ops, residual adds, embedding lookup, mean
-//! pooling and L2 normalization all run inside the trusted side.
+//! transparently. Non-linear ops, residual adds, embedding lookup, pooling
+//! and L2 normalization all run inside the trusted side.
 
-pub mod attention;
-pub mod config;
-pub mod embedder;
-pub mod forward;
-pub mod pooling;
-pub mod tokenizer;
-pub mod weights;
+pub mod bert;
+pub mod common;
+pub mod decoder;
 
-pub use config::BertConfig;
-pub use embedder::GeloBertEmbedder;
-pub use tokenizer::BertTokenizer;
-pub use weights::{BertLayerWeights, BertWeights};
+pub use bert::{BertConfig, BertLayerWeights, BertWeights, GeloBertEmbedder};
+pub use common::HfTokenizer;
+pub use decoder::{DecoderConfig, DecoderLayerWeights, DecoderWeights, GeloQwenEmbedder};
