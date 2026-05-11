@@ -8,6 +8,7 @@ use rand_chacha::ChaCha20Rng;
 use crate::integrity::verify_offload;
 use crate::mask::GeloMask;
 use crate::out_attn_mult;
+use crate::profile;
 use crate::rng::MaskSeed;
 use crate::shield::{ShieldConfig, stack_shield};
 use crate::substrate::{GpuOffloadEngine, TrustedExecutor, WeightHandle, WeightKind};
@@ -141,8 +142,12 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
     /// Stack shield rows (if enabled) and sample a fresh mask sized to the
     /// stacked matrix. Returns `(mask, H', n_data_rows)`.
     fn build_shielded(&mut self, hidden: ArrayView2<'_, f32>) -> (GeloMask, Array2<f32>, usize) {
-        let (stacked, n_data) = stack_shield(hidden, self.shield, &mut self.rng);
-        let mask = GeloMask::fresh(stacked.nrows(), &mut self.rng);
+        let (stacked, n_data) = profile::time("gelo:shield_stack", || {
+            stack_shield(hidden, self.shield, &mut self.rng)
+        });
+        let mask = profile::time("gelo:mask_sample", || {
+            GeloMask::fresh(stacked.nrows(), &mut self.rng)
+        });
         (mask, stacked, n_data)
     }
 }
@@ -163,22 +168,28 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         hidden: ArrayView2<f32>,
     ) -> Result<Array2<f32>> {
         let (mask, stacked, n_data) = self.build_shielded(hidden);
-        let masked = mask.apply(stacked.view());
-        let masked_out = self.engine.matmul(handle, masked.view())?;
+        let masked = profile::time("gelo:mask_apply", || mask.apply(stacked.view()));
+        let masked_out =
+            profile::time("engine:matmul", || self.engine.matmul(handle, masked.view()))?;
         if self.verify_probes > 0 {
             let weight = self.weights.get(&handle).ok_or_else(|| {
                 anyhow!("verify_probes>0 but weight {handle:?} not cached in TEE")
             })?;
-            verify_offload(
-                self.verify_probes,
-                masked.view(),
-                weight.view(),
-                masked_out.view(),
-                &mut self.rng,
-            )?;
+            profile::time("uverify:linear", || {
+                verify_offload(
+                    self.verify_probes,
+                    masked.view(),
+                    weight.view(),
+                    masked_out.view(),
+                    &mut self.rng,
+                )
+            })?;
         }
-        let unmasked = mask.unapply(masked_out.view());
-        Ok(unmasked.slice(ndarray::s![..n_data, ..]).to_owned())
+        let unmasked = profile::time("gelo:mask_unapply", || mask.unapply(masked_out.view()));
+        let strip = profile::time("gelo:strip_shield", || {
+            unmasked.slice(ndarray::s![..n_data, ..]).to_owned()
+        });
+        Ok(strip)
     }
 
     fn offload_qkv(
@@ -187,17 +198,17 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         hidden: ArrayView2<f32>,
     ) -> Result<(Array2<f32>, Array2<f32>, Array2<f32>)> {
         let (mask, stacked, n_data) = self.build_shielded(hidden);
-        let masked = mask.apply(stacked.view());
+        let masked = profile::time("gelo:mask_apply", || mask.apply(stacked.view()));
 
-        let mq = self
-            .engine
-            .matmul(WeightHandle::new(layer, WeightKind::Q), masked.view())?;
-        let mk = self
-            .engine
-            .matmul(WeightHandle::new(layer, WeightKind::K), masked.view())?;
-        let mv = self
-            .engine
-            .matmul(WeightHandle::new(layer, WeightKind::V), masked.view())?;
+        let mq = profile::time("engine:matmul", || {
+            self.engine.matmul(WeightHandle::new(layer, WeightKind::Q), masked.view())
+        })?;
+        let mk = profile::time("engine:matmul", || {
+            self.engine.matmul(WeightHandle::new(layer, WeightKind::K), masked.view())
+        })?;
+        let mv = profile::time("engine:matmul", || {
+            self.engine.matmul(WeightHandle::new(layer, WeightKind::V), masked.view())
+        })?;
 
         if self.verify_probes > 0 {
             for (kind, observed) in
@@ -207,26 +218,31 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
                 let w = self.weights.get(&h).ok_or_else(|| {
                     anyhow!("verify_probes>0 but weight {h:?} not cached in TEE")
                 })?;
-                verify_offload(
-                    self.verify_probes,
-                    masked.view(),
-                    w.view(),
-                    observed.view(),
-                    &mut self.rng,
-                )?;
+                profile::time("uverify:linear", || {
+                    verify_offload(
+                        self.verify_probes,
+                        masked.view(),
+                        w.view(),
+                        observed.view(),
+                        &mut self.rng,
+                    )
+                })?;
             }
         }
 
-        let q = mask.unapply(mq.view());
-        let k = mask.unapply(mk.view());
-        let v = mask.unapply(mv.view());
+        let q = profile::time("gelo:mask_unapply", || mask.unapply(mq.view()));
+        let k = profile::time("gelo:mask_unapply", || mask.unapply(mk.view()));
+        let v = profile::time("gelo:mask_unapply", || mask.unapply(mv.view()));
 
         let slice_n = ndarray::s![..n_data, ..];
-        Ok((
-            q.slice(slice_n).to_owned(),
-            k.slice(slice_n).to_owned(),
-            v.slice(slice_n).to_owned(),
-        ))
+        let triple = profile::time("gelo:strip_shield", || {
+            (
+                q.slice(slice_n).to_owned(),
+                k.slice(slice_n).to_owned(),
+                v.slice(slice_n).to_owned(),
+            )
+        });
+        Ok(triple)
     }
 
     fn offload_attention_qkt(
@@ -266,7 +282,7 @@ impl<E: GpuOffloadEngine> TrustedExecutor for PlaintextExecutor<E> {
         handle: WeightHandle,
         hidden: ArrayView2<f32>,
     ) -> Result<Array2<f32>> {
-        self.engine.matmul(handle, hidden)
+        profile::time("engine:matmul", || self.engine.matmul(handle, hidden))
     }
 
     fn offload_attention_qkt(
@@ -275,7 +291,7 @@ impl<E: GpuOffloadEngine> TrustedExecutor for PlaintextExecutor<E> {
         kt: ArrayView2<f32>,
     ) -> Result<Array2<f32>> {
         // Parity baseline: no mask, just compute Q · K^T directly via the engine.
-        self.engine.matmul_dynamic(q, kt)
+        profile::time("engine:matmul_dynamic", || self.engine.matmul_dynamic(q, kt))
     }
 }
 

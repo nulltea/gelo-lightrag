@@ -1,6 +1,7 @@
 use anyhow::Result;
 use ndarray::{Array2, ArrayView2};
 
+use gelo_protocol::profile;
 use gelo_protocol::{TrustedExecutor, WeightHandle, WeightKind};
 
 use super::attention::{causal_gqa_attention, causal_gqa_attention_with_offload};
@@ -22,11 +23,13 @@ pub fn run(
     exec: &mut impl TrustedExecutor,
     input_ids: &[u32],
 ) -> Result<Array2<f32>> {
-    let mut h = embedding_lookup(cfg, weights, input_ids);
+    let mut h = profile::time("tee:embed_lookup", || embedding_lookup(cfg, weights, input_ids));
     for (li, layer) in weights.layers.iter().enumerate() {
         h = decoder_block(cfg, layer, rope, exec, li as u16, h.view(), cfg.offload_layer(li))?;
     }
-    Ok(rms_norm(h.view(), weights.final_norm.as_slice().unwrap(), cfg.rms_norm_eps))
+    Ok(profile::time("tee:rmsnorm", || {
+        rms_norm(h.view(), weights.final_norm.as_slice().unwrap(), cfg.rms_norm_eps)
+    }))
 }
 
 fn embedding_lookup(cfg: &DecoderConfig, w: &DecoderWeights, ids: &[u32]) -> Array2<f32> {
@@ -50,27 +53,29 @@ fn decoder_block(
     offload: bool,
 ) -> Result<Array2<f32>> {
     // Pre-attention RMSNorm.
-    let h_norm = rms_norm(
-        hidden,
-        layer.norm_attn.as_slice().unwrap(),
-        cfg.rms_norm_eps,
-    );
+    let h_norm = profile::time("tee:rmsnorm", || {
+        rms_norm(hidden, layer.norm_attn.as_slice().unwrap(), cfg.rms_norm_eps)
+    });
 
     // Q/K/V projections — offloaded one mask shared across the three reads,
     // matching the BERT path.
     let (mut q, mut k, v) = if offload {
         exec.offload_qkv(layer_idx, h_norm.view())?
     } else {
-        (
-            h_norm.dot(&layer.wq),
-            h_norm.dot(&layer.wk),
-            h_norm.dot(&layer.wv),
-        )
+        profile::time("tee:qkv_direct", || {
+            (
+                h_norm.dot(&layer.wq),
+                h_norm.dot(&layer.wk),
+                h_norm.dot(&layer.wv),
+            )
+        })
     };
 
     // RoPE rotates Q and K only (V left alone) per-head.
-    rope.apply(q.view_mut(), cfg.num_attention_heads);
-    rope.apply(k.view_mut(), cfg.num_key_value_heads);
+    profile::time("tee:rope", || {
+        rope.apply(q.view_mut(), cfg.num_attention_heads);
+        rope.apply(k.view_mut(), cfg.num_key_value_heads);
+    });
 
     // GQA + causal attention. When this layer is offloaded and
     // `use_out_attn_mult` is set, route the per-head `Q · Kᵀ` through
@@ -86,30 +91,30 @@ fn decoder_block(
             cfg.head_dim_value(),
         )?
     } else {
-        causal_gqa_attention(
-            q.view(),
-            k.view(),
-            v.view(),
-            cfg.num_attention_heads,
-            cfg.num_key_value_heads,
-            cfg.head_dim_value(),
-        )
+        profile::time("tee:attn_inplace", || {
+            causal_gqa_attention(
+                q.view(),
+                k.view(),
+                v.view(),
+                cfg.num_attention_heads,
+                cfg.num_key_value_heads,
+                cfg.head_dim_value(),
+            )
+        })
     };
 
     // Output projection — fresh mask.
     let attn_out = if offload {
         exec.offload_linear(WeightHandle::new(layer_idx, WeightKind::O), ctx.view())?
     } else {
-        ctx.dot(&layer.wo)
+        profile::time("tee:o_direct", || ctx.dot(&layer.wo))
     };
-    let h1 = &hidden + &attn_out;
+    let h1 = profile::time("tee:residual", || &hidden + &attn_out);
 
     // Pre-FFN RMSNorm.
-    let h1_norm = rms_norm(
-        h1.view(),
-        layer.norm_ffn.as_slice().unwrap(),
-        cfg.rms_norm_eps,
-    );
+    let h1_norm = profile::time("tee:rmsnorm", || {
+        rms_norm(h1.view(), layer.norm_ffn.as_slice().unwrap(), cfg.rms_norm_eps)
+    });
 
     // SwiGLU FFN: two projections (gate, up) + activation product + down.
     let (gate, up) = if offload {
@@ -129,10 +134,12 @@ fn decoder_block(
         )?;
         (g, u)
     } else {
-        (h1_norm.dot(&layer.w_gate), h1_norm.dot(&layer.w_up))
+        profile::time("tee:swiglu_proj_direct", || {
+            (h1_norm.dot(&layer.w_gate), h1_norm.dot(&layer.w_up))
+        })
     };
 
-    let activated = swiglu(gate.view(), up.view());
+    let activated = profile::time("tee:swiglu_activate", || swiglu(gate.view(), up.view()));
 
     let ffn_out = if offload {
         exec.offload_linear(
@@ -140,7 +147,7 @@ fn decoder_block(
             activated.view(),
         )?
     } else {
-        activated.dot(&layer.w_down)
+        profile::time("tee:swiglu_down_direct", || activated.dot(&layer.w_down))
     };
-    Ok(&h1 + &ffn_out)
+    Ok(profile::time("tee:residual", || &h1 + &ffn_out))
 }

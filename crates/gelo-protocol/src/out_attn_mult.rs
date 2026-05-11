@@ -30,6 +30,7 @@ use rand::seq::SliceRandom;
 use rand_distr::{Distribution, StandardNormal, Uniform};
 
 use crate::integrity::verify_offload;
+use crate::profile;
 use crate::substrate::GpuOffloadEngine;
 
 /// Magnitude (`σ`) of the additive masks `R_Q`, `R_Kt`. Picked to match
@@ -64,53 +65,59 @@ pub fn offload_qkt<R: RngCore, E: GpuOffloadEngine + ?Sized>(
         ));
     }
 
-    // 1. Sample masks + scalars.
-    let r_q = sample_normal(n, d, MASK_SIGMA, rng);
-    let r_kt = sample_normal(d, n, MASK_SIGMA, rng);
-    let a = sample_scalar(rng);
-    let b = sample_scalar(rng);
+    // 1-3. Sample masks + scalars + permutations, build stacked operands.
+    let (stacked_q, stacked_kt, lambda_q, lambda_k, a, b) =
+        profile::time("outattn:setup_stack", || {
+            let r_q = sample_normal(n, d, MASK_SIGMA, rng);
+            let r_kt = sample_normal(d, n, MASK_SIGMA, rng);
+            let a = sample_scalar(rng);
+            let b = sample_scalar(rng);
 
-    // 2. Build stacked Q ∈ (2n, d).
-    let mut stacked_q = Array2::<f32>::zeros((2 * n, d));
-    stacked_q.slice_mut(ndarray::s![..n, ..]).assign(&(&q + &r_q));
-    stacked_q.slice_mut(ndarray::s![n.., ..]).assign(&(&r_q * a));
-    let lambda_q = random_perm(2 * n, rng);
-    let stacked_q = permute_rows(stacked_q.view(), &lambda_q);
+            let mut sq = Array2::<f32>::zeros((2 * n, d));
+            sq.slice_mut(ndarray::s![..n, ..]).assign(&(&q + &r_q));
+            sq.slice_mut(ndarray::s![n.., ..]).assign(&(&r_q * a));
+            let lambda_q = random_perm(2 * n, rng);
+            let sq = permute_rows(sq.view(), &lambda_q);
 
-    // 3. Build stacked Kᵀ ∈ (d, 2n).
-    let mut stacked_kt = Array2::<f32>::zeros((d, 2 * n));
-    stacked_kt.slice_mut(ndarray::s![.., ..n]).assign(&(&kt + &r_kt));
-    stacked_kt.slice_mut(ndarray::s![.., n..]).assign(&(&r_kt * b));
-    let lambda_k = random_perm(2 * n, rng);
-    let stacked_kt = permute_cols(stacked_kt.view(), &lambda_k);
+            let mut skt = Array2::<f32>::zeros((d, 2 * n));
+            skt.slice_mut(ndarray::s![.., ..n]).assign(&(&kt + &r_kt));
+            skt.slice_mut(ndarray::s![.., n..]).assign(&(&r_kt * b));
+            let lambda_k = random_perm(2 * n, rng);
+            let skt = permute_cols(skt.view(), &lambda_k);
+
+            (sq, skt, lambda_q, lambda_k, a, b)
+        });
 
     // 4. Offload the masked, permuted product.
-    let tilde = engine.matmul_dynamic(stacked_q.view(), stacked_kt.view())?;
+    let tilde = profile::time("engine:matmul_dynamic", || {
+        engine.matmul_dynamic(stacked_q.view(), stacked_kt.view())
+    })?;
 
     // U-Verify integrity check (TwinShield §V-C). Probe on the raw masked
     // product so tampering is detected before TEE-side recovery removes the
     // masks.
     if n_verify_probes > 0 {
-        verify_offload(
-            n_verify_probes,
-            stacked_q.view(),
-            stacked_kt.view(),
-            tilde.view(),
-            rng,
-        )?;
+        profile::time("uverify:attn_qkt", || {
+            verify_offload(
+                n_verify_probes,
+                stacked_q.view(),
+                stacked_kt.view(),
+                tilde.view(),
+                rng,
+            )
+        })?;
     }
 
-    // 5. Invert row + column permutations.
-    let permed = inverse_permute(tilde.view(), &lambda_q, &lambda_k);
-
-    let t1 = permed.slice(ndarray::s![..n, ..n]).to_owned();
-    let t2 = permed.slice(ndarray::s![..n, n..]).to_owned();
-    let t3 = permed.slice(ndarray::s![n.., ..n]).to_owned();
-    let t4 = permed.slice(ndarray::s![n.., n..]).to_owned();
-
-    // 6. Algebraic recovery: Q·Kᵀ = T₁ − T₂/b − T₃/a + T₄/(a·b).
-    let ab = a * b;
-    let qkt = &t1 - &(&t2 / b) - &(&t3 / a) + &(&t4 / ab);
+    // 5-6. Invert permutations, extract partitions, algebraic recovery.
+    let qkt = profile::time("outattn:recover", || {
+        let permed = inverse_permute(tilde.view(), &lambda_q, &lambda_k);
+        let t1 = permed.slice(ndarray::s![..n, ..n]).to_owned();
+        let t2 = permed.slice(ndarray::s![..n, n..]).to_owned();
+        let t3 = permed.slice(ndarray::s![n.., ..n]).to_owned();
+        let t4 = permed.slice(ndarray::s![n.., n..]).to_owned();
+        let ab = a * b;
+        &t1 - &(&t2 / b) - &(&t3 / a) + &(&t4 / ab)
+    });
     Ok(qkt)
 }
 

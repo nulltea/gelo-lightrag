@@ -1,6 +1,7 @@
 use anyhow::Result;
 use ndarray::{Array2, ArrayView2};
 
+use gelo_protocol::profile;
 use gelo_protocol::TrustedExecutor;
 
 /// Causal grouped-query attention. Inputs `q`, `k`, `v` already have
@@ -87,15 +88,16 @@ pub fn causal_gqa_attention_with_offload(
 
         // Transpose to materialise K^T (the protocol's right operand). This
         // is an n × d copy per head — small at typical head_dim (64-128).
-        let kht = kh_view.t().to_owned();
+        let kht = profile::time("tee:k_transpose", || kh_view.t().to_owned());
         let mut scores = exec.offload_attention_qkt(qh_view, kht.view())?;
-        scores *= scale;
-        apply_causal_mask(&mut scores);
-        softmax_inplace(&mut scores);
-        let ctx = scores.dot(&vh_view);
-
-        let mut dst = output.slice_mut(ndarray::s![.., q_off..q_off + head_dim]);
-        dst.assign(&ctx);
+        profile::time("tee:softmax_av", || {
+            scores *= scale;
+            apply_causal_mask(&mut scores);
+            softmax_inplace(&mut scores);
+            let ctx = scores.dot(&vh_view);
+            let mut dst = output.slice_mut(ndarray::s![.., q_off..q_off + head_dim]);
+            dst.assign(&ctx);
+        });
     }
     Ok(output)
 }
