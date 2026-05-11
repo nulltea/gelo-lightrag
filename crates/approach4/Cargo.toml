@@ -7,3 +7,8 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 rag_core = { path = "../core", package = "core" }
+
+[dev-dependencies]
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
