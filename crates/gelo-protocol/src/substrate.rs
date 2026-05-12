@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use ndarray::{Array2, Array3, ArrayView2, ArrayView3, Axis};
 
@@ -99,6 +101,26 @@ pub trait GpuOffloadEngine: Send {
 pub trait TrustedExecutor {
     /// Hand a public weight to the offload engine. Called at model load.
     fn provision_weight(&mut self, handle: WeightHandle, weight: ArrayView2<f32>) -> Result<()>;
+
+    /// Same as [`Self::provision_weight`] but accepts an `Arc<Array2<f32>>` so
+    /// the executor's TEE-side weight cache (for U-Verify probe computation)
+    /// can share storage with the embedder's loaded weight bytes instead of
+    /// cloning them. GELO targets openweight models — weight confidentiality
+    /// is not a goal — so the only reason the executor used to keep a
+    /// separate copy was to have the bytes in encrypted CVM RAM. With this
+    /// API the embedder's existing `Arc<DecoderWeights>` shards are reused
+    /// directly, halving the encrypted memory footprint on Qwen3-class
+    /// models (−2.4 GB).
+    ///
+    /// Default impl falls back to the cloning path so existing callers keep
+    /// working unchanged.
+    fn provision_weight_shared(
+        &mut self,
+        handle: WeightHandle,
+        weight: Arc<Array2<f32>>,
+    ) -> Result<()> {
+        self.provision_weight(handle, weight.view())
+    }
 
     /// Run a single offloaded linear: mask `hidden` on the token axis, ship
     /// to the engine, unmask, return `hidden · W[handle]`.

@@ -21,13 +21,18 @@
 //! round-trip tests where a mock-issued report flows through the same
 //! verifier code as a real one.
 
-pub mod cert_chain;
+pub mod executor;
 pub mod report;
 pub mod report_data;
+pub mod runtime_mode;
 pub mod verify;
 
 #[cfg(feature = "mock")]
+pub mod cert_chain;
+#[cfg(feature = "mock")]
 pub mod mock;
 
+pub use executor::{AttestationIssuer, SnpEvidence, SnpTrustedExecutor};
 pub use report_data::ReportData;
+pub use runtime_mode::{RuntimeMode, RuntimeModeError};
 pub use verify::{AttestedBinding, SnpAttestationVerifier, SnpRootTrust, TimeSource};

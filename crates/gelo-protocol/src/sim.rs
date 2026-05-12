@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use ndarray::{Array2, Array3, ArrayView2, ArrayView3};
@@ -79,7 +80,13 @@ pub struct InProcessTrustedExecutor<E: GpuOffloadEngine> {
     rng: ChaCha20Rng,
     shield: ShieldConfig,
     verify_probes: usize,
-    weights: HashMap<WeightHandle, Array2<f32>>,
+    /// TEE-side weight cache for U-Verify probe computation. Held as
+    /// `Arc<Array2<f32>>` so callers that already own the weight bytes
+    /// (the embedder loads them into `Arc<DecoderWeights>` at startup) can
+    /// share via `provision_weight_shared` instead of paying for a second
+    /// 2.4 GB copy on Qwen3-class models. The `provision_weight` path still
+    /// clones via `weight.to_owned()` for callers that don't have an Arc.
+    weights: HashMap<WeightHandle, Arc<Array2<f32>>>,
 }
 
 impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
@@ -157,9 +164,23 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         // Keep a TEE-local copy of the weight so the integrity probe can
         // compute `B · r` independently of what the engine reports.
         if self.verify_probes > 0 {
-            self.weights.insert(handle, weight.to_owned());
+            self.weights.insert(handle, Arc::new(weight.to_owned()));
         }
         self.engine.register_weight(handle, weight)
+    }
+
+    fn provision_weight_shared(
+        &mut self,
+        handle: WeightHandle,
+        weight: Arc<Array2<f32>>,
+    ) -> Result<()> {
+        // Same as `provision_weight` but avoids the 2.4 GB clone on
+        // Qwen3-class models when the embedder already holds an Arc.
+        self.engine.register_weight(handle, weight.view())?;
+        if self.verify_probes > 0 {
+            self.weights.insert(handle, weight);
+        }
+        Ok(())
     }
 
     fn offload_linear(

@@ -21,6 +21,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use thiserror::Error;
 
+#[cfg(feature = "mock")]
 use crate::cert_chain;
 use crate::report::{AttestationReport, parse_report};
 use crate::report_data::ReportData;
@@ -173,28 +174,14 @@ impl SnpAttestationVerifier {
         // 1. Parse report.
         let report = parse_report(report_bytes).map_err(SnpVerifyError::ReportParse)?;
 
-        // 2. Validate cert chain.
-        let vcek = if self.root_trust.use_mock_chain {
-            cert_chain::verify_mock_chain(
-                &self.root_trust.ark_pem,
-                &self.root_trust.ask_pem,
-                vcek_pem,
-            )
-            .map_err(SnpVerifyError::Chain)?
-        } else {
-            return Err(SnpVerifyError::UnsupportedProductionChain);
-        };
-
-        // 3. Check VCEK validity window.
-        let (nb, na) = cert_chain::validity_window(&vcek);
-        let now = self.clock.now_unix_seconds();
-        if now < nb || now > na {
-            return Err(SnpVerifyError::VcekExpired {
-                not_before: nb,
-                not_after: na,
-                now,
-            });
-        }
+        // 2. Validate cert chain + 3. check VCEK validity window.
+        //
+        // Mock chains (ECDSA throughout) go through `cert_chain::verify_mock_chain`,
+        // available only behind the `mock` feature. Real AMD chains
+        // (RSA-PSS for cert hops) will go through `sev::certs::snp::Chain::verify()`
+        // when M5.9 lands the production chain validator. Until then a
+        // default-features build returns `UnsupportedProductionChain` here.
+        let _vcek = self.validate_chain_and_window(vcek_pem)?;
 
         // 4. Verify report signature against VCEK.
         verify_report_signature(&report, vcek_pem)?;
@@ -238,6 +225,49 @@ impl SnpAttestationVerifier {
         }
 
         Ok(report)
+    }
+
+    /// Validate `vcek_pem` against the configured root chain and check that
+    /// `vcek.notBefore <= clock_now <= vcek.notAfter`.
+    ///
+    /// On the `mock` feature this walks the bundled ECDSA-P-384 chain via
+    /// [`cert_chain::verify_mock_chain`]. On a default-features build (no
+    /// `mock`) this returns [`SnpVerifyError::UnsupportedProductionChain`]
+    /// — the real AMD RSA-PSS chain validator lands in M5.9.
+    #[cfg(feature = "mock")]
+    fn validate_chain_and_window(
+        &self,
+        vcek_pem: &[u8],
+    ) -> Result<x509_cert::Certificate, SnpVerifyError> {
+        if !self.root_trust.use_mock_chain {
+            return Err(SnpVerifyError::UnsupportedProductionChain);
+        }
+        let vcek = cert_chain::verify_mock_chain(
+            &self.root_trust.ark_pem,
+            &self.root_trust.ask_pem,
+            vcek_pem,
+        )
+        .map_err(SnpVerifyError::Chain)?;
+        let (nb, na) = cert_chain::validity_window(&vcek);
+        let now = self.clock.now_unix_seconds();
+        if now < nb || now > na {
+            return Err(SnpVerifyError::VcekExpired {
+                not_before: nb,
+                not_after: na,
+                now,
+            });
+        }
+        Ok(vcek)
+    }
+
+    /// Production-only stub: the RSA-PSS chain validator isn't wired up yet,
+    /// so any call fails closed. Lands in M5.9.
+    #[cfg(not(feature = "mock"))]
+    fn validate_chain_and_window(
+        &self,
+        _vcek_pem: &[u8],
+    ) -> Result<(), SnpVerifyError> {
+        Err(SnpVerifyError::UnsupportedProductionChain)
     }
 }
 
