@@ -32,6 +32,12 @@ pub mod cert_chain;
 #[cfg(feature = "mock")]
 pub mod mock;
 
+#[cfg(feature = "sev-snp")]
+pub mod hardware;
+
+#[cfg(all(feature = "sev-snp", target_os = "linux"))]
+pub use hardware::HardwareReportIssuer;
+
 pub use executor::{AttestationIssuer, SnpEvidence, SnpTrustedExecutor};
 pub use report_data::ReportData;
 pub use runtime_mode::{RuntimeMode, RuntimeModeError};
