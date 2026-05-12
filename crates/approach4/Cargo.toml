@@ -26,6 +26,8 @@ gelo-embedder = { path = "../gelo-embedder", features = ["dp-forward"] }
 gelo-gpu-wgpu = { path = "../gelo-gpu-wgpu" }
 gelo-protocol = { path = "../gelo-protocol" }
 gelo-tee-sev-snp = { path = "../gelo-tee-sev-snp", features = ["mock"] }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
 remote-rag = { path = "../remote-rag" }
 reqwest.workspace = true
 serde.workspace = true

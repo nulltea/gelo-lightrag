@@ -219,6 +219,53 @@ dominates.
 
 ## 6. Risks and proposed fixes
 
+### Risk: aMGM at the pooled-output level destroys retrieval at standard ε
+
+The accuracy bench (`crates/approach4/tests/obfuscation_accuracy.rs`) on
+a 12-doc / 4-query corpus with MiniLM-L6 (384-d) plaintext baseline:
+
+| Config | top1_base (rank-1 matches baseline) | rec@3 |
+|---|---|---|
+| CAPRISE (no DP) | 1.00 | 1.00 |
+| CAPRISE + DP-Forward(ε=1) | 0.25 | 0.22 |
+| CAPRISE + DP-Forward(ε=4) | **0.00** | 0.22 |
+| CAPRISE + DP-Forward(ε=16) | 0.17 | 0.28 |
+
+At `(ε=4, δ=1e-5, C=1.0)` — the paper's reference operating point — the
+Balle–Wang bisection gives σ ≈ 2.16. Adding `N(0, 2.16² · I)` to a
+unit-norm 384-d embedding whose components average ~0.05 is **40× signal
+magnitude per component**, which scrambles cosine ranks completely.
+
+This is consistent with the DP-Forward paper's own approach: Yue et al.
+apply the mechanism at **intermediate transformer layers** (typically
+layer 10 in BERT-base), where representations are much higher-dimensional
+(hidden-size × seq-len) and individual components carry less relative
+information. Applied at the pooled output — where the entire semantic
+signal lives in 384 (or 768/1024) dimensions — standard-ε aMGM destroys
+the signal-to-noise ratio.
+
+**Fix.** Three orthogonal mitigations, none of which we apply by default:
+
+1. *Apply DP-Forward earlier in the encoder*, before pooling collapses
+   the representation. Requires inserting noise inside the GELO forward
+   loop at a designated layer index, not after `pool::last_l2`.
+   ~20 LOC change to `gelo-embedder/src/decoder/forward.rs` behind a
+   `dp-forward-layer-n` config field.
+2. *Loosen ε beyond the paper's reference range.* Retrieval utility
+   recovers at very loose budgets (ε ≫ 100) but the DP guarantee becomes
+   mostly cosmetic.
+3. *Pair with a higher-dim embedder.* Larger `d` means each component
+   carries less signal individually, so the same σ has smaller relative
+   impact. At Qwen3-Embedding-0.6B's 1024-d the relative impact is
+   ~2.6× smaller than at MiniLM-L6's 384-d — still material but
+   meaningfully better.
+
+For the current prototype, DP-Forward is best understood as a layer that
+gives a **formal `(ε,δ)`-SeqLDP guarantee at the cost of retrieval
+quality**, not as a free privacy upgrade. The composition story with
+CAPRISE (decryption can never recover the clean embedding) holds
+regardless; it's the *retrieval utility* that degrades.
+
 ### Risk: Sensitivity bound `C` is a hyperparameter
 
 Too small ⇒ clipped embeddings cluster on the boundary of the L2 ball and
