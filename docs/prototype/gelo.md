@@ -1,0 +1,596 @@
+# GELO Split-Inference Prototype
+
+> **Scope.** Design document for the private-embedding prototype implemented in
+> `crates/gelo-protocol`, `crates/gelo-embedder`, `crates/gelo-gpu-wgpu`,
+> `crates/gelo-tee-sev-snp`, and `crates/gelo-snp-runner`. Documents the
+> *what and why*, not the *how*. For source-level details see crate-level
+> rustdoc; for the research context that motivated this design see
+> `docs/research/private-embedding-research.md` §D Recipe D.
+
+---
+
+## 1. Background
+
+The prototype implements a **TEE-anchored, GPU-accelerated** embedding model
+under a threat model where the GPU is untrusted but the TEE is. The two
+academic ingredients are GELO and TwinShield.
+
+### GELO (Belikov & Fedotov, arXiv 2603.05035)
+
+GELO is a single-batch obfuscation protocol for linear layers in transformer
+inference. The trusted side holds the activations `H` and a public weight `W`
+known to both parties; the goal is to compute `H · W` with the heavy
+matrix-multiply on an untrusted accelerator without revealing `H`.
+
+The construction is one line of linear algebra:
+
+```
+A  ← orthogonal random matrix, fresh each batch     (TEE)
+U  ← A · H                                          (TEE; ship to GPU)
+V  ← U · W                                          (GPU)
+HW ← Aᵀ · V          // since Aᵀ·A·H·W = H·W        (TEE; recover)
+```
+
+Three properties make this work as a privacy primitive:
+
+1. **`A` never touches the GPU.** The accelerator sees only `U = A·H` and the
+   public `W`. For a fresh-per-batch orthogonal `A` drawn uniformly from `O(n)`,
+   `U` is information-theoretically a random rotation of `H` — every `H` is
+   equally consistent with the observed `U`.
+2. **`W` may be public.** The protocol is designed for **openweight** model
+   deployment. Attacks like ArrowMatch that exploit knowledge of `W` against
+   masking schemes that combine `W` with the mask (e.g. STIP, ObfuscaTune) do
+   not apply here — `A` is on the activation axis, never mixed with weights.
+3. **Bit-exact recovery in IEEE-754** (modulo floating-point associativity).
+   `Aᵀ = A⁻¹` for orthogonal `A`, so the recovery is one matmul and the round-trip
+   error is at the f32 cancellation floor, not protocol-induced drift.
+
+GELO doesn't cover Q·Kᵀ (both operands are runtime values, no public weight)
+and doesn't address two leak channels that follow from the bare construction:
+
+- **Gram leak**: `UᵀU = HᵀA·Aᵀ·H = HᵀH`. The masked output's row-Gram matrix
+  exactly equals the cleartext's. An adversary with multiple batches can chain
+  Gram matrices to mount a BSS-style ICA reconstruction.
+- **Engine tampering**: the GPU could return garbage and the TEE would not know.
+
+### TwinShield (Xue et al. 2025)
+
+TwinShield extends GELO with three primitives that close the gaps:
+
+- **Shield rows.** Splice `k` random rows of energy `σ ≈ 4–8 ·  mean‖h‖` into `H`
+  before masking, strip them after recovery. The Gram leak becomes
+  `UᵀU = HᵀH + SᵀS` where `S` is the per-batch shield — `HᵀH` is no longer
+  isolated and a multi-batch BSS attack cannot reduce to ICA on `H`.
+- **OutAttnMult.** A 4-partition embedding that lets the GPU compute Q·Kᵀ
+  without recovering either operand. Both Q and Kᵀ are masked additively
+  with fresh random matrices `R_Q`, `R_Kt` and scaled by random scalars `a, b`;
+  they are then stacked into `2n × 2n` operands plus row/column permutations.
+  The product decomposes into four partitions that the TEE recombines into
+  `Q·Kᵀ` using the secret `(R_Q, R_Kt, a, b, λ_Q, λ_K)`.
+- **U-Verify.** A Freivalds-style integrity probe: for asserted `Z = A·B`,
+  pick random `r ∈ {−L..L}^p`, check `A · (B·r) ≈ Z · r`. Probability of
+  missing a tamper per probe is `≤ 1/(2L)`; running `k` independent probes
+  brings it to `(2L)^-k`. At `L=3, k=8` that is `≈ 2.4·10⁻⁷`.
+
+The combination — fresh orthogonal mask + shield rows + U-Verify for the
+public-weight matmuls, plus OutAttnMult for Q·Kᵀ — is what this prototype
+implements.
+
+---
+
+## 2. Threat model
+
+The prototype targets the **openweight embedding** scenario:
+
+| Component | Trust | Visible to it |
+|---|---|---|
+| User-side text | Confidential | — |
+| TEE (SEV-SNP CVM) | Trusted | text, activations, mask state, model weights, embeddings |
+| GPU + driver + PCIe | Untrusted | public model weights, per-batch masked activations, integrity-probed matmul results |
+| TEE host (CVM operator) | Untrusted | encrypted CVM memory, masked PCIe traffic |
+| Network operator | Untrusted | TLS-wrapped requests + attestation evidence |
+| Vector store | Untrusted | per-vector ciphertext (handled by approach4's SAP/CAPRISE schemes — out of scope here) |
+
+**The asymmetry we lean on**: model weights are public. The user pulls a
+specific openweight model (e.g. `Qwen/Qwen3-Embedding-0.6B`) by name + revision;
+the SHA-256 of the safetensors bytes is published. There is no weight-side
+secret to protect. The threat is **user-activation confidentiality flowing
+through publicly-known weights**, not the converse.
+
+This single assumption is load-bearing. Two consequences:
+
+1. **Mask design is constrained but tractable.** With public `W`, mixing `W`
+   into the mask is unsafe (ArrowMatch class of attacks). GELO's
+   activation-axis-only mask is the only construction in the literature that
+   stays sound under this assumption — and our implementation relies on it.
+2. **The "trusted GPU" requirement collapses.** Confidential-compute GPUs
+   (H100 CC, MIG CC) exist but cost an order of magnitude more than commodity
+   silicon. Because the GPU only ever sees masked activations and public
+   weights, an attested confidential GPU is not necessary. **Consumer GPU
+   passthrough into a SEV-SNP CVM is sufficient.**
+
+---
+
+## 3. Protocol design
+
+### 3.1 Substrate abstraction
+
+Two traits define the protocol boundary (`crates/gelo-protocol/src/substrate.rs`):
+
+```rust
+trait GpuOffloadEngine: Send {
+    fn register_weight(&mut self, h: WeightHandle, w: ArrayView2<f32>) -> Result<()>;
+    fn matmul(&self, h: WeightHandle, input: ArrayView2<f32>) -> Result<Array2<f32>>;
+    fn matmul_dynamic(&self, lhs: ArrayView2<f32>, rhs: ArrayView2<f32>) -> Result<Array2<f32>>;
+    fn matmul_dynamic_batched(&self, lhs: ArrayView3<f32>, rhs: ArrayView3<f32>) -> Result<Array3<f32>>;
+}
+
+trait TrustedExecutor {
+    fn provision_weight(&mut self, h: WeightHandle, w: ArrayView2<f32>) -> Result<()>;
+    fn provision_weight_shared(&mut self, h: WeightHandle, w: Arc<Array2<f32>>) -> Result<()>;
+    fn offload_linear(&mut self, h: WeightHandle, hidden: ArrayView2<f32>) -> Result<Array2<f32>>;
+    fn offload_qkv(&mut self, layer: u16, hidden: ArrayView2<f32>) -> Result<(_, _, _)>;
+    fn offload_attention_qkt_batched(&mut self, q: ArrayView3<f32>, kt: ArrayView3<f32>) -> Result<Array3<f32>>;
+}
+```
+
+The split is deliberately narrow: the engine knows nothing about masking,
+verification, or even what it's computing. The executor owns all secret state
+(mask RNG, shield config, scheme identity, U-Verify weight cache) and decides
+per-call what to ship.
+
+Three impls cover the matrix of real deployments and test substrates:
+
+| Impl | Where | Role |
+|---|---|---|
+| `RayonCpuEngine` | `gelo-protocol::sim` | Reference offload backend on CPU; used as parity baseline and for the in-TEE attention fallback. |
+| `WgpuVulkanEngine` | `gelo-gpu-wgpu` | Real Vulkan compute via `wgpu` + `cubecl-matmul`. The production GPU backend. Vendor-agnostic — works on AMD, Intel, Nvidia. |
+| `InProcessTrustedExecutor` | `gelo-protocol::sim` | The protocol engine. Owns the mask RNG + shield + U-Verify; delegates the underlying GEMM to *any* `GpuOffloadEngine`. |
+
+The `SnpTrustedExecutor` (next section) wraps `InProcessTrustedExecutor` and
+adds the attestation boundary — every protocol method is a single forward
+to the inner executor. The math is identical at every tier.
+
+### 3.2 GELO mask layer
+
+`crates/gelo-protocol/src/mask.rs` samples a fresh orthogonal `A ∈ ℝ^(n×n)`
+each batch via Householder reflectors from a Gaussian seed, seeded from a
+`ChaCha20Rng`. Cost is `O(n²·d)` for the apply/unapply, `O(n²)` for sampling
+— negligible against the offloaded matmul.
+
+Each block of the encoder/decoder forward pass spends mask machinery on:
+
+```
+6 offloaded matmuls per layer (Q, K, V, O, FfnUp/Gate, FfnDown)
+× 28 layers (Qwen3-0.6B) or 12 (BGE-small)
+× (one mask-sample + mask-apply per offload group + mask-unapply per result)
+```
+
+A single `A` is reused across Q, K, V within a block (they read the same `H`),
+saving two samples per block. O, FfnUp, FfnGate (where present), FfnDown each
+get their own fresh `A`.
+
+### 3.3 Shield rows
+
+`crates/gelo-protocol/src/shield.rs` realises TwinShield's defence against
+the Gram leak. Default config in production: `k = 8` rows at `energy = 6 ·
+mean‖h‖`. The bench `tests/bss_recovery.rs` confirms FastICA cannot recover
+the masked Gram with shielding on; without it, recovery is direct (test
+asserts this as a regression guard, not a feature).
+
+### 3.4 U-Verify
+
+`crates/gelo-protocol/src/integrity.rs` implements Freivalds probing. Runs
+*after* each offload, against the cached weight (or the runtime operand, for
+OutAttnMult). Soundness scales as `(2L)^-k`; we ship `L = 3` and let the
+deployment pick `k`. Tested settings:
+
+- `k = 0`: off (default in benches that aren't testing tamper detection).
+- `k = 2`: `≈ 2.8%` undetected-tamper rate. Used in the long-running
+  `qwen3_overhead_bench` to amortise the integrity-cache cost.
+- `k = 8`: `≈ 2.4·10⁻⁷`. Production setting per TwinShield §V-C.
+
+The integrity check requires the TEE to keep a copy of every offloaded weight
+for the `B·r` step. This is a memory cost (§5.2 covers the Arc-share design
+choice that recovers it).
+
+### 3.5 OutAttnMult and the length-based auto-switch
+
+OutAttnMult handles `Q · Kᵀ` where both operands are runtime values. Q is
+masked additively `(Q + R_Q)` and `a·R_Q`; Kᵀ likewise. The TEE recombines
+the four partitions of the engine's `(2n × 2n)` output into `Q·Kᵀ`.
+
+Cost decomposition (per layer, per head):
+
+- **GPU work**: one `(2n, d) × (d, 2n) → (2n, 2n)` matmul = **4× the FLOPs**
+  of the unprotected `(n, d) × (d, n) → (n, n)` attention matmul.
+- **TEE work**: sample masks, stack the 2n-wide operands, apply permutations,
+  recover the four partitions. CPU-side, no GPU dispatches.
+
+**Key design choice — length-based auto-switch.** The 4× FLOP widening and
+the CPU stacking overhead are a net loss at short sequence lengths and a
+net win at long ones. The crossover follows from a simple FLOP-balance
+argument:
+
+```
+Attention compute per layer  ≈  num_heads · n² · head_dim    (O(n²·d))
+One linear projection        ≈  n · hidden² ≈ n · d²         (O(n·d²))
+```
+
+Attention starts matching one projection's work at `n ≈ d`. Below that,
+attention is a small share of the per-layer compute and CPU-side `(n²·d)` is
+faster than shipping a 4× widened matmul to the GPU and paying its dispatch
+overhead. Above it, attention's quadratic dominates and GPU offload at 4× wins.
+
+Implementation (`DecoderConfig`):
+
+```rust
+pub use_out_attn_mult: bool,                     // master switch (default true)
+pub out_attn_mult_min_seq_len: Option<usize>,    // threshold (None → hidden_size)
+
+fn out_attn_mult_enabled_for(&self, n: usize) -> bool {
+    self.use_out_attn_mult && n >= self.out_attn_mult_threshold()
+}
+```
+
+The dispatch site reads `n` per forward pass and picks the path. For
+`Qwen3-Embedding-0.6B` (d=1024) on embedding inputs (n in the tens), the
+auto-switch resolves to "off" — attention runs in-TEE, Q and K never cross
+PCIe. For a long-context decoder LLM with n in the thousands, it engages
+automatically.
+
+This is the **only structural deviation from TwinShield's paper**. The paper
+recommends OutAttnMult unconditionally; our measurements at embedding shape
+make the auto-switch the right default. The privacy story is identical at
+both ends: in-TEE attention is strictly more confidential (Q, K never visible
+to the GPU at all), and OutAttnMult is a performance lever for the regime
+where in-TEE attention becomes the bottleneck.
+
+### 3.6 Sensitive-layer exclusion
+
+Per GELO §3.2, the embedding lookup, final pooling head, and (configurably)
+the first / last transformer layers run entirely in the TEE — no offload.
+The rationale is empirical: the first and last layers are the easiest
+targets for inversion attacks because they sit closest to the cleartext.
+Skipping their GEMMs costs a small fixed amount of TEE compute and removes
+the leakiest matmuls from the GPU's view.
+
+`DecoderConfig::skip_first_layers` / `skip_last_layer` knob it; default is
+no skipping (modern shielding + per-batch fresh mask make the case for
+skipping weaker, but the lever is kept for higher-assurance configs).
+
+---
+
+## 4. TEE substrate
+
+### 4.1 Choosing SEV-SNP
+
+Intel TDX and AMD SEV-SNP are the two production confidential-VM technologies
+the prototype could target. We picked SEV-SNP for four reasons:
+
+1. **Ecosystem.** The Rust SEV ecosystem is mature: `virtee/sev` (Apache-2.0)
+   handles the full report ABI, ioctls, and signature verification. TDX's
+   `tdx-quote` is AGPL — usable, but a license footgun for an Apache-2.0
+   workspace. The `sev` crate is AMD-blessed and audited.
+2. **Attestation chain.** SEV-SNP uses a single chain `ARK → ASK → VCEK →
+   report`, with VCEKs fetched from AMD's KDS endpoint. TDX uses DCAP with
+   multi-component collateral on quarterly rotation. Half the moving parts.
+3. **Hardware path.** Development is on an AMD Strix Halo box (no SEV-SNP
+   silicon, but same vendor). Production target is a Hetzner EPYC Genoa /
+   Turin dedicated server — readily available at ~$50–150/mo vs. ~$5800/mo
+   for managed-cloud confidential-GPU SKUs.
+4. **Performance, security, managed-cloud availability** are comparable
+   between the two. The differentiators above were the deciders.
+
+### 4.2 Attestation flow
+
+`crates/gelo-tee-sev-snp` implements both sides:
+
+- **Issuer side** (inside the CVM). `SnpTrustedExecutor::evidence(nonce)`
+  builds a 64-byte `REPORT_DATA`:
+
+  ```
+  REPORT_DATA[0..32]  = SHA-256(model_identity)
+  REPORT_DATA[32..64] = SHA-256(scheme_identity || optional_nonce)
+  ```
+
+  `model_identity` is the hex-encoded SHA-256 of the loaded safetensors —
+  binds the running CVM to specific publicly-known weights.
+  `scheme_identity` covers protocol-secret state (mask seed config, shield
+  config, OutAttnMult policy). The nonce binds the report to a session
+  challenge.
+
+  The 1184-byte SEV-SNP attestation report is then obtained via
+  `SNP_GET_EXT_REPORT` (real silicon: `HardwareReportIssuer` opens
+  `/dev/sev-guest`; mock: `MockReportIssuer` signs against a bundled
+  test PKI). The VCEK certificate rides alongside.
+
+- **Verifier side** (relying party).
+  `SnpAttestationVerifier::verify(report, vcek, expected_binding)`:
+  1. Parse report via `virtee/sev`.
+  2. Validate the `ARK → ASK → VCEK` chain (mock: ECDSA-P-384; production:
+     RSA-PSS, deferred to M5.9 in the implementation plan).
+  3. Verify the report's ECDSA-P-384 signature against the VCEK.
+  4. Recompute the expected `REPORT_DATA` from the binding and compare.
+  5. Optionally pin `MEASUREMENT`, `POLICY`, and `expected_model_id`.
+
+The verifier code is the **same path for mock-issued and real reports**,
+because the on-the-wire signature shape is identical. Only the cert chain
+validator differs.
+
+### 4.3 Three simulation tiers
+
+The CVM image and binary are bit-identical across tiers; only the host
+environment and `SNP_MODE` env var change.
+
+| Tier | Host | Binary mode | Validates |
+|---|---|---|---|
+| **T1** in-process | any x86_64 Linux | `cargo test --features mock` | protocol math, report byte format, parser/verifier round-trip, tamper rejection |
+| **T2** VM-sim CVM | regular QEMU/KVM | `SNP_MODE=mock` in the production CVM image | OS boundary, systemd unit lifecycle, weight loading, full HTTP service end-to-end |
+| **T3** real silicon | Hetzner EPYC + consumer GPU via VFIO | `SNP_MODE=production` | real `/dev/sev-guest`, real ARK chain, real CVM memory encryption, SWIOTLB DMA, GPU passthrough |
+
+Mode selection is **fail-closed and explicit**: the runner parses `SNP_MODE`
+at startup; `production` aborts if `/dev/sev-guest` is absent, `mock` aborts
+if the `mock` feature wasn't linked. No autodetection — the operator must
+opt into mock.
+
+T1 + T2 give deployment confidence from a non-EPYC dev box: the same image
+and binary that production runs are exercised through their full systemd
+lifecycle. T3 covers hardware-specific behaviour once per release.
+
+---
+
+## 5. Key design choices
+
+This section calls out the non-obvious decisions and why we made them.
+
+### 5.1 Wrap, don't inherit: `SnpTrustedExecutor` over `InProcessTrustedExecutor`
+
+The SEV-SNP boundary is the **environment**, not the protocol. Every
+`TrustedExecutor` method on `SnpTrustedExecutor` is a single forward to the
+inner `InProcessTrustedExecutor`. The wrapper adds two things: the identity
+pair (`model_identity`, `scheme_identity`) and an `evidence(nonce)` method
+that issues a fresh report.
+
+This composition is why the same per-text overhead numbers hold for the
+in-process simulator and the SEV-SNP CVM. It also means the same protocol
+tests apply at every tier.
+
+### 5.2 Arc-shared weight cache
+
+U-Verify requires the TEE to keep a copy of every offloaded weight for the
+`B·r` step. The naive implementation clones every weight in
+`provision_weight`, producing a second ~2.4 GB f32 buffer for Qwen3-class
+models on top of the embedder's existing `Arc<DecoderWeights>` shards.
+
+Under the **openweight assumption**, the weights are public — they don't
+need *confidentiality* on the TEE side, only *integrity* (the host must not
+be able to mutate weight bytes mid-computation, but SEV-SNP's RMP catches
+that). So the executor can share storage with the embedder rather than
+clone:
+
+```rust
+weights: HashMap<WeightHandle, Arc<Array2<f32>>>,   // was Array2<f32>
+```
+
+`TrustedExecutor::provision_weight_shared(_, Arc<Array2<f32>>)` is the
+sharing-friendly path; `provision_weight(_, ArrayView2)` still clones for
+callers that don't have an Arc. **Net result: −2.4 GB encrypted CVM RAM on
+Qwen3-0.6B**, which is the difference between a 32 GB and 64 GB Hetzner SKU.
+
+This optimisation is **only safe because weights are public**. For a
+private-model deployment it would not apply — the executor would need its
+own encrypted-CVM copy.
+
+### 5.3 Length-based OutAttnMult auto-switch
+
+Covered in §3.5. The deviation from TwinShield-as-written is the only
+configuration decision in the protocol layer that's measurement-driven
+rather than paper-driven.
+
+### 5.4 Consumer GPU passthrough over Confidential Compute GPU
+
+GELO masks make the GPU information-theoretically blind. There is no
+material confidentiality difference between running these matmuls on an
+H100-CC and an RX 7900 XTX. The integrity story is handled by U-Verify,
+not by the GPU's attestation. So:
+
+- **Production GPU target**: commodity passthrough via VFIO PCIe.
+  Anything Vulkan-capable: RTX 4090, RX 7900 XTX, Intel Arc A770.
+- **Reason**: ~10× cost reduction over H100-CC, and our Vulkan backend
+  (`gelo-gpu-wgpu`) works unchanged. A CUDA backend (M4 in the plan) is
+  optional, not on the critical path to TEE deployment.
+
+The trade-off is that we pay **SWIOTLB DMA cost** for every cross-boundary
+transfer (~30 ns/KB), since SEV-SNP guests use bounce buffers for device
+DMA. For Qwen3 per-text traffic (~480 MB cross-boundary) this is ~15 ms/text
+overhead — visible but manageable. TDISP would remove it; we defer that
+to when AMD/PCI-SIG ships the kernel pieces.
+
+### 5.5 Thin CVM image + first-boot weight fetch
+
+The deploy image is intentionally **thin** (~50 MB, no weights baked in).
+A `gelo-fetch-weights` systemd one-shot downloads model bytes from a
+configured URL (HuggingFace or an offline mirror) on first boot and
+SHA-256-validates against the expected hash in `runner.env`. Mismatch ⇒
+unit fails ⇒ runner service refuses to start.
+
+The image hash is bit-reproducible across rebuilds; CI gates on it.
+Rebuilding for a new model revision is a config change, not an image rebuild.
+
+This is the conventional confidential-CVM pattern (canonical/tdx, AMDESE,
+RH OpenShift CoCo all do similar) — what's specific to openweight is that
+the weight blob's hash itself is a **public, attestable identifier**:
+the relying party knows what to expect and can pin
+`expected_model_id = SHA-256("Qwen/Qwen3-Embedding-0.6B@<rev>")`.
+
+### 5.6 Fail-closed `SNP_MODE`
+
+The runner refuses to start unless `SNP_MODE` is one of `production` or
+`mock`. There is no autodetection (e.g. "do we see `/dev/sev-guest`?"),
+because every silent-fallback we considered was a worse failure mode:
+
+- A production binary booting into mock because the device was missing
+  would silently emit reports a real verifier rejects.
+- A mock binary deployed to production wouldn't be caught at all.
+
+Operators must opt into either mode explicitly. The runner prints a loud
+warning when mock is active: *"Reports from this issuer will NOT verify
+against AMD's production ARK."*
+
+---
+
+## 6. Security & privacy model
+
+### What the protocol protects
+
+| Channel | Mechanism | Soundness argument |
+|---|---|---|
+| Per-batch activations crossing PCIe | GELO mask + shield rows | Fresh orthogonal `A` per batch makes `U = A·H` information-theoretically a random rotation; shield rows close the multi-batch Gram leak. |
+| Q, K never seen by GPU (default) | In-TEE attention via auto-switch | Q, K, V do not cross PCIe at all for short-input embedding workloads. |
+| Q, K under OutAttnMult (long context) | 4-partition embedding | GPU sees a `(2n, 2n)` masked permuted matmul without `(R_Q, R_Kt, a, b, λ_Q, λ_K)`. |
+| Integrity of every offloaded matmul | U-Verify | At `k=8, L=3`: undetected-tamper rate `≈ 2.4·10⁻⁷` per offload. |
+| Activations and mask state at rest | SEV-SNP memory encryption | CVM RAM encrypted with per-CVM key; host cannot read. RMP prevents tampering. |
+| Attestation key material | SEV-SNP CVM isolation + AMD-SP | Report-signing key is per-chip, never leaves the AMD Secure Processor. |
+| TEE → relying party binding | Attestation: `(model_identity, scheme_identity, nonce)` baked into REPORT_DATA | Relying party verifies it loaded the expected publicly-known weights with the expected protocol scheme. |
+
+### What it does not protect
+
+- **Model weights from the GPU.** Weights are public — uploaded to the GPU in
+  cleartext at startup. This is by design (openweight).
+- **PCIe traffic for the one-time weight upload.** ~2.4 GB once at startup;
+  not per-text.
+- **Side-channels in the TEE itself.** SEV-SNP isolates memory but not
+  cache / timing / power. The mask Householder sampler does a data-dependent
+  sqrt; for a future-revision hardening pass the `subtle` crate's
+  constant-time primitives would close this.
+- **Workload identity / volume.** The number and timing of offload calls is
+  visible to the GPU. A persistent attacker can learn that the workload is
+  *some* transformer of *some* shape from the dispatch pattern.
+
+### When the threat model breaks
+
+If anyone later wants **private-model** deployment (e.g. a fine-tuned
+proprietary model), GELO as-implemented does not target this. Two recovery
+paths:
+
+1. Treat the entire CVM image as the private artifact: bake weights into
+   the image, measure them into the launch policy, never download. Loses the
+   thin-image / first-boot-fetch convenience but keeps the GELO masks
+   for activations.
+2. Switch to an STIP-style protocol that masks weights as well. Out of scope
+   for this prototype.
+
+---
+
+## 7. Tradeoffs
+
+### Per-text overhead (Qwen3-Embedding-0.6B, RADV Vulkan, 3 short texts)
+
+| Configuration | Wall-clock | vs `gpu_plain` | What's enabled |
+|---|---|---|---|
+| `gpu_plain` | 371 ms | baseline | unprotected — GPU sees raw activations |
+| `gpu + GELO` (in-TEE attention, auto-switch off) | 395 ms | **+6.4%** | GELO mask on Q/K/V/O/Up/Gate/Down; attention in TEE |
+| `gpu + GELO + OutAttnMult` (forced on) | 460 ms | +24.0% | Same as above plus OutAttnMult for Q·Kᵀ |
+
+The production default at embedding shape is the middle row: ~6% wall-clock
+for openweight confidentiality on the public-weight matmuls. The
+OutAttnMult row is what a long-context decoder would land at; the +24% is
+the regime-mismatched cost (n ≪ hidden_size) and not representative of
+where OutAttnMult is meant to operate.
+
+**Steady-state cost decomposition** (`gpu + GELO`):
+
+- GELO mask machinery (`mask_apply` + `mask_unapply` + `mask_sample`):
+  ~17 ms across 168 offloaded linears per text — the irreducible mask cost.
+- In-TEE attention (`tee:attn_inplace`): ~5 ms — negligible at this n.
+- Everything else: within run-to-run variance.
+
+### Attestation cost
+
+| Step | Cost | Frequency |
+|---|---|---|
+| `SnpTrustedExecutor::evidence(nonce)` (mock issuer) | 0.39 ms | once per session |
+| `SnpAttestationVerifier::verify(...)` (mock chain) | 2.70 ms | once per session |
+| Report size on wire | 1184 B (SEV-SNP ABI) + ~733 B VCEK PEM | once per session |
+
+Production-silicon equivalents will be in the same order of magnitude.
+Attestation is **never on the per-text path**; the `SnpTrustedExecutor`
+wrapper adds zero overhead to the embed loop (forwarding-only `TrustedExecutor`
+impl).
+
+### Memory budget (Qwen3-Embedding-0.6B inside the CVM, with Arc-share)
+
+| Component | Encrypted CVM RAM | Shared (SWIOTLB) |
+|---|---|---|
+| Model weights (one Arc, shared embedder + executor U-Verify cache) | 2.4 GB | — |
+| Working-set activations across 28 layers | ~0.4 GB | — |
+| Mask state, shield rows, RNG, scheme_identity, attestation private state | ~0.05 GB | — |
+| OutAttnMult scratch (only when engaged at long n) | ~0.05 GB | — |
+| GPU-DMA bounce buffers | — | ~0.5 GB |
+| Misc systemd / kernel / Vulkan userspace | ~0.3 GB | — |
+| **Total** | **~3.2 GB** | **~0.5 GB** |
+
+Fits comfortably in a 32 GB Hetzner AX42. Without the Arc-share refactor
+the budget would be ~7 GB and force a 64 GB SKU.
+
+### Trade-off summary
+
+| What we gave up | What we got |
+|---|---|
+| Bit-exact privacy for model weights | Openweight scope → simpler attacks model, smaller TEE footprint, ~10× cheaper GPU |
+| Universal applicability across model classes | Sharp focus on openweight transformer inference → straightforward Arc-share, fail-closed runtime mode |
+| Unconditional OutAttnMult (paper recipe) | Length-based auto-switch → +6% overhead at embedding shape, OutAttnMult kept available for long-context deployments |
+| Confidential-GPU attested DMA | Per-PCIe-batch SWIOTLB cost (~15 ms/text on Qwen3) → consumer GPU compatibility |
+
+---
+
+## 8. Current results and forward-looking work
+
+### Where the prototype stands
+
+- **T1 in-process**: protocol math, mask, shield, U-Verify, OutAttnMult,
+  attestation report parse/verify, tamper rejection — all green.
+- **T2 VM-simulated CVM**: same binary boots in regular QEMU under
+  `SNP_MODE=mock`, HTTP smoke green (`/health`, `/attest`, `/ingest`, `/query`).
+- **T3 real silicon**: deferred to M5.9 (Hetzner EPYC provisioning).
+  Hardware-only behaviours — real PSP, real ARK chain, real RMP, SWIOTLB on
+  passthrough GPU — validated once per release on the dedicated server.
+
+### Highest-impact next levers
+
+1. **GPU-side OutAttnMult stacking.** `outattn:setup_stack_batched` is 42% of
+   the protected-path overhead when OutAttnMult is engaged. Moving the
+   2n-wide operand packing to a fused WGSL kernel (or SIMD on the CPU side)
+   would compress the long-context path's overhead from +24% toward +12–15%.
+2. **TDISP for DMA cost.** Once kernel + firmware support lands, the SWIOTLB
+   bounce-buffer cost disappears. ~15 ms/text on Qwen3 today.
+3. **Real-VCEK CI fixture.** After T3 boot, capture one VCEK + sample report
+   into the repo; CI offline-verifies it against AMD's published ARK on
+   every run, catching report-format regressions without per-run silicon
+   cost.
+
+### Out of scope (and why)
+
+- **Private model weights** — different threat model; would require an
+  STIP-style mask. The whole stack is built around the openweight assumption.
+- **MPC / FHE inference** — addressed in `docs/research/private-inference.md`.
+  Orders of magnitude slower than this for the embedding workload we target.
+- **DP-perturbed embeddings** — a complementary mechanism for the output
+  side; not needed when the embedding ciphertext itself is encrypted at rest
+  (approach4's SAP / CAPRISE schemes).
+
+---
+
+## References
+
+- Belikov & Fedotov, "GELO: Activation-Mask Split-Inference for Open-Weight
+  Transformers." arXiv 2603.05035.
+- Xue, Liu, Cao et al., "TwinShield: Defending Split-Inference Against the
+  Gram Leak and Engine Tampering." 2025.
+- AMD, "SEV Secure Nested Paging Firmware ABI Specification." Document 56860.
+- Morris, Kuleshov, Shmatikov, Rush, "Text Embeddings Reveal (Almost) As
+  Much As Text." EMNLP 2023 (Vec2Text — the embedding-inversion threat that
+  motivates this prototype).
+- `docs/research/private-embedding-research.md` §D Recipe D — the survey
+  that landed on this design.

@@ -21,9 +21,12 @@ gelo-tee-sev-snp = { path = "../gelo-tee-sev-snp", optional = true }
 rag_core = { path = "../core", package = "core" }
 
 [dev-dependencies]
-gelo-embedder = { path = "../gelo-embedder" }
+dp-forward = { workspace = true }
+gelo-embedder = { path = "../gelo-embedder", features = ["dp-forward"] }
+gelo-gpu-wgpu = { path = "../gelo-gpu-wgpu" }
 gelo-protocol = { path = "../gelo-protocol" }
 gelo-tee-sev-snp = { path = "../gelo-tee-sev-snp", features = ["mock"] }
+remote-rag = { path = "../remote-rag" }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -2,11 +2,13 @@
 members = [
     "crates/core",
     "crates/approach4",
+    "crates/dp-forward",
     "crates/gelo-protocol",
     "crates/gelo-embedder",
     "crates/gelo-gpu-wgpu",
     "crates/gelo-tee-sev-snp",
     "crates/gelo-snp-runner",
+    "crates/remote-rag",
 ]
 resolver = "2"
 
@@ -34,7 +36,16 @@ safetensors = "0.4"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.133"
 sha2 = "0.10.9"
+statrs = "0.18"
 thiserror = "2.0.17"
+dp-forward = { path = "crates/dp-forward" }
+# fast-paillier 0.3.2: MIT OR Apache-2.0. Default `backend-num-bigint` is
+# pure-Rust (num-bigint + glass_pumpkin); the LGPL `rug`/GMP path is the
+# optional `backend-rug` feature, which we do NOT enable.
+num-bigint = "0.4"
+num-traits = "0.2"
+num-integer = "0.1"
+num-prime = "0.5"
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 wgpu = "26"
 cubecl = { version = "=0.9.0-pre.5", default-features = false, features = ["std", "wgpu"] }
@@ -58,3 +69,4 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 toml = "0.8"
 base64 = "0.22"
+

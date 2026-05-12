@@ -13,6 +13,11 @@ use super::weights::BertWeights;
 use crate::common::pool;
 use crate::common::tokenizer::HfTokenizer;
 
+#[cfg(feature = "dp-forward")]
+use rand::SeedableRng;
+#[cfg(feature = "dp-forward")]
+use rand_chacha::ChaCha20Rng;
+
 /// A BERT-class embedding model whose Q/K/V/O + FFN GEMMs are routed
 /// through a GELO-style `TrustedExecutor`.
 pub struct GeloBertEmbedder<X: TrustedExecutor> {
@@ -21,11 +26,23 @@ pub struct GeloBertEmbedder<X: TrustedExecutor> {
     weights: Arc<BertWeights>,
     exec: X,
     max_len: usize,
-    /// Hex-encoded `sha256(safetensors_bytes)`. Stored as a UTF-8 string so
-    /// it can ride through `AttestationEvidence::model_identity` (which is
-    /// `String`). The relying party recomputes the same hex over the
-    /// expected weights and compares.
+    /// Hex-encoded `sha256(safetensors_bytes)`, optionally extended by
+    /// `sha256(weights ‖ dp_cfg.config_digest())` if [`Self::with_dp_forward`]
+    /// is called. Rides through `AttestationEvidence::model_identity` so a
+    /// relying party can pin `(weights, ε, δ, C, σ)`.
     model_identity: String,
+    /// Raw sha256 of the weights, before any DP-config mixing. Cached so
+    /// `with_dp_forward` can re-derive `model_identity` deterministically.
+    #[cfg(feature = "dp-forward")]
+    weights_identity: [u8; 32],
+    /// Recipe-B aMGM config applied to the pooled embedding inside this
+    /// embedder before `embed()` returns.
+    #[cfg(feature = "dp-forward")]
+    dp_forward: Option<dp_forward::DpForwardConfig>,
+    /// Dedicated RNG for DP noise sampling. Seeded from `OsRng` at
+    /// construction; not deterministic (DP noise must be unique per call).
+    #[cfg(feature = "dp-forward")]
+    dp_rng: ChaCha20Rng,
 }
 
 impl<X: TrustedExecutor> GeloBertEmbedder<X> {
@@ -59,11 +76,32 @@ impl<X: TrustedExecutor> GeloBertEmbedder<X> {
         Ok(Self {
             cfg,
             tokenizer,
+            #[cfg(feature = "dp-forward")]
+            weights_identity: weights.model_identity,
             weights,
             exec,
             max_len,
             model_identity,
+            #[cfg(feature = "dp-forward")]
+            dp_forward: None,
+            #[cfg(feature = "dp-forward")]
+            dp_rng: ChaCha20Rng::from_os_rng(),
         })
+    }
+
+    /// Enable Recipe-B aMGM noise (DP-Forward) on the pooled embedding.
+    /// See [`crate::decoder::embedder::GeloQwenEmbedder::with_dp_forward`]
+    /// for the full rationale; behaviour is identical for the BERT path.
+    #[cfg(feature = "dp-forward")]
+    pub fn with_dp_forward(mut self, cfg: dp_forward::DpForwardConfig) -> Self {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(self.weights_identity);
+        hasher.update(cfg.config_digest());
+        let combined: [u8; 32] = hasher.finalize().into();
+        self.model_identity = hex::encode(combined);
+        self.dp_forward = Some(cfg);
+        self
     }
 
     /// Download `BAAI/bge-small-en-v1.5` from the HuggingFace hub (using the
@@ -120,7 +158,14 @@ impl<X: TrustedExecutor> Embedder for GeloBertEmbedder<X> {
             let ids = self.tokenizer.encode(text, self.max_len)?;
             let hidden = forward::run(&self.cfg, &self.weights, &mut self.exec, &ids)?;
             let pooled = pool::mean_l2(hidden.view());
-            out.push(pooled.to_vec());
+            #[allow(unused_mut)]
+            let mut pooled_vec = pooled.to_vec();
+            #[cfg(feature = "dp-forward")]
+            if let Some(cfg) = &self.dp_forward {
+                dp_forward::amgm::clip_l2_in_place(&mut pooled_vec, cfg.clip_c);
+                dp_forward::amgm::add_gaussian_noise(&mut pooled_vec, cfg.sigma, &mut self.dp_rng);
+            }
+            out.push(pooled_vec);
         }
         Ok(out)
     }
