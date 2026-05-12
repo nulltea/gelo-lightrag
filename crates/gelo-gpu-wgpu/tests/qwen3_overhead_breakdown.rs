@@ -109,6 +109,27 @@ fn qwen3_overhead_step_breakdown() {
     // we can exercise once at session start.
     const MODEL_IDENT: &[u8] = b"Qwen/Qwen3-Embedding-0.6B@bench";
     const SCHEME_IDENT: &[u8] = b"gelo+twinshield@v1";
+
+    // Intermediate path: GELO mask on every offloaded linear, but
+    // attention computed in-TEE (no OutAttnMult). Pinpoints how much of
+    // the protected-path overhead is "TwinShield 4-partition attention"
+    // vs "GELO mask machinery on the Q/K/V/O/FFN linears".
+    let mut gpu_gelo_only = {
+        let mut c = cfg.clone();
+        c.use_out_attn_mult = false;
+        GeloQwenEmbedder::new(
+            c,
+            tokenizer.clone(),
+            Arc::clone(&weights_arc),
+            Arc::clone(&rope_arc),
+            InProcessTrustedExecutor::with_seed(
+                gpu_root.clone_shared(),
+                MaskSeed::from_bytes([3u8; 32]),
+            ),
+        )
+        .expect("gpu_gelo_only")
+    };
+
     let mut gpu_gelo_outattn = {
         let mut c = cfg.clone();
         c.use_out_attn_mult = true;
@@ -183,6 +204,15 @@ fn qwen3_overhead_step_breakdown() {
         plain_wall.as_secs_f64() * 1000.0 / texts.len() as f64,
     );
 
+    let (gelo_only_profile, gelo_only_wall) =
+        warmup_then_capture(&mut gpu_gelo_only, &texts);
+    gelo_only_profile.dump("gpu + GELO (no OutAttnMult; attention in TEE)");
+    eprintln!(
+        "→ wall-clock: {:.2} ms total, {:.2} ms/text",
+        gelo_only_wall.as_secs_f64() * 1000.0,
+        gelo_only_wall.as_secs_f64() * 1000.0 / texts.len() as f64,
+    );
+
     let (gelo_profile, gelo_wall) = warmup_then_capture(&mut gpu_gelo_outattn, &texts);
     gelo_profile.dump("gpu + GELO + OutAttnMult + mock SEV-SNP boundary");
     eprintln!(
@@ -205,6 +235,27 @@ fn qwen3_overhead_step_breakdown() {
 
     let overhead_ms =
         gelo_wall.as_secs_f64() * 1000.0 - plain_wall.as_secs_f64() * 1000.0;
+    let gelo_only_ms = gelo_only_wall.as_secs_f64() * 1000.0;
+    let plain_ms = plain_wall.as_secs_f64() * 1000.0;
+    let gelo_full_ms = gelo_wall.as_secs_f64() * 1000.0;
+    eprintln!();
+    eprintln!("=== three-way wall-clock summary ===");
+    eprintln!("{:<45} {:>10}", "config", "ms/3 texts");
+    eprintln!("{}", "-".repeat(58));
+    eprintln!("{:<45} {:>10.2}", "gpu_plain (no privacy)", plain_ms);
+    eprintln!(
+        "{:<45} {:>10.2}   (+{:.1}% over plain)",
+        "gpu + GELO  (attention in TEE)",
+        gelo_only_ms,
+        100.0 * (gelo_only_ms - plain_ms) / plain_ms,
+    );
+    eprintln!(
+        "{:<45} {:>10.2}   (+{:.1}% over plain, +{:.1}% over GELO-only)",
+        "gpu + GELO + OutAttnMult + SEV-SNP",
+        gelo_full_ms,
+        100.0 * (gelo_full_ms - plain_ms) / plain_ms,
+        100.0 * (gelo_full_ms - gelo_only_ms) / gelo_only_ms,
+    );
     eprintln!();
     eprintln!("=== overhead delta (protected − plain) ===");
     eprintln!(
