@@ -133,6 +133,10 @@ fn qwen3_overhead_step_breakdown() {
     let mut gpu_gelo_outattn = {
         let mut c = cfg.clone();
         c.use_out_attn_mult = true;
+        // Force OutAttnMult on at any n; without this, the
+        // `hidden_size`-based auto-switch would route short bench prompts
+        // to in-TEE attention and we'd never measure the OutAttnMult path.
+        c.out_attn_mult_min_seq_len = Some(0);
         let inner = InProcessTrustedExecutor::with_seed(
             gpu_root.clone_shared(),
             MaskSeed::from_bytes([1u8; 32]),

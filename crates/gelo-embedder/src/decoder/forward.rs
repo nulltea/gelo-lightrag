@@ -77,10 +77,15 @@ fn decoder_block(
         rope.apply(k.view_mut(), cfg.num_key_value_heads);
     });
 
-    // GQA + causal attention. When this layer is offloaded and
-    // `use_out_attn_mult` is set, route the per-head `Q · Kᵀ` through
-    // TwinShield OutAttnMult; otherwise compute it locally inside the TEE.
-    let ctx = if offload && cfg.use_out_attn_mult {
+    // GQA + causal attention. When this layer is offloaded **and** the
+    // auto-switch fires (sequence length ≥ threshold; see
+    // `DecoderConfig::out_attn_mult_enabled_for`), route per-head Q·Kᵀ
+    // through TwinShield OutAttnMult. Otherwise compute attention inside
+    // the TEE — equally confidential (Q, K never cross PCIe), and faster
+    // at short n where the 4-partition scheme's 4× FLOP widening loses
+    // to a plain in-TEE matmul.
+    let n = q.shape()[0];
+    let ctx = if offload && cfg.out_attn_mult_enabled_for(n) {
         causal_gqa_attention_with_offload(
             exec,
             q.view(),

@@ -204,6 +204,10 @@ fn qwen3_overhead_breakdown() {
     let mut gpu_gelo_outattn = {
         let mut cfg = cfg.clone();
         cfg.use_out_attn_mult = true;
+        // Force OutAttnMult on at any n so the bench measures it; the
+        // production auto-switch (n ≥ hidden_size) would otherwise route
+        // these short prompts through in-TEE attention.
+        cfg.out_attn_mult_min_seq_len = Some(0);
         GeloQwenEmbedder::new(
             cfg,
             tokenizer.clone(),
@@ -232,6 +236,10 @@ fn qwen3_overhead_breakdown() {
     let mut gpu_full_stack = {
         let mut cfg = cfg.clone();
         cfg.use_out_attn_mult = true;
+        // Same OutAttnMult force-on as gpu_gelo_outattn — measure the
+        // full protocol path, not the auto-switch's short-input
+        // fallback.
+        cfg.out_attn_mult_min_seq_len = Some(0);
         let exec = InProcessTrustedExecutor::with_shield(
             gpu_root.clone_shared(),
             MaskSeed::from_bytes([2u8; 32]),

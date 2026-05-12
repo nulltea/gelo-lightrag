@@ -1,6 +1,11 @@
 //! End-to-end test of `GeloQwenEmbedder` against `Qwen/Qwen3-Embedding-0.6B`.
 //!
 //! Asserts masked vs plaintext executor parity on the pooled embedding.
+//! Forces OutAttnMult on at any sequence length on both sides
+//! (`out_attn_mult_min_seq_len = Some(0)`) so the protected attention
+//! path keeps regression coverage even though the auto-switch would
+//! normally route short bench prompts to in-TEE attention.
+//!
 //! Downloads ~1.2 GB on first run; gated behind `#[ignore]`.
 
 use gelo_embedder::GeloQwenEmbedder;
@@ -17,13 +22,17 @@ fn qwen3_decoder_parity() {
         MODEL,
         PlaintextExecutor::new(RayonCpuEngine::new()),
     )
-    .expect("load Qwen3-Embedding-0.6B (plaintext)");
+    .expect("load Qwen3-Embedding-0.6B (plaintext)")
+    .with_out_attn_mult(true)
+    .with_out_attn_mult_min_seq_len(Some(0));
 
     let mut cpu_masked = GeloQwenEmbedder::from_pretrained(
         MODEL,
         InProcessTrustedExecutor::with_seed(RayonCpuEngine::new(), MaskSeed::from_bytes([29u8; 32])),
     )
-    .expect("load Qwen3-Embedding-0.6B (masked)");
+    .expect("load Qwen3-Embedding-0.6B (masked)")
+    .with_out_attn_mult(true)
+    .with_out_attn_mult_min_seq_len(Some(0));
 
     let texts = vec![
         "Confidential computing protects user data inside attested enclaves.".to_string(),

@@ -44,6 +44,9 @@ fn tiny_decoder_config(
         skip_first_layers: 0,
         skip_last_layer: false,
         use_out_attn_mult: true,
+        // Force OutAttnMult on at the small synthetic shapes used here,
+        // overriding the `hidden_size`-based auto-switch.
+        out_attn_mult_min_seq_len: Some(0),
     }
 }
 

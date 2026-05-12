@@ -128,11 +128,24 @@ impl<X: TrustedExecutor> GeloQwenEmbedder<X> {
         self
     }
 
-    /// Toggle TwinShield OutAttnMult on the attention `Q · Kᵀ` matmul.
-    /// Default: enabled. Disable to benchmark the OutAttnMult delta or to
-    /// run the encoder without it.
+    /// Master switch for TwinShield OutAttnMult on the attention `Q · Kᵀ`
+    /// matmul. Default: enabled (subject to the length auto-switch — see
+    /// [`Self::with_out_attn_mult_min_seq_len`]).
     pub fn with_out_attn_mult(mut self, enabled: bool) -> Self {
         self.cfg.use_out_attn_mult = enabled;
+        self
+    }
+
+    /// Override the auto-switch threshold (`out_attn_mult_min_seq_len`).
+    /// Pass `Some(n)` to force OutAttnMult only at sequence length ≥ `n`,
+    /// or `None` to restore the auto default (= `hidden_size`).
+    ///
+    /// Common settings:
+    /// - `Some(0)`         — always on (when the master switch is true).
+    /// - `Some(usize::MAX)` — never on, even with master switch true.
+    /// - `None`            — auto: on at `n ≥ hidden_size`.
+    pub fn with_out_attn_mult_min_seq_len(mut self, min_seq_len: Option<usize>) -> Self {
+        self.cfg.out_attn_mult_min_seq_len = min_seq_len;
         self
     }
 
