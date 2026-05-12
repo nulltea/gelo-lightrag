@@ -21,9 +21,11 @@ pub struct GeloBertEmbedder<X: TrustedExecutor> {
     weights: Arc<BertWeights>,
     exec: X,
     max_len: usize,
-    /// Cached copy of `weights.model_identity` so `Embedder::model_identity`
-    /// can return `&[u8]` without going through the Arc.
-    model_identity: [u8; 32],
+    /// Hex-encoded `sha256(safetensors_bytes)`. Stored as a UTF-8 string so
+    /// it can ride through `AttestationEvidence::model_identity` (which is
+    /// `String`). The relying party recomputes the same hex over the
+    /// expected weights and compares.
+    model_identity: String,
 }
 
 impl<X: TrustedExecutor> GeloBertEmbedder<X> {
@@ -53,7 +55,7 @@ impl<X: TrustedExecutor> GeloBertEmbedder<X> {
             )?;
         }
         let max_len = cfg.max_seq_len.min(cfg.max_position_embeddings);
-        let model_identity = weights.model_identity;
+        let model_identity = hex::encode(weights.model_identity);
         Ok(Self {
             cfg,
             tokenizer,
@@ -124,6 +126,6 @@ impl<X: TrustedExecutor> Embedder for GeloBertEmbedder<X> {
     }
 
     fn model_identity(&self) -> &[u8] {
-        &self.model_identity
+        self.model_identity.as_bytes()
     }
 }

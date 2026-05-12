@@ -1,0 +1,30 @@
+# gelo-snp-runner configuration
+#
+# Parsed at process start by gelo-snp-runner. Path is determined by
+# GELO_SNP_RUNNER_CONFIG (default: /etc/gelo-snp/runner.toml).
+
+# Bind address for the HTTP service.
+listen = "0.0.0.0:7878"
+
+# Public model identifier. Hashed into REPORT_DATA[0..32] so a relying
+# party can pin "this CVM is processing requests with these specific
+# publicly-known weights". For openweight deployment, use the model's
+# HuggingFace coordinate plus a pinned revision.
+model_identity = "stub-model@v1"
+
+# Protocol-scheme identifier. Hashed into REPORT_DATA[32..64] together
+# with an optional per-session nonce. Bumped whenever the GELO
+# mask/shield/U-Verify configuration changes in a way the verifier needs
+# to be aware of.
+scheme_identity = "gelo+twinshield@v1"
+
+# Embedder backend:
+#   "stub"      — deterministic-hash embedder; no model files required (T1/T2 smoke).
+#   "bge-small" — GeloBertEmbedder loading bge-small from `weights_path`.
+#   "qwen3-0.6b" — GeloQwenEmbedder loading Qwen3-Embedding-0.6B from `weights_path`.
+embedder = "stub"
+
+# Where weights are loaded from on the rootfs. The gelo-fetch-weights
+# one-shot populates this directory on first boot and validates the
+# SHA-256.
+# weights_path = "/var/lib/gelo-snp/weights"

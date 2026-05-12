@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 gelo-protocol = { path = "../gelo-protocol" }
+hex.workspace = true
 hf-hub.workspace = true
 ndarray = { workspace = true, features = ["rayon"] }
 rag_core = { path = "../core", package = "core" }

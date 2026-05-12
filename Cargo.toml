@@ -6,6 +6,7 @@ members = [
     "crates/gelo-embedder",
     "crates/gelo-gpu-wgpu",
     "crates/gelo-tee-sev-snp",
+    "crates/gelo-snp-runner",
 ]
 resolver = "2"
 
@@ -49,3 +50,11 @@ x509-cert = { version = "0.2", default-features = false, features = ["std", "pem
 p384 = { version = "0.13", default-features = false, features = ["ecdsa", "pem"] }
 rcgen = { version = "0.13", default-features = false, features = ["pem", "crypto", "aws_lc_rs"] }
 hex = "0.4"
+# M5.7 — service runner
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync"] }
+axum = { version = "0.7", default-features = false, features = ["json", "tokio", "http1"] }
+tower = "0.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+toml = "0.8"
+base64 = "0.22"

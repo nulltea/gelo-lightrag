@@ -1,0 +1,20 @@
+[Unit]
+Description=Fetch and hash-verify GELO model weights on first boot
+Documentation=https://github.com/anthropics/private-rag/blob/main/deploy/sev-snp/cvm-image/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/gelo-snp/runner.env
+# This unit downloads the model bytes named in runner.toml's
+# `weights_path` URL (or copies from a host-mounted offline mirror), then
+# verifies SHA-256 against the expected hash baked into the unit
+# environment. Hash mismatch ⇒ unit fails ⇒ gelo-snp-runner.service does
+# not start.
+ExecStart=/usr/local/libexec/gelo-fetch-weights
+ExecStartPost=/usr/bin/install -d -o gelo -g gelo -m 0750 /var/lib/gelo-snp
+RemainAfterExit=true
+
+[Install]
+WantedBy=multi-user.target

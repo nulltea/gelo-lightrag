@@ -25,9 +25,11 @@ pub struct GeloQwenEmbedder<X: TrustedExecutor> {
     rope: Arc<RopeTables>,
     exec: X,
     max_len: usize,
-    /// Cached copy of `weights.model_identity` so `Embedder::model_identity`
-    /// can hand out `&[u8]` without round-tripping through the Arc.
-    model_identity: [u8; 32],
+    /// Hex-encoded `sha256(concat of all shard bytes)`. Stored as UTF-8
+    /// so it rides through `AttestationEvidence::model_identity` (a
+    /// `String`); the relying party recomputes the hex over the expected
+    /// weights and compares.
+    model_identity: String,
 }
 
 impl<X: TrustedExecutor> GeloQwenEmbedder<X> {
@@ -66,7 +68,7 @@ impl<X: TrustedExecutor> GeloQwenEmbedder<X> {
         }
         let max_len = cfg.max_seq_len.min(cfg.max_position_embeddings);
         let _ = rope.head_dim(); // silence "unused field" if dead-code path triggers
-        let model_identity = weights.model_identity;
+        let model_identity = hex::encode(weights.model_identity);
         Ok(Self {
             cfg,
             tokenizer,
@@ -200,6 +202,6 @@ impl<X: TrustedExecutor> Embedder for GeloQwenEmbedder<X> {
     }
 
     fn model_identity(&self) -> &[u8] {
-        &self.model_identity
+        self.model_identity.as_bytes()
     }
 }

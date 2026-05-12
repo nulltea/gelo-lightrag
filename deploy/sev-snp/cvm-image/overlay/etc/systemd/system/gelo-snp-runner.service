@@ -1,0 +1,34 @@
+[Unit]
+Description=GELO SEV-SNP private RAG runner
+Documentation=https://github.com/anthropics/private-rag/blob/main/docs/research/private-embedding-research.md
+After=network-online.target gelo-fetch-weights.service
+Wants=network-online.target
+Requires=gelo-fetch-weights.service
+
+[Service]
+Type=notify
+# SNP_MODE is set by the per-host environment file. On T2 (regular QEMU
+# guest, no SEV-SNP) the operator sets `SNP_MODE=mock`; on T3 (real EPYC
+# CVM) `SNP_MODE=production`. The binary fails closed if SNP_MODE is unset.
+EnvironmentFile=/etc/gelo-snp/runner.env
+Environment=GELO_SNP_RUNNER_CONFIG=/etc/gelo-snp/runner.toml
+ExecStart=/usr/local/bin/gelo-snp-runner
+Restart=on-failure
+RestartSec=5
+# The runner does not need root; CVM-internal isolation is provided by SEV-SNP.
+User=gelo
+Group=gelo
+# Lock down the unit's view of the host. Note that inside a CVM these
+# protections are belt-and-suspenders — the SEV-SNP memory encryption is
+# the primary boundary.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/var/lib/gelo-snp
+# /dev/sev-guest is the SEV-SNP attestation device. Required under
+# SNP_MODE=production; absent under SNP_MODE=mock.
+DeviceAllow=/dev/sev-guest rw
+
+[Install]
+WantedBy=multi-user.target

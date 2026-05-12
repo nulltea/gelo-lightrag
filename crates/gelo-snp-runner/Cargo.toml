@@ -1,0 +1,41 @@
+[package]
+name = "gelo-snp-runner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "gelo-snp-runner"
+path = "src/main.rs"
+
+[features]
+default = ["snp"]
+# Wires the SEV-SNP hardware path (`/dev/sev-guest`) via gelo-tee-sev-snp's
+# `sev-snp` feature. Always on for the production binary; off for fast
+# local iteration where only the mock path is exercised.
+snp = ["gelo-tee-sev-snp/sev-snp"]
+# Mock attestation issuer + bundled test PKI. Required at runtime under
+# `SNP_MODE=mock`.
+mock = ["gelo-tee-sev-snp/mock"]
+# Both — the default development build so a single `cargo run` can serve
+# either mode based on the SNP_MODE env var.
+all-issuers = ["snp", "mock"]
+
+[dependencies]
+anyhow.workspace = true
+approach4 = { path = "../approach4", features = ["snp"] }
+axum.workspace = true
+base64.workspace = true
+gelo-embedder = { path = "../gelo-embedder" }
+gelo-protocol = { path = "../gelo-protocol" }
+gelo-tee-sev-snp = { path = "../gelo-tee-sev-snp", default-features = false }
+rag_core = { path = "../core", package = "core" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tower.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
