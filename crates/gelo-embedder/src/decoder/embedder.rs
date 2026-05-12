@@ -25,6 +25,9 @@ pub struct GeloQwenEmbedder<X: TrustedExecutor> {
     rope: Arc<RopeTables>,
     exec: X,
     max_len: usize,
+    /// Cached copy of `weights.model_identity` so `Embedder::model_identity`
+    /// can hand out `&[u8]` without round-tripping through the Arc.
+    model_identity: [u8; 32],
 }
 
 impl<X: TrustedExecutor> GeloQwenEmbedder<X> {
@@ -63,6 +66,7 @@ impl<X: TrustedExecutor> GeloQwenEmbedder<X> {
         }
         let max_len = cfg.max_seq_len.min(cfg.max_position_embeddings);
         let _ = rope.head_dim(); // silence "unused field" if dead-code path triggers
+        let model_identity = weights.model_identity;
         Ok(Self {
             cfg,
             tokenizer,
@@ -70,6 +74,7 @@ impl<X: TrustedExecutor> GeloQwenEmbedder<X> {
             rope,
             exec,
             max_len,
+            model_identity,
         })
     }
 
@@ -192,5 +197,9 @@ impl<X: TrustedExecutor> Embedder for GeloQwenEmbedder<X> {
             out.push(pooled.to_vec());
         }
         Ok(out)
+    }
+
+    fn model_identity(&self) -> &[u8] {
+        &self.model_identity
     }
 }

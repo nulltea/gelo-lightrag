@@ -4,6 +4,7 @@ use anyhow::{Context, Result, anyhow};
 use ndarray::{Array1, Array2};
 use safetensors::SafeTensors;
 use safetensors::tensor::{Dtype, TensorView};
+use sha2::{Digest, Sha256};
 
 use super::config::DecoderConfig;
 
@@ -14,6 +15,12 @@ pub struct DecoderWeights {
     pub token_embedding: Array2<f32>, // (vocab, hidden)
     pub final_norm: Array1<f32>,      // (hidden,)
     pub layers: Vec<DecoderLayerWeights>,
+    /// SHA-256 of the concatenated raw safetensors shard bytes (in the order
+    /// `paths` was passed to [`Self::from_safetensors`]). Bound into the
+    /// SEV-SNP attestation report's `REPORT_DATA[0..32]` so the relying party
+    /// can verify the CVM loaded these specific publicly-known weights —
+    /// the openweight threat model GELO targets.
+    pub model_identity: [u8; 32],
 }
 
 pub struct DecoderLayerWeights {
@@ -41,6 +48,11 @@ impl DecoderWeights {
                     .with_context(|| format!("reading safetensors shard {}", p.display()))
             })
             .collect::<Result<_>>()?;
+        let mut hasher = Sha256::new();
+        for b in &buffers {
+            hasher.update(b);
+        }
+        let model_identity: [u8; 32] = hasher.finalize().into();
         let shards: Vec<SafeTensors<'_>> = buffers
             .iter()
             .enumerate()
@@ -103,6 +115,7 @@ impl DecoderWeights {
             token_embedding,
             final_norm,
             layers,
+            model_identity,
         })
     }
 }

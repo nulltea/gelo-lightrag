@@ -41,6 +41,18 @@ pub struct RetrievalHit {
 
 pub trait Embedder {
     fn embed(&mut self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>>;
+
+    /// Stable identifier for the loaded model — typically the SHA-256 of the
+    /// weights manifest. Used by attestation backends to bind a CVM report to
+    /// "this specific publicly-known model was loaded".
+    ///
+    /// The default returns `b""`, which a default `NoopAttestationVerifier`
+    /// will accept; production embedders that participate in attestation
+    /// (e.g. `GeloBertEmbedder` / `GeloQwenEmbedder`) override with the actual
+    /// hash bytes cached at model load.
+    fn model_identity(&self) -> &[u8] {
+        b""
+    }
 }
 
 pub trait EmbeddingEncryptionScheme {

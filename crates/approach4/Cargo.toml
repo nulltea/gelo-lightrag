@@ -4,13 +4,26 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+# Wire the SEV-SNP backend (gelo-tee-sev-snp::SnpAttestationVerifier) in
+# behind the `snp` feature so the default approach4 build doesn't pull in
+# the sev/p384/rcgen graph for users who don't need attestation.
+snp = ["dep:gelo-tee-sev-snp"]
+# Layered on top of `snp`: pulls in the mock issuer + test PKI so tests
+# (and the T2 VM simulator) can exercise the full attestation pipeline
+# without real silicon.
+snp-mock = ["snp", "gelo-tee-sev-snp/mock"]
+
 [dependencies]
 anyhow.workspace = true
+gelo-tee-sev-snp = { path = "../gelo-tee-sev-snp", optional = true }
 rag_core = { path = "../core", package = "core" }
 
 [dev-dependencies]
 gelo-embedder = { path = "../gelo-embedder" }
 gelo-protocol = { path = "../gelo-protocol" }
+gelo-tee-sev-snp = { path = "../gelo-tee-sev-snp", features = ["mock"] }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -4,6 +4,7 @@ use anyhow::{Context, Result, anyhow};
 use ndarray::{Array1, Array2};
 use safetensors::SafeTensors;
 use safetensors::tensor::TensorView;
+use sha2::{Digest, Sha256};
 
 use super::config::BertConfig;
 
@@ -15,6 +16,11 @@ pub struct BertWeights {
     pub embeddings_ln_w: Array1<f32>,            // (d,)
     pub embeddings_ln_b: Array1<f32>,            // (d,)
     pub layers: Vec<BertLayerWeights>,
+    /// SHA-256 of the raw `model.safetensors` bytes. Bound into the SEV-SNP
+    /// attestation report's `REPORT_DATA[0..32]` so the relying party can
+    /// verify the CVM loaded these specific publicly-known weights — the
+    /// openweight threat model GELO targets.
+    pub model_identity: [u8; 32],
 }
 
 pub struct BertLayerWeights {
@@ -48,6 +54,7 @@ impl BertWeights {
     pub fn from_safetensors(path: &Path, cfg: &BertConfig) -> Result<Self> {
         let bytes = std::fs::read(path)
             .with_context(|| format!("reading safetensors from {}", path.display()))?;
+        let model_identity: [u8; 32] = Sha256::digest(&bytes).into();
         let st = SafeTensors::deserialize(&bytes)
             .with_context(|| format!("deserializing safetensors at {}", path.display()))?;
 
@@ -115,6 +122,7 @@ impl BertWeights {
             embeddings_ln_w,
             embeddings_ln_b,
             layers,
+            model_identity,
         })
     }
 }
