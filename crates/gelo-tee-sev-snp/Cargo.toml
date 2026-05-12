@@ -7,7 +7,7 @@ license.workspace = true
 [features]
 default = ["sev-snp"]
 sev-snp = []                                              # placeholder: sev crate compiles fine on any x86_64 Linux
-mock = ["dep:rcgen", "dep:p384"]
+mock = ["dep:rcgen", "dep:p384", "dep:time"]
 
 [dependencies]
 anyhow.workspace = true
@@ -26,3 +26,8 @@ x509-cert.workspace = true
 # mock-only deps
 p384 = { workspace = true, optional = true }
 rcgen = { workspace = true, optional = true }
+time = { version = "0.3", optional = true }
+
+[[example]]
+name = "mint-test-pki"
+required-features = ["mock"]
