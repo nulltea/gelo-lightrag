@@ -1,10 +1,12 @@
 //! Per-step breakdown of where the `gpu + GELO + OutAttnMult` overhead
-//! goes on `Qwen/Qwen3-Embedding-0.6B`.
+//! goes on `Qwen/Qwen3-Embedding-0.6B`, with the **mock SEV-SNP TEE
+//! boundary** wired in around the GELO executor.
 //!
-//! Runs the unprotected (gpu_plain) and protected (gpu + GELO + OutAttnMult)
-//! configurations on the same shared weights, snapshotting the thread-local
-//! `gelo_protocol::profile` accumulator between runs. The categories cover
-//! every coarse step that contributes per-text time, separated into:
+//! Runs the unprotected (gpu_plain) and protected
+//! (`SnpTrustedExecutor<… , MockReportIssuer>` wrapping the GELO
+//! `InProcessTrustedExecutor`) configurations on the same shared weights,
+//! snapshotting the thread-local `gelo_protocol::profile` accumulator
+//! between runs. Categories:
 //!
 //! - `tee:*` — pure TEE-side work (RMSNorm, RoPE, softmax+AV, SwiGLU
 //!   activation, residual adds, attention)
@@ -14,8 +16,12 @@
 //! - `outattn:*` — TwinShield OutAttnMult bookkeeping (setup + stack
 //!   2n-wide masked operands, recover Q·Kᵀ from the four partitions)
 //!
-//! Comparing the two snapshots makes the +83% overhead source visible per
-//! category rather than as one opaque number.
+//! Before measuring, the bench issues one **session attestation**
+//! through the mock SEV-SNP path (`SnpTrustedExecutor::evidence()`),
+//! verifies it round-trips through `SnpAttestationVerifier`, and prints
+//! its wall-clock cost. This mirrors what a real deployment does once
+//! per session — the steady-state embed loop happens *after* attestation
+//! and shouldn't pick up its cost.
 //!
 //! Downloads ~1.2 GB on first run; gated behind `#[ignore]`.
 
@@ -29,6 +35,10 @@ use gelo_gpu_wgpu::WgpuVulkanEngine;
 use gelo_protocol::profile;
 use gelo_protocol::rng::MaskSeed;
 use gelo_protocol::{InProcessTrustedExecutor, PlaintextExecutor};
+use gelo_tee_sev_snp::{
+    AttestedBinding, SnpAttestationVerifier, SnpRootTrust, SnpTrustedExecutor,
+    mock::MockReportIssuer,
+};
 use rag_core::Embedder;
 
 const MODEL: &str = "Qwen/Qwen3-Embedding-0.6B";
@@ -92,24 +102,78 @@ fn qwen3_overhead_step_breakdown() {
     .expect("gpu_plain")
     .with_out_attn_mult(false);
 
+    // Protected path: GELO mask + shield + OutAttnMult, wrapped in the
+    // mock SEV-SNP boundary. The wrapper forwards every TrustedExecutor
+    // method to its inner `InProcessTrustedExecutor`, so the per-text
+    // overhead is unchanged — what we get is a real attestation surface
+    // we can exercise once at session start.
+    const MODEL_IDENT: &[u8] = b"Qwen/Qwen3-Embedding-0.6B@bench";
+    const SCHEME_IDENT: &[u8] = b"gelo+twinshield@v1";
     let mut gpu_gelo_outattn = {
         let mut c = cfg.clone();
         c.use_out_attn_mult = true;
+        let inner = InProcessTrustedExecutor::with_seed(
+            gpu_root.clone_shared(),
+            MaskSeed::from_bytes([1u8; 32]),
+        );
+        let issuer = MockReportIssuer::from_bundled().expect("load bundled mock VCEK key");
+        let snp = SnpTrustedExecutor::new(inner, issuer, MODEL_IDENT, SCHEME_IDENT);
         GeloQwenEmbedder::new(
             c,
             tokenizer.clone(),
             Arc::clone(&weights_arc),
             Arc::clone(&rope_arc),
-            InProcessTrustedExecutor::with_seed(
-                gpu_root.clone_shared(),
-                MaskSeed::from_bytes([1u8; 32]),
-            ),
+            snp,
         )
-        .expect("gpu_gelo_outattn")
+        .expect("gpu_gelo_outattn (snp-wrapped)")
     };
 
     eprintln!("Vulkan adapter: {adapter_line}");
     eprintln!("Corpus: {} texts.", texts.len());
+
+    // ── Session attestation through the mock SEV-SNP path ──
+    // Done once *before* the warmup-and-measure cycle so the steady-
+    // state embed numbers below don't include attestation cost.
+    {
+        // The embedder consumed the executor by value, but the snp
+        // wrapper's identity strings + the same MockReportIssuer can be
+        // re-instantiated for the round-trip — issuer state is just the
+        // bundled signing key, no per-instance state to leak.
+        let issuer = MockReportIssuer::from_bundled().unwrap();
+        let snp_for_attest = SnpTrustedExecutor::new(
+            InProcessTrustedExecutor::with_seed(
+                gelo_protocol::RayonCpuEngine::new(),
+                MaskSeed::from_bytes([1u8; 32]),
+            ),
+            issuer,
+            MODEL_IDENT,
+            SCHEME_IDENT,
+        );
+        let t0 = std::time::Instant::now();
+        let evidence = snp_for_attest.evidence(Some(b"qwen3-bench-session")).unwrap();
+        let issue_ms = t0.elapsed().as_secs_f64() * 1000.0;
+
+        let verifier = SnpAttestationVerifier::new(SnpRootTrust::with_mock_root());
+        let t1 = std::time::Instant::now();
+        verifier
+            .verify(
+                &evidence.report_bytes,
+                &evidence.vcek_cert_pem,
+                AttestedBinding {
+                    model_identity: MODEL_IDENT,
+                    scheme_identity: SCHEME_IDENT,
+                    nonce: Some(b"qwen3-bench-session"),
+                },
+            )
+            .expect("session attestation must round-trip through SnpAttestationVerifier");
+        let verify_ms = t1.elapsed().as_secs_f64() * 1000.0;
+        eprintln!(
+            "[attest] mock SEV-SNP issue={issue_ms:.2} ms, verify={verify_ms:.2} ms, \
+             report={} B, vcek_pem={} B",
+            evidence.report_bytes.len(),
+            evidence.vcek_cert_pem.len(),
+        );
+    }
 
     let (plain_profile, plain_wall) = warmup_then_capture(&mut gpu_plain, &texts);
     plain_profile.dump("gpu_plain (no privacy)");
@@ -120,7 +184,7 @@ fn qwen3_overhead_step_breakdown() {
     );
 
     let (gelo_profile, gelo_wall) = warmup_then_capture(&mut gpu_gelo_outattn, &texts);
-    gelo_profile.dump("gpu + GELO + OutAttnMult");
+    gelo_profile.dump("gpu + GELO + OutAttnMult + mock SEV-SNP boundary");
     eprintln!(
         "→ wall-clock: {:.2} ms total, {:.2} ms/text",
         gelo_wall.as_secs_f64() * 1000.0,

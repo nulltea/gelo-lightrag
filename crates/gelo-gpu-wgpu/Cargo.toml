@@ -20,6 +20,7 @@ wgpu.workspace = true
 
 [dev-dependencies]
 gelo-embedder = { path = "../gelo-embedder" }
+gelo-tee-sev-snp = { path = "../gelo-tee-sev-snp", features = ["mock"] }
 rag_core = { path = "../core", package = "core" }
 rand.workspace = true
 rand_chacha.workspace = true
