@@ -77,6 +77,8 @@ fn synthetic_weights(cfg: &BertConfig, rng: &mut impl rand::RngCore) -> BertWeig
         embeddings_ln_w: Array1::from_elem(d, 1.0),
         embeddings_ln_b: Array1::zeros(d),
         layers,
+        // Synthetic weights have no on-disk hash; use a sentinel.
+        model_identity: [0u8; 32],
     }
 }
 

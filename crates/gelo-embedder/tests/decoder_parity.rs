@@ -76,6 +76,8 @@ fn synth_weights(cfg: &DecoderConfig, rng: &mut impl rand::RngCore) -> DecoderWe
         token_embedding: rand2(cfg.vocab_size, d, rng, 0.05),
         final_norm: Array1::from_elem(d, 1.0),
         layers,
+        // Synthetic weights have no on-disk hash; use a sentinel.
+        model_identity: [0u8; 32],
     }
 }
 

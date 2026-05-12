@@ -79,11 +79,18 @@ pub fn from_env() -> Result<RuntimeMode, RuntimeModeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
-    /// Confined-scope env-var manipulation. We can't run these in parallel
-    /// safely; the harness serializes them via cargo test's default single
-    /// thread for unit tests with shared globals.
+    /// Process-wide lock so the four env-var tests don't race each other.
+    /// Cargo's test harness runs unit tests in parallel by default; without
+    /// this lock, one test's `set_var` is visible to another test's
+    /// `var()` and the assertions go intermittently red.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Confined-scope env-var manipulation. Acquires `ENV_LOCK` for the
+    /// duration of `f` so other env-var tests serialise against this one.
     fn with_env_var<F: FnOnce()>(key: &str, value: Option<&str>, f: F) {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var(key).ok();
         match value {
             Some(v) => unsafe { std::env::set_var(key, v) },
