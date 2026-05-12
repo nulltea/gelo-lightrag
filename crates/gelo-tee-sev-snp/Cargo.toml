@@ -1,0 +1,28 @@
+[package]
+name = "gelo-tee-sev-snp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["sev-snp"]
+sev-snp = []                                              # placeholder: sev crate compiles fine on any x86_64 Linux
+mock = ["dep:rcgen", "dep:p384"]
+
+[dependencies]
+anyhow.workspace = true
+gelo-protocol = { path = "../gelo-protocol" }
+hex.workspace = true
+ndarray.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+serde = { workspace = true, optional = true }
+serde_json.workspace = true
+sev.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+x509-cert.workspace = true
+
+# mock-only deps
+p384 = { workspace = true, optional = true }
+rcgen = { workspace = true, optional = true }

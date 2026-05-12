@@ -5,6 +5,7 @@ members = [
     "crates/gelo-protocol",
     "crates/gelo-embedder",
     "crates/gelo-gpu-wgpu",
+    "crates/gelo-tee-sev-snp",
 ]
 resolver = "2"
 
@@ -42,3 +43,9 @@ cubecl-std = { version = "=0.9.0-pre.5", default-features = false }
 cubecl-common = { version = "=0.9.0-pre.5", default-features = false, features = ["std"] }
 cubecl-wgpu = { version = "=0.9.0-pre.5", default-features = false, features = ["std", "spirv"] }
 cubecl-matmul = { version = "=0.9.0-pre.5", default-features = false, features = ["std"] }
+# M5 — SEV-SNP attestation
+sev = { version = "7", default-features = false, features = ["snp", "crypto_nossl"] }
+x509-cert = { version = "0.2", default-features = false, features = ["std", "pem"] }
+p384 = { version = "0.13", default-features = false, features = ["ecdsa", "pem"] }
+rcgen = { version = "0.13", default-features = false, features = ["pem", "crypto", "aws_lc_rs"] }
+hex = "0.4"
