@@ -39,7 +39,7 @@ use approach4::{Approach4InMemoryService, NoopAttestationVerifier};
 use common::beir::{BeirDataset, load_nfcorpus};
 use common::embed_cache::CachingEmbedder;
 use dp_forward::DpForwardConfig;
-use gelo_embedder::GeloBertEmbedder;
+use gelo_embedder::{GeloBertEmbedder, GeloQwenEmbedder};
 use gelo_gpu_wgpu::WgpuVulkanEngine;
 use gelo_protocol::{InProcessTrustedExecutor, MaskSeed, PlaintextExecutor};
 use rag_core::{Caprise, CapriseKey, Embedder, FastEmbedEmbedder};
@@ -621,6 +621,58 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
         None
     };
 
+    // ─── Qwen3-Embedding-0.6B configuration ───
+    // Same Vulkan engine as BGE (re-use via GpuOffloadEngine trait), but
+    // a much bigger decoder-LLM-as-embedder. Gated behind BEIR_QWEN3=1
+    // because it (a) downloads ~1.2 GB on first run, (b) at ~85 ms/text
+    // is ~3× slower than BGE per text, and (c) the protocol fidelity
+    // story is already proven on BGE — this is here to validate corpus-
+    // scale retrieval correctness of the decoder path, not to gate
+    // anything we're shipping.
+    let run_qwen3 = std::env::var("BEIR_QWEN3").map(|v| v == "1").unwrap_or(false);
+    let qwen3_mask_metrics: Option<MetricSummary> = if run_qwen3 {
+        let gpu = WgpuVulkanEngine::new()
+            .map_err(|e| anyhow::anyhow!("Vulkan adapter unavailable: {e}"))?;
+        anyhow::ensure!(
+            gpu.is_real_gpu(),
+            "BEIR Qwen3 needs a real Vulkan GPU (got llvmpipe); set BEIR_QWEN3=0 to skip"
+        );
+        eprintln!(
+            "[qwen3] Vulkan adapter: {} ({:?})",
+            gpu.adapter_info().name,
+            gpu.adapter_info().device_type,
+        );
+        eprintln!("[run] Qwen3-Embedding-0.6B + GELO mask (Vulkan + in-process TEE) — first run downloads ~1.2 GB...");
+        let qwen3_emb = CachingEmbedder::new(
+            GeloQwenEmbedder::from_pretrained(
+                "Qwen/Qwen3-Embedding-0.6B",
+                InProcessTrustedExecutor::with_seed(
+                    gpu.clone_shared(),
+                    MaskSeed::from_bytes([11u8; 32]),
+                ),
+            )?,
+            "qwen3-embedding-0.6b-gelo-mask",
+        )?;
+        let qwen3_rankings = run_via_approach4(
+            Approach4InMemoryService::new(
+                qwen3_emb,
+                Caprise::new(CapriseKey::generate(32.0, 0.15)),
+                NoopAttestationVerifier,
+            ),
+            &dataset,
+            &queries,
+            K_RECALL,
+        )?;
+        Some(aggregate(
+            &queries,
+            &qwen3_rankings,
+            &dataset,
+            &baseline.rankings,
+        ))
+    } else {
+        None
+    };
+
     eprintln!();
     eprintln!(
         "=== BEIR/NFCorpus accuracy ({} queries × {} docs) ===",
@@ -654,6 +706,10 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
             print_row("  + DP-Forward(ε=4) @ layer 10 (M7.1)", dp_layer);
             print_row("  + DP-Forward(ε=4) @ pooled output", dp_pooled);
         }
+    }
+    if let Some(qwen3) = &qwen3_mask_metrics {
+        eprintln!();
+        print_row("GELO/Qwen3-Embedding-0.6B + GELO mask + CAPRISE", qwen3);
     }
     eprintln!();
 
