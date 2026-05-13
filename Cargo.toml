@@ -25,6 +25,7 @@ bytemuck = "1.21"
 fastembed = { version = "5.13.3", default-features = true }
 hf-hub = { version = "0.4", default-features = false, features = ["ureq", "rustls-tls"] }
 hmac = "0.12.1"
+half = { version = "2", features = ["bytemuck", "num-traits"] }
 matrixmultiply = "0.3"
 ndarray = "0.16"
 rand = "0.9.2"

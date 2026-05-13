@@ -462,8 +462,18 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
         // BGE-base on the shared Vulkan engine — ~10× faster than CPU
         // on 3.6k docs. Each BGE embedder gets its own executor wrapping
         // a `clone_shared()` of the same GPU.
-        let gpu = WgpuVulkanEngine::new()
-            .map_err(|e| anyhow::anyhow!("Vulkan adapter unavailable: {e}"))?;
+        // BEIR_BGE_FP16=1 → engine runs GEMMs in f16. Trade ~0.1% L2 rel
+        // error per matmul for ~1.3-3× wall-clock per call (heavily
+        // shape-dependent on Vulkan iGPU). U-Verify must stay off under
+        // fp16 (CachingEmbedder caches separately by model_label, so
+        // re-runs don't compare across precisions).
+        let gpu = if std::env::var("BEIR_BGE_FP16").map(|v| v == "1").unwrap_or(false) {
+            eprintln!("[bge] engine precision: f16 (BEIR_BGE_FP16=1)");
+            WgpuVulkanEngine::new_fp16()
+        } else {
+            WgpuVulkanEngine::new()
+        }
+        .map_err(|e| anyhow::anyhow!("Vulkan adapter unavailable: {e}"))?;
         anyhow::ensure!(
             gpu.is_real_gpu(),
             "BEIR BGE configs need a real Vulkan GPU (got llvmpipe); set BEIR_BGE=0 to skip"
@@ -562,6 +572,14 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
         // path Tier 2 optimisations move the needle on.
         let bge_mask = if run_bge_mask {
             eprintln!("[run] BGE-base + GELO mask (Vulkan + in-process TEE) — full-stack...");
+            // Engine precision goes into the cache key so fp32 and fp16 runs
+            // don't share cached embeddings (their outputs differ at the
+            // ~0.04% L2 level, enough to perturb rankings).
+            let cache_label = if gpu.is_fp16() {
+                "bge-base-en-v1.5-gelo-mask-fp16"
+            } else {
+                "bge-base-en-v1.5-gelo-mask"
+            };
             let bge_mask_emb = CachingEmbedder::new(
                 GeloBertEmbedder::from_pretrained(
                     "BAAI/bge-base-en-v1.5",
@@ -570,7 +588,7 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
                         MaskSeed::from_bytes([7u8; 32]),
                     ),
                 )?,
-                "bge-base-en-v1.5-gelo-mask",
+                cache_label,
             )?;
             let bge_mask_rankings = run_via_approach4(
                 Approach4InMemoryService::new(

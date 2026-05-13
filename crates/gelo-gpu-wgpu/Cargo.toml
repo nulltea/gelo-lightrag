@@ -17,6 +17,7 @@ cubecl-runtime.workspace = true
 cubecl-std.workspace = true
 cubecl-wgpu.workspace = true
 gelo-protocol = { path = "../gelo-protocol" }
+half.workspace = true
 ndarray.workspace = true
 wgpu.workspace = true
 
