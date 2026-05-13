@@ -120,32 +120,52 @@ pub fn causal_gqa_attention_with_offload(
 }
 
 fn apply_causal_mask(scores: &mut Array2<f32>) {
+    // Mask the strictly upper triangle. Writing through contiguous row
+    // slices lets LLVM emit a tight memset-style store (avoiding the
+    // per-element bounds-check that `scores[[i, j]]` would force).
     let n = scores.nrows();
-    for i in 0..n {
-        for j in (i + 1)..n {
-            scores[[i, j]] = f32::NEG_INFINITY;
+    for (i, mut row) in scores.axis_iter_mut(Axis(0)).enumerate() {
+        let row_slice = row
+            .as_slice_mut()
+            .expect("Array2 rows are contiguous in row-major");
+        for v in row_slice.iter_mut().skip(i + 1) {
+            *v = f32::NEG_INFINITY;
         }
     }
 }
 
 fn softmax_inplace(scores: &mut Array2<f32>) {
-    for mut row in scores.rows_mut() {
-        let max = row.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
-        // When the entire row is -inf (shouldn't happen for causal — row 0 still
-        // has scores[0,0] valid), fall back to uniform.
+    // Same tight pattern as BERT's softmax (Tier 2.3.a): contiguous
+    // &mut [f32] slice iter for the two passes per row, fused exp+sum,
+    // single reciprocal multiply for the normalise pass. The decoder
+    // path has a causal-mask `-inf` corner case to handle (row may be
+    // all-`-inf` only on a degenerate path; defensive zeroing kept).
+    for mut row in scores.axis_iter_mut(Axis(0)) {
+        let row_slice = row
+            .as_slice_mut()
+            .expect("Array2 rows are contiguous in row-major");
+        let mut max = f32::NEG_INFINITY;
+        for &v in row_slice.iter() {
+            if v > max {
+                max = v;
+            }
+        }
         if !max.is_finite() {
-            for v in row.iter_mut() {
+            for v in row_slice.iter_mut() {
                 *v = 0.0;
             }
             continue;
         }
         let mut sum = 0.0_f32;
-        for v in row.iter_mut() {
+        for v in row_slice.iter_mut() {
             *v = (*v - max).exp();
             sum += *v;
         }
         if sum > 0.0 {
-            row /= sum;
+            let inv_sum = 1.0_f32 / sum;
+            for v in row_slice.iter_mut() {
+                *v *= inv_sum;
+            }
         }
     }
 }
