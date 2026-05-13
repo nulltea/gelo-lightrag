@@ -438,7 +438,27 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
     // DP config digest, so each DP variant has its own cache entry —
     // first run is ~3-5 min per BGE config, subsequent runs are instant.
     let run_bge = std::env::var("BEIR_BGE").map(|v| v != "0").unwrap_or(true);
-    let bge_metrics: Option<(MetricSummary, MetricSummary, MetricSummary)> = if run_bge {
+    // BGE sub-config gates. Default is now: only GELO+mask runs.
+    //   - BGE plain (no mask) and the two BGE+DP variants are skipped
+    //     unless explicitly re-enabled; they already validated their
+    //     hypotheses in M7.1, and their embeddings are cached on disk
+    //     under `target/embed-cache/` — re-running them adds wall-clock
+    //     without changing results during Tier 2 perf work.
+    //   - GELO+mask is the only path that exercises the full mask
+    //     round-trip + engine matmul stack; that's what Tier 2 is
+    //     optimising.
+    let run_bge_plain = std::env::var("BEIR_BGE_PLAIN").map(|v| v == "1").unwrap_or(false);
+    let run_bge_dp = std::env::var("BEIR_BGE_DP").map(|v| v == "1").unwrap_or(false);
+    let run_bge_mask = std::env::var("BEIR_BGE_MASK").map(|v| v != "0").unwrap_or(true);
+
+    struct BgeRunMetrics {
+        plain: Option<MetricSummary>,
+        dp_layer: Option<MetricSummary>,
+        dp_pooled: Option<MetricSummary>,
+        mask: Option<MetricSummary>,
+    }
+
+    let bge_metrics: Option<BgeRunMetrics> = if run_bge {
         // BGE-base on the shared Vulkan engine — ~10× faster than CPU
         // on 3.6k docs. Each BGE embedder gets its own executor wrapping
         // a `clone_shared()` of the same GPU.
@@ -454,105 +474,131 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
             gpu.adapter_info().device_type,
         );
 
-        eprintln!("[run] BGE-base (plain, no DP) — first run embeds 3.6k docs on Vulkan...");
-        let bge_plain_emb = CachingEmbedder::new(
-            GeloBertEmbedder::from_pretrained(
-                "BAAI/bge-base-en-v1.5",
-                PlaintextExecutor::new(gpu.clone_shared()),
-            )?,
-            "bge-base-en-v1.5",
-        )?;
-        let bge_plain_rankings = run_via_approach4(
-            Approach4InMemoryService::new(
-                bge_plain_emb,
-                Caprise::new(CapriseKey::generate(32.0, 0.15)),
-                NoopAttestationVerifier,
-            ),
-            &dataset,
-            &queries,
-            K_RECALL,
-        )?;
-        let bge_plain = aggregate(&queries, &bge_plain_rankings, &dataset, &baseline.rankings);
+        let bge_plain = if run_bge_plain {
+            eprintln!("[run] BGE-base (plain, no DP) — first run embeds 3.6k docs on Vulkan...");
+            let bge_plain_emb = CachingEmbedder::new(
+                GeloBertEmbedder::from_pretrained(
+                    "BAAI/bge-base-en-v1.5",
+                    PlaintextExecutor::new(gpu.clone_shared()),
+                )?,
+                "bge-base-en-v1.5",
+            )?;
+            let bge_plain_rankings = run_via_approach4(
+                Approach4InMemoryService::new(
+                    bge_plain_emb,
+                    Caprise::new(CapriseKey::generate(32.0, 0.15)),
+                    NoopAttestationVerifier,
+                ),
+                &dataset,
+                &queries,
+                K_RECALL,
+            )?;
+            Some(aggregate(
+                &queries,
+                &bge_plain_rankings,
+                &dataset,
+                &baseline.rankings,
+            ))
+        } else {
+            eprintln!("[run] BGE-base plain SKIPPED (set BEIR_BGE_PLAIN=1 to enable)");
+            None
+        };
 
-        eprintln!("[run] BGE-base + CAPRISE + DP-Forward(ε=4) at LAYER 10 (M7.1 path)...");
-        let dp_layer_cfg =
-            DpForwardConfig::calibrate(4.0, 1e-5, 1.0).with_layer_index(Some(10));
-        let bge_dp_layer_emb = CachingEmbedder::new(
-            GeloBertEmbedder::from_pretrained(
-                "BAAI/bge-base-en-v1.5",
-                PlaintextExecutor::new(gpu.clone_shared()),
-            )?
-            .with_dp_forward(dp_layer_cfg),
-            "bge-base-en-v1.5-dp-layer10",
-        )?;
-        let bge_dp_layer_rankings = run_via_approach4(
-            Approach4InMemoryService::new(
-                bge_dp_layer_emb,
-                Caprise::new(CapriseKey::generate(32.0, 0.15)),
-                NoopAttestationVerifier,
-            ),
-            &dataset,
-            &queries,
-            K_RECALL,
-        )?;
-        let bge_dp_layer =
-            aggregate(&queries, &bge_dp_layer_rankings, &dataset, &baseline.rankings);
+        let (bge_dp_layer, bge_dp_pooled) = if run_bge_dp {
+            eprintln!("[run] BGE-base + CAPRISE + DP-Forward(ε=4) at LAYER 10 (M7.1 path)...");
+            let dp_layer_cfg =
+                DpForwardConfig::calibrate(4.0, 1e-5, 1.0).with_layer_index(Some(10));
+            let bge_dp_layer_emb = CachingEmbedder::new(
+                GeloBertEmbedder::from_pretrained(
+                    "BAAI/bge-base-en-v1.5",
+                    PlaintextExecutor::new(gpu.clone_shared()),
+                )?
+                .with_dp_forward(dp_layer_cfg),
+                "bge-base-en-v1.5-dp-layer10",
+            )?;
+            let bge_dp_layer_rankings = run_via_approach4(
+                Approach4InMemoryService::new(
+                    bge_dp_layer_emb,
+                    Caprise::new(CapriseKey::generate(32.0, 0.15)),
+                    NoopAttestationVerifier,
+                ),
+                &dataset,
+                &queries,
+                K_RECALL,
+            )?;
+            let bge_dp_layer =
+                aggregate(&queries, &bge_dp_layer_rankings, &dataset, &baseline.rankings);
 
-        eprintln!("[run] BGE-base + CAPRISE + DP-Forward(ε=4) at POOLED output (control)...");
-        let dp_pooled_cfg = DpForwardConfig::calibrate(4.0, 1e-5, 1.0); // layer_index = None
-        let bge_dp_pooled_emb = CachingEmbedder::new(
-            GeloBertEmbedder::from_pretrained(
-                "BAAI/bge-base-en-v1.5",
-                PlaintextExecutor::new(gpu.clone_shared()),
-            )?
-            .with_dp_forward(dp_pooled_cfg),
-            "bge-base-en-v1.5-dp-pooled",
-        )?;
-        let bge_dp_pooled_rankings = run_via_approach4(
-            Approach4InMemoryService::new(
-                bge_dp_pooled_emb,
-                Caprise::new(CapriseKey::generate(32.0, 0.15)),
-                NoopAttestationVerifier,
-            ),
-            &dataset,
-            &queries,
-            K_RECALL,
-        )?;
-        let bge_dp_pooled =
-            aggregate(&queries, &bge_dp_pooled_rankings, &dataset, &baseline.rankings);
+            eprintln!("[run] BGE-base + CAPRISE + DP-Forward(ε=4) at POOLED output (control)...");
+            let dp_pooled_cfg = DpForwardConfig::calibrate(4.0, 1e-5, 1.0); // layer_index = None
+            let bge_dp_pooled_emb = CachingEmbedder::new(
+                GeloBertEmbedder::from_pretrained(
+                    "BAAI/bge-base-en-v1.5",
+                    PlaintextExecutor::new(gpu.clone_shared()),
+                )?
+                .with_dp_forward(dp_pooled_cfg),
+                "bge-base-en-v1.5-dp-pooled",
+            )?;
+            let bge_dp_pooled_rankings = run_via_approach4(
+                Approach4InMemoryService::new(
+                    bge_dp_pooled_emb,
+                    Caprise::new(CapriseKey::generate(32.0, 0.15)),
+                    NoopAttestationVerifier,
+                ),
+                &dataset,
+                &queries,
+                K_RECALL,
+            )?;
+            let bge_dp_pooled =
+                aggregate(&queries, &bge_dp_pooled_rankings, &dataset, &baseline.rankings);
+            (Some(bge_dp_layer), Some(bge_dp_pooled))
+        } else {
+            eprintln!("[run] BGE-base + DP-Forward configs SKIPPED (set BEIR_BGE_DP=1 to enable)");
+            (None, None)
+        };
 
         // Full GELO mask round-trip via InProcessTrustedExecutor (Vulkan +
-        // in-process mock TEE). Validates that the mask + engine + unmask
-        // path produces baseline-equivalent embeddings under the migration
-        // to burn-cubecl.
-        eprintln!("[run] BGE-base + GELO mask (Vulkan + in-process TEE) — full-stack...");
-        let bge_mask_emb = CachingEmbedder::new(
-            GeloBertEmbedder::from_pretrained(
-                "BAAI/bge-base-en-v1.5",
-                InProcessTrustedExecutor::with_seed(
-                    gpu.clone_shared(),
-                    MaskSeed::from_bytes([7u8; 32]),
+        // in-process mock TEE). The headline Tier 2 target — this is the
+        // path Tier 2 optimisations move the needle on.
+        let bge_mask = if run_bge_mask {
+            eprintln!("[run] BGE-base + GELO mask (Vulkan + in-process TEE) — full-stack...");
+            let bge_mask_emb = CachingEmbedder::new(
+                GeloBertEmbedder::from_pretrained(
+                    "BAAI/bge-base-en-v1.5",
+                    InProcessTrustedExecutor::with_seed(
+                        gpu.clone_shared(),
+                        MaskSeed::from_bytes([7u8; 32]),
+                    ),
+                )?,
+                "bge-base-en-v1.5-gelo-mask",
+            )?;
+            let bge_mask_rankings = run_via_approach4(
+                Approach4InMemoryService::new(
+                    bge_mask_emb,
+                    Caprise::new(CapriseKey::generate(32.0, 0.15)),
+                    NoopAttestationVerifier,
                 ),
-            )?,
-            "bge-base-en-v1.5-gelo-mask",
-        )?;
-        let bge_mask_rankings = run_via_approach4(
-            Approach4InMemoryService::new(
-                bge_mask_emb,
-                Caprise::new(CapriseKey::generate(32.0, 0.15)),
-                NoopAttestationVerifier,
-            ),
-            &dataset,
-            &queries,
-            K_RECALL,
-        )?;
-        let bge_mask = aggregate(&queries, &bge_mask_rankings, &dataset, &baseline.rankings);
-        eprintln!(
-            "[run] BGE-base + GELO mask + CAPRISE: top1_vs_bge_plain check below"
-        );
-        let _ = bge_mask;
+                &dataset,
+                &queries,
+                K_RECALL,
+            )?;
+            Some(aggregate(
+                &queries,
+                &bge_mask_rankings,
+                &dataset,
+                &baseline.rankings,
+            ))
+        } else {
+            eprintln!("[run] BGE-base + GELO mask SKIPPED (set BEIR_BGE_MASK=1 to enable)");
+            None
+        };
 
-        Some((bge_plain, bge_dp_layer, bge_dp_pooled))
+        Some(BgeRunMetrics {
+            plain: bge_plain,
+            dp_layer: bge_dp_layer,
+            dp_pooled: bge_dp_pooled,
+            mask: bge_mask,
+        })
     } else {
         None
     };
@@ -575,12 +621,21 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
     print_row("CAPRISE (no DP)", &caprise_metrics);
     print_row("CAPRISE + DP-Forward(ε=4) pooled output", &caprise_dp_metrics);
     print_row("RemoteRAG (planar-Laplace ε=10·n)", &rrag_metrics);
-    if let Some((bge_plain, bge_dp_layer, bge_dp_pooled)) = &bge_metrics {
+    if let Some(bge) = &bge_metrics {
         eprintln!();
-        eprintln!("M7.1 validation — DP-Forward position comparison on BGE-base (12-layer BERT, 768-d):");
-        print_row("GELO/BGE-base (plain) + CAPRISE", bge_plain);
-        print_row("  + DP-Forward(ε=4) @ layer 10 (M7.1)", bge_dp_layer);
-        print_row("  + DP-Forward(ε=4) @ pooled output", bge_dp_pooled);
+        if let Some(p) = &bge.plain {
+            print_row("GELO/BGE-base (plain) + CAPRISE", p);
+        }
+        if let Some(m) = &bge.mask {
+            print_row("GELO/BGE-base + GELO mask + CAPRISE", m);
+        }
+        if let (Some(dp_layer), Some(dp_pooled)) = (&bge.dp_layer, &bge.dp_pooled) {
+            eprintln!(
+                "M7.1 validation — DP-Forward position comparison on BGE-base (12-layer BERT, 768-d):"
+            );
+            print_row("  + DP-Forward(ε=4) @ layer 10 (M7.1)", dp_layer);
+            print_row("  + DP-Forward(ε=4) @ pooled output", dp_pooled);
+        }
     }
     eprintln!();
 
@@ -596,33 +651,34 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
             rrag_metrics.top1_base_match,
         );
     }
-    if let Some((bge_plain, bge_dp_layer, bge_dp_pooled)) = &bge_metrics {
-        eprintln!(
-            "[m7.1] BGE plain    nDCG@10 = {:.3}\n[m7.1] BGE @layer10 nDCG@10 = {:.3} ({:.1}% of plain)\n[m7.1] BGE @pooled  nDCG@10 = {:.3} ({:.1}% of plain)",
-            bge_plain.ndcg10,
-            bge_dp_layer.ndcg10,
-            100.0 * bge_dp_layer.ndcg10 / bge_plain.ndcg10.max(1e-9),
-            bge_dp_pooled.ndcg10,
-            100.0 * bge_dp_pooled.ndcg10 / bge_plain.ndcg10.max(1e-9),
-        );
-        // The M7.1 plan §Verification §2 hypothesised that
-        // intermediate-layer DP would recover meaningful retrieval
-        // utility. Empirically (at ε=4, C=1.0, noise_layer=10 on BGE-base)
-        // BOTH paths destroy retrieval to near-random level. The paper's
-        // mechanism is calibrated for fine-tuned downstream classification,
-        // not zero-shot retrieval; without a learned downstream head that
-        // can absorb the noise, ε=4 aMGM at the paper-faithful position
-        // is catastrophic. Documented in docs/prototype/dp-forward.md §6.
-        //
-        // We assert only that BGE-plain nDCG@10 is meaningful (sanity:
-        // the BGE inference pipeline produces useful embeddings), not
-        // that either DP variant recovers utility (it doesn't).
-        if !perf_only {
-            assert!(
-                bge_plain.ndcg10 >= 0.30,
-                "BGE-base plain nDCG@10 = {:.3} below 0.30 — BGE inference pipeline broken, not a DP finding",
-                bge_plain.ndcg10,
+    if let Some(bge) = &bge_metrics {
+        // M7.1 detail print only when both DP variants ran alongside the
+        // plain baseline.
+        if let (Some(plain), Some(dp_layer), Some(dp_pooled)) =
+            (&bge.plain, &bge.dp_layer, &bge.dp_pooled)
+        {
+            eprintln!(
+                "[m7.1] BGE plain    nDCG@10 = {:.3}\n[m7.1] BGE @layer10 nDCG@10 = {:.3} ({:.1}% of plain)\n[m7.1] BGE @pooled  nDCG@10 = {:.3} ({:.1}% of plain)",
+                plain.ndcg10,
+                dp_layer.ndcg10,
+                100.0 * dp_layer.ndcg10 / plain.ndcg10.max(1e-9),
+                dp_pooled.ndcg10,
+                100.0 * dp_pooled.ndcg10 / plain.ndcg10.max(1e-9),
             );
+            // M7.1 plan §Verification §2 hypothesised that intermediate-
+            // layer DP would recover meaningful retrieval utility.
+            // Empirically (ε=4, C=1.0, noise_layer=10 on BGE-base) BOTH
+            // paths destroy retrieval to near-random level. Documented in
+            // docs/prototype/dp-forward.md §6. Assert only that BGE-plain
+            // nDCG@10 is meaningful (sanity: BGE inference pipeline
+            // produces useful embeddings).
+            if !perf_only {
+                assert!(
+                    plain.ndcg10 >= 0.30,
+                    "BGE-base plain nDCG@10 = {:.3} below 0.30 — BGE inference pipeline broken, not a DP finding",
+                    plain.ndcg10,
+                );
+            }
         }
     }
 

@@ -394,91 +394,202 @@ dependency.
 BGE-base. Still ~10–15× slower than fastembed CPU at single-text
 batch, but in the right order of magnitude and protocol-unchanged.
 
-### Tier 2 — bottlenecks at corpus scale (post-migration)
+### Tier 2 — Corpus-scale bottlenecks (post-migration) (~1 week)
 
-#### 2.0 Mask-QR sample at long-seq_len corpora (**new bottleneck — discovered 2026-05-13**)
+The burn-cubecl migration (Tier 1) revealed that two categories of
+cost dominate at IR-corpus scale (1k+ docs, long seq_len) that
+weren't visible in the 5-doc microbench:
 
-**Symptom.** On the 1k-doc NFCorpus run, the bench wall-clock grew far
-beyond the per-text projection. Per-text steady-state at 5 short docs
-showed `gelo:mask_sample` at only 1.7% of wall (~0.4 ms/text). On real
-NFCorpus medical abstracts the texts are ~150–400 tokens (sometimes
-hitting the seq_len cap), and the Haar QR is O(n³).
+1. **CPU mask sampling** at long seq_len (Haar QR O(n³) — added below
+   as §2.1; the headline new bottleneck).
+2. **Shape-variability cost** outside autotune (kernel specialisation,
+   pool reuse, buffer alloc) when M = seq_len varies per text.
 
-**Mechanism.** `gelo-protocol/src/mask.rs:72-142` implements Mezzadri
-2007 Householder QR with sign correction — the canonical Haar-uniform
-sampler. At seq_len=128: ~2 M ops × 240 mask samples/text × 1k texts
-≈ 500 G-ops over the bench just for mask sampling, dominantly scalar
-single-thread CPU. The cost is GELO-mandated only to the extent that
-**Haar-uniform** orthogonal masking is required; the *specific
-sampler* is our implementation choice.
+Tier 2 closes both. Tier 3 (separate task) is the trait change that
+unblocks the bigger architectural win (GPU utilization >> 10%).
 
-**Privacy boundary.** GELO requires `A ∈ O(n)` drawn from the Haar
-measure on each batch — uniform among all orthogonal matrices. The
-mask structure is the load-bearing security premise; the sampler is
-not. Any cheaper construction that preserves Haar-uniformity is fine;
-anything that biases the distribution weakens the privacy argument and
-needs analysis.
+#### 2.1 BLAS-accelerated Haar QR mask sampler (**top priority**)
 
-**Candidate fixes** (ranked by impact ÷ engineering effort):
+**Where.** `crates/gelo-protocol/src/mask.rs:72-142` —
+`sample_haar_orthogonal`.
 
-| Approach | Cost | Notes |
+**Today.** Hand-written scalar Householder QR with Mezzadri-2007 sign
+correction. O(n³) work, all scalar f32 in inner loops, no SIMD, no
+threading. At seq_len=128 it's ~25 μs/sample × 240 samples/text =
+~6 ms/text. At seq_len=400 (NFCorpus medical abstract) it's
+(400/128)³ × 6 ms ≈ **180 ms/text** — easily 60–80% of wall-clock
+under the GELO+mask path at corpus scale.
+
+**Algorithm choice.** Mezzadri 2007 stays — it's the canonical
+Haar-uniform sampler and the security premise of GELO requires the
+output to be Haar-distributed on O(n). We only change *how* we
+compute QR.
+
+**Two-step replacement** (both standard, no algorithmic change):
+
+| Sub-step | Change | Expected wall |
 |---|---|---|
-| 2.0.a | Replace scalar Householder with BLAS-accelerated QR (faer's `Qr::new` or matrixmultiply via ndarray::dot) | Same algorithm, SIMD + cache-friendly — expect 5–10× on the QR itself. No protocol change. |
-| 2.0.b | Cap seq_len at our embedder bucket (e.g. 128) and pad — keeps Haar dim small and uniform | Already a hot Tier 1 item (1.4 shape bucketing); doubles as a privacy-neutral mask cost cap. |
-| 2.0.c | Sample one mask per batch covering N texts: `A ∈ O(N·n)`. Cost grows as O((N·n)³), so only wins if we're already paying it; doesn't help here. | Skip. |
-| 2.0.d | Block-diagonal mask `diag(A_1, …, A_k)`: small blocks, O(k·b³) instead of O(n³) | **Privacy weakening**; flagged in §Tier 5 — needs analysis before adoption. |
-| 2.0.e | Cache the mask across calls (same `A` for multiple batches) | **Privacy weakening**; the GELO guarantee is fresh-per-batch — breaks the security argument. Reject. |
+| 2.1.a | Replace the inner Householder loops with BLAS-3 `ndarray::dot` calls (uses `matrixmultiply` under the hood — SIMD-vectorised, cache-tiled). The Householder step `A[k:, k:] -= 2 v vᵀ A[k:, k:]` is a rank-1 update — expressible as `α A + β vvᵀA`. | 5–10× faster QR at our n |
+| 2.1.b | Use `faer::linalg::qr::no_pivoting::compute::QrDecomposition` directly — fully tuned BLAS-equivalent QR. Skip the manual Householder. Apply Mezzadri sign correction after. | Another 1.5–2× over 2.1.a |
 
-**Plan.** Do 2.0.a (BLAS-accel QR) and 2.0.b (shape bucketing) together
-as the entry to Tier 2. Expected per-text wall-clock at 1k-doc scale:
-~150 → ~60 ms (post-bucketing) → ~30 ms (post-BLAS QR), bringing the
-1k-doc run from minutes back to ~tens of seconds.
+**Why both.** 2.1.a is a 2-hour change with no new dep; 2.1.b adds
+the `faer` workspace dep (~2 MB compiled) and ~half-day integration.
+Land 2.1.a first; A/B the 5-doc and 1k-doc benches; only do 2.1.b if
+2.1.a doesn't bring the 1k-doc bench back to under 5 min.
 
-### Tier 2 — Alternative engine: `gelo-gpu-ggml` (~1 week)
+**Files.**
+- `crates/gelo-protocol/src/mask.rs:72-142` — function body rewrite.
+- `crates/gelo-protocol/Cargo.toml` — possibly add `faer = "0.21"`.
+- Add a unit-test that asserts Haar-uniformity properties survive:
+  the existing `orthogonality()` test in `mask.rs` checks `AᵀA = I`;
+  add `det(A) ∈ {±1}` and `mask.matrix().mean()` close to 0 spot
+  checks. Mezzadri sign correction is the load-bearing piece — if we
+  drop it the distribution is no longer Haar-uniform.
 
-Build a second `GpuOffloadEngine` implementation backed by ggml's
-Vulkan backend, behind `--features ggml-engine`. Default stays cubecl
-until benchmarks justify the switch.
+**Privacy invariant.** The output `A` must remain Haar-uniform on
+O(n). Any drift toward signed-permutation, block-diagonal, or biased
+distributions would weaken the GELO security argument. Catch with
+the test above.
 
-**Why a second engine, not a replacement:** ggml-vulkan ships
-hand-tuned SGEMM kernels with three warptile presets selected by
-static heuristic (no autotune cold-start), a real buffer pool, and
-two years of AMD/Intel/NVIDIA Vulkan production hardening. Expected
-warm-vs-warm speedup over cubecl is **1.3–2.0×**, but the bigger
-qualitative win is no per-shape autotune and no per-dispatch sync.
-The risk is that we add a C/C++ build dep and a second engine to
-maintain, so we feature-gate and decide on the merge based on the
-A/B numbers.
+**Expected impact at 1k-doc NFCorpus:** GELO+mask config wall-clock
+from ~10 min → ~2 min (sub-step 2.1.a) → ~1 min (sub-step 2.1.b if
+needed).
 
-`llama-cpp-rs --features vulkan` is the **reference benchmark**, not
-a dependency. Its `wrapper.h` doesn't expose `ggml.h`, so it gives us
-nothing usable for per-GEMM offload. We build our own slim FFI.
+#### 2.2 Shape bucketing — pad `seq_len` to {64, 128, 256, 512}
 
-| Step | Change | Effort |
+**Where.** `crates/gelo-embedder/src/bert/embedder.rs` (encode +
+forward call site); analogous in `decoder/embedder.rs`.
+
+**Today.** The tokenizer produces variable-length token sequences
+(typically 16–512 for BEIR docs). Each unique length seeds a new
+matmul shape inside the engine. burn-cubecl's autotune anchors to
+power-of-two-ish buckets internally so this is less catastrophic
+than under raw cubecl, but the **buffer pool** still partitions by
+exact size and the mask QR is O(seq_len³) regardless of autotune.
+
+**Change.** After tokenize + truncate to model max, pad up to the
+nearest of `{64, 128, 256, 512}` with the tokenizer's `[PAD]` token.
+Attention mask must mark padding positions so they don't influence
+attention scores (already supported in `bert/attention.rs`'s mask
+handling — verify wiring).
+
+**Why this matters with 2.1.** At seq_len=512 the mask QR is still
+expensive (~30–50 ms even with BLAS). Bucketing caps the worst case
+and means 2.1's speedup applies uniformly. Without bucketing, a
+single 512-token doc dominates the bench wall-clock.
+
+**Files.**
+- `crates/gelo-embedder/src/common/tokenizer.rs` — add `pad_to_bucket`.
+- `crates/gelo-embedder/src/bert/embedder.rs` — call pad-to-bucket
+  after `tokenize_truncate`.
+- `crates/gelo-embedder/src/decoder/embedder.rs` — same.
+- `crates/gelo-embedder/src/bert/attention.rs` — verify pad-mask path
+  is exercised; if not, wire it (already correct for the BGE forward).
+
+**Trade-off.** Padding inflates compute for short documents — a
+17-token doc becomes 64 tokens, ~4× the matmul work + ~64× the mask
+QR work (n³). For NFCorpus medians around 150–250 tokens this is
+acceptable. For a short-query workload it's not — gate via a
+`with_seq_len_bucketing(bool)` builder so query-only paths can skip.
+
+**Expected impact:** ~1.5× on the matmul side (less per-text
+variance keeps autotune cache hot); ~3–5× on the mask QR side at
+typical doc lengths (we stop hitting n=400+ samples).
+
+#### 2.3 Attention-path CPU/GPU dance
+
+**Where.** `crates/gelo-embedder/src/bert/forward.rs:72-92`,
+`bert/attention.rs`.
+
+**Today.** Per layer the current flow is:
+- engine.offload_qkv → 3 matmuls + 3 mask round-trips (GPU)
+- add_bias → CPU
+- `multi_head_attention(q, k, v)` → CPU (softmax(Q·Kᵀ/√d)·V)
+- engine.offload_linear(O) → 1 matmul + 1 mask round-trip (GPU)
+
+The CPU attention compute reads 3 large tensors back from GPU then
+re-uploads the context for the O projection. Each CPU↔GPU bounce
+inflates wall-clock.
+
+**Two options:**
+
+| Option | What | Privacy impact |
 |---|---|---|
-| 2.1 | New `crates/gelo-ggml-sys`: vendored `ggml/` subtree from upstream `ggml-org/llama.cpp`, built `GGML_VULKAN=ON` (no llama runtime, no other backends) via cc/CMake build script | 2 days |
-| 2.2 | Hand-written C shim exposing `engine_init`, `register_weight`, `matmul`, `matmul_dynamic`, `free`. Internals: one persistent `ggml_backend` + `ggml_gallocr`; per-call 1-node `cgraph` around `ggml_mul_mat`, `ggml_backend_tensor_set/get` for input/output | 1 day |
-| 2.3 | New `crates/gelo-gpu-ggml`: Rust wrapper implementing `GpuOffloadEngine` over the FFI; mirror trait surface of `gelo-gpu-wgpu` so the rest of the stack is engine-agnostic | 1 day |
-| 2.4 | Wire `--features ggml-engine` into `beir_accuracy` bench; A/B against post-Tier-1 cubecl on 1k-doc NFCorpus subset. Concurrently run `llama-cpp-rs --features vulkan` standalone (whole-model forward, plaintext) as the hand-tuned reference | 1 day |
+| 2.3.a | Move multi-head attention to the trusted side ndarray-rayon path with batched `Q·Kᵀ` and `softmax(...)·V` via ndarray::dot. Stays on CPU but vectorised. | None — already TEE-side; just faster. |
+| 2.3.b | Use the existing `offload_attention_qkt` (TwinShield OutAttnMult) for Q·Kᵀ on GPU. Softmax + `attn·V` either stay on CPU or go through `offload_attention_qkt_batched`. | Requires OutAttnMult correctness — the implementation exists at `out_attn_mult.rs` but wasn't fully exercised in BERT path. |
 
-#### Decision criterion
+**Recommended.** 2.3.a first — pure CPU speedup, no protocol surface
+change. Probably ~3× faster attention at our seq_len. Defer 2.3.b
+until Tier 3 (on-device tensor handle trait) lands; then it becomes
+much easier to integrate without per-call sync.
 
-If `gelo-gpu-ggml` beats post-Tier-1 cubecl by **≥1.5× warm AND ≥10×
-cold-start**, flip default and consider deprecating `gelo-gpu-wgpu`.
-Otherwise keep cubecl as default and ggml as fallback/reference.
+**Files.**
+- `crates/gelo-embedder/src/bert/attention.rs` — rewrite
+  `multi_head_attention` to use `ndarray::dot` for `Q·Kᵀ` (currently
+  manual loops) and to vectorise softmax.
 
-#### Known caveats
+**Expected impact:** 1.5–2× wall-clock on the attention slice
+(currently ~10% of per-text time at NFCorpus seq_len).
 
-- ggml-vulkan has `graph_plan_create = NULL` — every call rebuilds
-  the Vulkan command buffer. For 1-node graphs this is ~150 μs and
-  amortizes fine at our shapes, but it's not a CUDA-Graph-style
-  "record once, replay N" pattern.
-- Intel iGPUs hard-code `support_async = false` in ggml-vulkan: every
-  `graph_compute` synchronously waits. AMD/NVIDIA pipeline transfers
-  but still submit per graph. We target AMD primarily.
-- Build complexity rises (CMake, glslc/glslang for SPIR-V, vendored
-  ~17 kLOC of C++ in our tree). TCB-irrelevant since the engine runs
-  untrusted, but build/reproducibility story thickens.
+#### 2.4 Shorter-text fastpath gate
+
+**Where.** `crates/gelo-embedder/src/bert/embedder.rs::embed`.
+
+**Today.** Every text — query or doc — runs the full 12-layer mask
++ matmul pipeline. Queries are typically 5–20 tokens, where the
+mask QR and shape-bucketing-padding overheads dominate the actual
+inference.
+
+**Change.** When `seq_len ≤ 16`, skip bucketing (pad only to next
+power of 2) and bypass the mask round-trip entirely for the
+*public-query* case — queries are not generally confidential under
+GELO's threat model (the privacy target is the doc embeddings, not
+the query token IDs). Doc ingest still uses the full path.
+
+**Caveat.** This is a *threat-model decision*, not a perf-only
+change. `docs/prototype/gelo.md` lists query confidentiality as a
+secondary goal. Confirm with you before flipping the default.
+
+**Files.**
+- `crates/gelo-embedder/src/bert/embedder.rs` — add
+  `with_query_fastpath(bool)` and a per-call `is_query` flag plumbed
+  through `embed`.
+- `docs/prototype/gelo.md` — document the query-confidentiality
+  exception.
+
+**Expected impact:** ~3–5× on query-phase wall-clock; zero impact
+on doc ingest.
+
+#### Tier 2 effort + outcome
+
+| Step | Effort | Risk | Wall-clock impact at 1k NFCorpus |
+|---|---|---|---|
+| 2.1.a BLAS Householder | ½ day | low — same algorithm, no protocol change | GELO+mask 10 min → ~3 min |
+| 2.1.b faer QR | ½ day | low — new dep, same algorithm | ~3 min → ~2 min |
+| 2.2 Shape bucketing | 1 day | medium — touches tokenizer + attention mask wiring | mask cost variance ÷ 3, autotune surface ÷ N |
+| 2.3.a Attention CPU vectorisation | ½ day | low | 1.5× on attention slice |
+| 2.4 Query fastpath (gated decision) | ½ day | **policy** — threat-model trade-off | 3–5× on query wall-clock |
+
+**Total effort:** ~3 days for 2.1+2.2+2.3 (the no-tradeoff items).
+2.4 deferred pending threat-model approval.
+
+**Bench checkpoints:**
+- After 2.1.a: re-run BEIR_DOCS=1000. GELO+mask should finish in
+  under 5 min. If not, escalate to 2.1.b before moving on.
+- After 2.2+2.3.a: BEIR_DOCS=1000 should be under 2 min for all 5
+  configs (with `BEIR_BGE_DP=0`).
+- Tier 2 sign-off: BEIR full 3,633-doc corpus completes under 5 min
+  on the GELO+mask config. (Today this would take >30 min.)
+
+#### Tier 2 — *not* doing
+
+- **Caching the mask across calls** — breaks GELO's fresh-per-batch
+  property. Reject.
+- **Block-diagonal mask construction** — privacy weakening that
+  needs a separate security analysis. Filed in §Tier 6.
+- **Random signed-permutation masks** — leaves H's sparsity pattern
+  exposed; not Haar.
+- **Streaming embedding (yield per-text)** — orthogonal concern.
 
 ### Tier 3 — protocol-aware fusion (target: another 2–3×, ~1.5 weeks)
 
@@ -505,6 +616,14 @@ batch.
 
 ### Tier 5 — research items (deferred, future-rnd.md)
 
+- **Alternative engine: `gelo-gpu-ggml`** — vendored ggml/Vulkan
+  build as a second `GpuOffloadEngine`. Deferred because the
+  burn-cubecl migration (Tier 1) covered the practical win that
+  motivated this exploration. Re-evaluate if Tier 3 (on-device
+  tensor handle) doesn't close the GPU-utilization gap, or if we
+  need Q4_K quantized weights (ggml has this for free). Source
+  spike investigation recorded in `docs/prototype/` (this file's
+  earlier revisions) and the agent transcripts.
 - Block-diagonal mask sampling (privacy weakening, needs analysis).
 - Full flash attention with TwinShield-compatible Q·Kᵀ embedding —
   open research problem.
