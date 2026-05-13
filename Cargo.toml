@@ -51,13 +51,17 @@ flate2 = "1.0"
 zip = "2.0"
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 wgpu = "26"
-cubecl = { version = "=0.9.0-pre.5", default-features = false, features = ["std", "wgpu"] }
-cubecl-core = { version = "=0.9.0-pre.5", default-features = false, features = ["std"] }
-cubecl-runtime = { version = "=0.9.0-pre.5", default-features = false, features = ["std"] }
-cubecl-std = { version = "=0.9.0-pre.5", default-features = false }
-cubecl-common = { version = "=0.9.0-pre.5", default-features = false, features = ["std"] }
-cubecl-wgpu = { version = "=0.9.0-pre.5", default-features = false, features = ["std", "spirv"] }
-cubecl-matmul = { version = "=0.9.0-pre.5", default-features = false, features = ["std"] }
+cubecl = { version = "=0.9.0", default-features = false, features = ["std", "wgpu"] }
+cubecl-core = { version = "=0.9.0", default-features = false, features = ["std"] }
+cubecl-runtime = { version = "=0.9.0", default-features = false, features = ["std"] }
+cubecl-std = { version = "=0.9.0", default-features = false }
+cubecl-common = { version = "=0.9.0", default-features = false, features = ["std"] }
+cubecl-wgpu = { version = "=0.9.0", default-features = false, features = ["std", "spirv"] }
+# Spike: burn-cubecl as smart-runtime over cubecl (real autotune + fusion + lazy eval).
+# Replaces direct cubecl-matmul use — cubecl-matmul has no stable release, only 0.9.0-pre.X.
+burn-cubecl = { version = "=0.20.1", default-features = false, features = ["std", "autotune", "fusion"] }
+burn-tensor = { version = "=0.20.1", default-features = false, features = ["std"] }
+burn-backend = { version = "=0.20.1", default-features = false, features = ["std", "cubecl-wgpu"] }
 # M5 — SEV-SNP attestation
 sev = { version = "7", default-features = false, features = ["snp", "crypto_nossl"] }
 x509-cert = { version = "0.2", default-features = false, features = ["std", "pem"] }
