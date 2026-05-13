@@ -657,6 +657,133 @@ batch.
 | 4.2 | Fused softmax+V WGSL kernel (keep `Q·Kᵀ` via OutAttnMult, fuse only the post-softmax matmul) | medium, mostly mechanical |
 | 4.3 | Q4_K weight-only quantization + dequant-aware U-Verify (ggml engine has this for free; cubecl engine doesn't) | error analysis + new bench |
 
+### Tier Q — Decoder-LLM (Qwen3-Embedding-0.6B) analysis + optimizations
+
+Most of the BGE-base optimization work doubles as Qwen3-Embedding
+work because the two share the same engine + GELO+mask pipeline. The
+notable structural differences in Qwen3:
+
+- **28 layers vs BGE's 12** (~2.3× more matmul calls per text)
+- **Hidden 1024, FFN 3072, 16 Q heads + 8 KV heads via GQA**
+- **SwiGLU FFN (gate + up + down)** instead of BERT's single up+down
+- **RMSNorm pre-LN** instead of post-LayerNorm
+- **RoPE positional embedding** computed per layer
+- **OutAttnMult opt-in** for Q·Kᵀ offload (large GQA heads make this
+  more attractive than for BGE — Q heads contribute 16 separate
+  (n, d) tensors)
+
+#### Empirical bottleneck breakdown (2026-05-13, 3-text micro-bench)
+
+Captured by `crates/gelo-gpu-wgpu/tests/qwen3_overhead_breakdown.rs`.
+3 short prompts on AMD Radeon Graphics (RADV GFX1151) via burn-cubecl
++ Vulkan. Post-Tier-2 baseline (BLAS QR, vectorised softmax in BERT —
+note: decoder paths share the same gelo-protocol mask code).
+
+Per-text wall-clock:
+
+| Config | ms/text | Δ vs BGE-base steady-state (~26 ms) |
+|---|---:|---:|
+| gpu_plain (no privacy) | 82 | 3.2× slower |
+| gpu + GELO (TEE attention) | 85 | 3.3× slower |
+| gpu + GELO + OutAttnMult + SEV-SNP | 108 | 4.2× slower |
+
+The 3-4× factor tracks model size (28 layers × 1024² vs 12 × 768² ≈ 4×).
+
+Cost shares — `gpu + GELO` (the practical default), 3-text bench:
+
+| Bucket | ms | Share |
+|---|---:|---:|
+| **engine:matmul** (non-QKV: O, FFN-up, FFN-down, FFN-gate) | 156 | 61.5% |
+| **engine:matmul_many** (QKV batches, 28 layers × 3 texts = 84 calls) | 59 | 23.3% |
+| tee:swiglu_activate (84 calls, ~130 μs/call) | 10.9 | 4.3% |
+| gelo:mask_unapply | 8.8 | 3.5% |
+| gelo:mask_apply | 5.6 | 2.2% |
+| tee:attn_inplace (CPU softmax+V·Attn) | 5.0 | 2.0% |
+| tee:rmsnorm (171 calls = 28×2+1 per text) | 3.7 | 1.5% |
+| gelo:mask_sample | 2.4 | 0.9% |
+| tee:rope + residual + shield bookkeeping | 2.4 | 1.0% |
+
+**Engine matmul = ~85% of wall** — same structural shape as BGE.
+
+OutAttnMult cost (only when enabled):
+
+| Δ Bucket | Δ ms (added) | Δ ms/text |
+|---|---:|---:|
+| outattn:setup_stack_batched (CPU: sample fillers, build 2n×d, permute) | +43.0 | +14.3 |
+| engine:matmul_dynamic_batched (offloaded Q·Kᵀ) | +20.8 | +6.9 |
+| outattn:recover_batched | +2.1 | +0.7 |
+| tee:softmax_av (− tee:attn_inplace) | −1.8 | −0.6 |
+| gelo:* delta (slight uptick) | +5 | +1.7 |
+| **Net** | **+69** | **+23** (+31% over GELO-only) |
+
+#### Q-series tasks
+
+Following the same logic as BGE Tier 2: tackle CPU-side wins, leave
+the engine-kernel ceiling alone (already at burn-cubecl best).
+
+**Q1 — Vectorize decoder CPU epilogues** (~½ day, low risk):
+- `tee:swiglu_activate` — 10.8 ms over 84 calls; scalar inner loop with
+  `silu(x) = x / (1 + (-x).exp())` per element. Tighten to slice-iter
+  contiguous &mut [f32] passes, fuse silu computation with the
+  element-wise multiplication against `up`. Expected ~2-3 ms/text
+  recovered.
+- `tee:attn_inplace` — softmax + Attn·V CPU code in the decoder
+  attention path. Verify it has the same fused max+exp+sum +
+  reciprocal-multiply pattern that fixed BERT's softmax (Tier 2.3.a).
+  Expected ~1-2 ms/text recovered.
+- `tee:rmsnorm` — single-pass sum-of-squares is already in place per
+  Tier 2.3.a / R3; verify no regression at decoder shape (n=20, d=1024).
+- **Total expected:** ~3-5 ms/text reduction = ~4-6% wall improvement.
+
+**Q2 — `offload_linear_many` for FFN gate+up** (~½ day, abstraction
+parity with `offload_qkv`):
+- Decoder's `forward.rs:148-160` issues two separate `offload_linear`
+  calls for FFN-gate and FFN-up, both with the same input `h_norm`.
+- Mirror the `offload_qkv` pattern via a new
+  `TrustedExecutor::offload_linear_many(&[handles], hidden)` that
+  delegates to `engine.matmul_many`. Saves one upload + one sync per
+  layer × 28 layers per text.
+- Same empirical caveat as Tier 3 step 1: at our shape sizes the
+  observable wall-clock win is likely in the noise. Worth doing for
+  abstraction parity.
+
+**Q3 — Vectorize OutAttnMult setup** (~1 day, only if we want
+OutAttnMult on by default):
+- `outattn:setup_stack_batched` is 511 μs/call × 84 = 43 ms over the
+  3-text bench. The per-call work is:
+  1. Sample two Gaussian filler arrays (`r_q` and `r_kt`)
+  2. Build doubled stacked operands (2n × d) and (d × 2n)
+  3. Random permutation per axis (Fisher-Yates O(n))
+  4. Apply row/col permutation
+- Optimizations:
+  - Batch the Gaussian sample across all heads via `ndarray::Array::from_shape_fn`
+    with one RNG (already StandardNormal-distrib via rand_distr)
+  - Permute index buffer reuse across heads
+  - SIMD-friendly slice copies for stacked-operand build
+- Expected: cut ~14 ms/text → ~5 ms/text on OutAttnMult config.
+
+**Q4 — Wire Qwen3 into BEIR/NFCorpus bench** (~½ day, gates Q1/Q2/Q3):
+- Currently the BEIR bench (`crates/approach4/tests/beir_accuracy.rs`)
+  only has BGE-base configs. Add a `BEIR_QWEN3=1` env gate that runs
+  a `GeloQwenEmbedder + GELO+mask` config alongside the BGE+mask one.
+- Validates retrieval correctness at corpus scale (the breakdown test
+  is only 3 short prompts; nothing tells us Qwen3 holds protocol
+  fidelity at NFCorpus seq_len).
+- Gives a corpus-scale baseline number to optimize against.
+- Defer Q1-Q3 prioritization until Q4 reveals the actual corpus-scale
+  bottleneck split (long-tail NFCorpus seq_len may shift the
+  relative weight of CPU epilogues vs engine matmul).
+
+#### Tier Q — *not* doing
+
+- **fp16 Qwen3 engine** — already validated on BGE that cubecl-wgpu's
+  f16 path doesn't win on AMD RDNA3. Qwen3's 28 layers would only
+  amplify the cold-start autotune problem.
+- **Q4_K weight quantization** — needs cubecl quantized-matmul kernels
+  we don't have. Filed in Tier 5 (deferred).
+- **Replacing Qwen3 with a different model** — outside scope; this is
+  perf work, not model-selection work.
+
 ### Tier 5 — research items (deferred, future-rnd.md)
 
 - **Alternative engine: `gelo-gpu-ggml`** — vendored ggml/Vulkan
