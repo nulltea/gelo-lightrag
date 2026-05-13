@@ -121,6 +121,14 @@ impl<E: GpuOffloadEngine, I: AttestationIssuer> SnpTrustedExecutor<E, I> {
 impl<E: GpuOffloadEngine, I: AttestationIssuer> TrustedExecutor
     for SnpTrustedExecutor<E, I>
 {
+    fn begin_forward_pass(&mut self, n: usize) -> Result<()> {
+        self.inner.begin_forward_pass(n)
+    }
+
+    fn end_forward_pass(&mut self) -> Result<()> {
+        self.inner.end_forward_pass()
+    }
+
     fn provision_weight(
         &mut self,
         handle: WeightHandle,

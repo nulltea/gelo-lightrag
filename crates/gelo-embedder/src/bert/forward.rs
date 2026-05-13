@@ -34,14 +34,24 @@ pub fn run_with_hook<F: FnMut(usize, &mut Array2<f32>)>(
     input_ids: &[u32],
     mut after_layer: F,
 ) -> Result<Array2<f32>> {
+    let n = input_ids.len();
     let mut h = build_embedding(cfg, weights, input_ids);
     h = layer_norm(h.view(), &weights.embeddings_ln_w, &weights.embeddings_ln_b, cfg.layer_norm_eps);
 
-    for (li, layer) in weights.layers.iter().enumerate() {
-        h = encoder_block(cfg, layer, exec, li as u16, h.view(), cfg.offload_layer(li))?;
-        after_layer(li, &mut h);
-    }
-    Ok(h)
+    // GELO paper §3.2 forward-pass session: bracket every per-text
+    // forward with begin/end so executors running in paper-parity
+    // (per-forward-pass A) mode sample exactly one mask. Per-offload
+    // executors and `PlaintextExecutor` use the trait's no-op defaults.
+    exec.begin_forward_pass(n)?;
+    let result = (|| -> Result<Array2<f32>> {
+        for (li, layer) in weights.layers.iter().enumerate() {
+            h = encoder_block(cfg, layer, exec, li as u16, h.view(), cfg.offload_layer(li))?;
+            after_layer(li, &mut h);
+        }
+        Ok(h)
+    })();
+    exec.end_forward_pass()?;
+    result
 }
 
 fn build_embedding(cfg: &BertConfig, w: &BertWeights, ids: &[u32]) -> Array2<f32> {

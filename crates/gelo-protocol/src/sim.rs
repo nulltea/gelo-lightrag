@@ -87,6 +87,28 @@ pub struct InProcessTrustedExecutor<E: GpuOffloadEngine> {
     /// 2.4 GB copy on Qwen3-class models. The `provision_weight` path still
     /// clones via `weight.to_owned()` for callers that don't have an Arc.
     weights: HashMap<WeightHandle, Arc<Array2<f32>>>,
+    /// Whether to use the GELO paper's per-forward-pass mask (one A
+    /// sampled at `begin_forward_pass`, reused across every offload
+    /// until `end_forward_pass`) vs. the per-offload mode (fresh A
+    /// inside every offload — strictly safer but ~48-140× more QR
+    /// work per text). Toggled via [`Self::with_per_forward_mask`].
+    per_forward_mask: bool,
+    /// Active session mask. `Some` between `begin_forward_pass` and
+    /// `end_forward_pass` when `per_forward_mask` is enabled. The mask
+    /// is sized to `n + shield.k` because shield rows are part of the
+    /// stacked operand the mask acts on.
+    session: Option<SessionMask>,
+}
+
+/// Per-forward-pass mask + bookkeeping for the GELO paper's
+/// "one A per batch" construction (§3.2). Constructed inside
+/// `begin_forward_pass` and dropped on `end_forward_pass`.
+struct SessionMask {
+    /// Haar-uniform orthogonal mask of size `(stacked_n, stacked_n)`
+    /// where `stacked_n = data_n + shield.k`.
+    mask: GeloMask,
+    /// Original data-row count (excluding shield rows).
+    data_n: usize,
 }
 
 impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
@@ -103,6 +125,8 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             shield: ShieldConfig::NONE,
             verify_probes: 0,
             weights: HashMap::new(),
+            per_forward_mask: false,
+            session: None,
         }
     }
 
@@ -114,12 +138,45 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             shield,
             verify_probes: 0,
             weights: HashMap::new(),
+            per_forward_mask: false,
+            session: None,
         }
     }
 
     /// Set or update the shield configuration in place.
     pub fn set_shield(&mut self, shield: ShieldConfig) {
         self.shield = shield;
+    }
+
+    /// Enable the GELO paper's "one A per forward pass" construction
+    /// (§3.2). When set, every `offload_*` call reuses the session mask
+    /// established at [`begin_forward_pass`] instead of sampling its
+    /// own fresh A.
+    ///
+    /// **Privacy requirement:** the paper pairs mask reuse with
+    /// shield vectors (§4.2) to defeat ICA / blind-source-separation
+    /// attacks that exploit cross-offload correlation under shared A.
+    /// This builder takes a `shield` argument and refuses to enable
+    /// per-forward-pass mode without one. Pass [`ShieldConfig::new(8,
+    /// 4.0)`] for the paper's recommended defaults.
+    ///
+    /// Trade-off: ~48–140× fewer Haar-QR samples per text vs the
+    /// per-offload default, at the cost of relying on the shield for
+    /// reuse-across-correlated-states security.
+    pub fn with_per_forward_mask(mut self, shield: ShieldConfig) -> Self {
+        assert!(
+            shield.enabled(),
+            "per-forward-pass mask requires shield to be enabled; \
+             pass `ShieldConfig::new(k>0, energy_scale>0)`"
+        );
+        self.per_forward_mask = true;
+        self.shield = shield;
+        self
+    }
+
+    /// Whether this executor is in paper-parity per-forward-pass mode.
+    pub fn is_per_forward_mask(&self) -> bool {
+        self.per_forward_mask
     }
 
     /// Enable U-Verify with `k` Freivalds-style probes per offload.
@@ -146,20 +203,69 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
         self.verify_probes
     }
 
-    /// Stack shield rows (if enabled) and sample a fresh mask sized to the
-    /// stacked matrix. Returns `(mask, H', n_data_rows)`.
+    /// Stack shield rows (if enabled) and supply a mask sized to the
+    /// stacked matrix. In per-forward-pass mode the mask is the session
+    /// mask established at [`Self::begin_forward_pass`] (cheap to clone:
+    /// it's an `Arc`-backed `ndarray::Array2` internally). In per-
+    /// offload mode a fresh Haar-uniform `A` is sampled every call.
+    ///
+    /// Shield rows are **always sampled fresh per offload**, even in
+    /// per-forward-pass mode. The mask reuse is what saves the Haar QR
+    /// cost; the shield is cheap (just k Gaussian rows) and per-offload
+    /// freshness is strictly safer for the ICA / cross-offload
+    /// correlation defence the paper relies on.
     fn build_shielded(&mut self, hidden: ArrayView2<'_, f32>) -> (GeloMask, Array2<f32>, usize) {
         let (stacked, n_data) = profile::time("gelo:shield_stack", || {
             stack_shield(hidden, self.shield, &mut self.rng)
         });
-        let mask = profile::time("gelo:mask_sample", || {
-            GeloMask::fresh(stacked.nrows(), &mut self.rng)
-        });
+        let stacked_n = stacked.nrows();
+
+        let mask = if self.per_forward_mask {
+            match &self.session {
+                Some(s) if s.data_n == n_data && s.mask.n() == stacked_n => s.mask.clone(),
+                Some(s) => {
+                    panic!(
+                        "per-forward-pass mask: offload n={n_data} (stacked {stacked_n}) \
+                         doesn't match session n={} (stacked {}); did you forget to call \
+                         begin_forward_pass for the new shape?",
+                        s.data_n,
+                        s.mask.n(),
+                    );
+                }
+                None => panic!(
+                    "per-forward-pass mode but no session mask — \
+                     embedder must call begin_forward_pass(n) before any offload_*"
+                ),
+            }
+        } else {
+            profile::time("gelo:mask_sample", || {
+                GeloMask::fresh(stacked_n, &mut self.rng)
+            })
+        };
         (mask, stacked, n_data)
     }
 }
 
 impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
+    fn begin_forward_pass(&mut self, n: usize) -> Result<()> {
+        if !self.per_forward_mask {
+            // Per-offload mode: nothing to do. Each offload_* will sample
+            // its own fresh mask the legacy way.
+            return Ok(());
+        }
+        let stacked_n = n + self.shield.k;
+        let mask = profile::time("gelo:mask_sample", || {
+            GeloMask::fresh(stacked_n, &mut self.rng)
+        });
+        self.session = Some(SessionMask { mask, data_n: n });
+        Ok(())
+    }
+
+    fn end_forward_pass(&mut self) -> Result<()> {
+        self.session = None;
+        Ok(())
+    }
+
     fn provision_weight(&mut self, handle: WeightHandle, weight: ArrayView2<f32>) -> Result<()> {
         // Keep a TEE-local copy of the weight so the integrity probe can
         // compute `B · r` independently of what the engine reports.

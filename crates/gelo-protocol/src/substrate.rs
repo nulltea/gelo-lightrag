@@ -129,6 +129,32 @@ pub trait TrustedExecutor {
     /// Hand a public weight to the offload engine. Called at model load.
     fn provision_weight(&mut self, handle: WeightHandle, weight: ArrayView2<f32>) -> Result<()>;
 
+    /// Begin a forward pass for a single text of token-axis length `n`.
+    ///
+    /// Implementations running in **paper-parity mode** (one mask A per
+    /// forward pass, per GELO §3.2) sample a fresh Haar-uniform `A` of
+    /// size `(n + shield_k, n + shield_k)` here and reuse it across every
+    /// subsequent `offload_*` call until the matching [`end_forward_pass`].
+    ///
+    /// Implementations in **per-offload mode** (sample fresh A inside
+    /// every `offload_*`) treat this as a no-op — the default impl does
+    /// exactly that, so `PlaintextExecutor` and other backends that don't
+    /// care about session lifecycle keep working unchanged.
+    ///
+    /// Embedders **MUST** call this at the start of each per-text
+    /// forward pass and call [`end_forward_pass`] before the next, even
+    /// if the executor is in per-offload mode (the no-op default makes
+    /// this cheap). This way the embedder code is engine-agnostic.
+    fn begin_forward_pass(&mut self, _n: usize) -> Result<()> {
+        Ok(())
+    }
+
+    /// End the current forward pass. Frees the session mask (if any)
+    /// and returns the executor to idle state. Default impl is no-op.
+    fn end_forward_pass(&mut self) -> Result<()> {
+        Ok(())
+    }
+
     /// Same as [`Self::provision_weight`] but accepts an `Arc<Array2<f32>>` so
     /// the executor's TEE-side weight cache (for U-Verify probe computation)
     /// can share storage with the embedder's loaded weight bytes instead of

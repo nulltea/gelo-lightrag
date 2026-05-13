@@ -41,7 +41,7 @@ use common::embed_cache::CachingEmbedder;
 use dp_forward::DpForwardConfig;
 use gelo_embedder::{GeloBertEmbedder, GeloQwenEmbedder};
 use gelo_gpu_wgpu::WgpuVulkanEngine;
-use gelo_protocol::{InProcessTrustedExecutor, MaskSeed, PlaintextExecutor};
+use gelo_protocol::{InProcessTrustedExecutor, MaskSeed, PlaintextExecutor, ShieldConfig};
 use rag_core::{Caprise, CapriseKey, Embedder, FastEmbedEmbedder};
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
@@ -602,21 +602,43 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
         // path Tier 2 optimisations move the needle on.
         let bge_mask = if run_bge_mask {
             eprintln!("[run] BGE-base + GELO mask (Vulkan + in-process TEE) — full-stack...");
-            // Engine precision goes into the cache key so fp32 and fp16 runs
-            // don't share cached embeddings (their outputs differ at the
-            // ~0.04% L2 level, enough to perturb rankings).
-            let cache_label = if gpu.is_fp16() {
-                "bge-base-en-v1.5-gelo-mask-fp16"
+            // `BEIR_PAPER_PARITY=1` → match the GELO paper §3.2: one
+            // Haar-uniform A sampled per forward pass (reused across all
+            // offloads in that pass), paired with shield vectors (§4.2,
+            // k=8 high-energy rows at 4× mean-row-norm energy) to defeat
+            // the cross-offload ICA attack that mask reuse otherwise
+            // exposes. Per-offload (default) samples a fresh A per
+            // offloaded GEMM — strictly safer (no reuse) but ~48× more
+            // QR work per BGE-base text (~140× for Qwen3).
+            let paper_parity = std::env::var("BEIR_PAPER_PARITY")
+                .map(|v| v == "1")
+                .unwrap_or(false);
+            let executor = if paper_parity {
+                eprintln!("[bge] paper-parity mode: one A per forward + shield(k=8, e=4)");
+                InProcessTrustedExecutor::with_seed(
+                    gpu.clone_shared(),
+                    MaskSeed::from_bytes([7u8; 32]),
+                )
+                .with_per_forward_mask(ShieldConfig::new(8, 4.0))
             } else {
-                "bge-base-en-v1.5-gelo-mask"
+                InProcessTrustedExecutor::with_seed(
+                    gpu.clone_shared(),
+                    MaskSeed::from_bytes([7u8; 32]),
+                )
+            };
+            // Engine precision + protocol mode go into the cache key so
+            // fp32/fp16 and per-offload/paper-parity runs don't share
+            // embeddings (their outputs differ enough to perturb rankings).
+            let cache_label = match (gpu.is_fp16(), paper_parity) {
+                (false, false) => "bge-base-en-v1.5-gelo-mask",
+                (true, false) => "bge-base-en-v1.5-gelo-mask-fp16",
+                (false, true) => "bge-base-en-v1.5-gelo-mask-paper",
+                (true, true) => "bge-base-en-v1.5-gelo-mask-fp16-paper",
             };
             let bge_mask_emb = maybe_cache(
                 GeloBertEmbedder::from_pretrained(
                     "BAAI/bge-base-en-v1.5",
-                    InProcessTrustedExecutor::with_seed(
-                        gpu.clone_shared(),
-                        MaskSeed::from_bytes([7u8; 32]),
-                    ),
+                    executor,
                 )?,
                 cache_label,
             )?;

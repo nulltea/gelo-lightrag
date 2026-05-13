@@ -44,14 +44,24 @@ pub fn run_with_hook<F: FnMut(usize, &mut Array2<f32>)>(
     input_ids: &[u32],
     mut after_layer: F,
 ) -> Result<Array2<f32>> {
+    let n = input_ids.len();
     let mut h = profile::time("tee:embed_lookup", || embedding_lookup(cfg, weights, input_ids));
-    for (li, layer) in weights.layers.iter().enumerate() {
-        h = decoder_block(cfg, layer, rope, exec, li as u16, h.view(), cfg.offload_layer(li))?;
-        after_layer(li, &mut h);
-    }
-    Ok(profile::time("tee:rmsnorm", || {
-        rms_norm(h.view(), weights.final_norm.as_slice().unwrap(), cfg.rms_norm_eps)
-    }))
+
+    // GELO paper §3.2 forward-pass session: see bert/forward.rs for the
+    // rationale. Paper-parity executors sample one mask here; per-offload
+    // executors and PlaintextExecutor treat this as a no-op.
+    exec.begin_forward_pass(n)?;
+    let result = (|| -> Result<Array2<f32>> {
+        for (li, layer) in weights.layers.iter().enumerate() {
+            h = decoder_block(cfg, layer, rope, exec, li as u16, h.view(), cfg.offload_layer(li))?;
+            after_layer(li, &mut h);
+        }
+        Ok(profile::time("tee:rmsnorm", || {
+            rms_norm(h.view(), weights.final_norm.as_slice().unwrap(), cfg.rms_norm_eps)
+        }))
+    })();
+    exec.end_forward_pass()?;
+    result
 }
 
 fn embedding_lookup(cfg: &DecoderConfig, w: &DecoderWeights, ids: &[u32]) -> Array2<f32> {
