@@ -253,14 +253,63 @@ impl<X: TrustedExecutor> Embedder for GeloQwenEmbedder<X> {
         let mut out = Vec::with_capacity(texts.len());
         for text in texts {
             let ids = self.tokenizer.encode(text, self.max_len)?;
-            let hidden = forward::run(&self.cfg, &self.weights, &self.rope, &mut self.exec, &ids)?;
+
+            // Resolve DP-Forward configuration once per text.
+            #[cfg(feature = "dp-forward")]
+            let dp_cfg = self.dp_forward;
+            #[cfg(not(feature = "dp-forward"))]
+            let dp_cfg: Option<()> = None;
+
+            // Intermediate-layer hook (M7.1): if `layer_index = Some(n)`,
+            // apply aMGM per token-row at the end of layer n. Otherwise the
+            // hook is a no-op and noise is applied at the pooled output
+            // below (legacy / not-recommended-for-retrieval path).
+            let hidden = {
+                #[cfg(feature = "dp-forward")]
+                {
+                    if let Some(cfg) = dp_cfg.filter(|c| c.layer_index.is_some()) {
+                        let target = cfg.layer_index.expect("filter guarantees Some");
+                        let clip = cfg.clip_c;
+                        let sigma = cfg.sigma;
+                        let rng = &mut self.dp_rng;
+                        forward::run_with_hook(
+                            &self.cfg,
+                            &self.weights,
+                            &self.rope,
+                            &mut self.exec,
+                            &ids,
+                            |li, h| {
+                                if li == target {
+                                    apply_dp_per_row(h, clip, sigma, rng);
+                                }
+                            },
+                        )?
+                    } else {
+                        forward::run(&self.cfg, &self.weights, &self.rope, &mut self.exec, &ids)?
+                    }
+                }
+                #[cfg(not(feature = "dp-forward"))]
+                {
+                    let _ = dp_cfg;
+                    forward::run(&self.cfg, &self.weights, &self.rope, &mut self.exec, &ids)?
+                }
+            };
+
             let pooled = pool::last_l2(hidden.view());
             #[allow(unused_mut)]
             let mut pooled_vec = pooled.to_vec();
             #[cfg(feature = "dp-forward")]
             if let Some(cfg) = &self.dp_forward {
-                dp_forward::amgm::clip_l2_in_place(&mut pooled_vec, cfg.clip_c);
-                dp_forward::amgm::add_gaussian_noise(&mut pooled_vec, cfg.sigma, &mut self.dp_rng);
+                // Legacy pooled-output application — only when no
+                // intermediate layer was specified.
+                if cfg.layer_index.is_none() {
+                    dp_forward::amgm::clip_l2_in_place(&mut pooled_vec, cfg.clip_c);
+                    dp_forward::amgm::add_gaussian_noise(
+                        &mut pooled_vec,
+                        cfg.sigma,
+                        &mut self.dp_rng,
+                    );
+                }
             }
             out.push(pooled_vec);
         }
@@ -269,5 +318,24 @@ impl<X: TrustedExecutor> Embedder for GeloQwenEmbedder<X> {
 
     fn model_identity(&self) -> &[u8] {
         self.model_identity.as_bytes()
+    }
+}
+
+/// Apply aMGM (clip + Gaussian noise) per token-row of a hidden-state
+/// matrix. Used by the intermediate-layer DP-Forward hook (M7.1) — the
+/// paper-faithful `add_and_norm_2` position.
+#[cfg(feature = "dp-forward")]
+fn apply_dp_per_row(
+    h: &mut ndarray::Array2<f32>,
+    clip_c: f32,
+    sigma: f64,
+    rng: &mut rand_chacha::ChaCha20Rng,
+) {
+    for mut row in h.rows_mut() {
+        let slice = row
+            .as_slice_mut()
+            .expect("Array2 rows are contiguous by construction");
+        dp_forward::amgm::clip_l2_in_place(slice, clip_c);
+        dp_forward::amgm::add_gaussian_noise(slice, sigma, rng);
     }
 }

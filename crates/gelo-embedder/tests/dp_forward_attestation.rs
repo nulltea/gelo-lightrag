@@ -125,3 +125,46 @@ fn mock_report_is_rejected_under_mismatched_dp_config() {
         "verifier with expected_model_id from cfg_b must reject a report issued under cfg_a"
     );
 }
+
+#[test]
+fn dp_layer_index_substitution_is_detected() {
+    // Two configs with identical (ε, δ, C, σ) but different layer_index
+    // must produce different `model_identity` bytes, so a report minted
+    // under `layer_index = Some(10)` is rejected by a verifier expecting
+    // `layer_index = Some(11)` (or `None`).
+    let weights = [0xC4u8; 32];
+    let cfg_layer_10 = DpForwardConfig::calibrate(4.0, 1e-5, 1.0).with_layer_index(Some(10));
+    let cfg_layer_11 = DpForwardConfig::calibrate(4.0, 1e-5, 1.0).with_layer_index(Some(11));
+    let cfg_pooled = DpForwardConfig::calibrate(4.0, 1e-5, 1.0); // layer_index = None
+
+    let id_10 = dp_bound_model_id_bytes(&weights, &cfg_layer_10);
+    let id_11 = dp_bound_model_id_bytes(&weights, &cfg_layer_11);
+    let id_pooled = dp_bound_model_id_bytes(&weights, &cfg_pooled);
+
+    // Sanity: same `(ε, δ, C, σ)` but different layer_index ⇒ different IDs.
+    assert_ne!(id_10, id_11);
+    assert_ne!(id_10, id_pooled);
+    assert_ne!(id_11, id_pooled);
+
+    // Mint a report under layer_index = Some(10); verifier expects Some(11).
+    let scheme_id = b"caprise-key-v1";
+    let issuer = MockReportIssuer::from_bundled().expect("load mock issuer");
+    let rd = ReportData::build(&id_10, scheme_id, None);
+    let issued = issuer.issue(rd).expect("issue mock report");
+
+    let expected_11_hash: [u8; 32] = Sha256::digest(&id_11).into();
+    let verifier = SnpAttestationVerifier::new(SnpRootTrust::with_mock_root())
+        .with_expected_model_id(expected_11_hash)
+        .with_clock(mock_now());
+
+    let binding = AttestedBinding {
+        model_identity: &id_10,
+        scheme_identity: scheme_id,
+        nonce: None,
+    };
+    let result = verifier.verify(&issued.report_bytes, &issued.vcek_cert_pem, binding);
+    assert!(
+        result.is_err(),
+        "verifier pinned to layer_index = Some(11) must reject a report issued under layer_index = Some(10)"
+    );
+}

@@ -23,9 +23,31 @@ pub fn run(
     exec: &mut impl TrustedExecutor,
     input_ids: &[u32],
 ) -> Result<Array2<f32>> {
+    run_with_hook(cfg, weights, rope, exec, input_ids, |_, _| {})
+}
+
+/// Same as [`run`] but invokes `after_layer(layer_idx, &mut h)` after the
+/// residual stream output of each transformer block (before the next
+/// layer's input). The hook is the integration point for DP-Forward
+/// intermediate-layer aMGM noise (M7.1): the embedder constructs a
+/// closure that matches against `DpForwardConfig::layer_index` and applies
+/// clip + Gaussian noise to each token-row of `h`.
+///
+/// For pre-norm decoder blocks (Qwen3-style), the layer output is the
+/// final residual add at the end of the block — the analog of BERT's
+/// `add_and_norm_2` position in the DP-Forward paper.
+pub fn run_with_hook<F: FnMut(usize, &mut Array2<f32>)>(
+    cfg: &DecoderConfig,
+    weights: &DecoderWeights,
+    rope: &RopeTables,
+    exec: &mut impl TrustedExecutor,
+    input_ids: &[u32],
+    mut after_layer: F,
+) -> Result<Array2<f32>> {
     let mut h = profile::time("tee:embed_lookup", || embedding_lookup(cfg, weights, input_ids));
     for (li, layer) in weights.layers.iter().enumerate() {
         h = decoder_block(cfg, layer, rope, exec, li as u16, h.view(), cfg.offload_layer(li))?;
+        after_layer(li, &mut h);
     }
     Ok(profile::time("tee:rmsnorm", || {
         rms_norm(h.view(), weights.final_norm.as_slice().unwrap(), cfg.rms_norm_eps)

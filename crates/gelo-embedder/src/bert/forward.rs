@@ -18,11 +18,28 @@ pub fn run(
     exec: &mut impl TrustedExecutor,
     input_ids: &[u32],
 ) -> Result<Array2<f32>> {
+    run_with_hook(cfg, weights, exec, input_ids, |_, _| {})
+}
+
+/// Same as [`run`] but invokes `after_layer(layer_idx, &mut h)` after the
+/// post-FFN `add_and_norm_2` position of each transformer block — the
+/// position used by the DP-Forward paper's released code for aMGM noise
+/// injection (`xiangyue9607/DP-Forward`, `noise_layer = 10` on BERT-base).
+/// The hook is the integration point for DP-Forward intermediate-layer
+/// aMGM (M7.1).
+pub fn run_with_hook<F: FnMut(usize, &mut Array2<f32>)>(
+    cfg: &BertConfig,
+    weights: &BertWeights,
+    exec: &mut impl TrustedExecutor,
+    input_ids: &[u32],
+    mut after_layer: F,
+) -> Result<Array2<f32>> {
     let mut h = build_embedding(cfg, weights, input_ids);
     h = layer_norm(h.view(), &weights.embeddings_ln_w, &weights.embeddings_ln_b, cfg.layer_norm_eps);
 
     for (li, layer) in weights.layers.iter().enumerate() {
         h = encoder_block(cfg, layer, exec, li as u16, h.view(), cfg.offload_layer(li))?;
+        after_layer(li, &mut h);
     }
     Ok(h)
 }
