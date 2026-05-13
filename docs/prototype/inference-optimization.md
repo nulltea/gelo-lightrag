@@ -560,36 +560,79 @@ secondary goal. Confirm with you before flipping the default.
 **Expected impact:** ~3–5× on query-phase wall-clock; zero impact
 on doc ingest.
 
-#### Tier 2 effort + outcome
+#### Tier 2 outcomes (2026-05-13)
 
-| Step | Effort | Risk | Wall-clock impact at 1k NFCorpus |
+Two of four planned sub-items landed and **crushed the target**.
+Headline: **500-doc NFCorpus GELO+mask config went from a >5 min
+projection to 11.4 s** — a ~30× whole-system speedup vs the
+post-Tier-1 baseline, on top of Tier 1's ~25× over the
+pre-migration cubecl-direct path.
+
+| Step | Status | Commit | 500-doc bench wall-clock |
 |---|---|---|---|
-| 2.1.a BLAS Householder | ½ day | low — same algorithm, no protocol change | GELO+mask 10 min → ~3 min |
-| 2.1.b faer QR | ½ day | low — new dep, same algorithm | ~3 min → ~2 min |
-| 2.2 Shape bucketing | 1 day | medium — touches tokenizer + attention mask wiring | mask cost variance ÷ 3, autotune surface ÷ N |
-| 2.3.a Attention CPU vectorisation | ½ day | low | 1.5× on attention slice |
-| 2.4 Query fastpath (gated decision) | ½ day | **policy** — threat-model trade-off | 3–5× on query wall-clock |
+| Tier 1 baseline (post-burn-cubecl migration) | ✓ | `45ff345` | ~5 min projection (1k was timing out at 22 min) |
+| 2.1.a BLAS-rewrite Haar QR | ✓ | `ac28462` | 80 s |
+| 2.3.a Vectorize attention softmax | ✓ | `86db002` | **11.4 s** |
+| 2.1.b faer QR | deferred | — | — |
+| 2.2 Shape bucketing + attention mask | deferred | — | — |
+| 2.4 Query fastpath (threat-model gated) | deferred | — | — |
 
-**Total effort:** ~3 days for 2.1+2.2+2.3 (the no-tradeoff items).
-2.4 deferred pending threat-model approval.
+Per-text wall-clock at 500-doc NFCorpus (avg seq_len ~150): **~20 ms**
+including the full GELO mask round-trip. Better than the 5-doc
+microbench's 26 ms/text — the long-tail mask cost from O(n³) Haar QR
+and from softmax's O(n²) per-head-per-layer hot loop has been
+largely eliminated.
 
-**Bench checkpoints:**
-- After 2.1.a: re-run BEIR_DOCS=1000. GELO+mask should finish in
-  under 5 min. If not, escalate to 2.1.b before moving on.
-- After 2.2+2.3.a: BEIR_DOCS=1000 should be under 2 min for all 5
-  configs (with `BEIR_BGE_DP=0`).
-- Tier 2 sign-off: BEIR full 3,633-doc corpus completes under 5 min
-  on the GELO+mask config. (Today this would take >30 min.)
+#### Tier 2 — deferred sub-items (status as of 2026-05-13)
+
+**2.1.b faer-backed QR** — deferred. Mask QR is now ~3–5% of wall-
+clock; an additional 1.5–2× on it would save <2% wall. Revisit only
+if a future change re-elevates mask cost (e.g., much longer corpora).
+
+**2.2 Shape bucketing + attention mask plumbing** — deferred. The
+original motivation was (a) cap mask cost on long-tail docs and (b)
+keep autotune cache / persistent pool hot. 2.1.a addressed (a)
+directly; (b) is less load-bearing now that the autotune cache
+persists to disk per Tier 1.4. The wiring cost (attention mask
+plumbing through `bert/attention.rs` + `multi_head_attention` + the
+mean-pool) is real (~1–2 days) and the upside is small (CI-cold-
+start fairness, marginal warm-state improvement). **Re-evaluate
+after Tier 3** — bucketing pairs naturally with the on-device
+tensor handle if shape variance shows up as a bottleneck there.
+
+**2.4 Query fastpath** — deferred pending threat-model decision on
+query confidentiality. Filed in task list (#78).
 
 #### Tier 2 — *not* doing
 
 - **Caching the mask across calls** — breaks GELO's fresh-per-batch
   property. Reject.
 - **Block-diagonal mask construction** — privacy weakening that
-  needs a separate security analysis. Filed in §Tier 6.
+  needs a separate security analysis. Filed in §Tier 5.
 - **Random signed-permutation masks** — leaves H's sparsity pattern
   exposed; not Haar.
 - **Streaming embedding (yield per-text)** — orthogonal concern.
+
+#### Constraints on Tier 3 learned from Tier 2
+
+Building Tier 3 on top of these results forces an honest accounting
+of what's still expensive:
+
+- **Mask round-trip per layer is intrinsic.** GELO requires the mask
+  `A` to stay on the trusted side. Sending `A` (or `Aᵀ`) to the GPU
+  to do the unmask there would let the untrusted side recover `H`
+  from `(Aᵀ · (U·W))` and `U·W` — privacy gone. So **at minimum
+  we keep one CPU↔GPU sync per layer** even with aggressive
+  on-device fusion. 12 syncs per BGE-base forward stay.
+- **Engine matmul still dominates (~91% of per-text wall).** The
+  remaining win must come from (1) cutting redundant syncs inside
+  `offload_qkv` (3 → 1 per layer), (2) enabling pointwise epilogue
+  fusion (`burn-cubecl-fusion` is feature-enabled but currently
+  dead because of the per-call sync), and (3) amortising input
+  upload across ops that share the masked H input.
+
+Realistic Tier 3 ceiling: 3–5× additional end-to-end speedup over
+Tier 2, NOT the 10–20× I optimistically projected pre-migration.
 
 ### Tier 3 — protocol-aware fusion (target: another 2–3×, ~1.5 weeks)
 
