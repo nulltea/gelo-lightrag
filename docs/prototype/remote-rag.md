@@ -243,12 +243,30 @@ crates/remote-rag/                this crate
   ε=4 (tight) the Stage-1 cosine order alone would miss the true top-1,
   and the Paillier-decrypted rerank restores it.
 
-### Deferred
+### Stage-1 ANN backend
 
-- ANN index on the RemoteRAG side. Linear cosine sweep over the in-memory
-  `Vec<IndexEntry>` for correctness; a production deployment would swap
-  in HNSW behind the same trait surface. See
-  [`future-rnd.md`](future-rnd.md).
+The Stage-1 ANN auto-switches between two backends based on corpus size:
+
+- **Below `LINEAR_THRESHOLD = 256` docs** — exact linear cosine sweep over
+  `Vec<IndexEntry>`. Deterministic, ~µs overhead per doc, used by the
+  unit tests (3–12-doc corpora).
+- **At or above 256 docs** — `hnsw_rs 0.3` (MIT/Apache-2.0) `Hnsw<f32,
+  DistDot>` index built lazily on first ingest past the threshold,
+  with `M=16`, `ef_construction=200`, and `ef_search=max(64, k')` at
+  query time. Inserts are incremental thereafter.
+
+Since the embedders produce L2-normalised pooled embeddings
+(`pool::{last,mean}_l2`), `DistDot` over those vectors equals `1 −
+cosine_similarity` — exact-up-to-f32-round-off, no separate cosine
+distance impl needed.
+
+**Measured at 10k docs** (`tests/remote_rag_scale.rs`): ingest = 18.3 s
+total (~1.83 ms/doc, dominated by HNSW build + AES-GCM + Paillier
+keygen); mean end-to-end query latency = 23.5 ms (Stage 1 + Stage 2
+PHE rerank with 256-bit Paillier on 15 over-fetched candidates); recall
+vs linear-cosine ground truth at k'=15 = 96.0 % (well above HNSW's
+typical 95 % at this `ef_search`). Linear-scan at 10k docs would take
+seconds.
 
 ---
 
@@ -469,9 +487,8 @@ builder on `GeloQwenEmbedder` applies whether the service is
 
 ## 8. Forward-looking work
 
-- **HNSW over the RemoteRAG plaintext index.** Drop in `hnsw_rs` behind
-  the same `Vec<IndexEntry>` interface; the linear sweep currently works
-  correctly but does not scale past ~10⁴ docs.
+- ~~HNSW over the RemoteRAG plaintext index~~ — **shipped in M7.2**;
+  see §4 *Stage-1 ANN backend*.
 - **Multi-query batching on the PHE rerank.** Amortise the Stage-2
   homomorphic dot products across a batch of queries to a single corpus,
   cutting per-query cost in proportion to batch size.

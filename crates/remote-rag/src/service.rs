@@ -9,6 +9,7 @@
 //! `crates/remote-rag/README.md` for the why.
 
 use anyhow::Result;
+use hnsw_rs::prelude::{DistDot, Hnsw};
 use rag_core::{
     AesChunkCipher, ChunkCiphertext, ChunkId, DocumentChunk, Embedder, RetrievalHit,
     cosine_similarity,
@@ -28,6 +29,37 @@ struct IndexEntry {
     chunk_ct: ChunkCiphertext,
     embedding: Vec<f32>,
 }
+
+/// Corpus size below which Stage-1 ANN uses a linear cosine sweep
+/// rather than HNSW. HNSW's graph-construction overhead exceeds its
+/// query benefit at toy sizes, and the unit tests use 3–12-doc corpora
+/// where forcing HNSW would (a) waste cycles and (b) introduce
+/// approximation noise into deterministic assertions. 256 is generous;
+/// any production corpus is far past it.
+const LINEAR_THRESHOLD: usize = 256;
+
+/// HNSW parameters. Defaults match `hnsw_rs`'s GloVe-25 example and
+/// the canonical Malkov–Yashunin paper recommendations for moderate-d
+/// vectors:
+/// - `max_nb_connection = 16` (M) — out-degree at each layer
+/// - `nb_layer = 16` — graph hierarchy depth cap
+/// - `ef_construction = 200` — neighbour-search beam width at build
+const HNSW_M: usize = 16;
+const HNSW_MAX_LAYER: usize = 16;
+const HNSW_EF_CONSTRUCTION: usize = 200;
+/// Default `ef_search`. Bumped at query time to `max(ef_search, k')`
+/// so requesting k' candidates always yields at least k' explored.
+const HNSW_EF_SEARCH: usize = 64;
+
+/// `DistDot` over L2-normalised vectors equals `1 - cosine_similarity`
+/// (hnsw_rs's `DistDot` returns `1 - dot(a, b)` so smaller = more
+/// similar, matching its "distance" convention). Our embedders produce
+/// unit-norm pooled embeddings (`pool::{last,mean}_l2`), so the
+/// substitution is exact modulo f32 round-off. This is explicitly
+/// recommended in the hnsw_rs glove example comment: "do l2
+/// normalisation … to use DistDot metric instead DistCosine to spare
+/// cpu."
+type AnnIndex = Hnsw<'static, f32, DistDot>;
 
 /// Per-thread RNG initializer for rayon `map_init`. Each worker thread
 /// gets a fresh ChaCha20 seeded from `OsRng` — Paillier nonces must be
@@ -58,6 +90,11 @@ pub struct RemoteRagService<E> {
 
     // === server-side state ===
     index: Vec<IndexEntry>,
+    /// HNSW ANN over the plaintext doc embeddings. Lazily constructed
+    /// on the first ingest after `index.len() ≥ LINEAR_THRESHOLD`; new
+    /// embeddings are inserted incrementally thereafter. Stage-1 search
+    /// branches on whether this is `Some`.
+    hnsw: Option<AnnIndex>,
 }
 
 impl<E: Embedder> RemoteRagService<E> {
@@ -76,6 +113,7 @@ impl<E: Embedder> RemoteRagService<E> {
             scale_bits: DEFAULT_SCALE_BITS,
             rng: ChaCha20Rng::from_seed(seed),
             index: Vec::new(),
+            hnsw: None,
         }
     }
 
@@ -113,16 +151,38 @@ impl<E: Embedder> RemoteRagService<E> {
 
     /// Ingest a batch of chunks. The embedder is called once; chunk text
     /// is AES-GCM-encrypted; plaintext embedding lands in the server-side
-    /// index.
+    /// index. Once `index.len()` crosses [`LINEAR_THRESHOLD`], an HNSW
+    /// ANN is lazily constructed (bulk-inserting all existing entries)
+    /// and subsequent inserts go into both `Vec<IndexEntry>` and HNSW.
     pub fn ingest_chunks(&mut self, chunks: Vec<DocumentChunk>) -> Result<()> {
         let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
         let embeddings = self.embedder.embed(&texts)?;
         for (chunk, embedding) in chunks.into_iter().zip(embeddings.into_iter()) {
             let chunk_ct = self.chunk_cipher.encrypt_chunk(&chunk)?;
+            let new_id = self.index.len();
             self.index.push(IndexEntry {
                 chunk_ct,
                 embedding,
             });
+            // Lazy HNSW bring-up the moment we cross the threshold.
+            // Bulk-insert all prior entries (including the just-pushed
+            // one), then switch to incremental inserts going forward.
+            if self.hnsw.is_none() && self.index.len() >= LINEAR_THRESHOLD {
+                let nb_elem = self.index.len().max(LINEAR_THRESHOLD);
+                let hnsw: AnnIndex = Hnsw::new(
+                    HNSW_M,
+                    nb_elem,
+                    HNSW_MAX_LAYER,
+                    HNSW_EF_CONSTRUCTION,
+                    DistDot {},
+                );
+                for (i, entry) in self.index.iter().enumerate() {
+                    hnsw.insert((entry.embedding.as_slice(), i));
+                }
+                self.hnsw = Some(hnsw);
+            } else if let Some(hnsw) = &self.hnsw {
+                hnsw.insert((self.index[new_id].embedding.as_slice(), new_id));
+            }
         }
         Ok(())
     }
@@ -144,15 +204,34 @@ impl<E: Embedder> RemoteRagService<E> {
         perturb(&mut noisy, &self.dp_cfg, &mut self.rng);
 
         // === Stage 1 (server) ===
+        // Below LINEAR_THRESHOLD: exact cosine sweep (deterministic;
+        // correct for test corpora). Above: HNSW approximate search.
+        // Both return up to `stage1_size` candidates; Stage 2's PHE
+        // rerank operates on exact cosine over the returned set, so
+        // HNSW's approximation only matters if it drops the true top-K
+        // before reaching Stage 2.
         let stage1_size = (top_k * self.over_fetch_factor).min(self.index.len());
-        let mut scored: Vec<(usize, f32)> = self
-            .index
-            .iter()
-            .enumerate()
-            .map(|(i, e)| (i, cosine_similarity(&noisy, &e.embedding)))
-            .collect();
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        let stage1: Vec<usize> = scored.into_iter().take(stage1_size).map(|(i, _)| i).collect();
+        let stage1: Vec<usize> = match &self.hnsw {
+            Some(hnsw) if self.index.len() >= LINEAR_THRESHOLD => {
+                let ef = HNSW_EF_SEARCH.max(stage1_size);
+                hnsw.search(&noisy, stage1_size, ef)
+                    .into_iter()
+                    .map(|n| n.d_id)
+                    .collect()
+            }
+            _ => {
+                let mut scored: Vec<(usize, f32)> = self
+                    .index
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| (i, cosine_similarity(&noisy, &e.embedding)))
+                    .collect();
+                scored.sort_by(|a, b| {
+                    b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                scored.into_iter().take(stage1_size).map(|(i, _)| i).collect()
+            }
+        };
 
         // === Stage 2 (client encrypt) ===
         // The client holds the keypair, so `PaillierPrivateKey::encrypt_signed`

@@ -7,6 +7,10 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 dp-forward = { workspace = true }
+# HNSW for RemoteRAG Stage-1 ANN. Below the LINEAR_THRESHOLD in
+# `src/service.rs` we keep the linear cosine sweep (test corpora, < 256
+# docs); above we use HNSW. MIT/Apache-2.0.
+hnsw_rs = { workspace = true }
 # Hand-rolled Paillier on num-bigint (see `src/paillier.rs` for rationale).
 # We considered fast-paillier 0.3.2 but its dependency on glass_pumpkin 1.9
 # (yanked transitive `core2 0.4`) and 1.10 (incompatible rand_core API)
