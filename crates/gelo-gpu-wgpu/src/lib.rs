@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use anyhow::{Result, anyhow};
 use burn_backend::Backend;
 use burn_cubecl::CubeBackend;
-use burn_tensor::{Tensor, TensorData};
+use burn_tensor::{Tensor, TensorData, Transaction};
 use cubecl_common::future;
 use cubecl_wgpu::{AutoGraphicsApi, RuntimeOptions, WgpuDevice, WgpuRuntime, init_setup_async};
 use ndarray::{Array2, Array3, ArrayView2, ArrayView3};
@@ -176,6 +176,77 @@ impl GpuOffloadEngine for WgpuVulkanEngine {
         let lhs = array2_to_tensor(input, &self.device);
         let out = lhs.matmul(weight);
         tensor2_to_array(out)
+    }
+
+    fn matmul_many(
+        &self,
+        handles: &[WeightHandle],
+        input: ArrayView2<'_, f32>,
+    ) -> Result<Vec<Array2<f32>>> {
+        if handles.is_empty() {
+            return Ok(Vec::new());
+        }
+        let k = input.ncols();
+        // Resolve weights up front + shape-check.
+        let weights = {
+            let map = self.weights.lock().unwrap();
+            handles
+                .iter()
+                .map(|h| {
+                    let w = map
+                        .get(h)
+                        .ok_or_else(|| anyhow!("weight {h:?} not registered"))?
+                        .clone();
+                    if w.dims()[0] != k {
+                        return Err(anyhow!(
+                            "matmul_many shape mismatch on {h:?}: input cols {k} != weight rows {}",
+                            w.dims()[0]
+                        ));
+                    }
+                    Ok(w)
+                })
+                .collect::<Result<Vec<_>>>()?
+        };
+
+        // ONE upload of the masked input.
+        let lhs = array2_to_tensor(input, &self.device);
+
+        // Issue all N matmuls lazily. Capture out-dims for the eventual
+        // ndarray rebuild; we lose access to dims() after registering with
+        // the transaction (which consumes the tensors).
+        let mut out_dims: Vec<(usize, usize)> = Vec::with_capacity(handles.len());
+        let mut transaction = Transaction::<CubeWgpu>::default();
+        for w in weights {
+            let out = lhs.clone().matmul(w);
+            let dims = out.dims();
+            out_dims.push((dims[0], dims[1]));
+            transaction = transaction.register(out);
+        }
+
+        // Single batched read: burn flushes the stream and downloads ALL
+        // registered tensors in one transaction. Documented at
+        // `burn_tensor::Transaction` as the canonical pattern for "reading
+        // multiple tensors at once" — better than N separate `into_data()`
+        // calls, which each force a device sync.
+        let datas: Vec<TensorData> = transaction.execute();
+        anyhow::ensure!(
+            datas.len() == out_dims.len(),
+            "Transaction returned {} datas; expected {}",
+            datas.len(),
+            out_dims.len()
+        );
+
+        datas
+            .into_iter()
+            .zip(out_dims.into_iter())
+            .map(|(data, (rows, cols))| {
+                let v: Vec<f32> = data
+                    .into_vec()
+                    .map_err(|e| anyhow!("burn TensorData → Vec<f32>: {e:?}"))?;
+                Array2::from_shape_vec((rows, cols), v)
+                    .map_err(|e| anyhow!("Array2 from tensor data: {e}"))
+            })
+            .collect()
     }
 
     fn matmul_dynamic(

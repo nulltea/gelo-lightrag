@@ -221,15 +221,27 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         let (mask, stacked, n_data) = self.build_shielded(hidden);
         let masked = profile::time("gelo:mask_apply", || mask.apply(stacked.view()));
 
-        let mq = profile::time("engine:matmul", || {
-            self.engine.matmul(WeightHandle::new(layer, WeightKind::Q), masked.view())
+        // Batched offload: one upload of `masked`, one device sync across
+        // all three matmuls (vs three of each via separate `matmul` calls).
+        // For backends without a lazy-tensor path, `matmul_many` falls back
+        // to looping over `matmul`, so correctness is preserved.
+        let handles = [
+            WeightHandle::new(layer, WeightKind::Q),
+            WeightHandle::new(layer, WeightKind::K),
+            WeightHandle::new(layer, WeightKind::V),
+        ];
+        let qkv_out = profile::time("engine:matmul_many", || {
+            self.engine.matmul_many(&handles, masked.view())
         })?;
-        let mk = profile::time("engine:matmul", || {
-            self.engine.matmul(WeightHandle::new(layer, WeightKind::K), masked.view())
-        })?;
-        let mv = profile::time("engine:matmul", || {
-            self.engine.matmul(WeightHandle::new(layer, WeightKind::V), masked.view())
-        })?;
+        anyhow::ensure!(
+            qkv_out.len() == 3,
+            "engine.matmul_many returned {} results; expected 3",
+            qkv_out.len()
+        );
+        let mut it = qkv_out.into_iter();
+        let mq = it.next().expect("len checked above");
+        let mk = it.next().expect("len checked above");
+        let mv = it.next().expect("len checked above");
 
         if self.verify_probes > 0 {
             for (kind, observed) in

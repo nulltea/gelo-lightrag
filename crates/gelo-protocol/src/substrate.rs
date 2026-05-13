@@ -46,6 +46,33 @@ pub trait GpuOffloadEngine: Send {
     /// masking is applied by the trusted side before the call.
     fn matmul(&self, handle: WeightHandle, input: ArrayView2<f32>) -> Result<Array2<f32>>;
 
+    /// Compute `input · W[h]` for each `h` in `handles`, sharing **one
+    /// upload of `input` and one device sync** across all N matmuls.
+    /// Returns the results in the same order as `handles`.
+    ///
+    /// Required-equivalent shape: each `W[h]` must accept `input`'s second
+    /// dim; outputs can differ in their second dim.
+    ///
+    /// **Why this exists:** the GELO mask round-trip means the trusted side
+    /// pays one upload + one sync per offloaded GEMM via `matmul()`. For
+    /// `offload_qkv` (3 matmuls sharing the same masked input) that's 2
+    /// redundant uploads + 2 redundant syncs per layer — ~24 wasted
+    /// CPU↔GPU bounces per BGE-base forward. With lazy-tensor engines
+    /// (burn-cubecl) `matmul_many` collapses the redundancy.
+    ///
+    /// Default impl just loops over `matmul`, so backends without a
+    /// lazy-tensor path produce the right answer without the speedup.
+    fn matmul_many(
+        &self,
+        handles: &[WeightHandle],
+        input: ArrayView2<f32>,
+    ) -> Result<Vec<Array2<f32>>> {
+        handles
+            .iter()
+            .map(|h| self.matmul(*h, input))
+            .collect()
+    }
+
     /// Two-operand dynamic matmul where neither operand is a pre-registered
     /// weight. Required by OutAttnMult (TwinShield §V-A): both `Q` and `Kᵀ`
     /// are runtime values, so neither side can be uploaded ahead of time.
