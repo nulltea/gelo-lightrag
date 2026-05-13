@@ -7,8 +7,13 @@
 //! * `fetch_document_markdown` — chains the edgequake `GET /documents/{id}` and
 //!   `GET /documents/pdf/{pdf_id}/content` endpoints and caches the markdown
 //!   next to the `target/` directory so repeated runs don't re-hit the API.
+//! * `beir` — loader for BEIR IR benchmark datasets (M7.3).
+//! * `embed_cache::CachingEmbedder` — disk-cached Embedder wrapper (M7.3).
 
 #![allow(dead_code)]
+
+pub mod beir;
+pub mod embed_cache;
 
 use std::env;
 use std::fs;

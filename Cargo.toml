@@ -47,6 +47,8 @@ num-traits = "0.2"
 num-integer = "0.1"
 num-prime = "0.5"
 hnsw_rs = "0.3"
+flate2 = "1.0"
+zip = "2.0"
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 wgpu = "26"
 cubecl = { version = "=0.9.0-pre.5", default-features = false, features = ["std", "wgpu"] }

@@ -219,52 +219,96 @@ dominates.
 
 ## 6. Risks and proposed fixes
 
-### Risk: aMGM at the pooled-output level destroys retrieval at standard ε
+### Risk: aMGM at standard ε destroys zero-shot retrieval *regardless of layer position*
 
-The accuracy bench (`crates/approach4/tests/obfuscation_accuracy.rs`) on
-a 12-doc / 4-query corpus with MiniLM-L6 (384-d) plaintext baseline:
+This risk was originally documented as "aMGM at the **pooled-output**
+level destroys retrieval" — with the (paper-grounded) hypothesis that
+applying the mechanism at an **intermediate transformer layer** would
+recover utility. M7.1 implemented the intermediate-layer hook
+(`DpForwardConfig::with_layer_index(Some(n))`); M7.3 measured both paths
+on BEIR/NFCorpus (3,633 docs, 100 queries, qrels-based nDCG@10) and
+**empirically falsified the recovery hypothesis**:
 
-| Config | top1_base (rank-1 matches baseline) | rec@3 |
+| Embedder & DP position (ε=4, δ=1e-5, C=1.0) | nDCG@10 | % of plain |
 |---|---|---|
-| CAPRISE (no DP) | 1.00 | 1.00 |
-| CAPRISE + DP-Forward(ε=1) | 0.25 | 0.22 |
-| CAPRISE + DP-Forward(ε=4) | **0.00** | 0.22 |
-| CAPRISE + DP-Forward(ε=16) | 0.17 | 0.28 |
+| FastEmbed MiniLM-L6 plain (CAPRISE) | 0.349 | 100 % |
+| FastEmbed + DP@pooled output | 0.007 | 2 % |
+| **BGE-base plain (CAPRISE, 12-layer BERT)** | **0.423** | **100 %** |
+| **BGE-base + DP @ layer 10 (paper default, M7.1)** | **0.004** | **~1 %** |
+| **BGE-base + DP @ pooled output** | **0.008** | **~2 %** |
 
-At `(ε=4, δ=1e-5, C=1.0)` — the paper's reference operating point — the
-Balle–Wang bisection gives σ ≈ 2.16. Adding `N(0, 2.16² · I)` to a
-unit-norm 384-d embedding whose components average ~0.05 is **40× signal
-magnitude per component**, which scrambles cosine ranks completely.
+Both DP positions collapse retrieval to near-random nDCG@10 (0.004–0.008
+vs ~0.42 plaintext). The intermediate-layer position the Yue et al.
+released code uses (`noise_layer=10` on a 12-layer BERT, position
+`add_and_norm_2`) does *not* deliver the utility recovery we
+hypothesised — for zero-shot retrieval at the paper's reference ε.
 
-This is consistent with the DP-Forward paper's own approach: Yue et al.
-apply the mechanism at **intermediate transformer layers** (typically
-layer 10 in BERT-base), where representations are much higher-dimensional
-(hidden-size × seq-len) and individual components carry less relative
-information. Applied at the pooled output — where the entire semantic
-signal lives in 384 (or 768/1024) dimensions — standard-ε aMGM destroys
-the signal-to-noise ratio.
+**Why it doesn't transfer.** Two compounding reasons, both flagged as
+caveats during M7.1 planning and now confirmed empirically:
 
-**Fix.** Three orthogonal mitigations, none of which we apply by default:
+1. **`C=1.0` over-clips intermediate-layer activations.** BERT layer-10
+   hidden state rows have natural L2 norms of O(10–30); the paper's
+   pre-processing normalises to unit Frobenius norm before clipping, but
+   our integration applies `clip_l2_in_place(_, 1.0)` directly to the
+   raw layer output. The clip ratio is then ~10–30× before the Gaussian
+   noise is even added — by layer 11–12, the residual stream is mostly
+   attenuated original signal + N(0, σ²I), and the pooled embedding is
+   nearly pure noise.
+2. **The paper validates fine-tuned downstream classification, not
+   zero-shot retrieval.** Yue et al.'s reported "<2 pp utility loss"
+   measures GLUE classification accuracy after supervised fine-tuning
+   on DP-noised representations. The downstream classifier *learns* to
+   absorb noise at the calibrated layer. Zero-shot retrieval has no
+   equivalent adaptation — the noise propagates straight through to the
+   pooled embedding with no learned correction, and cosine similarity
+   over noised vectors is meaningless.
 
-1. *Apply DP-Forward earlier in the encoder*, before pooling collapses
-   the representation. Requires inserting noise inside the GELO forward
-   loop at a designated layer index, not after `pool::last_l2`.
-   ~20 LOC change to `gelo-embedder/src/decoder/forward.rs` behind a
-   `dp-forward-layer-n` config field.
-2. *Loosen ε beyond the paper's reference range.* Retrieval utility
-   recovers at very loose budgets (ε ≫ 100) but the DP guarantee becomes
-   mostly cosmetic.
-3. *Pair with a higher-dim embedder.* Larger `d` means each component
-   carries less signal individually, so the same σ has smaller relative
-   impact. At Qwen3-Embedding-0.6B's 1024-d the relative impact is
-   ~2.6× smaller than at MiniLM-L6's 384-d — still material but
-   meaningfully better.
+**What still works for DP-Forward on the prototype:**
 
-For the current prototype, DP-Forward is best understood as a layer that
-gives a **formal `(ε,δ)`-SeqLDP guarantee at the cost of retrieval
-quality**, not as a free privacy upgrade. The composition story with
-CAPRISE (decryption can never recover the clean embedding) holds
-regardless; it's the *retrieval utility* that degrades.
+- The mechanism gives a **formal `(ε,δ)`-SeqLDP guarantee** on the
+  released embedding regardless of utility — that's intact.
+- The **attestation binding** (`config_digest` covers ε, δ, C, σ, and
+  `layer_index`) gives a SEV-SNP report that commits to the operating
+  point, including which layer the noise was applied at — useful for
+  proving to a relying party that the CVM is running DP.
+- The **intermediate-layer hook itself** is correctly implemented; if a
+  future change introduces DP-aware fine-tuning of the embedder, the
+  hook is the integration point.
+
+**Fix paths (none currently implemented, in priority order):**
+
+1. *DP-aware fine-tuning of the embedder*, following the paper's full
+   recipe (insert noise during training, let the model adapt). The
+   ~20-LOC inference-time hook stays; the training pipeline is the
+   missing piece. Out of scope for a prototype that doesn't own the
+   embedder.
+2. *Loosen ε well beyond the paper's reference range.* Retrieval might
+   start to recover at ε ≫ 100, but at that point the DP guarantee is
+   essentially cosmetic — the radius `n/ε` shrinks far below
+   inter-document cosine spread.
+3. *Pre-normalise rows to unit Frobenius norm before clipping.* This
+   matches the paper's preprocessing assumption and would at least
+   eliminate the over-clipping confound. Doesn't solve the
+   no-adaptation problem (and pre-normalising arbitrary intermediate
+   layer activations may itself break the downstream computation), but
+   is worth measuring as a sanity check.
+4. *Use a different privacy primitive entirely.* For retrieval-utility
+   preservation under formal DP, the field has moved toward
+   distance-relative notions like RemoteRAG's `(n,ε)`-DistanceDP (see
+   `remote-rag.md`), which our M7.3 bench shows preserves nDCG@10
+   exactly — at the cost of a different threat model.
+
+**Honest summary of the current DP-Forward state in this prototype.** It
+gives `(ε,δ)`-SeqLDP at standard ε, validated against the paper's
+formal guarantee, with attested integration. It does **not** preserve
+zero-shot retrieval utility at standard ε — applying it to a deployed
+retrieval pipeline is destructive regardless of where in the encoder
+the noise is injected. RemoteRAG (`docs/prototype/remote-rag.md`)
+remains the better fit for "preserve retrieval, defend against the
+server learning the query" workloads. DP-Forward earns its keep only
+when defending against post-decryption embedding inversion by a
+key-holder who is willing to accept catastrophic recall — a narrow but
+real threat model.
 
 ### Risk: Sensitivity bound `C` is a hyperparameter
 

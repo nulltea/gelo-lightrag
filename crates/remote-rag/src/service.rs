@@ -9,7 +9,7 @@
 //! `crates/remote-rag/README.md` for the why.
 
 use anyhow::Result;
-use hnsw_rs::prelude::{DistDot, Hnsw};
+use hnsw_rs::prelude::{DistCosine, Hnsw};
 use rag_core::{
     AesChunkCipher, ChunkCiphertext, ChunkId, DocumentChunk, Embedder, RetrievalHit,
     cosine_similarity,
@@ -51,15 +51,15 @@ const HNSW_EF_CONSTRUCTION: usize = 200;
 /// so requesting k' candidates always yields at least k' explored.
 const HNSW_EF_SEARCH: usize = 64;
 
-/// `DistDot` over L2-normalised vectors equals `1 - cosine_similarity`
-/// (hnsw_rs's `DistDot` returns `1 - dot(a, b)` so smaller = more
-/// similar, matching its "distance" convention). Our embedders produce
-/// unit-norm pooled embeddings (`pool::{last,mean}_l2`), so the
-/// substitution is exact modulo f32 round-off. This is explicitly
-/// recommended in the hnsw_rs glove example comment: "do l2
-/// normalisation … to use DistDot metric instead DistCosine to spare
-/// cpu."
-type AnnIndex = Hnsw<'static, f32, DistDot>;
+/// `DistCosine` returns `max(0, 1 − cos_sim)` and so produces a valid
+/// HNSW distance over any pair of f32 vectors, including unit-norm ones
+/// whose true cosine is negative (which `hnsw_rs::DistDot` rejects with
+/// an `assert!(dot >= 0)` — fine for the GloVe example's all-positive
+/// dataset but wrong for general retrieval where dissimilar embeddings
+/// can have negative cosine). Our embedders produce unit-norm pooled
+/// vectors via `pool::{last,mean}_l2`, so `DistCosine` matches our
+/// scoring direction exactly.
+type AnnIndex = Hnsw<'static, f32, DistCosine>;
 
 /// Per-thread RNG initializer for rayon `map_init`. Each worker thread
 /// gets a fresh ChaCha20 seeded from `OsRng` — Paillier nonces must be
@@ -174,7 +174,7 @@ impl<E: Embedder> RemoteRagService<E> {
                     nb_elem,
                     HNSW_MAX_LAYER,
                     HNSW_EF_CONSTRUCTION,
-                    DistDot {},
+                    DistCosine {},
                 );
                 for (i, entry) in self.index.iter().enumerate() {
                     hnsw.insert((entry.embedding.as_slice(), i));
