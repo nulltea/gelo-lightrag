@@ -582,6 +582,43 @@ the budget would be ~7 GB and force a 64 GB SKU.
 
 ---
 
+## Appendix: GELO masking does not corrupt retrieval ranking
+
+A confounded observation in an early accuracy bench attributed
+ranking-corruption to "decoder-LLM anisotropy under GELO masking." A
+follow-up controlled experiment
+(`crates/approach4/tests/gelo_embedder_accuracy.rs`) falsifies that:
+
+| Config | top1_grp | top1_vs_plain | rec3_vs_plain |
+|---|---|---|---|
+| FastEmbed MiniLM-L6 (control) | 1.00 | — | — |
+| BGE-small plain | 1.00 | — | — |
+| BGE-small + GELO masking | **1.00** | **1.00** | **1.00** |
+| Qwen3-0.6B plain | 1.00 | — | — |
+| Qwen3-0.6B + GELO masking | **1.00** | **1.00** | **1.00** |
+| Qwen3-0.6B + GELO + OutAttnMult forced at any n | **1.00** | **1.00** | **1.00** |
+| Qwen3-0.6B + GELO on Vulkan engine | **1.00** | **1.00** | **1.00** |
+| Qwen3-0.6B plain + `"Instruct: …"` prefix | 0.50 | **0.25** | **0.25** |
+
+GELO masking, the OutAttnMult 4-partition Q·Kᵀ path forced on at short
+sequences, and the Vulkan engine all preserve ranking **bit-for-bit**
+against their plain counterparts (`top1_vs_plain = 1.00`). The actual
+corruption source identified by the bench was the
+model-card-recommended `"Instruct: …\nQuery: …"` prefix interacting
+badly with **last-token pooling**: ~12 instruction tokens prepended to a
+short query means the pooled embedding sits in instruction-context
+space, not query-content space, collapsing semantic separation across
+queries.
+
+Practical guidance: do not apply Qwen3-Embedding-0.6B's HF instruction
+prefix to short-query zero-shot retrieval. The parity tests in
+`crates/gelo-embedder/tests/{decoder_parity.rs, qwen3_e2e.rs}` already
+confirm GELO masking preserves embeddings within `max_abs < 1e-2` per
+component, and the accuracy bench confirms that level of drift is below
+the threshold needed to flip cosine ranks on a 12-doc corpus.
+
+---
+
 ## References
 
 - Belikov & Fedotov, "GELO: Activation-Mask Split-Inference for Open-Weight
