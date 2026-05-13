@@ -84,11 +84,40 @@ impl<E: Embedder> Embedder for DpForwardWrapper<E> {
     }
 }
 
-/// Cached FastEmbed factory — every config goes through this so the
-/// internal 64-batch chunking in `CachingEmbedder` avoids the all-at-
-/// once 3.6k OOM, and second-run-onwards is instant.
-fn cached_fastembed(label: &str) -> anyhow::Result<CachingEmbedder<FastEmbedEmbedder>> {
-    CachingEmbedder::new(FastEmbedEmbedder::new_smallest()?, label)
+/// `BEIR_EMBED_CACHE=1` opt-in: wrap every embedder in CachingEmbedder
+/// so re-runs of the bench replay previously-computed embeddings from
+/// `target/embed-cache/`. The cache is keyed by `(model_label,
+/// model_identity, text_hash)`.
+///
+/// Default OFF because the cache silently turns wall-clock measurement
+/// into "what's on disk". It's the right choice for ranking-only
+/// validation where determinism-given-same-embeddings is the goal
+/// (M7.1/M7.3 protocol-fidelity work), the wrong choice for perf A/B.
+fn embed_cache_enabled() -> bool {
+    std::env::var("BEIR_EMBED_CACHE")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+}
+
+/// Wrap `inner` in CachingEmbedder if `BEIR_EMBED_CACHE=1`, else box
+/// `inner` directly. Returns a `Box<dyn Embedder>` so the caller's
+/// generic site doesn't need to switch between two concrete types.
+fn maybe_cache<E: Embedder + 'static>(
+    inner: E,
+    label: &str,
+) -> anyhow::Result<Box<dyn Embedder>> {
+    if embed_cache_enabled() {
+        Ok(Box::new(CachingEmbedder::new(inner, label)?))
+    } else {
+        Ok(Box::new(inner))
+    }
+}
+
+/// Backwards-compat helper for the FastEmbed configs — same env-gated
+/// behaviour as `maybe_cache` but specialized to FastEmbed construction.
+fn cached_fastembed(label: &str) -> anyhow::Result<Box<dyn Embedder>> {
+    let inner = FastEmbedEmbedder::new_smallest()?;
+    maybe_cache(inner, label)
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -170,8 +199,8 @@ fn build_plain_baseline(
     queries: &[(String, String)],
     k_max: usize,
 ) -> anyhow::Result<PlainBaseline> {
-    eprintln!("[baseline] embedding {} docs (cached)...", dataset.docs.len());
-    let mut embedder = CachingEmbedder::new(
+    eprintln!("[baseline] embedding {} docs...", dataset.docs.len());
+    let mut embedder = maybe_cache(
         FastEmbedEmbedder::new_smallest()?,
         "fastembed-minilm-l6-plain",
     )?;
@@ -184,7 +213,7 @@ fn build_plain_baseline(
         .map(|(d, e)| (d.id.0.clone(), e))
         .collect();
 
-    eprintln!("[baseline] embedding {} queries (cached)...", queries.len());
+    eprintln!("[baseline] embedding {} queries...", queries.len());
     let q_texts: Vec<String> = queries.iter().map(|(_, t)| t.clone()).collect();
     let q_embeds = embedder.embed(&q_texts)?;
 
@@ -433,10 +462,11 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
     //   - BGE + CAPRISE + DP at layer 10     ← M7.1 intermediate-layer
     //   - BGE + CAPRISE + DP at pooled out   ← legacy (control)
     //
-    // With CachingEmbedder, BGE inferences are cached per
-    // model_identity. The DP-enabled embedder's identity includes the
-    // DP config digest, so each DP variant has its own cache entry —
-    // first run is ~3-5 min per BGE config, subsequent runs are instant.
+    // BGE embeddings are NOT cached on disk by this bench — earlier
+    // runs used a CachingEmbedder wrapper but it silently turned every
+    // post-first run into cache hits, contaminating wall-clock numbers.
+    // Re-embed every run; if you need ranking-only validation use the
+    // common::embed_cache helper directly.
     let run_bge = std::env::var("BEIR_BGE").map(|v| v != "0").unwrap_or(true);
     // BGE sub-config gates. Default is now: only GELO+mask runs.
     //   - BGE plain (no mask) and the two BGE+DP variants are skipped
@@ -486,7 +516,7 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
 
         let bge_plain = if run_bge_plain {
             eprintln!("[run] BGE-base (plain, no DP) — first run embeds 3.6k docs on Vulkan...");
-            let bge_plain_emb = CachingEmbedder::new(
+            let bge_plain_emb = maybe_cache(
                 GeloBertEmbedder::from_pretrained(
                     "BAAI/bge-base-en-v1.5",
                     PlaintextExecutor::new(gpu.clone_shared()),
@@ -518,7 +548,7 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
             eprintln!("[run] BGE-base + CAPRISE + DP-Forward(ε=4) at LAYER 10 (M7.1 path)...");
             let dp_layer_cfg =
                 DpForwardConfig::calibrate(4.0, 1e-5, 1.0).with_layer_index(Some(10));
-            let bge_dp_layer_emb = CachingEmbedder::new(
+            let bge_dp_layer_emb = maybe_cache(
                 GeloBertEmbedder::from_pretrained(
                     "BAAI/bge-base-en-v1.5",
                     PlaintextExecutor::new(gpu.clone_shared()),
@@ -541,7 +571,7 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
 
             eprintln!("[run] BGE-base + CAPRISE + DP-Forward(ε=4) at POOLED output (control)...");
             let dp_pooled_cfg = DpForwardConfig::calibrate(4.0, 1e-5, 1.0); // layer_index = None
-            let bge_dp_pooled_emb = CachingEmbedder::new(
+            let bge_dp_pooled_emb = maybe_cache(
                 GeloBertEmbedder::from_pretrained(
                     "BAAI/bge-base-en-v1.5",
                     PlaintextExecutor::new(gpu.clone_shared()),
@@ -580,7 +610,7 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
             } else {
                 "bge-base-en-v1.5-gelo-mask"
             };
-            let bge_mask_emb = CachingEmbedder::new(
+            let bge_mask_emb = maybe_cache(
                 GeloBertEmbedder::from_pretrained(
                     "BAAI/bge-base-en-v1.5",
                     InProcessTrustedExecutor::with_seed(
@@ -643,7 +673,7 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
             gpu.adapter_info().device_type,
         );
         eprintln!("[run] Qwen3-Embedding-0.6B + GELO mask (Vulkan + in-process TEE) — first run downloads ~1.2 GB...");
-        let qwen3_emb = CachingEmbedder::new(
+        let qwen3_emb = maybe_cache(
             GeloQwenEmbedder::from_pretrained(
                 "Qwen/Qwen3-Embedding-0.6B",
                 InProcessTrustedExecutor::with_seed(

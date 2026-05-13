@@ -123,7 +123,6 @@ fn apply_causal_mask(scores: &mut Array2<f32>) {
     // Mask the strictly upper triangle. Writing through contiguous row
     // slices lets LLVM emit a tight memset-style store (avoiding the
     // per-element bounds-check that `scores[[i, j]]` would force).
-    let n = scores.nrows();
     for (i, mut row) in scores.axis_iter_mut(Axis(0)).enumerate() {
         let row_slice = row
             .as_slice_mut()

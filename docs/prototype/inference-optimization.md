@@ -840,20 +840,49 @@ Every step in §3 must preserve:
 
 ### Bench checkpoint targets
 
-| Tier | BGE-base ms/doc (single-text) | BGE-base ms/doc (batch=32) |
+> **2026-05-13 — CachingEmbedder contamination warning:** Earlier
+> Tier 2 / Tier 3 wall-clock numbers reported on this bench were
+> dominated by `CachingEmbedder` disk hits, not actual inference. The
+> headline "Tier 2 post-migration: 11.4 s on 500-doc" was the wall
+> clock of *reading 549 cached embeddings off disk*. The cache wrapper
+> existed for ranking-only validation (M7.1/M7.3 protocol-fidelity
+> work) and was the right call there because rankings are
+> deterministic given the same embeddings.
+>
+> The bench is now uncached by default (CachingEmbedder is opt-in via
+> `BEIR_EMBED_CACHE=1`). All subsequent perf numbers must be uncached.
+> Below is the corrected post-Tier-2 reality.
+
+#### True per-text wall-clock at NFCorpus seq_len (uncached)
+
+| State | 500-doc GELO+BGE+mask wall | Per-text |
+|---|---:|---:|
+| Pre-migration cubecl-direct | (>30 min projected; timed out at 22 min on 1k-doc) | >3 s |
+| **Post-Tier-1 + Tier-2 (today)** | **664 s (≈11 min)** | **1.2 s** |
+| Cached re-run (contaminated) | 11.4 s | — (fake) |
+
+So Tier 1 (burn-cubecl migration) + Tier 2 (BLAS QR + softmax
+vectorize) really did improve per-text by ~2–3×, **not 30×** as the
+cached numbers suggested.
+
+#### Speculative Tier 3 / Tier 4 / Tier Q targets
+
+These are the per-doc projections after additional work lands. They
+are speculative until measured uncached at NFCorpus scale.
+
+| Speculative state | BGE-base ms/doc | Notes |
 |---|---|---|
-| baseline (today) | ~900 | not measured |
-| post-Tier 1 mid-checkpoint (1.1 + 1.2 only, 4–5 doc subset) | ≤ ~300 (≥3× cold-start cut) | n/a |
-| post-Tier 1 full (1k-doc subset) | ~100–150 | ~60 |
-| post-Tier 2 (ggml engine, if it wins the A/B) | ~70–100 | ~40 |
-| post-Tier 3 | ~40–60 | ~20 |
-| post-Tier 4 | ~25 | ~10 |
-| fastembed CPU reference | ~10 | ~3 |
-| llama.cpp Vulkan reference (`llama-cpp-rs --features vulkan`) | ~5 | ~2 |
+| Mask-per-layer (deferred, security analysis needed) | ~400 | cuts 48 → 12 mask samples per text |
+| + fp16 engine matmul (mixed HW results to date) | ~300 | only on f16-friendly HW |
+| + cross-text batching (Tier 2.2 + Tier 3) | ~80 | block-diagonal mask, batched dispatch |
+| fastembed CPU reference | ~10 | for context |
+| llama.cpp Vulkan reference | ~5 | for context |
 
 We will not match llama.cpp at small batch on iGPU — the GELO mask
 round-trip imposes a structural overhead we can't optimize away. But
-within 3–5× of fastembed CPU is achievable and is the target.
+within 5–10× of fastembed CPU at uncached corpus-scale is the
+realistic target; the cached numbers misled us into thinking we were
+already there.
 
 ---
 

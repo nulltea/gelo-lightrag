@@ -55,6 +55,18 @@ pub trait Embedder {
     }
 }
 
+/// Forwarding impl for `Box<dyn Embedder>`. Useful when a caller wants to
+/// choose between embedder variants at runtime (e.g. caching wrapper on/off)
+/// without making the consumer generic over concrete embedder types.
+impl Embedder for Box<dyn Embedder> {
+    fn embed(&mut self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
+        (**self).embed(texts)
+    }
+    fn model_identity(&self) -> &[u8] {
+        (**self).model_identity()
+    }
+}
+
 pub trait EmbeddingEncryptionScheme {
     fn scheme_name(&self) -> &'static str;
     fn encrypt_document(&mut self, embedding: &[f32]) -> anyhow::Result<EncryptedEmbedding>;
