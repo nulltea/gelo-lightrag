@@ -1,5 +1,5 @@
 use anyhow::Result;
-use ndarray::{Array1, Array2, ArrayView2};
+use ndarray::{Array1, Array2, ArrayView2, Axis};
 
 use gelo_protocol::{TrustedExecutor, WeightHandle, WeightKind};
 
@@ -133,24 +133,36 @@ fn add(a: ArrayView2<'_, f32>, b: ArrayView2<'_, f32>) -> Array2<f32> {
 }
 
 fn add_bias(mut m: Array2<f32>, bias: &Array1<f32>) -> Array2<f32> {
-    for mut row in m.rows_mut() {
-        for (j, v) in row.iter_mut().enumerate() {
-            *v += bias[j];
-        }
+    // Single-thread; broadcast-add auto-vectorises in LLVM. Rayon overhead
+    // at our per-call work size (typ. 128×768) costs more than it saves.
+    for mut row in m.axis_iter_mut(Axis(0)) {
+        row += bias;
     }
     m
 }
 
 fn layer_norm(x: ArrayView2<'_, f32>, gamma: &Array1<f32>, beta: &Array1<f32>, eps: f32) -> Array2<f32> {
+    // Single-pass mean+variance (E[X²] − E[X]²) per row, then a single
+    // multiply-add per element using a precomputed `inv_denom`. Avoids the
+    // 2× pass + per-element division of the textbook formulation. Single-
+    // threaded; per-row work is too small to amortise rayon overhead.
     let d = x.ncols() as f32;
+    let inv_d = d.recip();
     let mut out = Array2::<f32>::zeros(x.raw_dim());
-    for (i, row) in x.rows().into_iter().enumerate() {
-        let mean = row.iter().sum::<f32>() / d;
-        let var = row.iter().map(|v| (*v - mean).powi(2)).sum::<f32>() / d;
-        let denom = (var + eps).sqrt();
-        let mut dst = out.row_mut(i);
-        for (j, v) in row.iter().enumerate() {
-            dst[j] = (*v - mean) / denom * gamma[j] + beta[j];
+    for (mut dst, row) in out.axis_iter_mut(Axis(0)).zip(x.axis_iter(Axis(0))) {
+        let mut s = 0.0_f32;
+        let mut ss = 0.0_f32;
+        for &v in row.iter() {
+            s += v;
+            ss += v * v;
+        }
+        let mean = s * inv_d;
+        let var = ss * inv_d - mean * mean;
+        let inv_denom = (var + eps).sqrt().recip();
+        for ((d_v, &x_v), (&g, &b)) in
+            dst.iter_mut().zip(row.iter()).zip(gamma.iter().zip(beta.iter()))
+        {
+            *d_v = (x_v - mean) * inv_denom * g + b;
         }
     }
     out
@@ -158,7 +170,8 @@ fn layer_norm(x: ArrayView2<'_, f32>, gamma: &Array1<f32>, beta: &Array1<f32>, e
 
 fn gelu(mut m: Array2<f32>) -> Array2<f32> {
     // erf-based GELU (matches HF BERT's "gelu" activation exactly):
-    // 0.5 * x * (1 + erf(x / sqrt(2)))
+    // 0.5 * x * (1 + erf(x / sqrt(2))). Single-threaded; element work
+    // is too small to benefit from rayon scheduling.
     let inv_sqrt_2 = 1.0_f32 / 2.0_f32.sqrt();
     for v in m.iter_mut() {
         let y = *v * inv_sqrt_2;

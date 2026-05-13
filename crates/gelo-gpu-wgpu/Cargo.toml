@@ -6,11 +6,13 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+burn-backend.workspace = true
+burn-cubecl.workspace = true
+burn-tensor.workspace = true
 bytemuck.workspace = true
 cubecl.workspace = true
 cubecl-common.workspace = true
 cubecl-core.workspace = true
-cubecl-matmul.workspace = true
 cubecl-runtime.workspace = true
 cubecl-std.workspace = true
 cubecl-wgpu.workspace = true
@@ -19,6 +21,8 @@ ndarray.workspace = true
 wgpu.workspace = true
 
 [dev-dependencies]
+env_logger = "0.11"
+log = "0.4"
 gelo-embedder = { path = "../gelo-embedder" }
 gelo-tee-sev-snp = { path = "../gelo-tee-sev-snp", features = ["mock"] }
 rag_core = { path = "../core", package = "core" }

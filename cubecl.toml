@@ -1,0 +1,22 @@
+# cubecl-runtime configuration. Loaded automatically by cubecl from the
+# nearest `cubecl.toml` walking up from the working dir. Documented in
+# `cubecl-runtime/src/config/base.rs::from_current_dir`.
+
+[autotune]
+# Cache autotune-picked kernel configs under the WORKSPACE `target/` —
+# explicit "file" config because `cache = "target"` walks up from
+# `current_dir()` and stops at the FIRST `Cargo.toml`, which is the
+# crate's, not the workspace root. With `cargo test -p X` that splits
+# the cache across `crates/X/target/autotune/`. Pointing all crates at
+# the workspace target unifies the cache.
+cache = { file = "/home/timo/repos/private-rag/target/autotune-cache" }
+
+[autotune.logger]
+level = "minimal"
+
+[memory]
+# Keep the default — `Enabled` lets cubecl-runtime's MemoryManager reuse
+# device buffers across calls when sizes repeat. Shape bucketing makes
+# this effective (without bucketing, every M=seq_len value is a unique
+# buffer size and the pool gets no hits).
+persistent_memory = "enabled"
