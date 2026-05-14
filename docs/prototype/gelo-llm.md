@@ -128,7 +128,168 @@ in the `Materialized` slot. CubeTensor handle plumbing via
 engine capability and prefers `fused_attention_batched` when available.
 Falls back to the composed path otherwise.
 
-### 3.3 Why this is deferred, not in flight
+### 3.3 Score-tensor materialization — the bandwidth bottleneck
+
+The 3-dispatch path that ships today computes attention as:
+
+```
+Dispatch 1 (matmul_dynamic_batched):  reads Q, K     →  writes scores
+Dispatch 2 (softmax_batched):         reads scores   →  writes probs
+Dispatch 3 (matmul_dynamic_batched):  reads probs, V →  writes output
+```
+
+The intermediate `scores = (heads, n, n)` tensor is an `O(n²)` object —
+every other tensor (Q, K, V, output) is `O(n·d)`. At long context the
+score tensor is the largest thing the GPU touches, and the 3-dispatch
+structure forces it through device memory three times: written by dispatch
+1, read by dispatch 2, written by dispatch 2, read by dispatch 3.
+
+Concrete numbers at our shapes (Qwen3-0.6B, 16 heads, head_dim=128):
+
+| Sequence length | Score tensor size | 3-dispatch traffic / layer | 28 layers total |
+|---|---:|---:|---:|
+| n = 400 (embedding) | 10 MB | ~30 MB | ~860 MB |
+| n = 1024 | 67 MB | ~200 MB | ~5.6 GB |
+| n = 4096 (RAG prefill) | 1 GB | ~3.2 GB | ~90 GB |
+| n = 16384 (long-context RAG) | 17 GB | ~51 GB | ~1.4 TB |
+
+The 3-dispatch structure is **forced by our protocol**, not a choice: the
+TEE needs control between matmul and softmax (to add the permuted causal
+mask) and between softmax and the second matmul (to recover via πᵀ). We
+can't fold them into one kernel because the engine doesn't know about the
+secret state (π, σ).
+
+Compute scales the same way (`O(n²·d_head)` mult-adds for attention), but
+modern accelerators hit 10-30 TFLOPS while bandwidth is fixed:
+
+| Hardware | Effective bandwidth | At n=4096, score-traffic time |
+|---|---|---:|
+| Integrated GPU (Ryzen AI Max+ 395 / DDR) | ~50 GB/s | ~1.8 s per prefill |
+| Discrete consumer (RTX 4090 / GDDR6X) | ~1 TB/s | ~90 ms per prefill |
+| Discrete datacenter (H100 / HBM3) | ~3 TB/s | ~30 ms per prefill |
+
+At long context the workload **shifts from compute-bound to memory-bound**,
+and the score tensor is what dominates that bound.
+
+**The ratio that matters.** The bandwidth gap between materialized
+attention and FlashAttention's tile-based formulation grows linearly with
+sequence length:
+
+```
+Bandwidth(materialized) / Bandwidth(FlashAttention)
+  = (n² · heads + n · d_total) / (n · d_total)
+  ≈ (n · heads) / d_total                       when n is large
+  = n / d_head                                  (when num_heads × d_head = d_total)
+```
+
+For Qwen3-0.6B's `d_head = 128`:
+
+| Sequence length | Bandwidth ratio (materialized / fused) |
+|---|---:|
+| n = 128 | 1× (parity) |
+| n = 400 (embedding) | 3× (small, eaten by dispatch overhead) |
+| n = 1024 | 8× |
+| n = 4096 (RAG prefill) | **32×** |
+| n = 16384 (long-context RAG) | **128×** |
+
+That linear scaling is the load-bearing piece of the "why fused attention
+matters for LLMs" story. Embedding lives in the regime where the ratio
+exists but doesn't matter; RAG prefill lives in the regime where it's the
+dominant cost.
+
+### 3.4 FlashAttention — what the fused kernel does differently
+
+FlashAttention's algorithmic insight: **the score tensor doesn't have to
+exist all at once**. Process attention in tiles, keep the per-tile scores
+in fast on-chip memory (SMEM / registers), and never round-trip through
+DDR.
+
+```
+For each Q-tile of size (B_q, d_head):                  // e.g. B_q = 128
+  Initialize running max[0..B_q], running sum[0..B_q], accumulator (B_q, d_head)
+  For each K-tile of size (B_k, d_head):                // e.g. B_k = 64
+    1. scores_tile  = Q_tile · K_tileᵀ                  // (B_q, B_k), lives in SMEM
+    2. Update running max & sum (online softmax, see §3.5)
+    3. probs_tile · V_tile → accumulate into output tile
+  Write output tile (B_q, d_head) to global memory once
+```
+
+Each tile (~32 KB) fits in shared memory or registers; the running max and
+sum are tiny scalars per row. The output is updated incrementally with a
+numerical-stability correction every time a new max is observed.
+
+Per-layer memory traffic drops from `O(n²·heads)` to `O(n·d_total)`:
+
+| Operation | Materialized path | FlashAttention path |
+|---|---:|---:|
+| Q, K, V reads | `3 · n · d_total` | `3 · n · d_total` (same) |
+| Score tensor I/O | `3 · n² · heads` | **0** (never goes to DDR) |
+| Output write | `n · d_total` | `n · d_total` (same) |
+| **Per-layer total @ n=4096** | **3.2 GB** | **130 MB** (~25× less) |
+
+Compute count is identical (same number of mult-adds and exps). The win
+is **bandwidth**, not FLOPs — which is exactly the bottleneck that matters
+at long context.
+
+### 3.5 FLASH-D — softmax refinement inside the fused kernel
+
+FLASH-D ("FlashAttention with Hidden Softmax Division," arXiv 2505.14201)
+is a math-level refinement to FlashAttention's softmax phase. It doesn't
+change the dispatch count, memory traffic, or privacy story — it's a
+within-kernel optimization that composes with the tile-based scheme above.
+
+Standard online softmax inside a FlashAttention tile loop:
+
+```
+For each K-tile:
+  scores_tile = ... · scale
+  new_max     = max(running_max, rowmax(scores_tile))
+  scale_old   = exp(running_max - new_max)              // correction factor
+  exp_tile    = exp(scores_tile - new_max)
+  running_sum = running_sum · scale_old + rowsum(exp_tile)
+  output      = output · scale_old + (exp_tile · V_tile)
+  running_max = new_max
+// At end:
+output = output / running_sum                            // ← the explicit division
+```
+
+The final division by `running_sum` is the numerically sensitive step
+(catastrophic cancellation when `running_sum` underflows) and an extra
+op the kernel has to do. FLASH-D's refactor absorbs that division into a
+nonlinear evaluation the kernel was already going to do (e.g. fuses it
+with the residual or norm at the layer boundary), so the explicit divide
+disappears.
+
+Practical impact for our setting:
+
+| Aspect | FlashAttention (online softmax) | FLASH-D variant |
+|---|---|---|
+| Memory traffic | `O(n·d_total)` per layer | same |
+| Op count per tile | 1 div + the exp/mult chain | div absorbed elsewhere |
+| Numerical stability around `running_sum ≈ 0` | Standard | Better — corner case eliminated |
+| Implementation complexity | FlashAttention baseline | + small refactor |
+| Wall-clock at our shapes (n=4096) | ~150-200 ms | ~140-190 ms (single-digit % faster) |
+
+So FLASH-D is the **right math for the softmax-in-the-middle phase** of
+any custom fused kernel we'd write, but it's not an independent line item:
+
+- **If we adopt `cubek-attention` via burn-cubecl** (option 2 below):
+  whatever softmax the upstream kernel uses is what we get. As of v0.1.1
+  it's a standard online softmax (FLASH-D not adopted upstream yet). When
+  upstream adopts FLASH-D — likely, given the recent paper — we get the
+  small numerical-stability win for free.
+- **If we write a custom WGSL fused kernel** (option 3 below): FLASH-D is
+  the recommended softmax pattern to use inside it. The win is small but
+  the complexity addition is also small.
+- **If we patch upstream to parameterize `causal: bool`** (option 1 below):
+  FLASH-D is orthogonal — it's an internal kernel optimization that
+  upstream can adopt independently.
+
+The protocol exposes nothing about which softmax variant is used inside
+the fused kernel; the privacy argument doesn't care. FLASH-D is purely a
+performance / numerics refinement.
+
+### 3.6 Why this is deferred, not in flight
 
 The upstream gap: `burn_cubecl::kernel::attention::flash_attention`
 hardcodes `causal: true` (see `burn-cubecl-0.20.1/src/kernel/attention/base.rs:46`).
@@ -150,7 +311,7 @@ maturity at that time. If cubek-attention has reached v0.5+ by then,
 option (2) becomes the default. If burn-cubecl has already parameterized
 causal upstream, option (1) is free.
 
-### 3.4 Expected payoff (rough, at the workload above)
+### 3.7 Expected payoff (rough, at the workload above)
 
 | Configuration | n=4096 prefill wall (Qwen3-0.6B est.) |
 |---|---:|
@@ -337,6 +498,13 @@ These are notes for the future implementer, not commitments:
   Confidential Transformer Serving," SIGCOMM 2025 (`yuanmu97/scx`).
   Candidate decode-phase primitive.
 - Dao et al., FlashAttention v1-v4 — the tiling/online-softmax algorithm
-  that makes long-context attention bandwidth-tractable.
+  that makes long-context attention bandwidth-tractable. See §3.3 and §3.4
+  for the materialization bottleneck and the tile-based fix.
+- "FLASH-D: FlashAttention with Hidden Softmax Division," arXiv 2505.14201
+  — softmax-phase refinement that absorbs the final division into an
+  adjacent nonlinear evaluation. Composes with FlashAttention. See §3.5.
+- `cubek-attention` v0.1.1 — `burn-cubecl`'s underlying FlashAttention
+  implementation. The `causal: true` hardcoding in burn-cubecl's wrapper
+  is the upstream gap that gates option (1) in §3.6.
 - `private-rag/memory/gelo_research_round_2.md` — research spike that
   identified SCX, Amulet, and the related attack literature.
