@@ -562,7 +562,7 @@ table.spec .accent { color: var(--tee); font-weight: 600; }
 /* ────── PATH CARDS (LANDING) ────── */
 .path-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 0;
   border: 1px solid var(--ink);
   margin-bottom: 36px;
@@ -570,6 +570,7 @@ table.spec .accent { color: var(--tee); font-weight: 600; }
 .path-card {
   padding: 26px 28px 30px;
   border-right: 1px solid var(--ink);
+  border-bottom: 1px solid var(--ink);
   background: var(--paper);
   text-decoration: none;
   color: inherit;
@@ -577,8 +578,29 @@ table.spec .accent { color: var(--tee); font-weight: 600; }
   transition: background 120ms;
   display: block;
 }
-.path-card:last-child { border-right: none; }
+.path-card:nth-child(2n) { border-right: none; }
+.path-card:nth-last-child(-n+2) { border-bottom: none; }
 .path-card:hover { background: var(--paper-2); }
+
+/* Muted variant — used on the landing for the RemoteRAG card (alternative
+   path that was prototyped but not chosen for production). The card
+   itself still links to the dedicated detail page; its visual weight is
+   just dialed down so the production paths stand out. */
+.path-card.muted h3,
+.path-card.muted .num { color: var(--ink-3); }
+.path-card.muted { background: var(--paper-2); }
+.path-card.muted:hover { background: var(--paper-3); }
+.path-card .alt-badge {
+  display: inline-block;
+  background: var(--warn);
+  color: var(--paper);
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  padding: 3px 8px 2px;
+  margin-bottom: 14px;
+  font-weight: 700;
+}
 .path-card .num {
   font-family: "Fraunces", serif;
   font-style: italic;

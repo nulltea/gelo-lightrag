@@ -24,9 +24,7 @@
     <div class="links">
       <a class="current" href="index.html">Overview</a>
       <a href="embedding.html">Embedding · GELO</a>
-      <a href="storage.html">Storage · CAPRISE / RemoteRAG</a>
-      <a href="caprise-two-party-kdf.md">KDF spec</a>
-      <a href="prototype-status.html">Status sheet</a>
+      <a href="storage.html">Storage · CAPRISE</a>
     </div>
   </nav>
 
@@ -45,6 +43,30 @@
     </div>
   </header>
 
+  <!-- ─── HEADLINE STATS ─── -->
+  <div class="stat-strip">
+    <div class="stat">
+      <div class="k">GELO overhead</div>
+      <div class="v"><em>1.27×</em><span class="unit">plain</span></div>
+      <div class="sub">Qwen3-Emb-0.6B · paper-parity · AOCL-BLIS · 100-doc NFCorpus</div>
+    </div>
+    <div class="stat">
+      <div class="k">end-to-end wall</div>
+      <div class="v">153<span class="unit">ms/text</span></div>
+      <div class="sub">vs 121 ms plain ⇒ +32 ms / +26 % per text</div>
+    </div>
+    <div class="stat">
+      <div class="k">U-Verify miss rate</div>
+      <div class="v">2.4·10<span class="unit">⁻⁷</span></div>
+      <div class="sub">k = 8 probes at L = 3 per offload (TwinShield §V-C)</div>
+    </div>
+    <div class="stat">
+      <div class="k">CVM footprint</div>
+      <div class="v">3.2<span class="unit">GB</span></div>
+      <div class="sub">Qwen3 weights Arc-shared between embedder + U-Verify cache</div>
+    </div>
+  </div>
+
   <!-- ═════ § 1 WHAT THIS IS ═════ -->
   <section id="overview">
     <header class="section-head">
@@ -58,7 +80,7 @@
 
     <div class="prose">
       <p><strong>The hard question this is built around:</strong> can openweight transformer embedding inference be served by an untrusted cloud GPU at near-plaintext cost, without the GPU learning the input? The literature offers three families of answer — full FHE (orders of magnitude too slow), confidential-compute GPUs (10× cost premium, vendor lock-in), and TEE-on-CPU paired with masked GPU offload. This codebase ships the third.</p>
-      <p>Two storage strategies are implemented as parallel services: <strong>GeloRAG (CAPRISE-at-rest)</strong>, where the index is encrypted and the cloud operator sees only ciphertext, and <strong>RemoteRAG (planar-Laplace + Paillier rerank)</strong>, where the index is plaintext but the <em>query</em> gets formal <code>(n, ε)</code>-DistanceDP. They protect different things and are mutually exclusive at the type level — pick one per deployment.</p>
+      <p>The chosen storage path is <strong>CAPRISE-at-rest</strong>: the cloud operator sees only distance-preserving ciphertext, and the CAPRISE seed is derived inside the SEV-SNP CVM per request from a two-party HKDF (<a href="storage.html">storage page</a>). A second strategy — <strong>RemoteRAG</strong>, where the doc index is plaintext but the query gets formal <code>(n, ε)</code>-DistanceDP via planar-Laplace noise + Paillier rerank — was prototyped end-to-end and parked. The two are mutually exclusive at the type level. See <a href="storage-remoterag.html">storage · RemoteRAG</a> for the decision trail.</p>
     </div>
   </section>
 
@@ -67,10 +89,10 @@
     <header class="section-head">
       <div class="section-num">§02</div>
       <h2 class="section-title">Full process flow</h2>
-      <div class="section-meta">approach 4 step list · cross-checked against implementation</div>
+      <div class="section-meta">two stages · ingest then query · approach 4 checklist below</div>
     </header>
     <p class="lede">
-      A single request traverses four trust zones. The embedding path is shared; the storage layer forks into <em>GeloRAG</em> and <em>RemoteRAG</em>. Below the diagram, every Approach-4 step is listed with its current implementation status — green for shipped, amber for partial, grey for deferred.
+      A request traverses four trust zones, in two stages. <em>Stage 1 · Ingest</em> takes raw chunks from the client, embeds them inside the attested TEE (offloading the matmuls to a blind GPU under the GELO mask), derives the CAPRISE + AES keys via two-party HKDF, and writes the resulting ciphertext records to the untrusted vector DB. <em>Stage 2 · Query</em> embeds the query through the same shape, encrypts it under the <em>query</em> CAPRISE coefficient, runs cosine ANN over the ciphertext on the server, then decrypts the top-k′ hits back inside the TEE before returning plaintext to the client over RATLS.
     </p>
 
     <!-- LEGEND -->
@@ -89,179 +111,241 @@
       </div>
       <div class="cell">
         <span class="lbl"><span class="swatch" style="background:var(--storage)"></span>UNTRUSTED · STORAGE</span>
-        <span class="desc">vector DB — sees ciphertext (CAPRISE) or plaintext doc embeddings (RemoteRAG)</span>
+        <span class="desc">vector DB — sees CAPRISE ciphertext rows + AES-GCM chunk blobs · access patterns</span>
       </div>
       <div class="cell">
         <span class="lbl"><span class="swatch" style="background:var(--crypto)"></span>CRYPTO PRIMITIVE</span>
-        <span class="desc">value-class — HKDF, CAPRISE, Paillier, DP-Forward, planar-Laplace</span>
+        <span class="desc">value-class — HKDF, CAPRISE, AES-GCM, optional DP-Forward</span>
       </div>
     </div>
 
-    <!-- HORIZONTAL FLOW DIAGRAM (PROCESS, NOT MODULES) -->
+    <!-- ══════════ FIG. 01 — combined two-stage flow ══════════ -->
     <div class="diagram-frame">
       <div class="diagram-cap">
-        <span class="l">FIG. 01 — End-to-end query path · GeloRAG (upper track) vs RemoteRAG (lower track)</span>
-        <span>dashed red = trust boundary · dashed amber = obfuscated · solid teal = ciphertext · solid plum = HE</span>
+        <span class="l">FIG. 01 — End-to-end process flow · Stage 1 Ingest (top) + Stage 2 Query (bottom)</span>
+        <span>dashed red = trust boundary · dashed amber = masked PCIe · solid teal = ciphertext · dashed navy = attestation</span>
       </div>
-      <svg class="flow" viewBox="0 0 1480 660" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="End-to-end process flow with two storage paths">
+      <svg class="flow" viewBox="0 0 1480 940" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="End-to-end flow · ingest + query">
         <defs>
-          <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <marker id="ahflow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
             <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
           </marker>
         </defs>
 
-        <!-- ZONE BANDS -->
-        <rect x="0"    y="48"  width="220"  height="568" class="zone-band zone-band-client"/>
-        <rect x="220"  y="48"  width="500"  height="568" class="zone-band zone-band-tee"/>
-        <rect x="720"  y="48"  width="240"  height="568" class="zone-band zone-band-gpu"/>
-        <rect x="960"  y="48"  width="520"  height="568" class="zone-band zone-band-storage"/>
+        <!-- ZONE BANDS (full height — shared across both stages) -->
+        <rect x="0"    y="40"  width="220"  height="880" class="zone-band zone-band-client"/>
+        <rect x="220"  y="40"  width="600"  height="880" class="zone-band zone-band-tee"/>
+        <rect x="820"  y="40"  width="260"  height="880" class="zone-band zone-band-gpu"/>
+        <rect x="1080" y="40"  width="400"  height="880" class="zone-band zone-band-storage"/>
 
         <!-- ZONE LABELS -->
-        <text x="20"   y="72" class="zone-label">Client</text>
-        <text x="20"   y="88" class="zone-sublabel">your device</text>
-        <text x="240"  y="72" class="zone-label">Trusted Execution Environment</text>
-        <text x="240"  y="88" class="zone-sublabel">SEV-SNP CVM · attested ARK→ASK→VCEK</text>
-        <text x="740"  y="72" class="zone-label">Untrusted GPU</text>
-        <text x="740"  y="88" class="zone-sublabel">Vulkan · VFIO passthrough</text>
-        <text x="980"  y="72" class="zone-label">Untrusted Storage</text>
-        <text x="980"  y="88" class="zone-sublabel">vector DB · two paths</text>
+        <text x="20"   y="62" class="zone-label">Client</text>
+        <text x="20"   y="78" class="zone-sublabel">holds keys · sends requests</text>
+        <text x="240"  y="62" class="zone-label">TEE · SEV-SNP CVM</text>
+        <text x="240"  y="78" class="zone-sublabel">attested · embed + KDF + crypto</text>
+        <text x="840"  y="62" class="zone-label">Untrusted GPU</text>
+        <text x="840"  y="78" class="zone-sublabel">Vulkan · masked matmuls only</text>
+        <text x="1100" y="62" class="zone-label">Untrusted Storage</text>
+        <text x="1100" y="78" class="zone-sublabel">vector DB · ciphertext only</text>
 
-        <!-- BOUNDARIES -->
-        <line x1="220"  y1="48" x2="220"  y2="616" class="boundary"/>
-        <line x1="720"  y1="48" x2="720"  y2="616" class="boundary"/>
-        <line x1="960"  y1="48" x2="960"  y2="616" class="boundary"/>
-        <text x="224"  y="612" class="boundary-label">RATLS</text>
-        <text x="724"  y="612" class="boundary-label">PCIe · masked</text>
-        <text x="964"  y="612" class="boundary-label">HTTP · ciphertext</text>
+        <!-- TRUST BOUNDARIES -->
+        <line x1="220"  y1="40" x2="220"  y2="920" class="boundary"/>
+        <line x1="820"  y1="40" x2="820"  y2="920" class="boundary"/>
+        <line x1="1080" y1="40" x2="1080" y2="920" class="boundary"/>
+        <text x="224"  y="916" class="boundary-label">RATLS</text>
+        <text x="824"  y="916" class="boundary-label">PCIe · masked</text>
+        <text x="1084" y="916" class="boundary-label">HTTP · ciphertext</text>
 
-        <!-- ── CLIENT BOX ── -->
-        <rect x="30" y="270" width="170" height="80" class="box box-strong box-client"/>
-        <text x="46" y="294" class="box-label">① Client</text>
-        <text x="46" y="312" class="box-sub">holds user_x_sk · tenant_id</text>
-        <text x="46" y="328" class="box-mono">attest → ingest → query</text>
-        <text x="46" y="344" class="box-mono">decrypt top-k locally</text>
+        <!-- ════════════ STAGE 1 · INGEST ════════════ -->
 
-        <!-- ── TEE: EMBEDDER ── -->
-        <rect x="240" y="180" width="200" height="80" class="box box-strong box-tee"/>
-        <text x="256" y="202" class="box-label">② Tokenize · embed</text>
-        <text x="256" y="218" class="box-sub">GeloBert / GeloQwen</text>
-        <text x="256" y="234" class="box-mono">model_identity SHA pinned</text>
-        <text x="256" y="250" class="box-mono">openweight + Arc-shared</text>
+        <!-- Stage 1 banner -->
+        <rect x="0" y="100" width="1480" height="28" fill="var(--ink)" opacity="0.88"/>
+        <text x="20"   y="119" font-family="JetBrains Mono" font-size="11" font-weight="700" fill="var(--paper)" letter-spacing="0.22em">STAGE 1 · INGEST</text>
+        <text x="240"  y="119" font-family="Fraunces" font-style="italic" font-size="13" fill="var(--paper)">N text chunks → embed via GELO → CAPRISE / AES encrypt → write to encrypted vector DB</text>
 
-        <!-- ── TEE: GELO MASK KERNEL ── -->
-        <rect x="240" y="290" width="200" height="80" class="box box-tee"/>
-        <text x="256" y="312" class="box-label">③ GELO mask + shield</text>
-        <text x="256" y="328" class="box-sub">Haar A per fwd · k=8 rows</text>
-        <text x="256" y="344" class="box-mono">U = A · stack(H, S)</text>
-        <text x="256" y="360" class="box-mono">apply ⇄ engine ⇄ unapply</text>
+        <!-- attestation prelude -->
+        <path d="M240 150 L200 150" class="arrow arrow-attest" marker-end="url(#ahflow)"/>
+        <text x="40" y="146" class="arrow-label attest">SEV-SNP report + VCEK</text>
 
-        <!-- ── TEE: POOL + DP ── -->
-        <rect x="240" y="400" width="200" height="56" class="box box-tee"/>
-        <text x="256" y="422" class="box-label">④ Pool · L2-normalize</text>
-        <text x="256" y="440" class="box-sub">last-token / mean → unit vec</text>
+        <!-- ── Stage 1 forward row (y ≈ 200) ── -->
 
-        <!-- ── TEE: KDF (SHARED) ── -->
-        <rect x="240" y="475" width="200" height="56" class="box box-tee"/>
-        <text x="256" y="497" class="box-label">⑤ Two-party HKDF</text>
-        <text x="256" y="515" class="box-sub">user_x_sk ‖ tee_user_x_sk → seed</text>
+        <rect x="20" y="170" width="180" height="70" class="box box-strong box-client"/>
+        <text x="34" y="190" class="box-label">① Ingest request</text>
+        <text x="34" y="206" class="box-sub">tenant_id · user_x_sk</text>
+        <text x="34" y="222" class="box-mono">chunks: [{id, text}…]</text>
 
-        <!-- ── GPU ENGINE ── -->
-        <rect x="740" y="290" width="200" height="80" class="box box-strong box-gpu"/>
-        <text x="756" y="312" class="box-label">WgpuVulkanEngine</text>
-        <text x="756" y="328" class="box-sub">burn-cubecl · wgpu 26</text>
-        <text x="756" y="344" class="box-mono">matmul(W, U)</text>
-        <text x="756" y="360" class="box-mono">sees masked U only</text>
+        <rect x="240" y="180" width="180" height="60" class="box box-tee box-strong"/>
+        <text x="254" y="200" class="box-label">② Tokenize · GELO embed</text>
+        <text x="254" y="216" class="box-sub">Pool + L2 normalize</text>
+        <text x="254" y="232" class="box-mono">→ pooled vector / chunk</text>
 
-        <rect x="740" y="400" width="200" height="56" class="box box-gpu"/>
-        <text x="756" y="422" class="box-label">Public weights</text>
-        <text x="756" y="440" class="box-sub">Qwen3-Emb · BGE-base · SHA-pinned</text>
+        <rect x="440" y="180" width="170" height="60" class="box box-tee"/>
+        <text x="454" y="200" class="box-label">③ HKDF derive</text>
+        <text x="454" y="216" class="box-sub">tee_user_x_sk ‖ user_x_sk</text>
+        <text x="454" y="232" class="box-mono">caprise_seed · aes_key</text>
 
-        <!-- ── BRANCH PILL ── -->
-        <rect x="455" y="497" width="60" height="22" class="pill"/>
-        <text x="464" y="512" class="pill-text">CHOOSE</text>
-        <path d="M440 503 L455 508" class="arrow" stroke="var(--ink)"/>
-        <path d="M515 503 L555 240" class="arrow arrow-cipher" marker-end="url(#ah)"/>
-        <path d="M515 515 L555 420" class="arrow arrow-rrag" marker-end="url(#ah)"/>
+        <rect x="630" y="180" width="180" height="60" class="box box-tee"/>
+        <text x="644" y="200" class="box-label">④ Encrypt per chunk</text>
+        <text x="644" y="216" class="box-sub">CAPRISE-enc <tspan font-style="italic">doc</tspan> (3/8 coeff)</text>
+        <text x="644" y="232" class="box-mono">AES-GCM chunk text</text>
 
-        <!-- ── GELORAG TRACK (UPPER) ── -->
-        <rect x="555" y="170" width="160" height="60" class="box box-tee" style="fill:#faeae6;"/>
-        <text x="565" y="190" class="box-label">⑥a CAPRISE-enc</text>
-        <text x="565" y="206" class="box-sub">doc 3/8 · query 1/8</text>
-        <text x="565" y="222" class="box-mono">+ AES chunk text</text>
+        <rect x="1100" y="170" width="360" height="100" class="box box-strong box-storage"/>
+        <text x="1114" y="190" class="box-label">⑤ Write to encrypted vector DB</text>
+        <text x="1114" y="207" class="box-sub">InMemoryEncryptedIndex.insert(…)</text>
+        <text x="1114" y="225" class="box-mono">× N records</text>
+        <text x="1114" y="242" class="box-mono">(EncryptedEmbedding, ChunkCiphertext)</text>
+        <text x="1114" y="260" class="box-sub">server sees ciphertext + access log only</text>
 
-        <rect x="980" y="170" width="220" height="60" class="box box-strong box-storage"/>
-        <text x="998" y="190" class="box-label">⑦a Encrypted ANN</text>
-        <text x="998" y="206" class="box-sub">cosine over CAPRISE ciphertext</text>
-        <text x="998" y="222" class="box-mono">InMemoryEncryptedIndex / HNSW</text>
+        <!-- forward arrows -->
+        <path d="M200 210 L240 210" class="arrow arrow-secret" marker-end="url(#ahflow)"/>
+        <path d="M420 210 L440 210" class="arrow arrow-secret" marker-end="url(#ahflow)"/>
+        <path d="M610 210 L630 210" class="arrow arrow-secret" marker-end="url(#ahflow)"/>
+        <path d="M810 210 L1100 210" class="arrow arrow-cipher" marker-end="url(#ahflow)"/>
+        <text x="850" y="203" class="arrow-label cipher">CAPRISE + AES records · × N</text>
 
-        <rect x="1210" y="170" width="240" height="60" class="box box-storage"/>
-        <text x="1224" y="190" class="box-label">⑧a Top-k ciphertexts</text>
-        <text x="1224" y="206" class="box-sub">(CAPRISE-vec, AES-chunk)</text>
-        <text x="1224" y="222" class="box-mono">TEE decrypts → plain over RATLS</text>
+        <!-- Stage 1 GPU row -->
+        <rect x="840" y="305" width="220" height="120" class="box box-strong box-gpu"/>
+        <text x="854" y="325" class="box-label">GPU · masked matmuls</text>
+        <text x="854" y="343" class="box-sub">Q · K · V · O · FfnUp · FfnDown</text>
+        <text x="854" y="361" class="box-mono">matmul_many bundles QKV + gate/up</text>
+        <text x="854" y="379" class="box-sub">× 28 layers · × N chunks</text>
+        <text x="854" y="397" class="box-mono">U · public W → masked output</text>
+        <text x="854" y="415" class="box-sub">weights public · activations are A·H</text>
 
-        <!-- arrows GeloRAG -->
-        <path d="M715 200 L980 200" class="arrow arrow-cipher" marker-end="url(#ah)"/>
-        <text x="780" y="192" class="arrow-label cipher">encrypted query</text>
-        <path d="M1200 200 L1210 200" class="arrow arrow-cipher" marker-end="url(#ah)"/>
-        <path d="M1450 200 C 1470 100, 100 80, 100 270" class="arrow arrow-cipher" marker-end="url(#ah)"/>
-        <text x="600" y="100" class="arrow-label cipher">plaintext top-k over RATLS</text>
+        <!-- mask roundtrip arrows (Stage 1) -->
+        <path d="M330 240 C 330 290, 880 270, 880 305" class="arrow arrow-masked" marker-end="url(#ahflow)"/>
+        <text x="520" y="280" class="arrow-label masked">mix: U = A·H</text>
+        <path d="M1000 305 C 1000 270, 370 290, 370 240" class="arrow arrow-masked" marker-end="url(#ahflow)" stroke-dasharray="4 3"/>
+        <text x="520" y="310" class="arrow-label masked">unmix: Aᵀ·(U·W)</text>
 
-        <!-- TRACK LABEL: GELO -->
-        <rect x="555" y="135" width="120" height="22" class="pill" style="fill:var(--storage);"/>
-        <text x="565" y="150" class="pill-text">GeloRAG path</text>
+        <!-- Stage 1 return row -->
+        <rect x="240" y="395" width="180" height="50" class="box box-tee"/>
+        <text x="254" y="415" class="box-label">⑥ Zeroize</text>
+        <text x="254" y="431" class="box-sub">caprise_seed · aes_key · user_x_sk</text>
 
-        <!-- ── REMOTERAG TRACK (LOWER) ── -->
-        <rect x="555" y="400" width="160" height="60" class="box box-crypto" style="fill:#ecdef0;"/>
-        <text x="565" y="420" class="box-label">⑥b planar-Laplace</text>
-        <text x="565" y="436" class="box-sub">q′ = q + r·v · r ~ Γ(n,1/ε)</text>
-        <text x="565" y="452" class="box-mono">(n, ε)-DistanceDP</text>
+        <rect x="20" y="395" width="180" height="50" class="box box-client"/>
+        <text x="34" y="415" class="box-label">⑦ 200 OK</text>
+        <text x="34" y="431" class="box-mono">{ ingested: N }</text>
 
-        <rect x="555" y="480" width="160" height="60" class="box box-crypto" style="fill:#ecdef0;"/>
-        <text x="565" y="500" class="box-label">⑥b Paillier-enc q</text>
-        <text x="565" y="516" class="box-sub">256-bit · CRT precompute</text>
-        <text x="565" y="532" class="box-mono">∏ Enc(qᵢ)^{e[i]_int}</text>
+        <path d="M1100 290 C 800 290, 720 360, 420 420" class="arrow arrow-cipher" marker-end="url(#ahflow)" stroke-dasharray="2 3"/>
+        <text x="850" y="368" class="arrow-label cipher">all N inserts done</text>
 
-        <rect x="980" y="430" width="220" height="60" class="box box-strong box-crypto" style="fill:#ecdef0;"/>
-        <text x="998" y="450" class="box-label">⑦b Plaintext ANN + PHE</text>
-        <text x="998" y="466" class="box-sub">HNSW DistCosine ≥256 docs</text>
-        <text x="998" y="482" class="box-mono">Stage1: q′ · Stage2: rerank clean q</text>
+        <path d="M240 420 L200 420" class="arrow arrow-secret" marker-end="url(#ahflow)"/>
 
-        <rect x="1210" y="430" width="240" height="60" class="box box-crypto" style="fill:#ecdef0;"/>
-        <text x="1224" y="450" class="box-label">⑧b Paillier hits + AES chunks</text>
-        <text x="1224" y="466" class="box-sub">client decrypts each ⟨q, e_d⟩</text>
-        <text x="1224" y="482" class="box-mono">~100% recall at ε ≈ 10n</text>
+        <!-- ════════════ SEPARATOR ════════════ -->
+        <line x1="0" y1="470" x2="1480" y2="470" stroke="var(--ink)" stroke-width="1" stroke-dasharray="6 4" opacity="0.6"/>
 
-        <!-- arrows RemoteRAG -->
-        <path d="M715 510 L980 470" class="arrow arrow-rrag" marker-end="url(#ah)"/>
-        <text x="780" y="500" class="arrow-label rrag">q′ + Enc(q)</text>
-        <path d="M1200 460 L1210 460" class="arrow arrow-rrag" marker-end="url(#ah)"/>
-        <path d="M1450 460 C 1470 600, 100 600, 100 350" class="arrow arrow-rrag" marker-end="url(#ah)"/>
-        <text x="600" y="608" class="arrow-label rrag">encrypted top-k · client decrypts</text>
+        <!-- ════════════ STAGE 2 · QUERY ════════════ -->
 
-        <!-- TRACK LABEL: RemoteRAG -->
-        <rect x="555" y="365" width="140" height="22" class="pill" style="fill:var(--crypto);"/>
-        <text x="565" y="380" class="pill-text">RemoteRAG path</text>
+        <rect x="0" y="490" width="1480" height="28" fill="var(--ink)" opacity="0.88"/>
+        <text x="20"   y="509" font-family="JetBrains Mono" font-size="11" font-weight="700" fill="var(--paper)" letter-spacing="0.22em">STAGE 2 · QUERY</text>
+        <text x="240"  y="509" font-family="Fraunces" font-style="italic" font-size="13" fill="var(--paper)">attest → embed query → CAPRISE-encrypt → cosine over ciphertext → decrypt hits → plaintext top-k</text>
 
-        <!-- ── CLIENT → TEE (top of fwd) ── -->
-        <path d="M200 290 L240 220" class="arrow arrow-secret" marker-end="url(#ah)"/>
-        <text x="206" y="252" class="arrow-label secret">text + user_x_sk</text>
+        <path d="M240 540 L200 540" class="arrow arrow-attest" marker-end="url(#ahflow)"/>
+        <text x="40" y="536" class="arrow-label attest">SEV-SNP report + VCEK</text>
 
-        <!-- ── TEE ↔ GPU LOOP ── -->
-        <path d="M440 320 L740 320" class="arrow arrow-masked" marker-end="url(#ah)"/>
-        <text x="540" y="312" class="arrow-label masked">U = A·H (masked)</text>
-        <path d="M740 350 L440 350" class="arrow arrow-masked" marker-end="url(#ah)"/>
-        <text x="560" y="370" class="arrow-label masked">U·W (still masked)</text>
+        <!-- ── Stage 2 forward row (y ≈ 600) ── -->
 
-        <!-- ── INTERNAL TEE FLOW ── -->
-        <path d="M340 370 L340 400" class="arrow arrow-secret" marker-end="url(#ah)"/>
-        <path d="M340 456 L340 475" class="arrow arrow-secret" marker-end="url(#ah)"/>
+        <rect x="20" y="560" width="180" height="70" class="box box-strong box-client"/>
+        <text x="34" y="580" class="box-label">① Query request</text>
+        <text x="34" y="596" class="box-sub">tenant_id · user_x_sk</text>
+        <text x="34" y="612" class="box-mono">text · top_k</text>
 
-        <!-- ── ATTESTATION (CLIENT ← TEE) ── -->
-        <path d="M240 130 L200 130" class="arrow arrow-attest" marker-end="url(#ah)"/>
-        <text x="210" y="124" class="arrow-label attest">SEV-SNP report + VCEK</text>
+        <rect x="240" y="570" width="180" height="60" class="box box-tee box-strong"/>
+        <text x="254" y="590" class="box-label">② Tokenize · GELO embed</text>
+        <text x="254" y="606" class="box-sub">Pool + L2 normalize</text>
+        <text x="254" y="622" class="box-mono">→ pooled query vector</text>
 
+        <rect x="440" y="570" width="170" height="60" class="box box-tee"/>
+        <text x="454" y="590" class="box-label">③ HKDF re-derive</text>
+        <text x="454" y="606" class="box-sub">same two halves as ingest</text>
+        <text x="454" y="622" class="box-mono">→ same caprise_seed</text>
+
+        <rect x="630" y="570" width="180" height="60" class="box box-tee"/>
+        <text x="644" y="590" class="box-label">④ CAPRISE-enc query</text>
+        <text x="644" y="606" class="box-sub">query form · 1/8 coefficient</text>
+        <text x="644" y="622" class="box-mono">fresh 16-byte nonce</text>
+
+        <rect x="1100" y="560" width="360" height="100" class="box box-strong box-storage"/>
+        <text x="1114" y="580" class="box-label">⑤ Cosine ANN over ciphertext</text>
+        <text x="1114" y="597" class="box-sub">InMemoryEncryptedIndex.search(eq, top_k')</text>
+        <text x="1114" y="615" class="box-mono">distance-preserving — no decrypt</text>
+        <text x="1114" y="633" class="box-sub">→ top-k′ candidate pairs</text>
+        <text x="1114" y="651" class="box-mono">(EncryptedEmbedding, ChunkCiphertext)</text>
+
+        <!-- forward arrows -->
+        <path d="M200 600 L240 600" class="arrow arrow-secret" marker-end="url(#ahflow)"/>
+        <path d="M420 600 L440 600" class="arrow arrow-secret" marker-end="url(#ahflow)"/>
+        <path d="M610 600 L630 600" class="arrow arrow-secret" marker-end="url(#ahflow)"/>
+        <path d="M810 600 L1100 600" class="arrow arrow-cipher" marker-end="url(#ahflow)"/>
+        <text x="850" y="593" class="arrow-label cipher">CAPRISE-encrypted query</text>
+
+        <!-- Stage 2 GPU row -->
+        <rect x="840" y="695" width="220" height="100" class="box box-strong box-gpu"/>
+        <text x="854" y="715" class="box-label">GPU · masked matmuls</text>
+        <text x="854" y="733" class="box-sub">Q · K · V · O · FfnUp · FfnDown</text>
+        <text x="854" y="751" class="box-mono">matmul_many bundles QKV + gate/up</text>
+        <text x="854" y="769" class="box-sub">× 28 layers · × 1 query</text>
+        <text x="854" y="787" class="box-mono">U · public W → masked output</text>
+
+        <!-- mask roundtrip arrows (Stage 2) -->
+        <path d="M330 630 C 330 680, 880 680, 880 695" class="arrow arrow-masked" marker-end="url(#ahflow)"/>
+        <text x="520" y="670" class="arrow-label masked">mix: U = A·H</text>
+        <path d="M1000 695 C 1000 680, 370 680, 370 630" class="arrow arrow-masked" marker-end="url(#ahflow)" stroke-dasharray="4 3"/>
+        <text x="520" y="700" class="arrow-label masked">unmix: Aᵀ·(U·W)</text>
+
+        <!-- Stage 2 return row -->
+        <rect x="630" y="820" width="180" height="60" class="box box-tee"/>
+        <text x="644" y="840" class="box-label">⑥ Decrypt inside CVM</text>
+        <text x="644" y="856" class="box-sub">CAPRISE-decrypt embeddings</text>
+        <text x="644" y="872" class="box-mono">AES-decrypt chunk text · zeroize</text>
+
+        <rect x="20" y="820" width="180" height="60" class="box box-strong box-client"/>
+        <text x="34" y="840" class="box-label">⑦ Top-k results</text>
+        <text x="34" y="856" class="box-sub">ranked plaintext passages</text>
+        <text x="34" y="872" class="box-mono">(id, score, text)</text>
+
+        <!-- ⑤ → ⑥ : encrypted hits flow back -->
+        <path d="M1100 660 C 950 770, 900 820, 810 845" class="arrow arrow-cipher" marker-end="url(#ahflow)"/>
+        <text x="860" y="760" class="arrow-label cipher">top-k′ ciphertexts</text>
+
+        <!-- ⑥ → ⑦ -->
+        <path d="M630 850 L200 850" class="arrow arrow-secret" marker-end="url(#ahflow)"/>
+        <text x="260" y="843" class="arrow-label secret">plaintext top-k over RATLS</text>
       </svg>
     </div>
+
+    <!-- ── STEP-BY-STEP TABLE BELOW DIAGRAM ── -->
+    <table class="spec">
+      <thead>
+        <tr>
+          <th style="width:88px">Stage</th>
+          <th style="width:28px">#</th>
+          <th>Step</th>
+          <th style="width:140px">Who runs it</th>
+          <th>What crosses the boundary</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td rowspan="7" style="vertical-align:top;"><b>1 · Ingest</b></td>
+            <td class="num">①</td><td>Client opens RATLS, verifies attestation, posts <code>{tenant_id, user_x_sk, chunks: [{id, text}, …]}</code></td><td>Client → TEE</td><td>plaintext text + 32-byte secret over RATLS</td></tr>
+        <tr><td class="num">②</td><td>TEE tokenizes + GELO-embeds each chunk · GPU runs the masked matmuls (Q/K/V/O + FfnUp/FfnDown) under the mask · TEE re-masks per layer · pools + L2-normalizes</td><td>TEE + GPU</td><td>masked <code>U</code> on PCIe outbound · <code>U·W</code> back</td></tr>
+        <tr><td class="num">③</td><td>TEE looks up (or creates on first contact) <code>tee_user_x_sk[tenant]</code>; runs <code>HkdfPolicy::derive(user_x_sk, tee_user_x_sk, tenant_id)</code> → <code>(caprise_seed, aes_chunk_key)</code></td><td>TEE</td><td>—</td></tr>
+        <tr><td class="num">④</td><td>TEE CAPRISE-encrypts each pooled vector with the <em>doc</em> coefficient (3/8) + a fresh 16-byte nonce; AES-256-GCM encrypts each chunk text</td><td>TEE</td><td>—</td></tr>
+        <tr><td class="num">⑤</td><td>Storage server inserts × N records into <code>InMemoryEncryptedIndex</code>; the server only ever sees the ciphertext pair <code>(EncryptedEmbedding, ChunkCiphertext)</code> + access patterns</td><td>Storage server</td><td>encrypted records over HTTP</td></tr>
+        <tr><td class="num">⑥</td><td>TEE zeroizes <code>caprise_seed</code>, <code>aes_chunk_key</code>, and the incoming <code>user_x_sk</code> at end of request</td><td>TEE</td><td>—</td></tr>
+        <tr><td class="num">⑦</td><td>TEE returns <code>200 OK { ingested: N }</code> over the same RATLS session</td><td>TEE → Client</td><td>response over RATLS</td></tr>
+
+        <tr><td rowspan="7" style="vertical-align:top;"><b>2 · Query</b></td>
+            <td class="num">①</td><td>Client opens RATLS, verifies attestation (fresh nonce), posts <code>{tenant_id, user_x_sk, text, top_k}</code></td><td>Client → TEE</td><td>plaintext query + 32-byte secret over RATLS</td></tr>
+        <tr><td class="num">②</td><td>Same embed pipeline as Stage 1 — GELO-masked matmuls offload to GPU for one input</td><td>TEE + GPU</td><td>masked <code>U</code> on PCIe outbound · <code>U·W</code> back</td></tr>
+        <tr><td class="num">③</td><td>TEE re-derives the <strong>same</strong> <code>(caprise_seed, aes_chunk_key)</code> deterministically from <code>tee_user_x_sk[tenant] ‖ user_x_sk</code> — that's the property that lets queries decrypt what ingest encrypted</td><td>TEE</td><td>—</td></tr>
+        <tr><td class="num">④</td><td>TEE CAPRISE-encrypts the query with the <em>query</em> coefficient (1/8) and a fresh nonce</td><td>TEE</td><td>—</td></tr>
+        <tr><td class="num">⑤</td><td>Storage server runs cosine ANN <strong>over the ciphertext</strong> — CAPRISE is distance-preserving, so no decryption is needed. Returns top-k′ pairs <code>(EncryptedEmbedding, ChunkCiphertext)</code></td><td>Storage server</td><td>encrypted query in · encrypted hits out</td></tr>
+        <tr><td class="num">⑥</td><td>TEE CAPRISE-decrypts each hit's embedding (for optional rerank against the clean query) and AES-decrypts the chunk texts inside the CVM; zeroizes derived keys + <code>user_x_sk</code></td><td>TEE</td><td>—</td></tr>
+        <tr><td class="num">⑦</td><td>Client receives ranked plaintext top-k <code>[(id, score, text), …]</code> over the same RATLS session</td><td>TEE → Client</td><td>plaintext top-k over RATLS</td></tr>
+      </tbody>
+    </table>
 
     <!-- APPROACH-4 STEP CHECKLIST -->
     <table class="spec">
@@ -278,10 +362,10 @@
         <tr><td class="num">2</td><td><b>Session setup / attestation</b></td><td>SEV-SNP attestation via <code>/attest</code>; <code>SnpAttestationVerifier</code> chain validates ARK→ASK→VCEK; <code>REPORT_DATA</code> binds <code>(model_id, scheme_id, nonce)</code></td><td class="accent">green</td></tr>
         <tr><td class="num">3</td><td><b>Embedding (TEE-side)</b></td><td><strong>Primary variant</strong> chosen: full embedding model in TEE with GELO mask offloading linears to GPU. ObfuscaTune-encoder + GELO-encoder variants not built.</td><td class="accent">green</td></tr>
         <tr><td class="num">4</td><td><b>Storage — CAPRISE key management</b></td><td><strong>Option 3 chosen</strong>: two-party HKDF (<code>user_x_sk</code> client + <code>tee_user_x_sk</code> TEE → <code>caprise_seed_key</code> + <code>aes_chunk_key</code>). Variant A in-memory persistence today; Variant B (KMS-released) deferred.</td><td class="accent">green</td></tr>
-        <tr><td class="num">5</td><td><b>Query submission</b></td><td>Client POSTs <code>(tenant_id, user_x_sk, text, top_k)</code> over RATLS; TEE re-derives same keys, embeds, CAPRISE-encrypts with the query coefficient (1/8) — or planar-Laplace + Paillier on the RemoteRAG path</td><td class="accent">green</td></tr>
-        <tr><td class="num">6</td><td><b>Retrieval</b></td><td>Cosine over CAPRISE ciphertext (in-memory linear ANN) — GeloRAG. HNSW DistCosine over plaintext doc embeddings ≥ 256 docs + Paillier PHE rerank — RemoteRAG.</td><td class="accent">green</td></tr>
-        <tr><td class="num">7</td><td><b>Decryption / handoff</b></td><td>GeloRAG: TEE CAPRISE-decrypts top-k inside the CVM, returns plaintext over RATLS. RemoteRAG: client holds Paillier private key, decrypts the rerank ciphertexts itself.</td><td class="accent">green</td></tr>
-        <tr><td class="num">8</td><td><b>DistanceDP — defence in depth</b></td><td>DP-Forward (Recipe-B aMGM) implemented in <code>crates/dp-forward</code>, callable on the pooled output. <strong>Empirically destroys NFCorpus retrieval at ε=4</strong> — kept available, not on by default. Planar-Laplace on the RemoteRAG path is on by default.</td><td>partial</td></tr>
+        <tr><td class="num">5</td><td><b>Query submission</b></td><td>Client POSTs <code>(tenant_id, user_x_sk, text, top_k)</code> over RATLS; TEE re-derives the same keys deterministically, embeds via GELO, CAPRISE-encrypts with the <em>query</em> coefficient (1/8)</td><td class="accent">green</td></tr>
+        <tr><td class="num">6</td><td><b>Retrieval</b></td><td>Cosine over CAPRISE ciphertext (in-memory linear ANN today; HNSW swap planned at &gt;100k docs). Distance-preserving — no server-side decryption ever.</td><td class="accent">green</td></tr>
+        <tr><td class="num">7</td><td><b>Decryption / handoff</b></td><td>TEE CAPRISE-decrypts the candidate embeddings + AES-decrypts the chunk texts inside the CVM, zeroizes the derived keys, returns plaintext top-k over the same RATLS session.</td><td class="accent">green</td></tr>
+        <tr><td class="num">8</td><td><b>DistanceDP — defence in depth</b></td><td>DP-Forward (Recipe-B aMGM) implemented in <code>crates/dp-forward</code>, callable on the pooled output inside the embedder. <strong>Empirically destroys NFCorpus retrieval at ε = 4</strong> — kept available, not on by default.</td><td>partial</td></tr>
         <tr><td class="num">9</td><td><b>Reranking / filtering</b></td><td>Not implemented in-TEE; client-side cross-encoder rerank is the design intent (TEE returns plaintext top-k that the client reranks locally). The TEE re-ranks Stage-1 candidates against the clean embedding only for accuracy verification in the bench.</td><td style="color:var(--ink-3)">deferred</td></tr>
         <tr><td class="num">10</td><td><b>Answer generation</b></td><td>Out of scope for the prototype — client-side LLM is the assumed architecture. ObfuscaTune / GELO+OSNIP variants for hosted generation are designed in the spec, not built.</td><td style="color:var(--ink-3)">deferred</td></tr>
       </tbody>
@@ -315,19 +399,33 @@
       </a>
       <a class="path-card" href="storage.html">
         <div class="num">§B</div>
-        <h3>Storage · CAPRISE / RemoteRAG</h3>
-        <p class="tagline">Two parallel implementations of "private retrieval". GeloRAG encrypts the index with CAPRISE (key derived per-request from two-party HKDF). RemoteRAG keeps the index plaintext but the query is planar-Laplace-perturbed + Paillier-reranked.</p>
+        <h3>Storage · CAPRISE-at-rest</h3>
+        <p class="tagline">The production storage path. Doc embeddings live on the untrusted server as distance-preserving CAPRISE ciphertext; cosine ANN runs over the ciphertext directly. The CAPRISE seed is HKDF-derived inside the SEV-SNP CVM per request from a two-party secret (Option 3) and zeroized at return.</p>
         <ul>
-          <li><code>core::caprise</code> · CAPRISE distance-preserving encryption</li>
-          <li><code>core::keying</code> · HkdfPolicy · two-party HKDF (Option 3)</li>
-          <li><code>gelo-rag</code> · GeloRagTwoPartyService (current runner shape)</li>
-          <li><code>remote-rag</code> · planar-Laplace · Paillier · RemoteRagService</li>
+          <li><code>core::caprise</code> · distance-preserving encryption</li>
+          <li><code>core::keying</code> · HkdfPolicy · two-party HKDF</li>
+          <li><code>gelo-rag</code> · GeloRagTwoPartyService (runner-bound)</li>
+          <li><code>core::storage</code> · InMemoryEncryptedIndex (cosine over ciphertext)</li>
           <li><code>core::content</code> · AES-256-GCM chunk-text cipher</li>
         </ul>
         <span class="arrow">read more</span>
       </a>
-      <a class="path-card" href="#hardware">
+      <a class="path-card muted" href="storage-remoterag.html">
+        <span class="alt-badge">✕ alternative · not pursued</span>
         <div class="num">§C</div>
+        <h3>Storage · RemoteRAG</h3>
+        <p class="tagline">A second storage strategy prototyped during the work and parked. Keeps the index plaintext on the server; the query gets formal <code>(n, ε)</code>-DistanceDP via planar-Laplace noise, with a Paillier homomorphic dot-product reranking against the clean query. <strong>Mutually exclusive with CAPRISE — the project chose CAPRISE.</strong></p>
+        <ul>
+          <li><code>remote-rag::planar_laplace</code> · Stage-1 query DP</li>
+          <li><code>remote-rag::paillier</code> · Stage-2 PHE rerank · 256-bit · CRT</li>
+          <li><code>remote-rag::service</code> · RemoteRagService (parallel, not wired in runner)</li>
+          <li>10k-doc bench: 96% recall vs ground truth · 23.5 ms / query</li>
+          <li>Documented for traceability; revivable if deployment shape inverts (public corpus, private queries)</li>
+        </ul>
+        <span class="arrow">read why not chosen</span>
+      </a>
+      <a class="path-card" href="#hardware">
+        <div class="num">§D</div>
         <h3>Hardware</h3>
         <p class="tagline">AMD EPYC SEV-SNP for the TEE, commodity Vulkan GPU via VFIO passthrough for offload. No confidential-compute GPU needed — GELO masks make the GPU information-theoretically blind regardless.</p>
         <ul>
@@ -399,9 +497,9 @@
       <h5>Drill into the parts</h5>
       <ul>
         <li><a href="embedding.html">Embedding · GELO</a> — TEE↔GPU split-inference protocol, mask + shield + U-Verify</li>
-        <li><a href="storage.html">Storage · CAPRISE / RemoteRAG</a> — two private-retrieval implementations</li>
+        <li><a href="storage.html">Storage · CAPRISE-at-rest</a> — production storage path · two-party HKDF</li>
+        <li><a href="storage-remoterag.html">Storage · RemoteRAG</a> — alternative explored, not pursued</li>
         <li><a href="caprise-two-party-kdf.md">CAPRISE two-party KDF spec</a> — Option 3 design + delivery</li>
-        <li><a href="prototype-status.html">Legacy status sheet</a> — single-page snapshot</li>
       </ul>
     </div>
     <div>

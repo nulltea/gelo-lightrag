@@ -24,9 +24,7 @@
     <div class="links">
       <a href="index.html">Overview</a>
       <a class="current" href="embedding.html">Embedding · GELO</a>
-      <a href="storage.html">Storage · CAPRISE / RemoteRAG</a>
-      <a href="caprise-two-party-kdf.md">KDF spec</a>
-      <a href="prototype-status.html">Status sheet</a>
+      <a href="storage.html">Storage · CAPRISE</a>
     </div>
   </nav>
 
@@ -382,146 +380,334 @@
       </div>
     </div>
 
+    <!-- ── WHAT EACH SIDE ACTUALLY DOES ── -->
+    <div class="two-col" style="margin: 0 0 28px;">
+      <div>
+        <h4>What the TEE actually does</h4>
+        <p style="font-size:12px; line-height:1.55; color:var(--ink-2); margin:0 0 8px;">
+          More <em>operation types</em> than the GPU, but each individually cheap (FLOP-asymmetric, see left). Every non-linear op lives here — the GPU only ever holds the obfuscated state and cannot run an op that needs the cleartext.
+        </p>
+        <ul style="font-size:12px; line-height:1.55; margin:0; padding-left:18px;">
+          <li><b>Norms</b> — LayerNorm (BERT) or RMSNorm (Qwen3). Need cleartext, run per-row.</li>
+          <li><b>Attention</b> — Q·Kᵀ, softmax, ·V. Runtime-runtime · no public weight to mask against · stays in TEE at embedding shape.</li>
+          <li><b>Positional</b> — RoPE on Q, K (Qwen3 only).</li>
+          <li><b>Activations</b> — GELU (BERT) or SwiGLU = silu(gate)⊙up (Qwen3).</li>
+          <li><b>Residuals + biases</b> — element-wise adds on cleartext.</li>
+          <li><b>Mask machinery</b> — sample A · apply <code>U = A·H</code> · unapply <code>Aᵀ·(U·W)</code> · shield-row pack/strip. BLIS-direct CBLAS at the GEMM hot path.</li>
+          <li><b>Pool + L2 normalize</b> — mean (BERT) or last-token (Qwen3), then L2.</li>
+        </ul>
+      </div>
+      <div>
+        <h4>What the GPU does</h4>
+        <p style="font-size:12px; line-height:1.55; color:var(--ink-2); margin:0 0 8px;">
+          A small, sharp set of GEMMs against publicly-known weights. Sees only masked activations + the model bytes everyone already has.
+        </p>
+        <ul style="font-size:12px; line-height:1.55; margin:0; padding-left:18px;">
+          <li><b>matmul</b> on a registered weight — Q · K · V · O · FfnUp · FfnDown (BERT, 6/layer) or +FfnGate (Qwen3, 7/layer).</li>
+          <li><b>matmul_many</b> — bundles GEMMs that share an input (QKV; gate+up for Qwen3) so one upload + one sync covers several products.</li>
+          <li><b>matmul_dynamic</b> + <b>softmax_batched</b> — only when OutAttnMult / permuted-attention engages; at embedding shape, off.</li>
+        </ul>
+        <p style="font-size:12px; line-height:1.55; color:var(--ink-2); margin:8px 0 0;">
+          <strong>Per Qwen3 forward at <code>n ≈ 400</code>:</strong> ~247 ms GPU GEMM (the heavy bucket) vs ~238 ms in-TEE attention spread across 28 layers (~0.3 ms / call). Op-count and wall-clock pull in opposite directions — that's the whole point of the split.
+        </p>
+      </div>
+    </div>
+
     <p class="lede" style="margin-top:0;">
-      The diagram below traces that split through one decoder block. Solid red arrows are operations the TEE handles directly on cleartext; dashed amber arrows are masked operations crossing PCIe.
+      Two figures below trace one layer-block. <strong>FIG. 02a</strong> shows a BERT-class encoder block (BGE-base; 12 layers); <strong>FIG. 02b</strong> shows a decoder-LLM block (Qwen3-Embedding; 28 layers). Same 4-offload-group rhythm in both — the differences live in norm placement, activation choice, and whether attention is causal + RoPE'd. Solid red = data on cleartext; dashed amber = masked transit across PCIe.
     </p>
 
+    <!-- ══════════ FIG. 02a — BERT ══════════ -->
     <div class="diagram-frame">
       <div class="diagram-cap">
-        <span class="l">FIG. 02 — One decoder block · TEE ⇄ GPU mask round-trip · Qwen3 shape</span>
-        <span>solid red = trusted secret · dashed amber = obfuscated transit</span>
+        <span class="l">FIG. 02a — One BERT encoder block · post-LN · GELU · multi-head bidirectional · 12 layers</span>
+        <span>blue arc = residual · solid red = TEE flow · dashed amber = masked PCIe transit (mix → / unmix ←)</span>
       </div>
-      <svg class="flow" viewBox="0 0 1320 600" xmlns="http://www.w3.org/2000/svg" role="img">
+      <svg class="flow" viewBox="0 0 1320 660" xmlns="http://www.w3.org/2000/svg" role="img">
         <defs>
-          <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <marker id="ahbert" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
             <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
           </marker>
         </defs>
-
-        <!-- ZONE BANDS -->
-        <rect x="0"    y="40"  width="780"  height="540" class="zone-band zone-band-tee"/>
-        <rect x="780"  y="40"  width="540"  height="540" class="zone-band zone-band-gpu"/>
-
+        <rect x="0"   y="40" width="940"  height="600" class="zone-band zone-band-tee"/>
+        <rect x="940" y="40" width="380"  height="600" class="zone-band zone-band-gpu"/>
         <text x="20"  y="64" class="zone-label">Trusted side · in CVM</text>
-        <text x="20"  y="80" class="zone-sublabel">embedder + protocol kernel</text>
-        <text x="800" y="64" class="zone-label">Untrusted GPU</text>
-        <text x="800" y="80" class="zone-sublabel">burn-cubecl · Vulkan</text>
+        <text x="20"  y="80" class="zone-sublabel">encoder + protocol kernel</text>
+        <text x="960" y="64" class="zone-label">Untrusted GPU</text>
+        <text x="960" y="80" class="zone-sublabel">burn-cubecl · Vulkan</text>
+        <line x1="940" y1="40" x2="940" y2="640" class="boundary"/>
+        <text x="944" y="636" class="boundary-label">PCIe · masked</text>
 
-        <line x1="780"  y1="40" x2="780"  y2="580" class="boundary"/>
-        <text x="784"  y="576" class="boundary-label">PCIe · SWIOTLB · masked</text>
+        <!-- INPUT -->
+        <rect x="340" y="106" width="220" height="34" class="box box-tee box-strong"/>
+        <text x="450" y="128" class="box-label" text-anchor="middle">H_in   (n, 768)</text>
 
-        <!-- ── INPUT ── -->
-        <rect x="20" y="110" width="180" height="50" class="box box-tee"/>
-        <text x="34" y="130" class="box-label">H (residual from prev)</text>
-        <text x="34" y="146" class="box-sub">(n, 1024) f32</text>
+        <!-- arrow to attn-block residual split -->
+        <path d="M450 140 L450 158" class="arrow arrow-secret" marker-end="url(#ahbert)"/>
+        <circle cx="450" cy="160" r="4" fill="var(--ink)"/>
 
-        <!-- RMSNorm 1 -->
-        <rect x="220" y="110" width="160" height="50" class="box box-tee"/>
-        <text x="234" y="130" class="box-label">RMSNorm pre-attn</text>
-        <text x="234" y="146" class="box-sub">TEE</text>
+        <!-- attention residual arc (bypasses Q/K/V + Attn + O sub-block, joins at + before LN1) -->
+        <path d="M450 160 C 250 160, 220 290, 444 326" class="arrow" stroke="var(--client)" stroke-dasharray="3 2" fill="none" marker-end="url(#ahbert)"/>
+        <text x="170" y="246" class="arrow-label attest" transform="rotate(-90 170 246)">residual</text>
 
-        <!-- QKV mask apply -->
-        <rect x="400" y="110" width="180" height="50" class="box box-tee box-strong"/>
-        <text x="414" y="130" class="box-label">mask apply (Q/K/V)</text>
-        <text x="414" y="146" class="box-sub">A ← Haar; U = A·stack(H, S)</text>
+        <!-- ① QKV (masked) -->
+        <path d="M450 162 L450 170" class="arrow arrow-secret"/>
+        <rect x="340" y="170" width="220" height="40" class="box box-tee"/>
+        <text x="356" y="188" class="box-label">① QKV  (masked offload)</text>
+        <text x="356" y="202" class="box-mono">mix → matmul → unmix · +bias</text>
+        <rect x="960" y="170" width="340" height="40" class="box box-gpu box-strong"/>
+        <text x="976" y="188" class="box-label">matmul_many [Q, K, V]</text>
+        <text x="976" y="202" class="box-mono">3 weights · 1 dispatch · 1 sync</text>
+        <path d="M560 182 L960 182" class="arrow arrow-masked" marker-end="url(#ahbert)"/>
+        <text x="680" y="176" class="arrow-label masked">mix:  U = A·H</text>
+        <path d="M960 198 L560 198" class="arrow arrow-masked" marker-end="url(#ahbert)" stroke-dasharray="4 3"/>
+        <text x="680" y="212" class="arrow-label masked">unmix:  Aᵀ·(U·W)</text>
 
-        <!-- GPU QKV matmul -->
-        <rect x="820" y="110" width="200" height="50" class="box box-gpu box-strong"/>
-        <text x="834" y="130" class="box-label">matmul_many [Q,K,V]</text>
-        <text x="834" y="146" class="box-sub">3 weights · 1 dispatch</text>
+        <!-- ② Multi-head attention -->
+        <path d="M450 210 L450 226" class="arrow arrow-secret" marker-end="url(#ahbert)"/>
+        <rect x="340" y="226" width="220" height="40" class="box box-tee"/>
+        <text x="356" y="244" class="box-label">② Multi-head attention</text>
+        <text x="356" y="258" class="box-sub">bidirectional · TEE · Q·Kᵀ/√d → softmax → ·V</text>
 
-        <!-- mask unapply ×3 -->
-        <rect x="400" y="190" width="180" height="50" class="box box-tee"/>
-        <text x="414" y="210" class="box-label">unapply ×3</text>
-        <text x="414" y="226" class="box-sub">Aᵀ · (U·W)</text>
+        <!-- ③ O (masked) -->
+        <path d="M450 266 L450 282" class="arrow arrow-secret" marker-end="url(#ahbert)"/>
+        <rect x="340" y="282" width="220" height="40" class="box box-tee"/>
+        <text x="356" y="300" class="box-label">③ O  (masked offload)</text>
+        <text x="356" y="314" class="box-mono">mix → matmul → unmix · +bias</text>
+        <rect x="960" y="282" width="340" height="40" class="box box-gpu"/>
+        <text x="976" y="300" class="box-label">matmul O</text>
+        <text x="976" y="314" class="box-mono">single GEMM</text>
+        <path d="M560 294 L960 294" class="arrow arrow-masked" marker-end="url(#ahbert)"/>
+        <path d="M960 310 L560 310" class="arrow arrow-masked" marker-end="url(#ahbert)" stroke-dasharray="4 3"/>
 
-        <!-- RoPE + GQA -->
-        <rect x="220" y="190" width="160" height="50" class="box box-tee"/>
-        <text x="234" y="210" class="box-label">RoPE · GQA causal attn</text>
-        <text x="234" y="226" class="box-sub">TEE (Q, K never leave)</text>
+        <!-- + merge (residual rejoins) -->
+        <path d="M450 322 L450 332" class="arrow arrow-secret"/>
+        <circle cx="450" cy="334" r="8" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+        <text x="450" y="338" text-anchor="middle" font-size="12" font-weight="700">+</text>
 
-        <!-- O mask apply -->
-        <rect x="400" y="270" width="180" height="50" class="box box-tee"/>
-        <text x="414" y="290" class="box-label">mask apply O</text>
-        <text x="414" y="306" class="box-sub">fresh A</text>
+        <!-- ④ LayerNorm₁ (post-LN, AFTER residual add) -->
+        <path d="M450 342 L450 354" class="arrow arrow-secret" marker-end="url(#ahbert)"/>
+        <rect x="340" y="354" width="220" height="36" class="box box-tee box-strong"/>
+        <text x="450" y="372" class="box-label" text-anchor="middle">④ LayerNorm₁   (post-LN)</text>
+        <text x="450" y="384" class="box-sub" text-anchor="middle">LayerNorm(H + attn_proj)</text>
 
-        <!-- GPU O -->
-        <rect x="820" y="270" width="200" height="50" class="box box-gpu"/>
-        <text x="834" y="290" class="box-label">matmul O</text>
-        <text x="834" y="306" class="box-sub">attn_out · W_O</text>
+        <!-- FFN residual split -->
+        <path d="M450 390 L450 406" class="arrow arrow-secret" marker-end="url(#ahbert)"/>
+        <circle cx="450" cy="408" r="4" fill="var(--ink)"/>
 
-        <!-- unapply O + residual + RMSNorm 2 -->
-        <rect x="220" y="270" width="160" height="50" class="box box-tee"/>
-        <text x="234" y="290" class="box-label">unapply · +residual</text>
-        <text x="234" y="306" class="box-sub">RMSNorm pre-FFN</text>
+        <!-- FFN residual arc -->
+        <path d="M450 408 C 250 408, 220 522, 444 560" class="arrow" stroke="var(--client)" stroke-dasharray="3 2" fill="none" marker-end="url(#ahbert)"/>
+        <text x="170" y="494" class="arrow-label attest" transform="rotate(-90 170 494)">residual</text>
 
-        <!-- FFN gate+up mask apply -->
-        <rect x="400" y="350" width="180" height="50" class="box box-tee box-strong"/>
-        <text x="414" y="370" class="box-label">mask apply (gate, up)</text>
-        <text x="414" y="386" class="box-sub">offload_linear_many</text>
+        <!-- ⑤ FfnUp (masked) -->
+        <path d="M450 410 L450 420" class="arrow arrow-secret"/>
+        <rect x="340" y="420" width="220" height="40" class="box box-tee"/>
+        <text x="356" y="438" class="box-label">⑤ FfnUp  (masked offload)</text>
+        <text x="356" y="452" class="box-mono">mix → matmul → unmix · +bias · 768 → 3072</text>
+        <rect x="960" y="420" width="340" height="40" class="box box-gpu"/>
+        <text x="976" y="438" class="box-label">matmul FfnUp</text>
+        <text x="976" y="452" class="box-mono">single GEMM · 768 → 3072</text>
+        <path d="M560 432 L960 432" class="arrow arrow-masked" marker-end="url(#ahbert)"/>
+        <path d="M960 448 L560 448" class="arrow arrow-masked" marker-end="url(#ahbert)" stroke-dasharray="4 3"/>
 
-        <!-- GPU gate+up -->
-        <rect x="820" y="350" width="200" height="50" class="box box-gpu box-strong"/>
-        <text x="834" y="370" class="box-label">matmul_many [gate, up]</text>
-        <text x="834" y="386" class="box-sub">batched on GPU</text>
+        <!-- ⑥ GELU (TEE, narrow box because it's a single elementwise) -->
+        <path d="M450 460 L450 476" class="arrow arrow-secret" marker-end="url(#ahbert)"/>
+        <rect x="380" y="476" width="140" height="32" class="box box-tee"/>
+        <text x="450" y="496" class="box-label" text-anchor="middle">⑥ GELU</text>
 
-        <!-- unapply gate+up + swiglu -->
-        <rect x="400" y="430" width="180" height="50" class="box box-tee"/>
-        <text x="414" y="450" class="box-label">unapply · SwiGLU</text>
-        <text x="414" y="466" class="box-sub">silu(gate) · up — TEE</text>
+        <!-- ⑦ FfnDown (masked) -->
+        <path d="M450 508 L450 522" class="arrow arrow-secret" marker-end="url(#ahbert)"/>
+        <rect x="340" y="522" width="220" height="40" class="box box-tee"/>
+        <text x="356" y="540" class="box-label">⑦ FfnDown  (masked offload)</text>
+        <text x="356" y="554" class="box-mono">mix → matmul → unmix · +bias · 3072 → 768</text>
+        <rect x="960" y="522" width="340" height="40" class="box box-gpu"/>
+        <text x="976" y="540" class="box-label">matmul FfnDown</text>
+        <text x="976" y="554" class="box-mono">single GEMM · 3072 → 768</text>
+        <path d="M560 534 L960 534" class="arrow arrow-masked" marker-end="url(#ahbert)"/>
+        <path d="M960 550 L560 550" class="arrow arrow-masked" marker-end="url(#ahbert)" stroke-dasharray="4 3"/>
 
-        <!-- mask apply down -->
-        <rect x="220" y="430" width="160" height="50" class="box box-tee"/>
-        <text x="234" y="450" class="box-label">mask apply down</text>
-        <text x="234" y="466" class="box-sub">fresh A</text>
+        <!-- + merge 2 -->
+        <path d="M450 562 L450 568" class="arrow arrow-secret"/>
+        <circle cx="450" cy="570" r="8" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+        <text x="450" y="574" text-anchor="middle" font-size="12" font-weight="700">+</text>
 
-        <!-- GPU down -->
-        <rect x="820" y="430" width="200" height="50" class="box box-gpu"/>
-        <text x="834" y="450" class="box-label">matmul down</text>
-        <text x="834" y="466" class="box-sub">ffn_hidden · W_down</text>
-
-        <!-- unapply down + residual + repeat -->
-        <rect x="20" y="510" width="560" height="50" class="box box-tee"/>
-        <text x="34" y="530" class="box-label">unapply · +residual · → next block (×27 more)</text>
-        <text x="34" y="546" class="box-sub">final block → final RMSNorm → last-token pool → L2 normalize</text>
-
-        <!-- ARROWS -->
-        <path d="M200 135 L220 135" class="arrow arrow-secret" marker-end="url(#ah2)"/>
-        <path d="M380 135 L400 135" class="arrow arrow-secret" marker-end="url(#ah2)"/>
-        <path d="M580 135 L820 135" class="arrow arrow-masked" marker-end="url(#ah2)"/>
-        <text x="630" y="125" class="arrow-label masked">U (masked)</text>
-        <path d="M820 145 L580 195" class="arrow arrow-masked" marker-end="url(#ah2)" stroke-dasharray="4 3"/>
-        <text x="630" y="180" class="arrow-label masked">U·W (still masked)</text>
-        <path d="M400 215 L380 215" class="arrow arrow-secret" marker-end="url(#ah2)"/>
-
-        <path d="M380 295 L400 295" class="arrow arrow-secret" marker-end="url(#ah2)"/>
-        <path d="M580 295 L820 295" class="arrow arrow-masked" marker-end="url(#ah2)"/>
-        <path d="M820 305 L580 315" class="arrow arrow-masked" marker-end="url(#ah2)" stroke-dasharray="4 3"/>
-        <path d="M400 320 L300 320 L300 270" class="arrow arrow-secret" marker-end="url(#ah2)"/>
-
-        <path d="M380 375 L400 375" class="arrow arrow-secret" marker-end="url(#ah2)"/>
-        <path d="M580 375 L820 375" class="arrow arrow-masked" marker-end="url(#ah2)"/>
-        <path d="M820 385 L580 435" class="arrow arrow-masked" marker-end="url(#ah2)" stroke-dasharray="4 3"/>
-        <path d="M400 455 L380 455" class="arrow arrow-secret" marker-end="url(#ah2)"/>
-
-        <path d="M220 455 L200 455" class="arrow arrow-secret" marker-end="url(#ah2)"/>
-        <path d="M200 460 L200 510" class="arrow arrow-secret" marker-end="url(#ah2)"/>
+        <!-- ⑧ LayerNorm₂ (post-LN) → next block -->
+        <path d="M450 578 L450 588" class="arrow arrow-secret" marker-end="url(#ahbert)"/>
+        <rect x="340" y="588" width="220" height="36" class="box box-tee box-strong"/>
+        <text x="450" y="606" class="box-label" text-anchor="middle">⑧ LayerNorm₂   (post-LN)</text>
+        <text x="450" y="618" class="box-sub" text-anchor="middle">→ next block (×11) · final → mean-pool → L2</text>
       </svg>
     </div>
 
+    <!-- ══════════ FIG. 02b — Qwen3 ══════════ -->
+    <div class="diagram-frame">
+      <div class="diagram-cap">
+        <span class="l">FIG. 02b — One Qwen3 decoder block · pre-LN · SwiGLU · causal GQA + RoPE · 28 layers</span>
+        <span>norm moves <em>inside</em> the residual loop (pre-LN) · FFN forks into parallel gate/up branches that merge through SiLU ⊙</span>
+      </div>
+      <svg class="flow" viewBox="0 0 1320 760" xmlns="http://www.w3.org/2000/svg" role="img">
+        <defs>
+          <marker id="ahqwen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
+          </marker>
+        </defs>
+        <rect x="0"   y="40" width="940"  height="700" class="zone-band zone-band-tee"/>
+        <rect x="940" y="40" width="380"  height="700" class="zone-band zone-band-gpu"/>
+        <text x="20"  y="64" class="zone-label">Trusted side · in CVM</text>
+        <text x="20"  y="80" class="zone-sublabel">decoder + protocol kernel</text>
+        <text x="960" y="64" class="zone-label">Untrusted GPU</text>
+        <text x="960" y="80" class="zone-sublabel">burn-cubecl · Vulkan</text>
+        <line x1="940" y1="40" x2="940" y2="740" class="boundary"/>
+        <text x="944" y="736" class="boundary-label">PCIe · masked</text>
+
+        <!-- INPUT -->
+        <rect x="340" y="106" width="220" height="34" class="box box-tee box-strong"/>
+        <text x="450" y="128" class="box-label" text-anchor="middle">H_in   (n, 1024)</text>
+
+        <!-- residual split (BEFORE the norm — pre-LN) -->
+        <path d="M450 140 L450 158" class="arrow arrow-secret" marker-end="url(#ahqwen)"/>
+        <circle cx="450" cy="160" r="4" fill="var(--ink)"/>
+
+        <!-- Attention residual arc: bypasses Norm AND sub-block (pre-LN puts norm inside loop) -->
+        <path d="M450 160 C 250 160, 220 340, 444 388" class="arrow" stroke="var(--client)" stroke-dasharray="3 2" fill="none" marker-end="url(#ahqwen)"/>
+        <text x="170" y="276" class="arrow-label attest" transform="rotate(-90 170 276)">residual (around Norm + sub-block)</text>
+
+        <!-- ① RMSNorm₁ (pre-LN — INSIDE the residual loop) -->
+        <path d="M450 162 L450 174" class="arrow arrow-secret"/>
+        <rect x="340" y="174" width="220" height="34" class="box box-tee box-strong"/>
+        <text x="450" y="196" class="box-label" text-anchor="middle">① RMSNorm₁   (pre-LN)</text>
+
+        <!-- ② QKV (masked) -->
+        <path d="M450 208 L450 222" class="arrow arrow-secret" marker-end="url(#ahqwen)"/>
+        <rect x="340" y="222" width="220" height="40" class="box box-tee"/>
+        <text x="356" y="240" class="box-label">② QKV  (masked offload)</text>
+        <text x="356" y="254" class="box-mono">mix → matmul → unmix · no bias</text>
+        <rect x="960" y="222" width="340" height="40" class="box box-gpu box-strong"/>
+        <text x="976" y="240" class="box-label">matmul_many [Q, K, V]</text>
+        <text x="976" y="254" class="box-mono">3 weights · 1 dispatch · 1 sync</text>
+        <path d="M560 234 L960 234" class="arrow arrow-masked" marker-end="url(#ahqwen)"/>
+        <text x="680" y="228" class="arrow-label masked">mix:  U = A·H</text>
+        <path d="M960 250 L560 250" class="arrow arrow-masked" marker-end="url(#ahqwen)" stroke-dasharray="4 3"/>
+        <text x="680" y="264" class="arrow-label masked">unmix:  Aᵀ·(U·W)</text>
+
+        <!-- ③ RoPE (TEE) — Qwen3-specific, between QKV and attention -->
+        <path d="M450 262 L450 278" class="arrow arrow-secret" marker-end="url(#ahqwen)"/>
+        <rect x="340" y="278" width="220" height="32" class="box box-tee"/>
+        <text x="450" y="298" class="box-label" text-anchor="middle">③ RoPE on Q, K</text>
+
+        <!-- ④ Causal GQA attention -->
+        <path d="M450 310 L450 322" class="arrow arrow-secret" marker-end="url(#ahqwen)"/>
+        <rect x="340" y="322" width="220" height="40" class="box box-tee"/>
+        <text x="356" y="340" class="box-label">④ Causal GQA attention</text>
+        <text x="356" y="354" class="box-sub">16 Q-heads · 4 KV-heads · causal mask · TEE</text>
+
+        <!-- + merge 1 (residual rejoins — bypasses ① through ④) -->
+        <path d="M450 362 L450 384" class="arrow arrow-secret" marker-end="url(#ahqwen)"/>
+        <circle cx="450" cy="392" r="8" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+        <text x="450" y="396" text-anchor="middle" font-size="12" font-weight="700">+</text>
+
+        <!-- (no norm after merge in pre-LN — Qwen3 distinguishing feature) -->
+
+        <!-- FFN residual split -->
+        <path d="M450 400 L450 426" class="arrow arrow-secret" marker-end="url(#ahqwen)"/>
+        <circle cx="450" cy="428" r="4" fill="var(--ink)"/>
+
+        <!-- FFN residual arc: bypasses RMSNorm₂ AND the SwiGLU sub-block -->
+        <path d="M450 428 C 250 428, 220 600, 444 658" class="arrow" stroke="var(--client)" stroke-dasharray="3 2" fill="none" marker-end="url(#ahqwen)"/>
+        <text x="170" y="544" class="arrow-label attest" transform="rotate(-90 170 544)">residual (around Norm + sub-block)</text>
+
+        <!-- ⑤ RMSNorm₂ (pre-LN INSIDE FFN loop) -->
+        <path d="M450 430 L450 442" class="arrow arrow-secret"/>
+        <rect x="340" y="442" width="220" height="34" class="box box-tee box-strong"/>
+        <text x="450" y="464" class="box-label" text-anchor="middle">⑤ RMSNorm₂   (pre-LN)</text>
+
+        <!-- FORK into Gate || Up parallel branches  -->
+        <path d="M450 476 L450 490" class="arrow arrow-secret"/>
+        <circle cx="450" cy="492" r="4" fill="var(--ink)"/>
+        <!-- branch lines -->
+        <path d="M450 492 C 450 502, 400 502, 400 510" class="arrow arrow-secret" marker-end="url(#ahqwen)"/>
+        <path d="M450 492 C 450 502, 500 502, 500 510" class="arrow arrow-secret" marker-end="url(#ahqwen)"/>
+
+        <!-- ⑥a Gate (masked) — LEFT branch -->
+        <rect x="320" y="510" width="160" height="40" class="box box-tee"/>
+        <text x="330" y="528" class="box-label">⑥a Gate  (masked)</text>
+        <text x="330" y="542" class="box-mono">mix → matmul → unmix</text>
+
+        <!-- ⑥b Up (masked) — RIGHT branch -->
+        <rect x="500" y="510" width="160" height="40" class="box box-tee"/>
+        <text x="510" y="528" class="box-label">⑥b Up  (masked)</text>
+        <text x="510" y="542" class="box-mono">mix → matmul → unmix</text>
+
+        <!-- GPU box for bundled gate+up matmul_many -->
+        <rect x="960" y="510" width="340" height="40" class="box box-gpu box-strong"/>
+        <text x="976" y="528" class="box-label">matmul_many [gate, up]</text>
+        <text x="976" y="542" class="box-mono">2 weights · 1 dispatch · 1 sync</text>
+        <!-- arrows to GPU from both branches -->
+        <path d="M480 522 L960 522" class="arrow arrow-masked" marker-end="url(#ahqwen)"/>
+        <path d="M660 522 L960 532" class="arrow arrow-masked" marker-end="url(#ahqwen)"/>
+        <path d="M960 538 L660 542" class="arrow arrow-masked" marker-end="url(#ahqwen)" stroke-dasharray="4 3"/>
+        <path d="M960 545 L480 545" class="arrow arrow-masked" marker-end="url(#ahqwen)" stroke-dasharray="4 3"/>
+
+        <!-- ⑦ SiLU on Gate branch only -->
+        <path d="M400 550 L400 568" class="arrow arrow-secret" marker-end="url(#ahqwen)"/>
+        <rect x="340" y="568" width="120" height="32" class="box box-tee"/>
+        <text x="400" y="588" class="box-label" text-anchor="middle">⑦ SiLU(gate)</text>
+
+        <!-- Up branch passes straight down (no activation) -->
+        <path d="M580 550 L580 600" class="arrow arrow-secret" marker-end="url(#ahqwen)"/>
+
+        <!-- ⑧ ⊙ merge — element-wise multiply of SiLU(gate) and up -->
+        <path d="M400 600 C 400 614, 440 614, 442 618" class="arrow arrow-secret" marker-end="url(#ahqwen)"/>
+        <path d="M580 600 C 580 614, 460 614, 458 618" class="arrow arrow-secret" marker-end="url(#ahqwen)"/>
+        <circle cx="450" cy="624" r="9" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+        <text x="450" y="628" text-anchor="middle" font-size="13" font-weight="700">⊙</text>
+        <text x="490" y="628" class="arrow-label secret">silu(gate) ⊙ up</text>
+
+        <!-- ⑨ FfnDown (masked) -->
+        <path d="M450 633 L450 648" class="arrow arrow-secret" marker-end="url(#ahqwen)"/>
+        <rect x="340" y="648" width="220" height="40" class="box box-tee"/>
+        <text x="356" y="666" class="box-label">⑨ FfnDown  (masked offload)</text>
+        <text x="356" y="680" class="box-mono">mix → matmul → unmix · 3072 → 1024</text>
+        <rect x="960" y="648" width="340" height="40" class="box box-gpu"/>
+        <text x="976" y="666" class="box-label">matmul FfnDown</text>
+        <text x="976" y="680" class="box-mono">single GEMM · 3072 → 1024</text>
+        <path d="M560 660 L960 660" class="arrow arrow-masked" marker-end="url(#ahqwen)"/>
+        <path d="M960 676 L560 676" class="arrow arrow-masked" marker-end="url(#ahqwen)" stroke-dasharray="4 3"/>
+
+        <!-- + merge 2 (residual rejoins) — NO norm after merge in pre-LN -->
+        <path d="M450 688 L450 700" class="arrow arrow-secret"/>
+        <circle cx="450" cy="702" r="8" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+        <text x="450" y="706" text-anchor="middle" font-size="12" font-weight="700">+</text>
+
+        <!-- → next block (no final norm in pre-LN until end of full stack) -->
+        <path d="M450 710 L450 724" class="arrow arrow-secret" marker-end="url(#ahqwen)"/>
+        <text x="450" y="736" text-anchor="middle" font-size="11" fill="var(--ink-2)">→ next block (×27)  ·  after final block: RMSNorm → last-token pool → L2</text>
+      </svg>
+    </div>
+
+    <p class="lede" style="margin-top:0; font-size:14px;">
+      <strong>What to look for between the two figures:</strong>
+      ① <em>norm placement</em> — BERT puts LayerNorm <em>after</em> the residual add (post-LN); Qwen3 puts RMSNorm <em>before</em> each sub-block, <em>inside</em> the residual loop (pre-LN).
+      ② <em>positional</em> — Qwen3 has a RoPE step between QKV and attention; BERT has none.
+      ③ <em>attention</em> — Qwen3 is causal + GQA (16 Q-heads, 4 KV-heads); BERT is bidirectional multi-head.
+      ④ <em>FFN topology</em> — BERT is a linear chain (Up → GELU → Down); Qwen3 is a forked SwiGLU (Gate ∥ Up → SiLU ⊙ → Down) where the two GEMMs share one masked input and travel to the GPU as a single <code>matmul_many</code> dispatch.
+    </p>
+
     <table class="spec">
       <thead>
-        <tr><th style="width:60px">Op</th><th>Where</th><th>Sees</th><th>Cost / Qwen3 fwd</th></tr>
+        <tr><th style="width:24%">Op</th><th>Where</th><th>Sees</th><th class="num">Qwen3 fwd</th><th class="num">BERT fwd</th></tr>
       </thead>
       <tbody>
-        <tr><td><b>RMSNorm</b></td><td>TEE</td><td>cleartext H</td><td class="num">~10.9 ms (57 calls)</td></tr>
-        <tr><td><b>Q/K/V matmul</b></td><td>GPU under mask</td><td>U · public W</td><td class="num">~142 ms (matmul_many)</td></tr>
-        <tr><td><b>RoPE + attention</b></td><td>TEE</td><td>cleartext Q, K, V</td><td class="num">~238 ms (28 layers · in-TEE)</td></tr>
-        <tr><td><b>O matmul</b></td><td>GPU under mask</td><td>U · W_O</td><td class="num">part of ~105 ms</td></tr>
-        <tr><td><b>SwiGLU activate</b></td><td>TEE</td><td>cleartext gate, up</td><td class="num">~25.5 ms</td></tr>
-        <tr><td><b>FFN gate+up · down</b></td><td>GPU under mask</td><td>U · public W</td><td class="num">part of GPU bucket</td></tr>
-        <tr><td><b>Mask apply / unapply</b></td><td>TEE (BLIS-direct)</td><td>cleartext both sides</td><td class="num">~100 + 173 ms (308 GEMMs)</td></tr>
-        <tr><td><b>Mask sample</b></td><td>TEE</td><td>fresh Haar A</td><td class="num">~8.8 ms (once / fwd)</td></tr>
+        <tr><td><b>LayerNorm / RMSNorm</b></td><td>TEE</td><td>cleartext H</td><td class="num">~10.9 ms (57 calls)</td><td class="num">~25 calls</td></tr>
+        <tr><td><b>QKV matmul (bundled)</b></td><td>GPU under mask</td><td>U · public W</td><td class="num">~142 ms (matmul_many)</td><td class="num">12 dispatches</td></tr>
+        <tr><td><b>Attention (Q·Kᵀ · softmax · ·V)</b></td><td>TEE · cleartext both sides</td><td>cleartext Q, K, V</td><td class="num">~238 ms (28 layers)</td><td class="num">~5× less</td></tr>
+        <tr><td><b>RoPE</b></td><td>TEE</td><td>cleartext Q, K</td><td class="num">~2.1 ms (28 calls)</td><td class="num">—</td></tr>
+        <tr><td><b>O matmul</b></td><td>GPU under mask</td><td>U · W_O</td><td class="num">part of ~105 ms single-matmul bucket</td><td class="num">12 dispatches</td></tr>
+        <tr><td><b>Activation (SwiGLU / GELU)</b></td><td>TEE</td><td>cleartext gate, up</td><td class="num">~25.5 ms (SwiGLU)</td><td class="num">smaller (GELU is 1-arg)</td></tr>
+        <tr><td><b>FFN matmuls</b></td><td>GPU under mask</td><td>U · public W</td><td class="num">part of GPU bucket</td><td class="num">12 × 2 dispatches</td></tr>
+        <tr><td><b>Mask apply / unapply</b></td><td>TEE · BLIS-direct</td><td>cleartext both sides</td><td class="num">~100 + 173 ms (308 GEMMs)</td><td class="num">~5× less (132 GEMMs)</td></tr>
+        <tr><td><b>Mask sample (paper-parity)</b></td><td>TEE</td><td>fresh Haar A</td><td class="num">~8.8 ms (once / fwd)</td><td class="num">~8.8 ms</td></tr>
+        <tr><td><b>Pool + L2 normalize</b></td><td>TEE</td><td>cleartext final H</td><td class="num">µs (last-token + L2)</td><td class="num">µs (mean + L2)</td></tr>
       </tbody>
     </table>
   </section>
@@ -720,8 +906,9 @@
       <h5>Cross-references</h5>
       <ul>
         <li><a href="index.html">← Overview / Landing</a></li>
-        <li><a href="storage.html">Storage · CAPRISE / RemoteRAG →</a></li>
+        <li><a href="storage.html">Storage · CAPRISE-at-rest →</a></li>
         <li><a href="caprise-two-party-kdf.md">CAPRISE two-party KDF spec</a></li>
+        <li><a href="storage-remoterag.html">Storage · RemoteRAG (alternative)</a></li>
       </ul>
     </div>
     <div>
