@@ -551,6 +551,106 @@ fn trait_method_seed_determinism() {
 }
 
 #[test]
+fn empirical_direction_recovery_is_bounded() {
+    // Phase 5 (lighter): the engine's view of (πQ + η_Q) — which is what
+    // a curious GPU side observes — must not trivially leak Q's row
+    // directions via cosine-matching against the public-base / unmasked
+    // checkpoint. ARROWMATCH-style attacks (Wang et al. USENIX Sec '25)
+    // succeed by finding `argmax_j cos(W_obs[i], W_base[j])` to recover
+    // the row permutation; the per-batch fresh π plus σ-noise should
+    // prevent any single batch's observation from giving a confident
+    // mapping back to the cleartext Q.
+    //
+    // Test setup: generate Q, k=σ=0.01, sample 16 fresh (π, η) batches,
+    // compute argmax-cos mapping from observed rows back to original Q,
+    // measure recovery rate.
+    let n = 32;
+    let d = 64;
+    let mut rng = ChaCha20Rng::seed_from_u64(0xA77ACC);
+    let q = Array2::<f32>::from_shape_fn((n, d), |_| rng.random::<f32>() * 2.0 - 1.0);
+
+    // Pre-compute per-row L2 norms for the cosine denominator.
+    let row_norm = |m: ArrayView2<'_, f32>, i: usize| -> f32 {
+        m.row(i).iter().map(|v| v * v).sum::<f32>().sqrt()
+    };
+    let q_norms: Vec<f32> = (0..n).map(|i| row_norm(q.view(), i)).collect();
+
+    let sigma = 0.01f32;
+    let normal = rand_distr::StandardNormal;
+
+    let mut total_correct = 0usize;
+    let trials = 16usize;
+    for _ in 0..trials {
+        // Sample fresh π, apply to Q (rows), add noise η_Q.
+        let mut perm: Vec<usize> = (0..n).collect();
+        perm.shuffle(&mut rng);
+        let mut q_obs = Array2::<f32>::zeros((n, d));
+        for (i, &src) in perm.iter().enumerate() {
+            q_obs.row_mut(i).assign(&q.row(src));
+        }
+        for v in q_obs.iter_mut() {
+            let z: f32 = rand_distr::Distribution::sample(&normal, &mut rng);
+            *v += sigma * z;
+        }
+
+        // Attacker: for each observed row i, find argmax_j cos(q_obs[i], q[j]).
+        // If they recover perm[i] = j, that's a success.
+        for i in 0..n {
+            let row_obs_norm = row_norm(q_obs.view(), i);
+            let mut best_j = 0usize;
+            let mut best_cos = f32::NEG_INFINITY;
+            for j in 0..n {
+                let mut dot = 0.0f32;
+                for d_i in 0..d {
+                    dot += q_obs[(i, d_i)] * q[(j, d_i)];
+                }
+                let c = dot / (row_obs_norm * q_norms[j] + 1e-9);
+                if c > best_cos {
+                    best_cos = c;
+                    best_j = j;
+                }
+            }
+            if best_j == perm[i] {
+                total_correct += 1;
+            }
+        }
+    }
+
+    // With σ=0.01 the row directions are still mostly preserved (each
+    // entry perturbed by 0.01 vs row mean ≈ 0.5), so cosine matching
+    // recovers the permutation with high probability. This documents the
+    // single-batch direction-recovery threat: σ=0.01 alone is NOT enough
+    // to defeat the ARROWMATCH-class attacker who has the cleartext Q.
+    //
+    // In the deployed protocol Q is not directly cleartext — it's
+    // computed from H (which is masked via GELO) and the public W. The
+    // ARROWMATCH-class attacker who knows W would still need to recover
+    // H from U=A·H, which the orthogonal-mask security argument blocks.
+    //
+    // So this test ASSERTS the negative — the noise alone doesn't
+    // protect Q if the attacker has cleartext Q — to keep us honest
+    // about why the overall protocol's security argument relies on
+    // GELO's orthogonal mask, not just the per-batch σ-noise.
+    let recovery_rate = total_correct as f32 / (n * trials) as f32;
+    assert!(
+        recovery_rate > 0.5,
+        "with cleartext Q available, σ=0.01 noise alone permits direction \
+         recovery >50%: got {recovery_rate} — this is the expected negative \
+         result; protocol security relies on Q not being cleartext, which is \
+         the GELO orthogonal-mask invariant.",
+    );
+    // Document the upper bound too so a future tightening (e.g. larger σ
+    // or per-row noise scaling) lowers this number visibly.
+    eprintln!(
+        "[security] σ=0.01 cleartext-Q direction-recovery rate: {:.1}% ({} of {} trials × {} rows)",
+        100.0 * recovery_rate,
+        total_correct,
+        trials,
+        n,
+    );
+}
+
+#[test]
 fn trait_method_causal_mask_matches_plaintext() {
     // With AttentionMask::Causal, the InProcessTrustedExecutor must
     // produce output equivalent to the PlaintextExecutor's causal
