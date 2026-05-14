@@ -223,3 +223,116 @@ fn weight_buffer_is_cached_across_calls() {
     }
     assert!(prev.is_some());
 }
+
+#[test]
+fn softmax_batched_matches_cpu_reference() {
+    // Phase 3 of the Tier 1 work: the wgpu engine's softmax_batched
+    // override must produce row-stochastic results that match the CPU
+    // trait default to within f32 tolerance. Without this parity, the
+    // permutation-shielded attention path would silently disagree with
+    // its TEE-side equivalent.
+    let Some(gpu) = open_engine() else {
+        return;
+    };
+    let cpu = RayonCpuEngine::new();
+    let mut rng = ChaCha20Rng::from_seed([42u8; 32]);
+
+    let (b, m, n) = (4usize, 32, 32);
+    let mut input = ndarray::Array3::<f32>::zeros((b, m, n));
+    for bi in 0..b {
+        let mat = random_matrix(m, n, &mut rng);
+        input.index_axis_mut(ndarray::Axis(0), bi).assign(&mat);
+    }
+
+    let cpu_out = cpu.softmax_batched(input.view()).unwrap();
+    let gpu_out = gpu.softmax_batched(input.view()).unwrap();
+
+    assert_eq!(cpu_out.shape(), gpu_out.shape());
+
+    let mut max_diff = 0.0f32;
+    for ((bi, i, j), v) in cpu_out.indexed_iter() {
+        max_diff = max_diff.max((v - gpu_out[[bi, i, j]]).abs());
+    }
+    // burn-cubecl softmax goes through max-subtract + exp + sum_dim + div.
+    // f32 tolerance of 5e-5 — softmax tends to amplify small input drift.
+    assert!(
+        max_diff < 5e-5,
+        "GPU softmax_batched diverges from CPU: max_diff={max_diff}",
+    );
+
+    // Row-stochastic check on the GPU output.
+    for bi in 0..b {
+        for i in 0..m {
+            let row_sum: f32 = (0..n).map(|j| gpu_out[[bi, i, j]]).sum();
+            assert!(
+                (row_sum - 1.0).abs() < 1e-4,
+                "GPU softmax row sum != 1 at ({bi},{i}): {row_sum}",
+            );
+        }
+    }
+}
+
+#[test]
+fn permuted_attention_gpu_matches_cpu() {
+    // Full Tier 1 chain: permuted_attention with the wgpu engine vs with
+    // the CPU engine. Same RNG seed ensures the same π is sampled both
+    // times, so we compare engine outputs at identical pre-softmax
+    // states — the only difference is which device does matmul + softmax.
+    use gelo_protocol::attention::{self, PermAttnConfig};
+
+    let Some(gpu) = open_engine() else {
+        return;
+    };
+    let cpu = RayonCpuEngine::new();
+
+    let h = 4;
+    let n = 16;
+    let d_head = 32;
+    let scale = 1.0 / (d_head as f32).sqrt();
+
+    let mut rng_init = ChaCha20Rng::from_seed([99u8; 32]);
+    let mut q = ndarray::Array3::<f32>::zeros((h, n, d_head));
+    let mut k = ndarray::Array3::<f32>::zeros((h, n, d_head));
+    let mut v = ndarray::Array3::<f32>::zeros((h, n, d_head));
+    for hi in 0..h {
+        let qm = random_matrix(n, d_head, &mut rng_init);
+        let km = random_matrix(n, d_head, &mut rng_init);
+        let vm = random_matrix(n, d_head, &mut rng_init);
+        q.index_axis_mut(ndarray::Axis(0), hi).assign(&qm);
+        k.index_axis_mut(ndarray::Axis(0), hi).assign(&km);
+        v.index_axis_mut(ndarray::Axis(0), hi).assign(&vm);
+    }
+
+    let mut rng_cpu = ChaCha20Rng::from_seed([7u8; 32]);
+    let cpu_out = attention::permuted_attention(
+        &cpu,
+        q.view(),
+        k.view(),
+        v.view(),
+        scale,
+        PermAttnConfig::DISABLED_NOISE,
+        &mut rng_cpu,
+    )
+    .unwrap();
+
+    let mut rng_gpu = ChaCha20Rng::from_seed([7u8; 32]);
+    let gpu_out = attention::permuted_attention(
+        &gpu,
+        q.view(),
+        k.view(),
+        v.view(),
+        scale,
+        PermAttnConfig::DISABLED_NOISE,
+        &mut rng_gpu,
+    )
+    .unwrap();
+
+    let mut max_diff = 0.0f32;
+    for (idx, v) in cpu_out.indexed_iter() {
+        max_diff = max_diff.max((v - gpu_out[idx]).abs());
+    }
+    assert!(
+        max_diff < 5e-4,
+        "permuted_attention CPU vs GPU divergence: max_diff={max_diff}",
+    );
+}

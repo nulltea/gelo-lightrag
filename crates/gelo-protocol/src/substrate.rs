@@ -122,6 +122,38 @@ pub trait GpuOffloadEngine: Send {
         }
         Ok(out)
     }
+
+    /// Row-wise numerically stable softmax on the last axis of a 3D
+    /// tensor. `input` shape `(B, M, N)` → output shape `(B, M, N)`.
+    /// Used by the permutation-shielded attention protocol (Tier 1) to
+    /// offload softmax onto the engine.
+    ///
+    /// Default impl computes softmax in-process (on the CPU). The Wgpu
+    /// backend overrides with `burn_tensor::activation::softmax` so that
+    /// the GPU pipeline of `matmul_dynamic_batched + softmax_batched +
+    /// matmul_dynamic_batched` runs entirely on the accelerator with one
+    /// device sync at the end.
+    fn softmax_batched(&self, input: ArrayView3<f32>) -> Result<Array3<f32>> {
+        let (b, m, n) = input.dim();
+        let mut out = Array3::<f32>::zeros((b, m, n));
+        for bi in 0..b {
+            for i in 0..m {
+                let row = input.slice(ndarray::s![bi, i, ..]);
+                let max = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                let mut sum = 0.0f32;
+                for (j, v) in row.iter().enumerate() {
+                    let e = (*v - max).exp();
+                    out[(bi, i, j)] = e;
+                    sum += e;
+                }
+                let inv = 1.0 / sum;
+                for j in 0..n {
+                    out[(bi, i, j)] *= inv;
+                }
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// The trusted side of the split protocol.

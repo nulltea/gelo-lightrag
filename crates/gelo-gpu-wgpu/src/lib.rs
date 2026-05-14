@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use anyhow::{Result, anyhow};
 use burn_backend::Backend;
 use burn_cubecl::CubeBackend;
-use burn_tensor::{Tensor, TensorData, Transaction};
+use burn_tensor::{Tensor, TensorData, Transaction, activation};
 use cubecl_common::future;
 use cubecl_wgpu::{AutoGraphicsApi, RuntimeOptions, WgpuDevice, WgpuRuntime, init_setup_async};
 use half::f16;
@@ -131,6 +131,19 @@ impl WgpuVulkanEngine {
             fp16: self.fp16,
         }
     }
+}
+
+/// `Clone` delegates to `clone_shared` — both handles point at the same
+/// `Arc`-backed weight cache, so the `Embedder::embed` rayon fan-out can
+/// hand each worker its own engine handle without duplicating the
+/// device-resident weight tensors.
+impl Clone for WgpuVulkanEngine {
+    fn clone(&self) -> Self {
+        self.clone_shared()
+    }
+}
+
+impl WgpuVulkanEngine {
 
     /// `true` if this engine handle runs GEMM kernels in f16. Trusted-
     /// side code that needs bit-equal matmul output (e.g. U-Verify) must
@@ -447,6 +460,19 @@ impl GpuOffloadEngine for WgpuVulkanEngine {
             let lhs_t = array3_to_tensor_f32(lhs, &self.device);
             let rhs_t = array3_to_tensor_f32(rhs, &self.device);
             tensor3_to_array_f32(lhs_t.matmul(rhs_t))
+        }
+    }
+
+    fn softmax_batched(&self, input: ArrayView3<'_, f32>) -> Result<Array3<f32>> {
+        // Last-axis softmax via burn_tensor::activation::softmax. Runs on
+        // the wgpu device — used by permutation-shielded attention so the
+        // softmax doesn't bounce back to the TEE between Q·Kᵀ and ·V.
+        if self.fp16 {
+            let t = array3_to_tensor_f16(input, &self.device);
+            tensor3_to_array_f16(activation::softmax(t, 2))
+        } else {
+            let t = array3_to_tensor_f32(input, &self.device);
+            tensor3_to_array_f32(activation::softmax(t, 2))
         }
     }
 }

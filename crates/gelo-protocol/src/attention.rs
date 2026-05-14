@@ -26,9 +26,13 @@
 //! permutation + noise; it does not re-add shield rows.
 
 use anyhow::Result;
-use ndarray::{Array2, Array3, ArrayView2, ArrayView3, Axis, s};
+use ndarray::{Array3, ArrayView3, Axis, s};
+#[cfg(test)]
+use ndarray::{Array2, ArrayView2};
 use rand::{RngCore, seq::SliceRandom};
 use rand_distr::{Distribution, StandardNormal};
+
+use crate::substrate::GpuOffloadEngine;
 
 /// Configuration for the permutation-shielded attention protocol.
 #[derive(Debug, Clone, Copy)]
@@ -55,7 +59,9 @@ impl Default for PermAttnConfig {
 }
 
 /// Compute `softmax(Q·Kᵀ / √d) · V` for every head, under the
-/// permutation-shielded protocol.
+/// permutation-shielded protocol. Offloads the three heavy ops
+/// (Q·Kᵀ, softmax, ·V) to the engine so they can run on the GPU
+/// in one dispatch chain.
 ///
 /// `q`, `k`, `v` shape: `(num_heads, n, d_head)`. Result shape:
 /// `(num_heads, n, d_head)`.
@@ -64,9 +70,14 @@ impl Default for PermAttnConfig {
 ///
 /// The fresh per-batch row permutation `π_b ∈ S_n` is sampled once and
 /// shared across all heads within this block. The Hidden No More
-/// per-head decoupling can be added in a later phase by sampling one π
-/// per head.
-pub fn permuted_attention<R: RngCore>(
+/// per-head decoupling can be added later by sampling one π per head.
+///
+/// Engine usage:
+/// - `matmul_dynamic_batched` for `(πQ + η_Q)(πK + η_K)ᵀ` (batched over heads)
+/// - `softmax_batched` on the last axis of the score tensor
+/// - `matmul_dynamic_batched` for `probs · πV` (batched over heads)
+pub fn permuted_attention<R: RngCore, E: GpuOffloadEngine + ?Sized>(
+    engine: &E,
     q: ArrayView3<'_, f32>,
     k: ArrayView3<'_, f32>,
     v: ArrayView3<'_, f32>,
@@ -93,60 +104,68 @@ pub fn permuted_attention<R: RngCore>(
     // Sample one π_b for this attention block, shared across heads.
     let perm = sample_permutation(n, rng);
 
-    let mut out = Array3::<f32>::zeros((num_heads, n, d_head));
+    // Permute Q, K, V on the token axis (TEE side, cheap O(n·d) per head).
+    let mut q_perm = Array3::<f32>::zeros((num_heads, n, d_head));
+    let mut k_perm = Array3::<f32>::zeros((num_heads, n, d_head));
+    let mut v_perm = Array3::<f32>::zeros((num_heads, n, d_head));
     for h in 0..num_heads {
         let qh = q.index_axis(Axis(0), h);
         let kh = k.index_axis(Axis(0), h);
         let vh = v.index_axis(Axis(0), h);
-
-        // Permute Q, K, V on the row (token) axis.
-        let mut qp = permute_rows(qh, &perm);
-        let mut kp = permute_rows(kh, &perm);
-        let vp = permute_rows(vh, &perm);
-
-        // Optionally inject N(0, σ²·I) on Q and K. V is left untouched.
-        if cfg.noise_sigma > 0.0 {
-            add_gaussian_inplace(qp.view_mut(), cfg.noise_sigma, rng);
-            add_gaussian_inplace(kp.view_mut(), cfg.noise_sigma, rng);
-        }
-
-        // GPU work (Phase 3): currently TEE-side.
-        let mut scores = qp.dot(&kp.t());
-        scores.mapv_inplace(|x| x * scale);
-        let probs = softmax_rowwise(scores.view());
-        let op = probs.dot(&vp);
-
-        // Recover via πᵀ: out[perm[i]] = op[i].
         for (i, &src) in perm.iter().enumerate() {
-            out.slice_mut(s![h, src, ..]).assign(&op.row(i));
+            q_perm.slice_mut(s![h, i, ..]).assign(&qh.row(src));
+            k_perm.slice_mut(s![h, i, ..]).assign(&kh.row(src));
+            v_perm.slice_mut(s![h, i, ..]).assign(&vh.row(src));
+        }
+    }
+
+    // Optional N(0, σ²·I) noise on πQ and πK (Hidden No More mitigation).
+    if cfg.noise_sigma > 0.0 {
+        add_gaussian_3d_inplace(q_perm.view_mut(), cfg.noise_sigma, rng);
+        add_gaussian_3d_inplace(k_perm.view_mut(), cfg.noise_sigma, rng);
+    }
+
+    // Build Kᵀ over the last two axes — engine matmul wants (B, K, N).
+    let mut kt_perm = Array3::<f32>::zeros((num_heads, d_head, n));
+    for h in 0..num_heads {
+        for i in 0..n {
+            for j in 0..d_head {
+                kt_perm[(h, j, i)] = k_perm[(h, i, j)];
+            }
+        }
+    }
+
+    // GPU step 1: scores = (πQ + η_Q) · (πK + η_K)ᵀ shape (num_heads, n, n).
+    let mut scores = engine.matmul_dynamic_batched(q_perm.view(), kt_perm.view())?;
+    scores.mapv_inplace(|x| x * scale);
+
+    // GPU step 2: softmax along last axis.
+    let probs = engine.softmax_batched(scores.view())?;
+
+    // GPU step 3: out_perm = probs · πV shape (num_heads, n, d_head).
+    let out_perm = engine.matmul_dynamic_batched(probs.view(), v_perm.view())?;
+
+    // TEE recovery via πᵀ: out[h, perm[i], :] = out_perm[h, i, :].
+    let mut out = Array3::<f32>::zeros((num_heads, n, d_head));
+    for h in 0..num_heads {
+        for (i, &src) in perm.iter().enumerate() {
+            out.slice_mut(s![h, src, ..]).assign(&out_perm.slice(s![h, i, ..]));
         }
     }
 
     Ok(out)
 }
 
-/// Sample a fresh row permutation π ∈ S_n. Public so adjacent modules
-/// (and future per-head variants) can build on it.
+/// Sample a fresh row permutation π ∈ S_n.
 pub(crate) fn sample_permutation<R: RngCore>(n: usize, rng: &mut R) -> Vec<usize> {
     let mut perm: Vec<usize> = (0..n).collect();
     perm.shuffle(rng);
     perm
 }
 
-/// Permute rows of `m`: `out[i] = m[perm[i]]`.
-pub(crate) fn permute_rows(m: ArrayView2<'_, f32>, perm: &[usize]) -> Array2<f32> {
-    let (n, d) = m.dim();
-    debug_assert_eq!(perm.len(), n);
-    let mut out = Array2::<f32>::zeros((n, d));
-    for (i, &src) in perm.iter().enumerate() {
-        out.row_mut(i).assign(&m.row(src));
-    }
-    out
-}
-
-/// Add `N(0, σ²·I)` noise to `m` element-wise.
-fn add_gaussian_inplace<R: RngCore>(
-    mut m: ndarray::ArrayViewMut2<'_, f32>,
+/// Add `N(0, σ²·I)` noise to a 3D view element-wise.
+fn add_gaussian_3d_inplace<R: RngCore>(
+    mut m: ndarray::ArrayViewMut3<'_, f32>,
     sigma: f32,
     rng: &mut R,
 ) {
@@ -160,7 +179,9 @@ fn add_gaussian_inplace<R: RngCore>(
     }
 }
 
-/// Row-wise numerically stable softmax. `(n, m) → (n, m)`.
+/// Row-wise numerically stable softmax. `(n, m) → (n, m)`. Test-only —
+/// production softmax goes through `GpuOffloadEngine::softmax_batched`.
+#[cfg(test)]
 fn softmax_rowwise(scores: ArrayView2<'_, f32>) -> Array2<f32> {
     let (n, m) = scores.dim();
     let mut out = Array2::<f32>::zeros((n, m));
@@ -184,6 +205,7 @@ fn softmax_rowwise(scores: ArrayView2<'_, f32>) -> Array2<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim::RayonCpuEngine;
     use rand::SeedableRng;
     use rand_chacha::ChaCha20Rng;
 
@@ -223,9 +245,11 @@ mod tests {
         let q = random_q3(h, n, d, &mut rng);
         let k = random_q3(h, n, d, &mut rng);
         let v = random_q3(h, n, d, &mut rng);
+        let engine = RayonCpuEngine::new();
 
         let plain = plain_multi_head_attention(q.view(), k.view(), v.view(), scale);
         let out = permuted_attention(
+            &engine,
             q.view(),
             k.view(),
             v.view(),
@@ -255,9 +279,11 @@ mod tests {
         let q = random_q3(h, n, d, &mut rng);
         let k = random_q3(h, n, d, &mut rng);
         let v = random_q3(h, n, d, &mut rng);
+        let engine = RayonCpuEngine::new();
 
         let plain = plain_multi_head_attention(q.view(), k.view(), v.view(), scale);
         let out = permuted_attention(
+            &engine,
             q.view(),
             k.view(),
             v.view(),
@@ -280,11 +306,13 @@ mod tests {
     #[test]
     fn shape_mismatch_returns_error() {
         let mut rng = ChaCha20Rng::seed_from_u64(0);
+        let engine = RayonCpuEngine::new();
         let q = Array3::<f32>::zeros((2, 4, 8));
         let k = Array3::<f32>::zeros((2, 4, 8));
         let v = Array3::<f32>::zeros((2, 4, 4)); // wrong d
         assert!(
             permuted_attention(
+                &engine,
                 q.view(),
                 k.view(),
                 v.view(),
