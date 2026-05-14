@@ -857,6 +857,38 @@ running FFN in TEE at ~3× the wall-clock.
    week spike, including an empirical attack-resistance benchmark using
    `qsxltss/Game-of-Arrows` as the attack-side reference.
 
+6. **Stateless mask derivation via HKDF** (from SCX, SIGCOMM '25 —
+   `yuanmu97/scx`). Replace `InProcessTrustedExecutor`'s
+   `ChaCha20Rng` instance state with HKDF-derived per-request seeds
+   keyed on `(session_id, request_id, layer_idx, op_kind)`. Each
+   mask becomes a deterministic function of attested session state.
+
+   Three properties this unlocks:
+
+   - **Horizontal scaling**: any CVM in a pool can deterministically
+     reproduce a given mask from the session seed. The current
+     single-`ChaCha20Rng`-instance design implicitly pins a session to
+     one CVM for its lifetime.
+   - **Attestation-bound mask audit**: a relying party with the
+     session seed (revealed via attestation channel) can re-derive
+     every mask used in a session for verification. Today's masks are
+     only verifiable by the issuing CVM.
+   - **Replay binding**: mask state tied to the attestation report
+     rather than to a long-lived RNG instance — sessions whose
+     attestation has expired can't reuse mask material.
+
+   Security equivalent to the current path: HKDF-SHA256 expansion
+   → Box-Muller → Householder QR gives the same Haar-uniform draw
+   from `O(n)`. Performance neutral (HKDF is ~1-2 µs vs ms-scale mask
+   GEMMs). Effort: 2-3 days — pure refactor of `mask.rs` plus
+   baking the session seed into `SnpTrustedExecutor::evidence`'s
+   `REPORT_DATA`.
+
+   **When to do it**: skippable if the deployment stays single-tenant
+   per CVM forever. Required for multi-tenant cloud serving and for
+   the audit story when relying parties want to verify mask
+   provenance after the fact.
+
 ### Out of scope (and why)
 
 - **Private model weights** — different threat model; would require an

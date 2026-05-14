@@ -323,6 +323,62 @@ causal upstream, option (1) is free.
 So the fused permuted path lands within ~2× of the unprotected baseline at
 long-context prefill, vs the in-TEE path being effectively unusable.
 
+### 3.8 Maybe: ARROWCLOAK per-row scaling for OutAttnMult masks
+
+A *complementary* security tightening lever from ARROWCLOAK
+(Wang et al., USENIX Sec '25 — `qsxltss/Game-of-Arrows`). Not on the
+critical path; optional defense-in-depth for long-context decoder
+workloads where OutAttnMult is the dominant attention path
+(`gelo.md` §3.5).
+
+**What it changes**: in `crates/gelo-protocol/src/out_attn_mult.rs`,
+replace the scalar `(a, b)` Q/K scale factors with per-row integer
+vectors `(a_i ∈ {1, 2, 3}, b_j ∈ {1, 2, 3})`. The TEE-side recombine
+divides each row by its own scale factor — same shape as the current
+scalar division, marginal cost increase.
+
+**Why it might be worth it**: scalar `a` gives `log₂(range)` bits of
+mask entropy per batch (~3-4 bits for typical integer ranges). Per-row
+vector gives `n · log₂(range)` bits. At n = 4096 RAG prefill, that's
+~20 kbits of extra mask entropy per batch. Moves the brute-force budget
+required to recover Q from the 4-partition decomposition from "in
+principle small enough an attacker could enumerate over many batches"
+to "information-theoretically out of reach."
+
+**Why this is "maybe" rather than committed**:
+
+- The current OutAttnMult construction is paper-strength —
+  ARROWCLOAK's win is incremental defense-in-depth, not a
+  step-change in security posture.
+- The security argument needs re-derivation under the 4-partition
+  recombine algebra. Per-row scales must compose cleanly with the
+  row/column permutations and the additive `R_Q`, `R_Kt` masks
+  without breaking partition correctness. Non-trivial proof work.
+- No known attack against the current scalar formulation. `gelo.md`
+  §6 doesn't flag any exploitable weakness; ARROWCLOAK doesn't
+  publish one either. This is "make the entropy budget more
+  comfortable," not "close a known leak."
+- The path it tightens (OutAttnMult) is *also* off by default at
+  embedding shapes per the auto-switch in `gelo.md` §3.5. Tightening
+  a path that doesn't engage by default is even less urgent.
+
+**Effort**: ~2-3 days code change + parity test, plus ~1 week of
+security review to write down the recombine algebra under per-row
+scales and convince ourselves the partition decomposition still
+holds.
+
+**When to bundle it**: alongside `gelo.md` §8 lever #1 — the
+GPU-side `outattn:setup_stack_batched` kernel rewrite. Both touch
+`out_attn_mult.rs`; the per-row-scale change is a `while we're in
+here` add-on with its own parity test, so the kernel work and the
+security tightening can be one PR.
+
+**Where it shows up in the threat model**: under the row
+*OutAttnMult masks Q·Kᵀ on the untrusted side* in `gelo.md` §6.
+The 4-partition trick already prevents the GPU from recovering Q
+or Kᵀ from the masked output; per-row scaling makes the per-batch
+unknown space exponentially larger.
+
 ---
 
 ## 4. Decode: a separate primitive entirely
