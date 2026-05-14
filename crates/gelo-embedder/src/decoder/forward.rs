@@ -4,7 +4,9 @@ use ndarray::{Array2, ArrayView2};
 use gelo_protocol::profile;
 use gelo_protocol::{TrustedExecutor, WeightHandle, WeightKind};
 
-use super::attention::{causal_gqa_attention, causal_gqa_attention_with_offload};
+use super::attention::{
+    causal_gqa_attention, causal_gqa_attention_permuted, causal_gqa_attention_with_offload,
+};
 use super::config::DecoderConfig;
 use super::rms_norm::rms_norm;
 use super::rope::RopeTables;
@@ -127,6 +129,16 @@ fn decoder_block(
             cfg.num_key_value_heads,
             cfg.head_dim_value(),
         )?
+    } else if offload && cfg.perm_attention_enabled_for(n) {
+        causal_gqa_attention_permuted(
+            exec,
+            q.view(),
+            k.view(),
+            v.view(),
+            cfg.num_attention_heads,
+            cfg.num_key_value_heads,
+            cfg.head_dim_value(),
+        )?
     } else {
         profile::time("tee:attn_inplace", || {
             causal_gqa_attention(
@@ -153,22 +165,17 @@ fn decoder_block(
         rms_norm(h1.view(), layer.norm_ffn.as_slice().unwrap(), cfg.rms_norm_eps)
     });
 
-    // SwiGLU FFN: two projections (gate, up) + activation product + down.
+    // SwiGLU FFN: gate + up share the same input `h1_norm`, so one
+    // `offload_linear_many` call shares the mask apply + batches the
+    // matmul + batches the unapply across both projections.
     let (gate, up) = if offload {
-        let g = exec.offload_linear(
+        let handles = [
+            WeightHandle::new(layer_idx, WeightKind::FfnGate),
             WeightHandle::new(layer_idx, WeightKind::FfnUp),
-            h1_norm.view(),
-        )?;
-        // FfnUp slot reused for the SwiGLU "gate" projection; we still need
-        // the "up" projection. The trait doesn't have a dedicated handle for
-        // it, so we extend by piggy-backing on WeightKind::FfnDown which we
-        // wire to "up" in this path. (See provisioning in embedder.rs.)
-        // To avoid that overload, we register an additional handle via a
-        // synthetic layer-offset trick: use (layer_idx | 0x8000) for gate.
-        let u = exec.offload_linear(
-            WeightHandle::new(layer_idx | 0x8000, WeightKind::FfnUp),
-            h1_norm.view(),
-        )?;
+        ];
+        let mut out = exec.offload_linear_many(&handles, h1_norm.view())?;
+        let u = out.pop().expect("offload_linear_many returns 2 outputs");
+        let g = out.pop().expect("offload_linear_many returns 2 outputs");
         (g, u)
     } else {
         profile::time("tee:swiglu_proj_direct", || {

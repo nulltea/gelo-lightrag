@@ -1,8 +1,9 @@
 use anyhow::Result;
 use ndarray::{Array2, Array3, ArrayView2, Axis};
 
-use gelo_protocol::profile;
 use gelo_protocol::TrustedExecutor;
+use gelo_protocol::attention::AttentionMask;
+use gelo_protocol::profile;
 
 /// Causal grouped-query attention. Inputs `q`, `k`, `v` already have
 /// position-rotated values applied (RoPE handled by caller).
@@ -114,6 +115,75 @@ pub fn causal_gqa_attention_with_offload(
             output
                 .slice_mut(ndarray::s![.., q_off..q_off + head_dim])
                 .assign(&ctx);
+        }
+    });
+    Ok(output)
+}
+
+/// Permutation-shielded causal GQA attention (Tier 1). Offloads all
+/// three heavy ops — Q·Kᵀ, softmax, and ·V — to the GPU engine under
+/// a fresh per-batch row permutation + optional Gaussian noise. Causal
+/// mask is transformed by π on the TEE side and added to the score
+/// tensor before the engine softmax dispatch.
+///
+/// Same input/output shapes as [`causal_gqa_attention_with_offload`]:
+///   q: (n, num_q_heads * head_dim)
+///   k: (n, num_kv_heads * head_dim)
+///   v: (n, num_kv_heads * head_dim)
+///   → (n, num_q_heads * head_dim)
+pub fn causal_gqa_attention_permuted(
+    exec: &mut impl TrustedExecutor,
+    q: ArrayView2<'_, f32>,
+    k: ArrayView2<'_, f32>,
+    v: ArrayView2<'_, f32>,
+    num_q_heads: usize,
+    num_kv_heads: usize,
+    head_dim: usize,
+) -> Result<Array2<f32>> {
+    assert!(num_q_heads >= num_kv_heads);
+    assert_eq!(num_q_heads % num_kv_heads, 0);
+    let group = num_q_heads / num_kv_heads;
+    let n = q.nrows();
+    let scale = 1.0_f32 / (head_dim as f32).sqrt();
+
+    // Reshape: (n, num_q_heads * head_dim) → (num_q_heads, n, head_dim).
+    // K, V get GQA replication: each KV head feeds `group` Q heads.
+    let (q3, k3, v3) = profile::time("tee:perm_attn_pack", || {
+        let mut q3 = Array3::<f32>::zeros((num_q_heads, n, head_dim));
+        let mut k3 = Array3::<f32>::zeros((num_q_heads, n, head_dim));
+        let mut v3 = Array3::<f32>::zeros((num_q_heads, n, head_dim));
+        for qh in 0..num_q_heads {
+            let q_off = qh * head_dim;
+            let kvh = qh / group;
+            let kv_off = kvh * head_dim;
+            q3.index_axis_mut(Axis(0), qh)
+                .assign(&q.slice(ndarray::s![.., q_off..q_off + head_dim]));
+            k3.index_axis_mut(Axis(0), qh)
+                .assign(&k.slice(ndarray::s![.., kv_off..kv_off + head_dim]));
+            v3.index_axis_mut(Axis(0), qh)
+                .assign(&v.slice(ndarray::s![.., kv_off..kv_off + head_dim]));
+        }
+        (q3, k3, v3)
+    });
+
+    // One protocol call: permute + (optional) noise + GPU matmul +
+    // GPU softmax + GPU matmul, with TEE-side causal mask injection.
+    let out3 = exec.offload_attention_permuted(
+        q3.view(),
+        k3.view(),
+        v3.view(),
+        scale,
+        AttentionMask::Causal,
+    )?;
+
+    // Reshape: (num_q_heads, n, head_dim) → (n, num_q_heads * head_dim).
+    let mut output = Array2::<f32>::zeros((n, num_q_heads * head_dim));
+    profile::time("tee:perm_attn_unpack", || {
+        for qh in 0..num_q_heads {
+            let q_off = qh * head_dim;
+            output
+                .slice_mut(ndarray::s![.., q_off..q_off + head_dim])
+                .assign(&out3.index_axis(Axis(0), qh));
         }
     });
     Ok(output)

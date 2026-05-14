@@ -47,6 +47,8 @@ fn tiny_decoder_config(
         // Force OutAttnMult on at the small synthetic shapes used here,
         // overriding the `hidden_size`-based auto-switch.
         out_attn_mult_min_seq_len: Some(0),
+        use_perm_attention: false,
+        perm_attention_min_seq_len: None,
     }
 }
 
@@ -94,9 +96,9 @@ fn provision_decoder<E: GpuOffloadEngine>(weights: &DecoderWeights, cfg: &Decode
         engine.register_weight(WeightHandle::new(li16, WeightKind::K), layer.wk.view()).unwrap();
         engine.register_weight(WeightHandle::new(li16, WeightKind::V), layer.wv.view()).unwrap();
         engine.register_weight(WeightHandle::new(li16, WeightKind::O), layer.wo.view()).unwrap();
-        // SwiGLU: gate at FfnUp slot, up at FfnUp slot with high-bit-set layer index, down at FfnDown.
-        engine.register_weight(WeightHandle::new(li16, WeightKind::FfnUp), layer.w_gate.view()).unwrap();
-        engine.register_weight(WeightHandle::new(li16 | 0x8000, WeightKind::FfnUp), layer.w_up.view()).unwrap();
+        // SwiGLU: gate at FfnGate, up at FfnUp, down at FfnDown.
+        engine.register_weight(WeightHandle::new(li16, WeightKind::FfnGate), layer.w_gate.view()).unwrap();
+        engine.register_weight(WeightHandle::new(li16, WeightKind::FfnUp), layer.w_up.view()).unwrap();
         engine.register_weight(WeightHandle::new(li16, WeightKind::FfnDown), layer.w_down.view()).unwrap();
     }
 }
@@ -132,6 +134,50 @@ fn synthetic_decoder_parity_two_layer_gqa() {
     assert!(
         max_abs < 5e-3,
         "decoder masked vs plaintext diverges: max abs {max_abs}",
+    );
+}
+
+#[test]
+fn synthetic_decoder_parity_permuted_attention() {
+    // 3-way autoswitch path #2: permuted attention. Configure the
+    // config to engage it (perm_attention enabled, threshold below the
+    // input length, OutAttnMult threshold above the input length so it
+    // doesn't preempt). At σ = 0 (PermAttnConfig default) the math is
+    // exact equivariance — should match the in-TEE / plaintext path to
+    // f32 tolerance.
+    let mut cfg = tiny_decoder_config(2, 32, 4, 2, 8, 64);
+    cfg.use_perm_attention = true;
+    cfg.perm_attention_min_seq_len = Some(0);
+    cfg.use_out_attn_mult = false; // disable OutAttnMult so perm wins
+
+    let mut rng = ChaCha20Rng::from_seed([91u8; 32]);
+    let weights = Arc::new(synth_weights(&cfg, &mut rng));
+    let rope = RopeTables::new(cfg.head_dim_value(), cfg.max_position_embeddings, cfg.rope_theta);
+
+    let input_ids: Vec<u32> = vec![1, 5, 9, 13, 17, 21];
+
+    let mut plain_engine = RayonCpuEngine::new();
+    provision_decoder(&weights, &cfg, &mut plain_engine);
+    let mut plain = PlaintextExecutor::new(plain_engine);
+    let plain_out = forward::run(&cfg, &weights, &rope, &mut plain, &input_ids).unwrap();
+
+    let mut masked_engine = RayonCpuEngine::new();
+    provision_decoder(&weights, &cfg, &mut masked_engine);
+    let mut masked =
+        InProcessTrustedExecutor::with_seed(masked_engine, MaskSeed::from_bytes([92u8; 32]));
+    let masked_out = forward::run(&cfg, &weights, &rope, &mut masked, &input_ids).unwrap();
+
+    assert_eq!(plain_out.shape(), masked_out.shape());
+    let mut max_abs = 0.0_f32;
+    for ((i, j), v) in plain_out.indexed_iter() {
+        let diff = (v - masked_out[[i, j]]).abs();
+        if diff > max_abs {
+            max_abs = diff;
+        }
+    }
+    assert!(
+        max_abs < 5e-3,
+        "decoder permuted-attention path diverges from plain: max abs {max_abs}",
     );
 }
 

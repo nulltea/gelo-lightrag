@@ -61,6 +61,36 @@ pub struct DecoderConfig {
     /// attention.
     #[serde(default)]
     pub out_attn_mult_min_seq_len: Option<usize>,
+
+    /// Master switch for Tier 1 permutation-shielded attention
+    /// (Amulet-inspired). When enabled and the sequence length reaches
+    /// [`perm_attention_min_seq_len`] (but not yet
+    /// [`out_attn_mult_min_seq_len`]), `causal_gqa_attention_permuted`
+    /// routes the full attention chain — Q·Kᵀ, softmax, ·V — through
+    /// the GPU under a fresh per-batch row permutation.
+    ///
+    /// Cheaper than OutAttnMult at medium sequence lengths because the
+    /// permutation doesn't widen the operand to 2n×2n; softmax lives on
+    /// the GPU rather than on the TEE side.
+    #[serde(default = "default_perm_attention")]
+    pub use_perm_attention: bool,
+
+    /// Length threshold at which the permutation-shielded attention
+    /// path engages. Below this `n`, in-TEE attention is the default
+    /// (cheap at short sequences). Above [`out_attn_mult_min_seq_len`]
+    /// the permuted path yields to OutAttnMult (which has stronger
+    /// privacy when Q, K are valuable runtime values at long context).
+    ///
+    /// `None` resolves to `64` at runtime via
+    /// [`Self::perm_attention_threshold`]. Empirically tuned for the
+    /// Qwen3 / NFCorpus shape: n ≈ 400 is well above the threshold so
+    /// the permuted path engages.
+    #[serde(default)]
+    pub perm_attention_min_seq_len: Option<usize>,
+}
+
+const fn default_perm_attention() -> bool {
+    false
 }
 
 const fn default_out_attn_mult() -> bool {
@@ -128,6 +158,29 @@ impl DecoderConfig {
     pub fn out_attn_mult_enabled_for(&self, n: usize) -> bool {
         self.use_out_attn_mult && n >= self.out_attn_mult_threshold()
     }
+
+    /// Effective threshold at which permutation-shielded attention
+    /// engages. `None` resolves to `64` (the empirical knee where the
+    /// engine offload starts amortising the extra PCIe round-trips).
+    pub fn perm_attention_threshold(&self) -> usize {
+        self.perm_attention_min_seq_len.unwrap_or(64)
+    }
+
+    /// True iff the dispatch layer should route the full attention
+    /// chain through permutation-shielded attention for sequence
+    /// length `n`. The 3-way autoswitch precedence is:
+    /// - OutAttnMult wins at very long `n` (its declared threshold)
+    /// - permuted attention wins in the medium range
+    /// - in-TEE attention is the fallback for short `n`
+    pub fn perm_attention_enabled_for(&self, n: usize) -> bool {
+        if !self.use_perm_attention {
+            return false;
+        }
+        if self.out_attn_mult_enabled_for(n) {
+            return false;
+        }
+        n >= self.perm_attention_threshold()
+    }
 }
 
 #[cfg(test)]
@@ -153,6 +206,8 @@ mod tests {
             skip_last_layer: false,
             use_out_attn_mult: use_master,
             out_attn_mult_min_seq_len: threshold,
+            use_perm_attention: false,
+            perm_attention_min_seq_len: None,
         }
     }
 
