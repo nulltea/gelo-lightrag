@@ -468,6 +468,43 @@ against AMD's production ARK."*
   visible to the GPU. A persistent attacker can learn that the workload is
   *some* transformer of *some* shape from the dispatch pattern.
 
+### What attack classes don't apply (and why)
+
+Two 2025–2026 attack papers target schemes structurally related to GELO. Neither
+applies to this prototype, because GELO's per-batch full-rank sampling is
+exactly the architectural choice that closes both attack classes.
+
+- **Precomputed-basis recovery** (Wang et al., "Vulnerabilities in Partial
+  TEE-Shielded LLM Inference with Precomputed Noise", arXiv 2602.11088).
+  Recovers a LLaMA-3 8B layer's secrets in ~6 minutes from SOTER, TSQP, and
+  TransLinkGuard by exploiting their use of a precomputed K-dimensional static
+  basis — the noise lives in that subspace forever, regardless of how
+  coefficients are freshly resampled per query. The authors empirically show
+  that random subset sampling of basis vectors per query provides no
+  meaningful defense; the attack just costs more queries.
+
+  GELO's `A` is sampled per batch via Householder reflectors from a fresh
+  ChaCha20-seeded Gaussian — Haar-uniform over the full orthogonal group
+  `O(n)`. There is no static low-dimensional subspace to attack; the entire
+  orthogonal group is the support of the mask distribution.
+
+- **Sequential vocabulary matching against fixed permutations** (Wang et al.,
+  "Hidden No More: Attacking and Defending Private Third-Party LLM Inference",
+  ICML 2025, arXiv 2505.18332). 99%+ recovery from PermLLM, STIP, and Centaur
+  by exploiting decoder-only LLMs' non-collision property: the attacker tries
+  each vocabulary token at each position, runs a forward pass, and matches
+  the resulting hidden state against observed obfuscated states. The attack's
+  declared scope is fixed/precomputed permutations only.
+
+  GELO's `A` is not a permutation (it's a full-rank orthogonal rotation) and
+  is fresh per batch. Two independent reasons the attack misses by
+  construction.
+
+Both attacks land squarely on schemes with a static mask basis — including
+schemes that *look* fresh because their coefficients are resampled per query
+while the basis stays fixed. GELO's full-rank per-batch sampling closes both
+attack classes by design.
+
 ### When the threat model breaks
 
 If anyone later wants **private-model** deployment (e.g. a fine-tuned
@@ -505,6 +542,62 @@ where OutAttnMult is meant to operate.
   ~17 ms across 168 offloaded linears per text — the irreducible mask cost.
 - In-TEE attention (`tee:attn_inplace`): ~5 ms — negligible at this n.
 - Everything else: within run-to-run variance.
+
+### Per-text overhead on a 100-doc NFCorpus batch (Qwen3, AMD Ryzen AI Max+ 395)
+
+The above is per-text wall-clock with a small, 3-text micro-benchmark.
+At realistic corpus-ingest sizes the bench in
+`crates/approach4/tests/beir_accuracy.rs` runs with **`BEIR_PAPER_PARITY=1`**
+(one Haar `A` per forward, paired with shield rows — see §3.2) and
+the `blas` cargo feature (CBLAS-direct in `mask::apply`/`unapply` via
+BLIS), and parallel-fan-out `embed()` via rayon (one cloned executor
+per worker, each with its own ChaCha20 stream so cross-text `A` stays
+independent — see also `future-rnd.md` §5):
+
+| Stage | Vanilla BLIS (AVX2 dispatch) | **AOCL-BLIS (AVX-512 via `skx_asm`)** |
+|---|---:|---:|
+| Qwen3 plain (`PlaintextExecutor`, no mask) | 123 ms | 121 ms |
+| Qwen3 + GELO mask + CAPRISE | 281 ms (2.28× plain) | **153 ms (1.27× plain)** |
+| `gelo:mask_apply` aggregate (over 100-doc bench) | 326.6 ms | **62.6 ms (5.22×)** |
+| `gelo:mask_unapply` aggregate | 586.7 ms | **121.4 ms (4.83×)** |
+| Total bench wall (100 docs + 100 queries) | 129.6 s | **88.7 s (−31.5%)** |
+
+Both columns use **`BEIR_PAPER_PARITY=1`**, parallel-fan-out `embed()` via
+rayon, `BLIS_NUM_THREADS=1` (rayon owns the parallelism), and the
+`blas` cargo feature.
+
+For a 100-doc batch ingest this lands at **~15 s/100 texts** with
+AOCL-BLIS (vs ~30 s with vanilla BLIS, and ~85 s with the older
+sequential `BLIS=16` configuration). The parallel path is gated on
+`texts.len() > 1` so the single-query online path is unchanged
+(single-text embed clones one executor and runs serially without the
+rayon scope overhead).
+
+**Why AOCL-BLIS wins.** Vanilla BLIS's `bli_sgemm` dispatcher on Zen 4/5
+falls back to `bli_sgemm_haswell_asm_16x6` (AVX2 — 8 floats per
+zmm-equivalent ymm register). AOCL-BLIS's `config/zen5/bli_cntx_init_zen5.c`
+explicitly assigns SGEMM to `bli_sgemm_skx_asm_32x12_l2` (Intel SKX AVX-512
+— 16 floats per zmm register). The skx kernel is pure AVX-512 instructions,
+not Intel-specific, so it runs natively on Zen 4/5 with full per-clock
+throughput. Hand-tuned Zen-specific SGEMM ASM doesn't actually exist
+upstream — but Intel's SKX AVX-512 SGEMM is what we get instead, and AOCL
+just makes the dispatcher pick it. (DGEMM/CGEMM/ZGEMM *do* have hand-tuned
+Zen 4/5 kernels in AOCL-BLIS — see `kernels/zen4/3/bli_dgemm_zen4_asm_*` —
+but our mask is f32 SGEMM, so we route through skx_asm.)
+
+The 4–5× improvement at the bucket level is bigger than the naive "AVX-512
+is 2× AVX2" estimate because (a) the skx kernel uses 32x12 tiling that
+fits Zen 5's L2 cache better than haswell's 16x6, and (b) under rayon
+parallelism each worker's CPU-bound time shrinks, leaving the GPU as the
+real bottleneck — so wall-clock per text drops further than the BLAS
+in-isolation speedup would predict.
+
+**Install reproducibility.** AOCL-BLIS is built from `github.com/amd/blis`
+into `vendor/aocl-install/` via the `scripts/install-aocl-blis.sh` script
+(idempotent, no sudo). The `blis-src` crate's `system` feature picks it
+up at link time given `LIBRARY_PATH` and `LD_LIBRARY_PATH` env vars set
+to `vendor/aocl-install/lib`. The CVM build image needs `libblis-mt.so`
+on `LD_LIBRARY_PATH` at runtime.
 
 ### Attestation cost
 
@@ -557,6 +650,108 @@ the budget would be ~7 GB and force a 64 GB SKU.
   Hardware-only behaviours — real PSP, real ARK chain, real RMP, SWIOTLB on
   passthrough GPU — validated once per release on the dedicated server.
 
+### Per-operation runtime breakdown (Qwen3+mask, paper-parity)
+
+Measurement context: BEIR/NFCorpus, 100 docs + 100 queries (200 texts
+total), Qwen3-Embedding-0.6B with 28 decoder blocks, n≈400 tokens
+average, hidden=1024, intermediate=3072. Paper-parity mode (one Haar
+`A` per forward + 8 shield rows), `--features blas` (CBLAS-direct in
+`mask::apply`/`unapply` via BLIS), AMD Ryzen AI Max+ 395.
+
+The wall-clock numbers below are from a **sequential** run
+(`BLIS_NUM_THREADS=16`, single-threaded `embed`) because the
+profiling aggregator is thread-local and the parallel run splits
+samples across rayon workers. The per-text cost is identical between
+sequential and parallel modes; parallel just runs N texts on N CPU
+workers concurrently to drop the wall-clock — see §7's "100-doc
+NFCorpus batch" table for the parallel-mode end-to-end numbers.
+
+**Model compute (would happen without GELO too):**
+
+| op | per-text | per-call | calls/text | what it is |
+|---|---:|---:|---:|---|
+| `tee:attn_inplace` | 237.8 ms | 8.50 ms | 28 | Causal GQA attention in TEE (Q/K/V never cross PCIe) |
+| `engine:matmul_many` | 142.1 ms | 2.54 ms | 56 | Batched GPU matmuls (QKV-bundle: 28; gate+up-bundle: 28) |
+| `engine:matmul` | 105.2 ms | 1.88 ms | 56 | Single GPU matmuls (O: 28; Down: 28) |
+| `tee:swiglu_activate` | 25.5 ms | 0.91 ms | 28 | SiLU(gate)·up element-wise |
+| `tee:rmsnorm` | 10.9 ms | 0.19 ms | 57 | Pre-attn + pre-FFN norm per block, + final norm |
+| `tee:residual` | 3.9 ms | 0.07 ms | 56 | h + attn_out, h + ffn_out per block |
+| `tee:rope` | 2.1 ms | 0.076 ms | 28 | Rotary embedding on Q, K per block |
+| `tee:embed_lookup` | 0.08 ms | 0.075 ms | 1 | Token-id → embedding row |
+| **subtotal — model compute** | **527.6 ms** | | | matches Qwen3 plain wall-clock (~511 ms) |
+
+**GELO mask machinery (overhead added by the protocol):**
+
+| op | per-text | per-call | calls/text | what it is |
+|---|---:|---:|---:|---|
+| `gelo:mask_unapply` | 173.1 ms | 0.88 ms | 196 | `Aᵀ · V` via direct `cblas_sgemm` (BLIS) |
+| `gelo:mask_apply` | 100.9 ms | 0.90 ms | 112 | `A · stacked_H` via direct `cblas_sgemm` (BLIS) |
+| `gelo:shield_stack` | 28.1 ms | 0.25 ms | 112 | Write data rows + 8 fresh Gaussian shield rows into scratch |
+| `gelo:strip_shield` | 14.5 ms | 0.13 ms | 112 | Slice off shield rows, `to_owned()` the data block |
+| `gelo:mask_sample` | 8.8 ms | 8.76 ms | 1 | Haar-uniform QR over (n+k)×(n+k) Gaussian (one per forward) |
+| **subtotal — GELO overhead** | **325.4 ms** | | | |
+
+**Totals:**
+
+| | per-text | share |
+|---|---:|---:|
+| Model compute | 527.6 ms | 61.9% |
+| GELO mask machinery | 325.4 ms | 38.1% |
+| **Total Qwen3 + GELO mask, sequential** | **853 ms** | 100% |
+| **Total Qwen3 + GELO mask, parallel (BLIS=1, rayon)** | **302 ms** | (4.5× throughput vs sequential) |
+| Qwen3 plain reference | 132–511 ms | depends on parallel vs sequential |
+
+**Call-count tally** (Qwen3 = 28 decoder blocks, paper-parity, Q2
+gate+up bundling on):
+
+| group | apply/block | unapply/block | per forward (×28) |
+|---|---:|---:|---:|
+| QKV (bundled via `offload_qkv`, shared `H_norm`) | 1 | 3 | 28 apply, 84 unapply |
+| O (attention output) | 1 | 1 | 28 apply, 28 unapply |
+| FFN gate+up (bundled via `offload_linear_many`, shared `H_norm_ffn`) | 1 | 2 | 28 apply, 56 unapply |
+| FFN down | 1 | 1 | 28 apply, 28 unapply |
+| **per forward** | **4** | **7** | **112 apply, 196 unapply** |
+
+Without Q2's gate+up bundling this would be 5 apply / 7 unapply per
+block (140 apply / 196 unapply per forward — Q2 saves 28 redundant
+applies / forward at ~0.9 ms each).
+
+**Where the time really goes:**
+
+- **Mask GEMMs are 32% of total with vanilla BLIS** (274 ms/text apply+unapply).
+  Each is a `(n+k)² × d` CPU matmul. With AOCL-BLIS swapped in (lever #4
+  below — done), this drops to **2.2% of total (~184 ms across 308 GEMMs
+  per text) — a 5× per-bucket reduction**. The wins come from the
+  dispatcher selecting `bli_sgemm_skx_asm_32x12_l2` (AVX-512) over
+  `bli_sgemm_haswell_asm_16x6` (AVX2 fallback).
+- **In-TEE attention is 28% of total** (238 ms/text). Eight Q·Kᵀ
+  matmuls per layer × 28 layers, each tiny — `ndarray::dot`
+  (matrixmultiply, single-thread). OutAttnMult would move this to GPU
+  but adds 4× FLOPs; the auto-switch (§3.5) keeps it in-TEE at our
+  short n.
+- **GPU GEMMs are 29% of total** (247 ms/text). Eight offloaded
+  projections per layer × 28 layers, dispatched through `wgpu` /
+  burn-cubecl. Mostly bandwidth-bound at the small (n+k, d) shape.
+- **Everything else** (mask sample, shield stack/strip, RMSNorm,
+  SwiGLU, residual, RoPE, lookup) totals **~94 ms (11%)** — none of it
+  a single dominant bucket.
+
+**Apples-to-apples with the GELO paper.** The paper's headline 20%
+overhead is computed on Llama-2 7B at n=512 against a baseline that
+includes ~14 ms/call of socket-IPC overhead between the SGX trusted
+process and the GPU process. Our in-process TEE has no such IPC.
+Comparing on the right metric — per-offload mask cost / per-offload
+GPU GEMM cost — we land at **1.36×** (mask / GEMM ratio) vs the
+paper's **1.07×**, within hardware-tuning distance. Comparing on
+percentage overhead is misleading because the denominators differ:
+the same absolute mask cost is a much larger fraction of our cleaner
+~511 ms baseline than of the paper's ~1.9 s IPC-inflated baseline.
+The full reasoning lives in the commit history for this section; the
+take-away is **we are not doing redundant work relative to the paper
+within attention scope** — we extend mask coverage to the FFN
+projections too, which the paper omits, because the alternative is
+running FFN in TEE at ~3× the wall-clock.
+
 ### Highest-impact next levers
 
 1. **GPU-side OutAttnMult stacking.** `outattn:setup_stack_batched` is 42% of
@@ -569,6 +764,42 @@ the budget would be ~7 GB and force a 64 GB SKU.
    into the repo; CI offline-verifies it against AMD's published ARK on
    every run, catching report-format regressions without per-run silicon
    cost.
+4. **AOCL-BLIS swap for the `blas` cargo feature — DONE 2026-05-14.**
+   Vanilla `blis-src 0.2.2` builds upstream BLIS from source; on Zen 4/5
+   hosts the runtime dispatcher falls back to `bli_sgemm_haswell_asm_16x6`
+   (AVX2) because no `zen4/5_asm` SGEMM kernels exist upstream (`nm libblis.a`
+   shows only `zen*_ref`). AMD's AOCL-BLIS fork (`github.com/amd/blis`)
+   does **not** add hand-tuned Zen SGEMM kernels either — but its
+   `config/zen5/bli_cntx_init_zen5.c` explicitly maps SGEMM dispatch to
+   `bli_sgemm_skx_asm_32x12_l2` (Intel SKX AVX-512 — pure AVX-512
+   instructions, runs natively on Zen). That single dispatch-table change
+   is the win. Implemented via `blis-src` features `["system", "cblas"]`
+   pointing at `vendor/aocl-install/lib/libblis-mt.so` (see
+   `scripts/install-aocl-blis.sh`). **Measured 4.96× speedup on mask GEMMs**
+   (913 → 184 ms aggregate per 100-doc bench), taking Qwen3+mask
+   from 281 → 153 ms/text (2.28× → **1.27× plain**). License: BSD-3,
+   compatible.
+
+5. **Softmax-equivariant attention offload (research lever).** Amulet
+   (Wang et al., "Fast TEE-Shielded Inference for On-Device Model
+   Protection", arXiv 2512.07495, Dec 2025) observes that
+   `softmax(πQKᵀπᵀ/√d) = π · softmax(QKᵀ/√d) · πᵀ` — permutation matrices
+   commute through softmax. If we composed a fresh-per-batch permutation π
+   onto the attention block (in addition to GELO's orthogonal mask + shield
+   rows + small Gaussian noise per Hidden No More's mitigation), softmax
+   itself could run on the GPU. This would address the **in-TEE attention
+   cost** (28% of total per-text, ~238 ms on Qwen3 at n≈400) — the single
+   largest bucket after mask GEMMs. The construction differs from
+   OutAttnMult (which masks Q·Kᵀ additively but still runs softmax in the
+   TEE) by moving softmax itself off the trusted side. Risk: must be
+   combined with shield rows + σ≈0.01 Gaussian noise to survive sequential
+   vocabulary matching; for embedding shapes the threat is weaker than
+   for decoder generation, but the security argument still needs an
+   end-to-end re-derivation under our threat model. Amulet's own threat
+   model is on-device weight protection, so the security proof doesn't
+   port directly. No public Amulet code as of 2026-05-14. Effort: 1–2
+   week spike, including an empirical attack-resistance benchmark using
+   `qsxltss/Game-of-Arrows` as the attack-side reference.
 
 ### Out of scope (and why)
 
@@ -629,5 +860,16 @@ the threshold needed to flip cosine ranks on a 12-doc corpus.
 - Morris, Kuleshov, Shmatikov, Rush, "Text Embeddings Reveal (Almost) As
   Much As Text." EMNLP 2023 (Vec2Text — the embedding-inversion threat that
   motivates this prototype).
+- Wang et al., "Vulnerabilities in Partial TEE-Shielded LLM Inference with
+  Precomputed Noise." arXiv 2602.11088 — precomputed-basis recovery attack on
+  SOTER / TSQP / TransLinkGuard; surveyed in §6 "What attack classes don't
+  apply."
+- Wang et al., "Hidden No More: Attacking and Defending Private Third-Party
+  LLM Inference." ICML 2025, arXiv 2505.18332 — sequential vocabulary
+  matching attack on fixed permutations (PermLLM / STIP / Centaur); surveyed
+  in §6.
+- Wang et al., "Amulet: Fast TEE-Shielded Inference for On-Device Model
+  Protection." arXiv 2512.07495 — source of the softmax-permutation
+  equivariance technique referenced in §8 "Highest-impact next levers."
 - `docs/research/private-embedding-research.md` §D Recipe D — the survey
   that landed on this design.

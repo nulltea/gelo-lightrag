@@ -3,3 +3,6 @@ target/
 Cargo.lock
 .fastembed_cache/
 crates/*/.fastembed_cache/
+# AOCL-BLIS source + install (built by scripts/install-aocl-blis.sh)
+vendor/aocl-blis/
+vendor/aocl-install/

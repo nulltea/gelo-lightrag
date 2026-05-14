@@ -28,6 +28,14 @@ hmac = "0.12.1"
 half = { version = "2", features = ["bytemuck", "num-traits"] }
 matrixmultiply = "0.3"
 ndarray = "0.16"
+# BLAS backend wiring for the GELO mask apply/unapply (CPU GEMMs at
+# stacked_n ≈ 400, d ∈ {1024, 3072}). Enable on a crate by adding the
+# `blas` feature; that lights up ndarray's BLAS fast path which the
+# default matrixmultiply backend lags by ~2–3× at our shapes. We use
+# BLIS (built from source by blis-src) because it's pure C — no Fortran
+# dep — and BLIS' `zen` config-set lands well on this APU.
+blas-src = { version = "0.14", default-features = false, features = ["blis"] }
+blis-src = { version = "0.2", default-features = false, features = ["system", "cblas"] }
 rand = "0.9.2"
 rand_chacha = "0.9.0"
 rand_distr = "0.5"
