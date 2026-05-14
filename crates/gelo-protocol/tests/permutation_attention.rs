@@ -455,13 +455,13 @@ fn trait_method_sigma_zero_matches_plaintext_executor() {
 
     let mut plain_exec = PlaintextExecutor::new(RayonCpuEngine::new());
     let plain_out = plain_exec
-        .offload_attention_permuted(q.view(), k.view(), v.view(), scale)
+        .offload_attention_permuted(q.view(), k.view(), v.view(), scale, gelo_protocol::attention::AttentionMask::None)
         .unwrap();
 
     let mut in_proc = InProcessTrustedExecutor::with_seed(RayonCpuEngine::new(), MaskSeed([7u8; 32]))
         .with_perm_attention(PermAttnConfig::DISABLED_NOISE);
     let in_proc_out = in_proc
-        .offload_attention_permuted(q.view(), k.view(), v.view(), scale)
+        .offload_attention_permuted(q.view(), k.view(), v.view(), scale, gelo_protocol::attention::AttentionMask::None)
         .unwrap();
 
     let drift = plain_out
@@ -491,13 +491,13 @@ fn trait_method_hnm_noise_deviates_bounded() {
 
     let mut plain_exec = PlaintextExecutor::new(RayonCpuEngine::new());
     let plain_out = plain_exec
-        .offload_attention_permuted(q.view(), k.view(), v.view(), scale)
+        .offload_attention_permuted(q.view(), k.view(), v.view(), scale, gelo_protocol::attention::AttentionMask::None)
         .unwrap();
 
     let mut in_proc = InProcessTrustedExecutor::with_seed(RayonCpuEngine::new(), MaskSeed([9u8; 32]))
         .with_perm_attention(PermAttnConfig::HIDDEN_NO_MORE);
     let in_proc_out = in_proc
-        .offload_attention_permuted(q.view(), k.view(), v.view(), scale)
+        .offload_attention_permuted(q.view(), k.view(), v.view(), scale, gelo_protocol::attention::AttentionMask::None)
         .unwrap();
 
     let drift = plain_out
@@ -530,13 +530,13 @@ fn trait_method_seed_determinism() {
     let mut exec1 = InProcessTrustedExecutor::with_seed(RayonCpuEngine::new(), seed)
         .with_perm_attention(PermAttnConfig::HIDDEN_NO_MORE);
     let out1 = exec1
-        .offload_attention_permuted(q.view(), k.view(), v.view(), scale)
+        .offload_attention_permuted(q.view(), k.view(), v.view(), scale, gelo_protocol::attention::AttentionMask::None)
         .unwrap();
 
     let mut exec2 = InProcessTrustedExecutor::with_seed(RayonCpuEngine::new(), seed)
         .with_perm_attention(PermAttnConfig::HIDDEN_NO_MORE);
     let out2 = exec2
-        .offload_attention_permuted(q.view(), k.view(), v.view(), scale)
+        .offload_attention_permuted(q.view(), k.view(), v.view(), scale, gelo_protocol::attention::AttentionMask::None)
         .unwrap();
 
     let drift = out1
@@ -547,5 +547,55 @@ fn trait_method_seed_determinism() {
     assert!(
         drift < 1e-7,
         "same seed must yield bit-identical output: drift={drift}",
+    );
+}
+
+#[test]
+fn trait_method_causal_mask_matches_plaintext() {
+    // With AttentionMask::Causal, the InProcessTrustedExecutor must
+    // produce output equivalent to the PlaintextExecutor's causal
+    // path (which the default trait impl computes via -inf upper
+    // triangle). Validates the permuted-causal-mask math.
+    let h = 4;
+    let n = 16;
+    let d_head = 32;
+    let scale = 1.0 / (d_head as f32).sqrt();
+
+    let mut rng = ChaCha20Rng::seed_from_u64(0xC0DEC0DE);
+    let q = random_q3(h, n, d_head, &mut rng);
+    let k = random_q3(h, n, d_head, &mut rng);
+    let v = random_q3(h, n, d_head, &mut rng);
+
+    let mut plain_exec = PlaintextExecutor::new(RayonCpuEngine::new());
+    let plain_out = plain_exec
+        .offload_attention_permuted(
+            q.view(),
+            k.view(),
+            v.view(),
+            scale,
+            gelo_protocol::attention::AttentionMask::Causal,
+        )
+        .unwrap();
+
+    let mut in_proc = InProcessTrustedExecutor::with_seed(RayonCpuEngine::new(), MaskSeed([4u8; 32]))
+        .with_perm_attention(PermAttnConfig::DISABLED_NOISE);
+    let in_proc_out = in_proc
+        .offload_attention_permuted(
+            q.view(),
+            k.view(),
+            v.view(),
+            scale,
+            gelo_protocol::attention::AttentionMask::Causal,
+        )
+        .unwrap();
+
+    let drift = plain_out
+        .iter()
+        .zip(in_proc_out.iter())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        drift < 1e-5,
+        "permuted causal mask must reproduce plain causal attention at σ=0: drift={drift}",
     );
 }

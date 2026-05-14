@@ -316,7 +316,7 @@ pub trait TrustedExecutor {
         Ok(out)
     }
 
-    /// Compute `softmax(Q·Kᵀ / √d) · V` for every head, under the
+    /// Compute `softmax(Q·Kᵀ / √d + mask) · V` for every head, under the
     /// permutation-shielded attention protocol (Tier 1 — Amulet's
     /// softmax-permutation equivariance, arXiv 2512.07495, combined with
     /// Hidden No More's σ-noise mitigation, arXiv 2505.18332).
@@ -328,6 +328,7 @@ pub trait TrustedExecutor {
     ///
     /// `q`, `k`, `v` shape: `(num_heads, n, d_head)`. Result shape:
     /// `(num_heads, n, d_head)`. `scale` is typically `1 / √d_head`.
+    /// `mask` selects between full bidirectional and causal attention.
     ///
     /// Default impl falls back to **plain** multi-head attention — useful
     /// only as a parity baseline (no privacy). Real implementations override.
@@ -337,6 +338,7 @@ pub trait TrustedExecutor {
         k: ArrayView3<f32>,
         v: ArrayView3<f32>,
         scale: f32,
+        mask: crate::attention::AttentionMask,
     ) -> Result<Array3<f32>> {
         // Default: plain multi-head attention. Used by PlaintextExecutor
         // and as a fallback for executors that haven't been upgraded.
@@ -348,6 +350,14 @@ pub trait TrustedExecutor {
             let vh = v.index_axis(Axis(0), i);
             let mut scores = qh.dot(&kh.t());
             scores.mapv_inplace(|x| x * scale);
+            // Causal mask: -inf on the strict upper triangle.
+            if let crate::attention::AttentionMask::Causal = mask {
+                for r in 0..scores.nrows() {
+                    for c in (r + 1)..scores.ncols() {
+                        scores[(r, c)] = f32::NEG_INFINITY;
+                    }
+                }
+            }
             // Numerically stable softmax row-wise.
             let mut probs = Array2::<f32>::zeros(scores.dim());
             for r in 0..scores.nrows() {
@@ -359,9 +369,11 @@ pub trait TrustedExecutor {
                     probs[(r, c)] = e;
                     s += e;
                 }
-                let inv = 1.0 / s;
-                for c in 0..probs.ncols() {
-                    probs[(r, c)] *= inv;
+                if s > 0.0 {
+                    let inv = 1.0 / s;
+                    for c in 0..probs.ncols() {
+                        probs[(r, c)] *= inv;
+                    }
                 }
             }
             out.index_axis_mut(Axis(0), i).assign(&probs.dot(&vh));

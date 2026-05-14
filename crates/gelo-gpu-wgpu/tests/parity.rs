@@ -278,7 +278,7 @@ fn permuted_attention_gpu_matches_cpu() {
     // the CPU engine. Same RNG seed ensures the same π is sampled both
     // times, so we compare engine outputs at identical pre-softmax
     // states — the only difference is which device does matmul + softmax.
-    use gelo_protocol::attention::{self, PermAttnConfig};
+    use gelo_protocol::attention::{self, AttentionMask, PermAttnConfig};
 
     let Some(gpu) = open_engine() else {
         return;
@@ -310,6 +310,7 @@ fn permuted_attention_gpu_matches_cpu() {
         k.view(),
         v.view(),
         scale,
+        AttentionMask::None,
         PermAttnConfig::DISABLED_NOISE,
         &mut rng_cpu,
     )
@@ -322,6 +323,7 @@ fn permuted_attention_gpu_matches_cpu() {
         k.view(),
         v.view(),
         scale,
+        AttentionMask::None,
         PermAttnConfig::DISABLED_NOISE,
         &mut rng_gpu,
     )

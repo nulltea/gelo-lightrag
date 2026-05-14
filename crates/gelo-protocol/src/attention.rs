@@ -26,9 +26,9 @@
 //! permutation + noise; it does not re-add shield rows.
 
 use anyhow::Result;
-use ndarray::{Array3, ArrayView3, Axis, s};
+use ndarray::{Array2, Array3, ArrayView3, Axis, s};
 #[cfg(test)]
-use ndarray::{Array2, ArrayView2};
+use ndarray::ArrayView2;
 use rand::{RngCore, seq::SliceRandom};
 use rand_distr::{Distribution, StandardNormal};
 
@@ -58,6 +58,21 @@ impl Default for PermAttnConfig {
     }
 }
 
+/// What attention mask (if any) to apply before softmax in the
+/// permutation-shielded attention protocol.
+#[derive(Debug, Clone, Copy)]
+pub enum AttentionMask {
+    /// No mask — full bidirectional attention. Used by encoder-style
+    /// models (e.g. BGE).
+    None,
+    /// Causal upper-triangular mask. For decoder-style models the mask
+    /// is transformed by π so position `i` attends only to positions `j`
+    /// with `perm[j] ≤ perm[i]`. Math: `mask'[i,j] = -inf if perm[j] >
+    /// perm[i] else 0` — direct algebra shows this preserves the
+    /// equivariance identity exactly (see `tests/permutation_attention.rs`).
+    Causal,
+}
+
 /// Compute `softmax(Q·Kᵀ / √d) · V` for every head, under the
 /// permutation-shielded protocol. Offloads the three heavy ops
 /// (Q·Kᵀ, softmax, ·V) to the engine so they can run on the GPU
@@ -67,6 +82,11 @@ impl Default for PermAttnConfig {
 /// `(num_heads, n, d_head)`.
 ///
 /// `scale` is the attention scale (typically `1 / √d_head`).
+///
+/// `mask` selects no mask (encoder-style) or causal mask (decoder LMs);
+/// for the causal variant the mask is transformed by π before being
+/// added to the engine's score tensor on the TEE side (cheap O(n²) work
+/// shared across heads).
 ///
 /// The fresh per-batch row permutation `π_b ∈ S_n` is sampled once and
 /// shared across all heads within this block. The Hidden No More
@@ -82,6 +102,7 @@ pub fn permuted_attention<R: RngCore, E: GpuOffloadEngine + ?Sized>(
     k: ArrayView3<'_, f32>,
     v: ArrayView3<'_, f32>,
     scale: f32,
+    mask: AttentionMask,
     cfg: PermAttnConfig,
     rng: &mut R,
 ) -> Result<Array3<f32>> {
@@ -138,6 +159,29 @@ pub fn permuted_attention<R: RngCore, E: GpuOffloadEngine + ?Sized>(
     // GPU step 1: scores = (πQ + η_Q) · (πK + η_K)ᵀ shape (num_heads, n, n).
     let mut scores = engine.matmul_dynamic_batched(q_perm.view(), kt_perm.view())?;
     scores.mapv_inplace(|x| x * scale);
+
+    // TEE step: apply permuted causal mask if requested. The mask is the
+    // same for every head, so we add it in a broadcast pattern.
+    if let AttentionMask::Causal = mask {
+        // mask'[i, j] = -inf if perm[j] > perm[i] else 0.
+        // Build once, add to scores[h, :, :] for every head.
+        let mut mask_mat = Array2::<f32>::zeros((n, n));
+        for i in 0..n {
+            let pi = perm[i];
+            for j in 0..n {
+                if perm[j] > pi {
+                    mask_mat[(i, j)] = f32::NEG_INFINITY;
+                }
+            }
+        }
+        for h in 0..num_heads {
+            for i in 0..n {
+                for j in 0..n {
+                    scores[(h, i, j)] += mask_mat[(i, j)];
+                }
+            }
+        }
+    }
 
     // GPU step 2: softmax along last axis.
     let probs = engine.softmax_batched(scores.view())?;
@@ -254,6 +298,7 @@ mod tests {
             k.view(),
             v.view(),
             scale,
+            AttentionMask::None,
             PermAttnConfig::DISABLED_NOISE,
             &mut rng,
         )
@@ -288,6 +333,7 @@ mod tests {
             k.view(),
             v.view(),
             scale,
+            AttentionMask::None,
             PermAttnConfig::HIDDEN_NO_MORE,
             &mut rng,
         )
@@ -317,6 +363,7 @@ mod tests {
                 k.view(),
                 v.view(),
                 1.0,
+                AttentionMask::None,
                 PermAttnConfig::DISABLED_NOISE,
                 &mut rng,
             )

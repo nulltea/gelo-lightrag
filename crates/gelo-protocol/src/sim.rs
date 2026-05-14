@@ -632,10 +632,13 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         k: ArrayView3<f32>,
         v: ArrayView3<f32>,
         scale: f32,
+        mask: attention::AttentionMask,
     ) -> Result<Array3<f32>> {
-        // Phase 3: matmuls + softmax delegated to the engine. The engine
+        // Phase 3+4: matmuls + softmax delegated to the engine. The engine
         // sees only permuted (and optionally noise-perturbed) Q, K, V —
-        // the secret state (π, σ) stays inside `self`.
+        // the secret state (π, σ) stays inside `self`. Causal mask, when
+        // requested, is applied TEE-side to the score tensor between the
+        // first and second engine call (shared across heads).
         profile::time("gelo:perm_attention", || {
             attention::permuted_attention(
                 &self.engine,
@@ -643,6 +646,7 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
                 k,
                 v,
                 scale,
+                mask,
                 self.perm_attn,
                 &mut self.rng,
             )
