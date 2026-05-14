@@ -6,6 +6,7 @@ use ndarray::{Array2, Array3, ArrayView2, ArrayView3};
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 
+use crate::attention::{self, PermAttnConfig};
 use crate::integrity::verify_offload;
 use crate::mask::GeloMask;
 use crate::out_attn_mult;
@@ -16,7 +17,7 @@ use crate::substrate::{GpuOffloadEngine, TrustedExecutor, WeightHandle, WeightKi
 
 /// Reference [`GpuOffloadEngine`] that performs the offloaded GEMM on the CPU.
 /// Stand-in for a real Vulkan / CUDA backend.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct RayonCpuEngine {
     weights: HashMap<WeightHandle, Array2<f32>>,
 }
@@ -98,6 +99,46 @@ pub struct InProcessTrustedExecutor<E: GpuOffloadEngine> {
     /// is sized to `n + shield.k` because shield rows are part of the
     /// stacked operand the mask acts on.
     session: Option<SessionMask>,
+    /// Per-session reusable (stacked_n × d) shield-scratch buffers, keyed
+    /// by input width `d`. In paper-parity mode the data rows are
+    /// invariant across all offloads in a forward (only the input width
+    /// changes, e.g. hidden_size for QKV/O/gate/up and intermediate_size
+    /// for FFN-down). Reusing the buffer skips ~140 × (n+k)·d memcpys
+    /// per Qwen3 forward and the matching allocator churn; only the k
+    /// shield rows are rewritten per offload.
+    ///
+    /// Cleared on `end_forward_pass`.
+    stacked_scratch: HashMap<usize, Array2<f32>>,
+    /// Configuration for the permutation-shielded attention protocol
+    /// (Tier 1). Defaults to no noise (pure permutation equivariance).
+    /// Set via [`Self::with_perm_attention`] /
+    /// [`Self::set_perm_attention`] to opt into the Hidden No More
+    /// σ-noise mitigation. Phase 2 keeps the inner ops TEE-side; Phase 3
+    /// will swap softmax + matmuls onto the GPU.
+    perm_attn: PermAttnConfig,
+}
+
+/// Clone the executor sharing the underlying engine (engines that opt
+/// into the `clone_shared` Arc-pattern reuse their weight cache; engines
+/// that don't will duplicate state per the `E: Clone` impl). The session
+/// mask and scratch are NOT cloned — they only make sense inside a
+/// `begin_forward_pass`/`end_forward_pass` bracket on the owning thread.
+/// The RNG state IS cloned; callers that want independent streams across
+/// clones should chain `.with_rng_stream(stream_id)`.
+impl<E: GpuOffloadEngine + Clone> Clone for InProcessTrustedExecutor<E> {
+    fn clone(&self) -> Self {
+        Self {
+            engine: self.engine.clone(),
+            rng: self.rng.clone(),
+            shield: self.shield,
+            verify_probes: self.verify_probes,
+            weights: self.weights.clone(),
+            per_forward_mask: self.per_forward_mask,
+            session: None,
+            stacked_scratch: HashMap::new(),
+            perm_attn: self.perm_attn,
+        }
+    }
 }
 
 /// Per-forward-pass mask + bookkeeping for the GELO paper's
@@ -127,6 +168,8 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             weights: HashMap::new(),
             per_forward_mask: false,
             session: None,
+            stacked_scratch: HashMap::new(),
+            perm_attn: PermAttnConfig::default(),
         }
     }
 
@@ -140,6 +183,8 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             weights: HashMap::new(),
             per_forward_mask: false,
             session: None,
+            stacked_scratch: HashMap::new(),
+            perm_attn: PermAttnConfig::default(),
         }
     }
 
@@ -179,6 +224,7 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
         self.per_forward_mask
     }
 
+
     /// Enable U-Verify with `k` Freivalds-style probes per offload.
     /// `k = 0` disables the check. Soundness scales as `(2L)^-k`; `k = 8`
     /// with the default `L = 3` is `≈ 2.4·10⁻⁷` undetected-tamper rate.
@@ -203,23 +249,60 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
         self.verify_probes
     }
 
-    /// Stack shield rows (if enabled) and supply a mask sized to the
-    /// stacked matrix. In per-forward-pass mode the mask is the session
-    /// mask established at [`Self::begin_forward_pass`] (cheap to clone:
-    /// it's an `Arc`-backed `ndarray::Array2` internally). In per-
-    /// offload mode a fresh Haar-uniform `A` is sampled every call.
+    /// Configure the permutation-shielded attention protocol (Tier 1).
+    /// Defaults to no noise; pass `PermAttnConfig::HIDDEN_NO_MORE` to
+    /// enable the σ = 0.01 mitigation per arXiv 2505.18332.
+    pub fn with_perm_attention(mut self, cfg: PermAttnConfig) -> Self {
+        self.perm_attn = cfg;
+        self
+    }
+
+    /// In-place setter for the perm-attention config.
+    pub fn set_perm_attention(&mut self, cfg: PermAttnConfig) {
+        self.perm_attn = cfg;
+    }
+
+    /// Read the current perm-attention config.
+    pub fn perm_attention(&self) -> PermAttnConfig {
+        self.perm_attn
+    }
+
+    /// Stack shield rows (if enabled), then apply the per-batch mask `A`
+    /// to the stacked matrix in a single fused step. Returns `(mask,
+    /// masked, n_data)` where `masked = A · [H; S]` and `n_data` is the
+    /// original (pre-shield) row count.
+    ///
+    /// In per-forward-pass mode the mask is the session mask established
+    /// at [`Self::begin_forward_pass`] (cheap to clone — internal
+    /// `Array2` only). In per-offload mode a fresh Haar-uniform `A` is
+    /// sampled every call.
     ///
     /// Shield rows are **always sampled fresh per offload**, even in
     /// per-forward-pass mode. The mask reuse is what saves the Haar QR
     /// cost; the shield is cheap (just k Gaussian rows) and per-offload
     /// freshness is strictly safer for the ICA / cross-offload
     /// correlation defence the paper relies on.
-    fn build_shielded(&mut self, hidden: ArrayView2<'_, f32>) -> (GeloMask, Array2<f32>, usize) {
-        let (stacked, n_data) = profile::time("gelo:shield_stack", || {
-            stack_shield(hidden, self.shield, &mut self.rng)
-        });
-        let stacked_n = stacked.nrows();
+    ///
+    /// In paper-parity mode the (stacked_n × d) scratch buffer is taken
+    /// from `stacked_scratch` if one of matching width exists, else
+    /// allocated once and cached for the rest of the forward. Data rows
+    /// are copied in; the k shield rows are overwritten with fresh
+    /// Gaussians on every call. The buffer is **not** returned to the
+    /// caller — the mask is applied immediately so the scratch can stay
+    /// in place across the whole forward pass without any per-offload
+    /// clone. Saves ~140 mallocs + ~224 MB of memcpy per Qwen3 forward
+    /// without weakening the protocol.
+    fn build_shielded_and_apply(
+        &mut self,
+        hidden: ArrayView2<'_, f32>,
+    ) -> (GeloMask, Array2<f32>, usize) {
+        let n_data = hidden.nrows();
+        let d = hidden.ncols();
+        let k = self.shield.k;
+        let stacked_n = n_data + k;
 
+        // Resolve the mask first (cheap; just an Arc-clone of the session
+        // mask in paper-parity mode, or a fresh Haar sample otherwise).
         let mask = if self.per_forward_mask {
             match &self.session {
                 Some(s) if s.data_n == n_data && s.mask.n() == stacked_n => s.mask.clone(),
@@ -242,8 +325,77 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
                 GeloMask::fresh(stacked_n, &mut self.rng)
             })
         };
-        (mask, stacked, n_data)
+
+        let masked = if self.per_forward_mask && self.shield.enabled() {
+            // Scratch-reuse path: populate cached buffer in place, then
+            // apply the mask. The buffer stays owned by `stacked_scratch`
+            // — no per-offload clone or allocation.
+            let scale = self.shield.energy_scale;
+            // Compute mean_row_norm before we borrow the scratch buffer
+            // (avoids overlapping borrow on hidden through the buffer slice).
+            let mean_norm = mean_row_norm(hidden);
+            let sigma = if d == 0 { 0.0 } else { scale * mean_norm / (d as f32).sqrt() };
+
+            let buf = self
+                .stacked_scratch
+                .entry(d)
+                .or_insert_with(|| Array2::<f32>::zeros((stacked_n, d)));
+            debug_assert_eq!(buf.shape(), &[stacked_n, d]);
+            profile::time("gelo:shield_stack", || {
+                buf.slice_mut(ndarray::s![..n_data, ..]).assign(&hidden);
+                fill_shield_rows_inline(
+                    buf.slice_mut(ndarray::s![n_data.., ..]),
+                    sigma,
+                    &mut self.rng,
+                );
+            });
+            profile::time("gelo:mask_apply", || mask.apply(buf.view()))
+        } else {
+            // Legacy path: allocate-each-time, used in per-offload mode
+            // and whenever shield is disabled.
+            let stacked = profile::time("gelo:shield_stack", || {
+                let (stacked, _n) = stack_shield(hidden, self.shield, &mut self.rng);
+                stacked
+            });
+            profile::time("gelo:mask_apply", || mask.apply(stacked.view()))
+        };
+
+        (mask, masked, n_data)
     }
+}
+
+/// Overwrite `shield_dest` (a (k × d) mutable view) with fresh Gaussian
+/// shield rows scaled to per-component `sigma`. The caller computes
+/// `sigma = energy_scale × mean_row_norm(hidden) / sqrt(d)` once and
+/// passes it in; this lets the helper avoid re-borrowing `hidden`
+/// against the scratch buffer slice in the paper-parity path.
+fn fill_shield_rows_inline<R: rand::RngCore>(
+    mut shield_dest: ndarray::ArrayViewMut2<'_, f32>,
+    sigma: f32,
+    rng: &mut R,
+) {
+    use rand_distr::{Distribution, StandardNormal};
+    let normal = StandardNormal;
+    for mut row in shield_dest.rows_mut() {
+        for v in row.iter_mut() {
+            let z: f32 = normal.sample(rng);
+            *v = z * sigma;
+        }
+    }
+}
+
+/// Mean L2 norm of the rows of `m`. Mirrors `shield::mean_row_norm`,
+/// kept module-local to skip the export round-trip.
+fn mean_row_norm(m: ArrayView2<'_, f32>) -> f32 {
+    let n = m.nrows();
+    if n == 0 {
+        return 0.0;
+    }
+    let mut acc = 0.0_f32;
+    for row in m.rows() {
+        acc += row.iter().map(|v| v * v).sum::<f32>().sqrt();
+    }
+    acc / (n as f32)
 }
 
 impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
@@ -258,12 +410,21 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
             GeloMask::fresh(stacked_n, &mut self.rng)
         });
         self.session = Some(SessionMask { mask, data_n: n });
+        // Stale scratches from a prior forward with a different `n` are
+        // unusable now — clear to avoid silently feeding the wrong row
+        // count into mask.apply().
+        self.stacked_scratch.clear();
         Ok(())
     }
 
     fn end_forward_pass(&mut self) -> Result<()> {
         self.session = None;
+        self.stacked_scratch.clear();
         Ok(())
+    }
+
+    fn set_rng_stream(&mut self, stream: u64) {
+        self.rng.set_stream(stream);
     }
 
     fn provision_weight(&mut self, handle: WeightHandle, weight: ArrayView2<f32>) -> Result<()> {
@@ -294,8 +455,7 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         handle: WeightHandle,
         hidden: ArrayView2<f32>,
     ) -> Result<Array2<f32>> {
-        let (mask, stacked, n_data) = self.build_shielded(hidden);
-        let masked = profile::time("gelo:mask_apply", || mask.apply(stacked.view()));
+        let (mask, masked, n_data) = self.build_shielded_and_apply(hidden);
         let masked_out =
             profile::time("engine:matmul", || self.engine.matmul(handle, masked.view()))?;
         if self.verify_probes > 0 {
@@ -324,8 +484,7 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         layer: u16,
         hidden: ArrayView2<f32>,
     ) -> Result<(Array2<f32>, Array2<f32>, Array2<f32>)> {
-        let (mask, stacked, n_data) = self.build_shielded(hidden);
-        let masked = profile::time("gelo:mask_apply", || mask.apply(stacked.view()));
+        let (mask, masked, n_data) = self.build_shielded_and_apply(hidden);
 
         // Batched offload: one upload of `masked`, one device sync across
         // all three matmuls (vs three of each via separate `matmul` calls).
@@ -369,19 +528,80 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
             }
         }
 
-        let q = profile::time("gelo:mask_unapply", || mask.unapply(mq.view()));
-        let k = profile::time("gelo:mask_unapply", || mask.unapply(mk.view()));
-        let v = profile::time("gelo:mask_unapply", || mask.unapply(mv.view()));
+        // Three separate `Aᵀ · M` GEMMs. We tried batching them into a
+        // single stacked GEMM (mask::unapply_many) and it regressed: at
+        // stacked_n ≈ 408 the combined (stacked_n × 2·intermediate)
+        // working set thrashes L2 vs matrixmultiply's tile-tuned
+        // separate (stacked_n × hidden_size) calls. FLOPs are equal;
+        // cache behaviour is not.
+        let q_full = profile::time("gelo:mask_unapply", || mask.unapply(mq.view()));
+        let k_full = profile::time("gelo:mask_unapply", || mask.unapply(mk.view()));
+        let v_full = profile::time("gelo:mask_unapply", || mask.unapply(mv.view()));
 
         let slice_n = ndarray::s![..n_data, ..];
         let triple = profile::time("gelo:strip_shield", || {
             (
-                q.slice(slice_n).to_owned(),
-                k.slice(slice_n).to_owned(),
-                v.slice(slice_n).to_owned(),
+                q_full.slice(slice_n).to_owned(),
+                k_full.slice(slice_n).to_owned(),
+                v_full.slice(slice_n).to_owned(),
             )
         });
         Ok(triple)
+    }
+
+    fn offload_linear_many(
+        &mut self,
+        handles: &[WeightHandle],
+        hidden: ArrayView2<f32>,
+    ) -> Result<Vec<Array2<f32>>> {
+        if handles.is_empty() {
+            return Ok(Vec::new());
+        }
+        let (mask, masked, n_data) = self.build_shielded_and_apply(hidden);
+
+        let masked_outs = profile::time("engine:matmul_many", || {
+            self.engine.matmul_many(handles, masked.view())
+        })?;
+        anyhow::ensure!(
+            masked_outs.len() == handles.len(),
+            "engine.matmul_many returned {} results; expected {}",
+            masked_outs.len(),
+            handles.len(),
+        );
+
+        if self.verify_probes > 0 {
+            for (h, observed) in handles.iter().zip(masked_outs.iter()) {
+                let w = self.weights.get(h).ok_or_else(|| {
+                    anyhow!("verify_probes>0 but weight {h:?} not cached in TEE")
+                })?;
+                profile::time("uverify:linear", || {
+                    verify_offload(
+                        self.verify_probes,
+                        masked.view(),
+                        w.view(),
+                        observed.view(),
+                        &mut self.rng,
+                    )
+                })?;
+            }
+        }
+
+        // Separate unapply per output (same reasoning as offload_qkv: at
+        // our shapes a stacked Aᵀ · [V₁ | V₂ | …] GEMM thrashes L2 vs
+        // matrixmultiply's tile-tuned per-call GEMMs).
+        let unmasked: Vec<Array2<f32>> = masked_outs
+            .iter()
+            .map(|m| profile::time("gelo:mask_unapply", || mask.unapply(m.view())))
+            .collect();
+
+        let slice_n = ndarray::s![..n_data, ..];
+        let stripped = profile::time("gelo:strip_shield", || {
+            unmasked
+                .iter()
+                .map(|u| u.slice(slice_n).to_owned())
+                .collect::<Vec<_>>()
+        });
+        Ok(stripped)
     }
 
     fn offload_attention_qkt(
@@ -405,6 +625,20 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
             self.verify_probes,
         )
     }
+
+    fn offload_attention_permuted(
+        &mut self,
+        q: ArrayView3<f32>,
+        k: ArrayView3<f32>,
+        v: ArrayView3<f32>,
+        scale: f32,
+    ) -> Result<Array3<f32>> {
+        // Phase 2: inner ops stay TEE-side. Phase 3 will swap the matmuls
+        // and softmax into the engine via softmax_batched.
+        profile::time("gelo:perm_attention", || {
+            attention::permuted_attention(q, k, v, scale, self.perm_attn, &mut self.rng)
+        })
+    }
 }
 
 /// Trusted executor that skips the mask entirely. Used as the parity baseline
@@ -413,6 +647,14 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
 /// what the offload engine sees.
 pub struct PlaintextExecutor<E: GpuOffloadEngine> {
     engine: E,
+}
+
+impl<E: GpuOffloadEngine + Clone> Clone for PlaintextExecutor<E> {
+    fn clone(&self) -> Self {
+        Self {
+            engine: self.engine.clone(),
+        }
+    }
 }
 
 impl<E: GpuOffloadEngine> PlaintextExecutor<E> {

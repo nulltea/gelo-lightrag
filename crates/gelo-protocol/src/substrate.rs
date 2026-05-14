@@ -24,6 +24,10 @@ pub enum WeightKind {
     K,
     V,
     O,
+    /// SwiGLU "gate" projection. Some BERT-class models lack a gate
+    /// (they only have a single FFN up projection); for those, only
+    /// `FfnUp` is provisioned and `FfnGate` is unused.
+    FfnGate,
     FfnUp,
     FfnDown,
 }
@@ -155,6 +159,19 @@ pub trait TrustedExecutor {
         Ok(())
     }
 
+    /// Move this executor's randomness source to an independent
+    /// stream. Used by the embedder's rayon-parallel `embed` path so
+    /// each worker in a batch gets its own mask `A` — without this,
+    /// every worker would share the cloned executor's RNG state and
+    /// sample the same `A`, exposing the cross-text Gram leak (see
+    /// `docs/prototype/future-rnd.md` §5 "Shared-A multi-text
+    /// batching").
+    ///
+    /// Default impl is no-op: executors that don't sample randomness
+    /// (e.g. `PlaintextExecutor`) or that derive their `A` from
+    /// elsewhere just ignore the call.
+    fn set_rng_stream(&mut self, _stream: u64) {}
+
     /// Same as [`Self::provision_weight`] but accepts an `Arc<Array2<f32>>` so
     /// the executor's TEE-side weight cache (for U-Verify probe computation)
     /// can share storage with the embedder's loaded weight bytes instead of
@@ -201,6 +218,28 @@ pub trait TrustedExecutor {
         Ok((q, k, v))
     }
 
+    /// Offload several linear projections that all read the **same** hidden
+    /// state, sharing a single mask apply + a single batched matmul + a
+    /// single batched unapply. The canonical caller is the SwiGLU FFN
+    /// (gate + up share `h_norm_ffn`); the QKV path is hand-written for
+    /// historical reasons and uses an equivalent shape internally.
+    ///
+    /// Result order matches `handles` order. Each output's column dim is
+    /// determined by the corresponding weight's `out_features`.
+    ///
+    /// Default impl loops over `offload_linear` so executors that don't
+    /// override (e.g. `PlaintextExecutor`) still produce correct results.
+    fn offload_linear_many(
+        &mut self,
+        handles: &[WeightHandle],
+        hidden: ArrayView2<f32>,
+    ) -> Result<Vec<Array2<f32>>> {
+        handles
+            .iter()
+            .map(|h| self.offload_linear(*h, hidden))
+            .collect()
+    }
+
     /// Offload the attention `Q · Kᵀ` matmul via the TwinShield OutAttnMult
     /// 4-partition embedding (Xue et al. 2025 §V-A). Both `q` and `kt` are
     /// runtime values; the trick lets the untrusted engine compute the
@@ -241,6 +280,59 @@ pub trait TrustedExecutor {
                 kt.index_axis(Axis(0), i),
             )?;
             out.index_axis_mut(Axis(0), i).assign(&r);
+        }
+        Ok(out)
+    }
+
+    /// Compute `softmax(Q·Kᵀ / √d) · V` for every head, under the
+    /// permutation-shielded attention protocol (Tier 1 — Amulet's
+    /// softmax-permutation equivariance, arXiv 2512.07495, combined with
+    /// Hidden No More's σ-noise mitigation, arXiv 2505.18332).
+    ///
+    /// Unlike [`Self::offload_attention_qkt`] (which returns just the
+    /// pre-softmax scores), this returns the **full attention output** —
+    /// softmax and `·V` are performed under the same per-batch permutation
+    /// so neither operand is observable to the untrusted side.
+    ///
+    /// `q`, `k`, `v` shape: `(num_heads, n, d_head)`. Result shape:
+    /// `(num_heads, n, d_head)`. `scale` is typically `1 / √d_head`.
+    ///
+    /// Default impl falls back to **plain** multi-head attention — useful
+    /// only as a parity baseline (no privacy). Real implementations override.
+    fn offload_attention_permuted(
+        &mut self,
+        q: ArrayView3<f32>,
+        k: ArrayView3<f32>,
+        v: ArrayView3<f32>,
+        scale: f32,
+    ) -> Result<Array3<f32>> {
+        // Default: plain multi-head attention. Used by PlaintextExecutor
+        // and as a fallback for executors that haven't been upgraded.
+        let (h, n, _d) = q.dim();
+        let mut out = Array3::<f32>::zeros((h, n, q.shape()[2]));
+        for i in 0..h {
+            let qh = q.index_axis(Axis(0), i);
+            let kh = k.index_axis(Axis(0), i);
+            let vh = v.index_axis(Axis(0), i);
+            let mut scores = qh.dot(&kh.t());
+            scores.mapv_inplace(|x| x * scale);
+            // Numerically stable softmax row-wise.
+            let mut probs = Array2::<f32>::zeros(scores.dim());
+            for r in 0..scores.nrows() {
+                let row = scores.row(r);
+                let m = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                let mut s = 0.0f32;
+                for (c, v) in row.iter().enumerate() {
+                    let e = (*v - m).exp();
+                    probs[(r, c)] = e;
+                    s += e;
+                }
+                let inv = 1.0 / s;
+                for c in 0..probs.ncols() {
+                    probs[(r, c)] *= inv;
+                }
+            }
+            out.index_axis_mut(Axis(0), i).assign(&probs.dot(&vh));
         }
         Ok(out)
     }

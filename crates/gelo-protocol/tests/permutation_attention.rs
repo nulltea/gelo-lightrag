@@ -419,3 +419,133 @@ fn _l2_distance(a: ArrayView2<'_, f32>, b: ArrayView2<'_, f32>) -> f32 {
         .into();
     diff.iter().copied().fold(0.0f32, f32::max)
 }
+
+// ---------------------------------------------------------------------------
+// Phase 2: substrate-level integration tests for offload_attention_permuted.
+//
+// These exercise the trait method through both InProcessTrustedExecutor
+// (the protocol implementer) and PlaintextExecutor (the parity baseline)
+// and assert the trait API composes the math correctly.
+// ---------------------------------------------------------------------------
+
+use gelo_protocol::rng::MaskSeed;
+use gelo_protocol::{
+    InProcessTrustedExecutor, PermAttnConfig, PlaintextExecutor, RayonCpuEngine, TrustedExecutor,
+};
+use ndarray::Array3;
+
+fn random_q3(h: usize, n: usize, d: usize, rng: &mut ChaCha20Rng) -> Array3<f32> {
+    Array3::from_shape_fn((h, n, d), |_| rng.random::<f32>() * 2.0 - 1.0)
+}
+
+#[test]
+fn trait_method_sigma_zero_matches_plaintext_executor() {
+    // InProcessTrustedExecutor with σ=0 must produce bit-exact (to f32 floor)
+    // output as PlaintextExecutor — the default impl is plain multi-head
+    // attention, and σ=0 in the permuted protocol is mathematically the same.
+    let h = 4;
+    let n = 16;
+    let d_head = 32;
+    let scale = 1.0 / (d_head as f32).sqrt();
+
+    let mut rng = ChaCha20Rng::seed_from_u64(0xABCDEF);
+    let q = random_q3(h, n, d_head, &mut rng);
+    let k = random_q3(h, n, d_head, &mut rng);
+    let v = random_q3(h, n, d_head, &mut rng);
+
+    let mut plain_exec = PlaintextExecutor::new(RayonCpuEngine::new());
+    let plain_out = plain_exec
+        .offload_attention_permuted(q.view(), k.view(), v.view(), scale)
+        .unwrap();
+
+    let mut in_proc = InProcessTrustedExecutor::with_seed(RayonCpuEngine::new(), MaskSeed([7u8; 32]))
+        .with_perm_attention(PermAttnConfig::DISABLED_NOISE);
+    let in_proc_out = in_proc
+        .offload_attention_permuted(q.view(), k.view(), v.view(), scale)
+        .unwrap();
+
+    let drift = plain_out
+        .iter()
+        .zip(in_proc_out.iter())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        drift < 1e-5,
+        "trait method @ σ=0 must match plaintext exec to f32 floor: drift={drift}",
+    );
+}
+
+#[test]
+fn trait_method_hnm_noise_deviates_bounded() {
+    // With σ=0.01 the InProcessTrustedExecutor output differs from
+    // PlaintextExecutor, but by a bounded amount.
+    let h = 4;
+    let n = 32;
+    let d_head = 64;
+    let scale = 1.0 / (d_head as f32).sqrt();
+
+    let mut rng = ChaCha20Rng::seed_from_u64(0xC0FFEE);
+    let q = random_q3(h, n, d_head, &mut rng);
+    let k = random_q3(h, n, d_head, &mut rng);
+    let v = random_q3(h, n, d_head, &mut rng);
+
+    let mut plain_exec = PlaintextExecutor::new(RayonCpuEngine::new());
+    let plain_out = plain_exec
+        .offload_attention_permuted(q.view(), k.view(), v.view(), scale)
+        .unwrap();
+
+    let mut in_proc = InProcessTrustedExecutor::with_seed(RayonCpuEngine::new(), MaskSeed([9u8; 32]))
+        .with_perm_attention(PermAttnConfig::HIDDEN_NO_MORE);
+    let in_proc_out = in_proc
+        .offload_attention_permuted(q.view(), k.view(), v.view(), scale)
+        .unwrap();
+
+    let drift = plain_out
+        .iter()
+        .zip(in_proc_out.iter())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        drift > 0.0 && drift < 5e-2,
+        "σ=0.01 should deviate but stay bounded: drift={drift}",
+    );
+}
+
+#[test]
+fn trait_method_seed_determinism() {
+    // Same seed + same inputs ⇒ same output. The permutation is
+    // ChaCha20-driven, so two executors with the same seed produce
+    // identical π and identical noise.
+    let h = 2;
+    let n = 8;
+    let d_head = 16;
+    let scale = 1.0 / (d_head as f32).sqrt();
+
+    let mut rng = ChaCha20Rng::seed_from_u64(0x42);
+    let q = random_q3(h, n, d_head, &mut rng);
+    let k = random_q3(h, n, d_head, &mut rng);
+    let v = random_q3(h, n, d_head, &mut rng);
+
+    let seed = MaskSeed([0xAAu8; 32]);
+    let mut exec1 = InProcessTrustedExecutor::with_seed(RayonCpuEngine::new(), seed)
+        .with_perm_attention(PermAttnConfig::HIDDEN_NO_MORE);
+    let out1 = exec1
+        .offload_attention_permuted(q.view(), k.view(), v.view(), scale)
+        .unwrap();
+
+    let mut exec2 = InProcessTrustedExecutor::with_seed(RayonCpuEngine::new(), seed)
+        .with_perm_attention(PermAttnConfig::HIDDEN_NO_MORE);
+    let out2 = exec2
+        .offload_attention_permuted(q.view(), k.view(), v.view(), scale)
+        .unwrap();
+
+    let drift = out1
+        .iter()
+        .zip(out2.iter())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        drift < 1e-7,
+        "same seed must yield bit-identical output: drift={drift}",
+    );
+}

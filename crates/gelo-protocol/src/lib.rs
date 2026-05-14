@@ -10,6 +10,14 @@
 //! implements [`GpuOffloadEngine`]. A reference in-process simulation
 //! (`InProcessTrustedExecutor` + `RayonCpuEngine`) lives in [`sim`].
 
+// Pull in `blas-src` so the linker picks up the BLIS-provided BLAS
+// symbols that ndarray's `blas` fast path dispatches to. The `use _`
+// idiom forces the unused dep to be linked. No-op without the
+// `blas` feature.
+#[cfg(feature = "blas")]
+use blas_src as _;
+
+pub mod attention;
 pub mod integrity;
 pub mod mask;
 pub mod out_attn_mult;
@@ -19,6 +27,7 @@ pub mod shield;
 pub mod sim;
 pub mod substrate;
 
+pub use attention::PermAttnConfig;
 pub use mask::{GeloMask, MaskSeed};
 pub use shield::ShieldConfig;
 pub use sim::{InProcessTrustedExecutor, PlaintextExecutor, RayonCpuEngine};
