@@ -146,18 +146,14 @@ pub fn permuted_attention<R: RngCore, E: GpuOffloadEngine + ?Sized>(
         add_gaussian_3d_inplace(k_perm.view_mut(), cfg.noise_sigma, rng);
     }
 
-    // Build Kᵀ over the last two axes — engine matmul wants (B, K, N).
-    let mut kt_perm = Array3::<f32>::zeros((num_heads, d_head, n));
-    for h in 0..num_heads {
-        for i in 0..n {
-            for j in 0..d_head {
-                kt_perm[(h, j, i)] = k_perm[(h, i, j)];
-            }
-        }
-    }
+    // Build Kᵀ over the last two axes as a zero-copy view. burn-cubecl /
+    // ndarray handle the non-contiguous stride at upload time — far
+    // cheaper than a per-element transpose loop at our shape (Qwen3:
+    // 16×400×128 = 820k entries per layer × 28 layers).
+    let kt_perm_view = k_perm.view().permuted_axes([0, 2, 1]);
 
     // GPU step 1: scores = (πQ + η_Q) · (πK + η_K)ᵀ shape (num_heads, n, n).
-    let mut scores = engine.matmul_dynamic_batched(q_perm.view(), kt_perm.view())?;
+    let mut scores = engine.matmul_dynamic_batched(q_perm.view(), kt_perm_view)?;
     scores.mapv_inplace(|x| x * scale);
 
     // TEE step: apply permuted causal mask if requested. The mask is the

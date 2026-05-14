@@ -246,6 +246,62 @@ both ends: in-TEE attention is strictly more confidential (Q, K never visible
 to the GPU at all), and OutAttnMult is a performance lever for the regime
 where in-TEE attention becomes the bottleneck.
 
+### 3.5b Permutation-shielded attention (Tier 1, Amulet-inspired)
+
+A third attention path lives at `causal_gqa_attention_permuted` and the
+protocol-level `TrustedExecutor::offload_attention_permuted`. It exploits the
+softmax-permutation equivariance identity from Amulet (arXiv 2512.07495):
+
+```
+softmax(π·Q·Kᵀ·πᵀ / √d) · π·V  =  π · softmax(Q·Kᵀ / √d) · V
+```
+
+so a fresh-per-batch row permutation `π_b ∈ S_n` lets softmax, both attention
+matmuls, and the optional Gaussian σ-noise (Hidden No More mitigation, arXiv
+2505.18332) all run on the GPU under obfuscation. Causal mask is transformed
+to `mask'[i,j] = -inf if perm[j] > perm[i] else 0` and added to scores TEE-side
+between the engine matmul and engine softmax dispatch.
+
+Phase-by-phase work logged in commits 3b5b587 (math), 3a47056 (substrate),
+0f7f239 (engine routing), d6fbade (causal mask), 51a4cc3 (decoder wiring).
+Math verified by `tests/permutation_attention.rs` (12 tests: bit-exact
+σ=0 equivariance, σ=0.01 bounded drift, causal mask parity, σ-scaling
+sanity, Gram-leak documentation, shield-row negative result). Engine
+parity tests in `crates/gelo-gpu-wgpu/tests/parity.rs`.
+
+**Measured wall-clock at embedding shape (Qwen3-Embedding-0.6B, n≈400,
+NFCorpus 100-doc bench, parallel rayon, AOCL-BLIS):**
+
+| Configuration | Qwen3 + mask wall | vs plain | Notes |
+|---|---:|---:|---|
+| In-TEE attention (default) | 153 ms/text | 1.27× | Phase 3 baseline |
+| Permuted attention (`BEIR_PERM_ATTN=1`) | 300 ms/text | 2.49× | **regresses** at this shape |
+
+**Why permuted attention regresses on this workload**: each forward
+adds 3 extra engine dispatches per layer (matmul + softmax + matmul) ×
+28 layers = 84 GPU sync points per text. On the integrated GPU (no
+discrete PCIe), each sync is small but adds up to ~80 ms/text of pure
+dispatch overhead. Meanwhile the in-TEE attention bucket is already
+only ~60 ms aggregate across all texts (~0.3 ms/text amortized). So
+moving attention off-TEE pays dispatch cost much greater than the
+in-TEE compute it replaces.
+
+This is structurally the same trade-off OutAttnMult has (4× FLOP
+widening loses at short n); the permuted-attention threshold knob
+defaults to `Some(64)` so the path engages at n ≥ 64 when its master
+switch is on, leaving the user to opt in via
+`DecoderEmbedder::with_perm_attention(true)`. The default keeps it off.
+
+**Where it does win**: long-context decoder workloads (n in the
+thousands), where attention is O(n²·d) and dominates per-layer cost.
+At that regime the in-TEE attention bucket grows superlinearly while
+the engine dispatch cost stays constant — the breakeven point is
+~n = 1000-2000 on this hardware, beyond what the embedding benchmark
+exercises. Long-context deployments should turn the switch on.
+
+The protocol is correct and the engineering is reusable; it's a tool
+in the toolbox rather than the new default.
+
 ### 3.6 Sensitive-layer exclusion
 
 Per GELO §3.2, the embedding lookup, final pooling head, and (configurably)
