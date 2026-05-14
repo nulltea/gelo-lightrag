@@ -4,6 +4,19 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+# `blas` calls into BLIS for the mask apply/unapply CPU GEMMs **only**
+# (via a direct cblas_sgemm dispatch in `mask::apply` / `mask::unapply`).
+# We intentionally do NOT enable `ndarray/blas` here: that would re-route
+# every `.dot()` in the workspace through BLIS, which regresses the
+# per-head attention matmuls (small shapes pay BLIS thread-spawn
+# overhead). Pulls in `blas-src + blis-src` to build BLIS from source.
+# At stacked_n ≈ 400 and d ∈ {1024, 3072} this is ~2× faster than the
+# matrixmultiply default on AMD Zen, when `BLIS_NUM_THREADS` is set
+# (suggest 16 on 32-core hosts).
+blas = ["dep:blas-src", "dep:blis-src", "dep:cblas-sys"]
+
 [dependencies]
 anyhow.workspace = true
 ndarray = { workspace = true, features = ["rayon"] }
@@ -12,3 +25,6 @@ rand_chacha.workspace = true
 rand_distr.workspace = true
 rayon.workspace = true
 thiserror.workspace = true
+blas-src = { workspace = true, optional = true }
+blis-src = { workspace = true, optional = true }
+cblas-sys = { version = "0.1", optional = true }

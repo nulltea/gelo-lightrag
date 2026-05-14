@@ -89,7 +89,7 @@ The prototype targets the **openweight embedding** scenario:
 | GPU + driver + PCIe | Untrusted | public model weights, per-batch masked activations, integrity-probed matmul results |
 | TEE host (CVM operator) | Untrusted | encrypted CVM memory, masked PCIe traffic |
 | Network operator | Untrusted | TLS-wrapped requests + attestation evidence |
-| Vector store | Untrusted | per-vector ciphertext (handled by approach4's SAP/CAPRISE schemes — out of scope here) |
+| Vector store | Untrusted | per-vector ciphertext (handled by gelo-rag's SAP/CAPRISE schemes — out of scope here) |
 
 **The asymmetry we lean on**: model weights are public. The user pulls a
 specific openweight model (e.g. `Qwen/Qwen3-Embedding-0.6B`) by name + revision;
@@ -603,7 +603,7 @@ where OutAttnMult is meant to operate.
 
 The above is per-text wall-clock with a small, 3-text micro-benchmark.
 At realistic corpus-ingest sizes the bench in
-`crates/approach4/tests/beir_accuracy.rs` runs with **`BEIR_PAPER_PARITY=1`**
+`crates/gelo-rag/tests/beir_accuracy.rs` runs with **`BEIR_PAPER_PARITY=1`**
 (one Haar `A` per forward, paired with shield rows — see §3.2) and
 the `blas` cargo feature (CBLAS-direct in `mask::apply`/`unapply` via
 BLIS), and parallel-fan-out `embed()` via rayon (one cloned executor
@@ -897,7 +897,7 @@ running FFN in TEE at ~3× the wall-clock.
   Orders of magnitude slower than this for the embedding workload we target.
 - **DP-perturbed embeddings** — a complementary mechanism for the output
   side; not needed when the embedding ciphertext itself is encrypted at rest
-  (approach4's SAP / CAPRISE schemes).
+  (gelo-rag's SAP / CAPRISE schemes).
 
 ---
 
@@ -906,7 +906,7 @@ running FFN in TEE at ~3× the wall-clock.
 A confounded observation in an early accuracy bench attributed
 ranking-corruption to "decoder-LLM anisotropy under GELO masking." A
 follow-up controlled experiment
-(`crates/approach4/tests/gelo_embedder_accuracy.rs`) falsifies that:
+(`crates/gelo-rag/tests/gelo_embedder_accuracy.rs`) falsifies that:
 
 | Config | top1_grp | top1_vs_plain | rec3_vs_plain |
 |---|---|---|---|

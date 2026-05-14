@@ -2,8 +2,11 @@
 //! deployment.
 //!
 //! Boots once at process start, parses [`SNP_MODE`] (production or mock),
-//! wires up an [`Approach4InMemoryService`] with the SEV-SNP attestation
-//! backend, and serves a minimal HTTP API.
+//! wires up a [`GeloRagTwoPartyService`] with the SEV-SNP attestation
+//! backend, and serves a minimal HTTP API. CAPRISE encryption happens
+//! inside the CVM, with the key derived per-request from a two-party
+//! HKDF (`user_x_sk` from the client + `tee_user_x_sk` held by the CVM)
+//! — see `docs/prototype/caprise-two-party-kdf.md`.
 //!
 //! Designed to be the **same binary** at every simulation tier:
 //! - **T1**: invoked via `cargo run`; useful for hand-driven smoke testing.
@@ -18,14 +21,14 @@
 //!
 //! - `GET  /health`  → 200 OK
 //! - `GET  /attest`  → fresh attestation evidence (report + VCEK + identities)
-//! - `POST /ingest`  → `{ "chunks": [{"id": ..., "text": ...}] }`
-//! - `POST /query`   → `{ "text": ..., "top_k": N }` → ranked hits
+//! - `POST /ingest`  → `{ tenant_id, user_x_sk, chunks: [{id, text}, …] }`
+//! - `POST /query`   → `{ tenant_id, user_x_sk, text, top_k }` → ranked hits
+//! - `POST /rotate`  → stub (501 Not Implemented), milestone M8
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use approach4::{Approach4InMemoryService, NoopAttestationVerifier};
 use axum::{
     Json, Router,
     extract::State,
@@ -35,12 +38,14 @@ use axum::{
 };
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
-use rag_core::{ChunkId, DocumentChunk, Embedder, EmbeddingEncryptionScheme, EncryptedEmbedding};
+use gelo_rag::{GeloRagTwoPartyService, NoopAttestationVerifier, TwoPartyError};
+use rag_core::{ChunkId, DocumentChunk, Embedder, TenantId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
+use zeroize::Zeroizing;
 
 mod config;
 mod evidence;
@@ -65,17 +70,24 @@ async fn main() -> Result<()> {
 
     let embedder = StubEmbedder::from_model_id(&cfg.model_identity);
     let model_identity_b = cfg.model_identity.clone().into_bytes();
-    let scheme = IdentityScheme;
 
     let issuer = IssuerHandle::for_mode(mode)?;
+    let service = GeloRagTwoPartyService::new(embedder, NoopAttestationVerifier);
 
-    let service = Approach4InMemoryService::new(embedder, scheme, NoopAttestationVerifier);
+    // M5: scheme_identity reported in REPORT_DATA composes the
+    // runner-config string with the canonical KDF + CAPRISE digest from
+    // the service. A relying party verifying the report can reproduce
+    // this composition byte-for-byte.
+    let scheme_identity_b = compose_scheme_identity(
+        cfg.scheme_identity.as_bytes(),
+        &service.scheme_identity(),
+    );
 
     let state = AppState {
         service: Arc::new(Mutex::new(service)),
         issuer: Arc::new(issuer),
         model_identity: model_identity_b,
-        scheme_identity: cfg.scheme_identity.into_bytes(),
+        scheme_identity: scheme_identity_b,
     };
 
     let app = Router::new()
@@ -83,6 +95,7 @@ async fn main() -> Result<()> {
         .route("/attest", get(attest))
         .route("/ingest", post(ingest))
         .route("/query", post(query))
+        .route("/rotate", post(rotate))
         .with_state(state);
 
     let addr: SocketAddr = cfg.listen.parse().context("parsing listen address")?;
@@ -99,6 +112,24 @@ async fn main() -> Result<()> {
 
     info!("gelo-snp-runner shut down cleanly");
     Ok(())
+}
+
+/// Compose the runner-config `scheme_identity` string with the
+/// canonical KDF + CAPRISE digest from the service:
+///
+/// ```text
+/// REPORT_DATA[32..64] ← sha256(cfg_scheme_identity ‖ 0x00 ‖ service.scheme_identity())
+/// ```
+///
+/// The single null separator prevents an attacker from producing two
+/// distinct `(cfg, service_digest)` pairs with the same composition by
+/// shifting bytes across the boundary.
+fn compose_scheme_identity(cfg_bytes: &[u8], service_digest: &[u8; 32]) -> Vec<u8> {
+    let mut hasher = Sha256::new();
+    hasher.update(cfg_bytes);
+    hasher.update([0u8]);
+    hasher.update(service_digest);
+    hasher.finalize().to_vec()
 }
 
 fn init_tracing() {
@@ -126,7 +157,7 @@ async fn shutdown_signal() {
 
 #[derive(Clone)]
 struct AppState {
-    service: Arc<Mutex<Approach4InMemoryService<StubEmbedder, IdentityScheme, NoopAttestationVerifier>>>,
+    service: Arc<Mutex<GeloRagTwoPartyService<StubEmbedder, NoopAttestationVerifier>>>,
     issuer: Arc<IssuerHandle>,
     model_identity: Vec<u8>,
     scheme_identity: Vec<u8>,
@@ -158,12 +189,48 @@ async fn attest(State(state): State<AppState>) -> Result<Json<AttestResponse>, A
     }))
 }
 
+/// Base64-encoded 32-byte secret. Carries a manual `Debug` impl so a
+/// panic backtrace or stray `tracing::debug!("{:?}", req)` cannot leak
+/// `user_x_sk` to logs. The actual decoded bytes never reside in this
+/// type — see [`UserXskB64::decode`].
 #[derive(Deserialize)]
+#[serde(transparent)]
+struct UserXskB64(String);
+
+impl std::fmt::Debug for UserXskB64 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted user_x_sk : base64-32B>")
+    }
+}
+
+impl UserXskB64 {
+    fn decode(&self) -> anyhow::Result<Zeroizing<[u8; 32]>> {
+        // The raw decoded buffer is heap memory we don't control — wrap
+        // it in `Zeroizing` so it wipes on drop even on the error path.
+        let bytes = Zeroizing::new(
+            B64.decode(self.0.as_bytes())
+                .context("user_x_sk: base64 decode failed")?,
+        );
+        if bytes.len() != 32 {
+            anyhow::bail!(
+                "user_x_sk must be exactly 32 bytes after base64 decode (got {})",
+                bytes.len()
+            );
+        }
+        let mut out: Zeroizing<[u8; 32]> = Zeroizing::new([0u8; 32]);
+        out.copy_from_slice(&bytes);
+        Ok(out)
+    }
+}
+
+#[derive(Deserialize, Debug)]
 struct IngestRequest {
+    tenant_id: String,
+    user_x_sk: UserXskB64,
     chunks: Vec<IngestChunk>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct IngestChunk {
     id: String,
     text: String,
@@ -178,6 +245,8 @@ async fn ingest(
     State(state): State<AppState>,
     Json(req): Json<IngestRequest>,
 ) -> Result<Json<IngestResponse>, AppError> {
+    let tenant = TenantId::new(req.tenant_id);
+    let user_x_sk = req.user_x_sk.decode()?;
     let n = req.chunks.len();
     let docs: Vec<DocumentChunk> = req
         .chunks
@@ -187,12 +256,18 @@ async fn ingest(
             text: c.text,
         })
         .collect();
-    state.service.lock().await.ingest_chunks(docs)?;
+    state
+        .service
+        .lock()
+        .await
+        .ingest_chunks_for(&tenant, user_x_sk, docs)?;
     Ok(Json(IngestResponse { ingested: n }))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct QueryRequest {
+    tenant_id: String,
+    user_x_sk: UserXskB64,
     text: String,
     top_k: Option<usize>,
 }
@@ -214,12 +289,14 @@ async fn query(
     State(state): State<AppState>,
     Json(req): Json<QueryRequest>,
 ) -> Result<Json<QueryResponse>, AppError> {
+    let tenant = TenantId::new(req.tenant_id);
+    let user_x_sk = req.user_x_sk.decode()?;
     let top_k = req.top_k.unwrap_or(5);
     let hits = state
         .service
         .lock()
         .await
-        .query(&req.text, top_k)?
+        .query_for(&tenant, user_x_sk, &req.text, top_k)?
         .into_iter()
         .map(|h| QueryHit {
             id: h.id.0,
@@ -237,20 +314,95 @@ async fn query(
     Ok(Json(QueryResponse { hits, attestation }))
 }
 
-struct AppError(anyhow::Error);
-impl<E: Into<anyhow::Error>> From<E> for AppError {
-    fn from(e: E) -> Self {
-        Self(e.into())
+#[derive(Deserialize, Debug)]
+struct RotateRequest {
+    tenant_id: String,
+    old_user_x_sk: UserXskB64,
+    new_user_x_sk: UserXskB64,
+}
+
+/// M8 — stub. Returns 501 Not Implemented; the runner exposes the
+/// route so clients can probe whether their CVM revision supports
+/// rotation without parsing 404s.
+async fn rotate(
+    State(state): State<AppState>,
+    Json(req): Json<RotateRequest>,
+) -> Result<axum::response::Response, AppError> {
+    let tenant = TenantId::new(req.tenant_id);
+    let old = req.old_user_x_sk.decode()?;
+    let new = req.new_user_x_sk.decode()?;
+    let res = state
+        .service
+        .lock()
+        .await
+        .rotate_tenant(&tenant, old, new);
+    // The service today returns `TwoPartyError::Inner("not implemented…")`
+    // for any successful entry path. Map that to 501 explicitly so a
+    // client doesn't get a 500 for "expected behaviour".
+    match res {
+        Err(TwoPartyError::UnknownTenant(t)) => Ok((
+            StatusCode::GONE,
+            format!("tenant {t} unknown — re-bootstrap"),
+        )
+            .into_response()),
+        Err(TwoPartyError::Inner(e)) => Ok((
+            StatusCode::NOT_IMPLEMENTED,
+            format!("rotation not implemented: {e:#}"),
+        )
+            .into_response()),
+        Ok(()) => Ok(StatusCode::NO_CONTENT.into_response()),
     }
 }
+
+/// Error type for HTTP handlers — maps every error variant to the
+/// correct status code. `UnknownTenant` is 410 Gone per spec §12; the
+/// "loud failure" contract that lets the client detect a CVM restart
+/// without quietly re-encrypting under a fresh `tee_user_x_sk`.
+struct AppError(AppErrorKind);
+
+enum AppErrorKind {
+    UnknownTenant(TenantId),
+    Other(anyhow::Error),
+}
+
+impl From<TwoPartyError> for AppError {
+    fn from(e: TwoPartyError) -> Self {
+        match e {
+            TwoPartyError::UnknownTenant(t) => Self(AppErrorKind::UnknownTenant(t)),
+            TwoPartyError::Inner(inner) => Self(AppErrorKind::Other(inner)),
+        }
+    }
+}
+
+impl From<anyhow::Error> for AppError {
+    fn from(e: anyhow::Error) -> Self {
+        Self(AppErrorKind::Other(e))
+    }
+}
+
 impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
-        error!("request failed: {:#}", self.0);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("internal error: {:#}", self.0),
-        )
-            .into_response()
+        match self.0 {
+            AppErrorKind::UnknownTenant(t) => {
+                info!(tenant = %t, "unknown tenant — returning 410 Gone");
+                (
+                    StatusCode::GONE,
+                    format!(
+                        "tenant {t} unknown — re-bootstrap the tenant \
+                         (CVM may have restarted)"
+                    ),
+                )
+                    .into_response()
+            }
+            AppErrorKind::Other(e) => {
+                error!("request failed: {:#}", e);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("internal error: {:#}", e),
+                )
+                    .into_response()
+            }
+        }
     }
 }
 
@@ -300,27 +452,3 @@ fn text_to_vec(text: &str) -> Vec<f32> {
     }
     v
 }
-
-#[derive(Clone)]
-struct IdentityScheme;
-
-impl EmbeddingEncryptionScheme for IdentityScheme {
-    fn scheme_name(&self) -> &'static str {
-        "identity"
-    }
-    fn encrypt_document(&mut self, embedding: &[f32]) -> anyhow::Result<EncryptedEmbedding> {
-        Ok(EncryptedEmbedding {
-            scheme: "identity",
-            vector: embedding.to_vec(),
-            nonce: vec![],
-            original_dimension: embedding.len(),
-        })
-    }
-    fn encrypt_query(&mut self, embedding: &[f32]) -> anyhow::Result<EncryptedEmbedding> {
-        self.encrypt_document(embedding)
-    }
-    fn decrypt_document(&mut self, ciphertext: &EncryptedEmbedding) -> anyhow::Result<Vec<f32>> {
-        Ok(ciphertext.vector.clone())
-    }
-}
-

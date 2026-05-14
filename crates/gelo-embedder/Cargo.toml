@@ -21,6 +21,7 @@ ndarray = { workspace = true, features = ["rayon"] }
 rag_core = { path = "../core", package = "core" }
 rand.workspace = true
 rand_chacha.workspace = true
+rayon.workspace = true
 safetensors.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true

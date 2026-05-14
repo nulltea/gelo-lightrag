@@ -60,11 +60,11 @@
 //! Run:
 //!
 //! ```text
-//! cargo test -p approach4 --release \
+//! cargo test -p gelo-rag --release \
 //!     --test obfuscation_accuracy -- --ignored --nocapture
 //! ```
 
-use approach4::{Approach4InMemoryService, NoopAttestationVerifier};
+use gelo_rag::{GeloRagInMemoryService, NoopAttestationVerifier};
 use dp_forward::DpForwardConfig;
 use rag_core::{Caprise, CapriseKey, ChunkId, DocumentChunk, Embedder, FastEmbedEmbedder};
 use rand::{RngCore, SeedableRng};
@@ -289,7 +289,7 @@ fn run_caprise_trial<E: Embedder>(
     baseline: &[Vec<String>],
 ) -> TrialResult {
     let scheme = Caprise::new(CapriseKey::generate(32.0, 0.15));
-    let mut svc = Approach4InMemoryService::new(embedder, scheme, NoopAttestationVerifier);
+    let mut svc = GeloRagInMemoryService::new(embedder, scheme, NoopAttestationVerifier);
     svc.ingest_chunks(corpus.to_vec()).expect("ingest");
     let mut hits_per_q = Vec::with_capacity(qs.len());
     for (q_text, _) in qs {

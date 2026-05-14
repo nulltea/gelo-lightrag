@@ -331,7 +331,7 @@ still contains the DP-bound identity, but nothing forces the verifier to
 check it. A misconfigured deployment could ship a CVM with the right
 weights but a vacuous DP config and the verifier would happily accept.
 
-**Fix.** The `Approach4InMemoryService::with_snp_verifier` constructor
+**Fix.** The `GeloRagInMemoryService::with_snp_verifier` constructor
 (M5) accepts a fully-configured `SnpAttestationVerifier`. The intended
 operator workflow is to compute `expected_model_id` *offline* from the
 pinned `(weights manifest hash, DpForwardConfig)` pair using the same

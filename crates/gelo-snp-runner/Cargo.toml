@@ -23,7 +23,7 @@ all-issuers = ["snp", "mock"]
 
 [dependencies]
 anyhow.workspace = true
-approach4 = { path = "../approach4", features = ["snp"] }
+gelo-rag = { path = "../gelo-rag", features = ["snp"] }
 axum.workspace = true
 base64.workspace = true
 gelo-embedder = { path = "../gelo-embedder" }
@@ -39,3 +39,4 @@ toml.workspace = true
 tower.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+zeroize.workspace = true

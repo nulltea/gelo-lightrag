@@ -48,7 +48,7 @@
 //! Run:
 //!
 //! ```text
-//! cargo test -p approach4 --release \
+//! cargo test -p gelo-rag --release \
 //!     --test gelo_embedder_accuracy -- --ignored --nocapture
 //! ```
 
@@ -118,7 +118,7 @@ fn queries() -> Vec<(&'static str, &'static str)> {
 
 // ─────────────────────────────────────────────────────────────────────
 // Direct-cosine retrieval over any `Embedder`. Skips the
-// approach4/remote-rag services so we measure pure inference + cosine
+// gelo-rag/remote-rag services so we measure pure inference + cosine
 // without protocol-side encryption distortion in the mix.
 // ─────────────────────────────────────────────────────────────────────
 

@@ -1,0 +1,749 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>private-rag · embedding (GELO)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,300..900,0..100,0..1&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+<div class="sheet">
+  <span class="crosshair tl"></span>
+  <span class="crosshair tr"></span>
+  <span class="crosshair bl"></span>
+  <span class="crosshair br"></span>
+
+  <!-- ─── TOP NAV ─── -->
+  <nav class="topnav">
+    <a class="brand" href="index.html">
+      private-rag<span class="dot">·</span><span class="rev">prototype</span>
+    </a>
+    <div class="links">
+      <a href="index.html">Overview</a>
+      <a class="current" href="embedding.html">Embedding · GELO</a>
+      <a href="storage.html">Storage · CAPRISE / RemoteRAG</a>
+      <a href="caprise-two-party-kdf.md">KDF spec</a>
+      <a href="prototype-status.html">Status sheet</a>
+    </div>
+  </nav>
+
+  <!-- ─── MASTHEAD ─── -->
+  <header class="masthead">
+    <div>
+      <h1 class="title">embedding<br><em>· GELO</em></h1>
+      <p class="subtitle">An attested SEV-SNP CVM runs the embedding model. Every Q/K/V/O + FFN matmul rides through a Haar-uniform mask before crossing PCIe to a commodity Vulkan GPU. The GPU is information-theoretically blind.</p>
+    </div>
+    <div class="colophon">
+      <div><b>protocol</b>&nbsp;&nbsp;GELO + TwinShield</div>
+      <div><b>TEE</b>&nbsp;&nbsp;AMD SEV-SNP CVM</div>
+      <div><b>GPU</b>&nbsp;&nbsp;commodity Vulkan via VFIO</div>
+      <div><b>overhead</b>&nbsp;&nbsp;~1.27× plain · Qwen3-Emb-0.6B</div>
+      <span class="rev">read across the matmul seam</span>
+    </div>
+  </header>
+
+  <!-- ═════ § 1 ROLE ═════ -->
+  <section id="role">
+    <header class="section-head">
+      <div class="section-num">§01</div>
+      <h2 class="section-title">Role in the project</h2>
+      <div class="section-meta">where this fits</div>
+    </header>
+    <p class="lede">
+      The embedding layer is the most computationally heavy step in private RAG, and historically the hardest to keep confidential. Full-FHE inference is 1000× too slow; confidential-compute GPUs (H100-CC) carry a 10× cost premium and lock the deployment to one vendor. <em>GELO + SEV-SNP</em> hits a third point on the curve: <strong>commodity Vulkan GPU, ~6% protocol overhead, hardware trust anchored in AMD's Secure Processor</strong>.
+    </p>
+    <div class="prose">
+      <p>The embedder turns user text into a unit-norm vector. The vector then feeds the storage layer (CAPRISE-at-rest <em>or</em> RemoteRAG, see <a href="storage.html">Storage</a>). At no point does the GPU, the cloud operator, or the storage server see plaintext text or plaintext activations — they see only attested code identity, masked activations <code>U=A·H</code>, and (publicly known) model weights.</p>
+      <p>What makes this tractable is the <strong>openweight assumption</strong>: the user pulls a specific public embedding model (e.g. <code>Qwen/Qwen3-Embedding-0.6B</code>) by SHA-pinned revision, and the attestation report binds the running CVM to those specific bytes. There is no weight secret to protect — only activation confidentiality flowing through public weights. That single assumption is what lets the GPU stay commodity.</p>
+    </div>
+  </section>
+
+  <!-- ═════ § 2 THREAT MODEL ═════ -->
+  <section id="threats">
+    <header class="section-head">
+      <div class="section-num">§02</div>
+      <h2 class="section-title">Threat model</h2>
+      <div class="section-meta">what each component sees · what it cannot</div>
+    </header>
+    <p class="lede">
+      The trust posture is: hardware-attested TEE on CPU, information-theoretically blind GPU, everything else hostile.
+    </p>
+
+    <table class="spec">
+      <thead>
+        <tr>
+          <th>Component</th>
+          <th>Trust</th>
+          <th>What it sees</th>
+          <th>What it does NOT see</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>User-side text</td><td>confidential</td><td>—</td><td>—</td></tr>
+        <tr><td>TEE (SEV-SNP CVM)</td><td class="accent">trusted</td><td>text · activations · mask state · model weights · pooled embeddings</td><td>—</td></tr>
+        <tr><td>GPU + driver + PCIe</td><td>untrusted</td><td>public model weights · per-batch masked activations <code>U=A·H</code> · integrity-probed matmul results</td><td>clean activations <code>H</code> · mask <code>A</code> · user text · pooled embedding</td></tr>
+        <tr><td>TEE host (CVM operator)</td><td>untrusted</td><td>encrypted CVM memory · masked PCIe traffic · attestation report</td><td>plaintext memory · per-CVM encryption key</td></tr>
+        <tr><td>Network operator</td><td>untrusted</td><td>TLS-wrapped requests · attestation evidence</td><td>RATLS contents</td></tr>
+      </tbody>
+    </table>
+
+    <p class="lede" style="margin-top:32px;">
+      Two recent attacks (2025–2026) target schemes structurally related to GELO. Neither applies here — GELO's per-batch full-rank Haar sampling is exactly the architectural choice that closes both.
+    </p>
+
+    <table class="spec">
+      <thead>
+        <tr>
+          <th>Attack</th>
+          <th>Reference</th>
+          <th>Why GELO survives</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>Precomputed-basis recovery</b></td>
+          <td><span class="mono">arXiv 2602.11088</span> (Wang et al.)</td>
+          <td>Recovers LLaMA-3 8B layer secrets from SOTER / TSQP / TransLinkGuard in ~6 min by exploiting a static low-dimensional basis. GELO's <code>A</code> is sampled per batch via Householder QR from a fresh ChaCha20-seeded Gaussian — Haar-uniform over the full orthogonal group <code>O(n)</code>. <strong>No static basis exists.</strong></td>
+        </tr>
+        <tr>
+          <td><b>Sequential vocab matching against fixed permutations</b></td>
+          <td><span class="mono">arXiv 2505.18332</span> "Hidden No More" (Wang et al., ICML 2025)</td>
+          <td>99%+ recovery from PermLLM / STIP / Centaur by exploiting fixed permutations. GELO's <code>A</code> is not a permutation (it's a full-rank rotation) and is fresh per batch. <strong>Two independent reasons the attack misses by construction.</strong></td>
+        </tr>
+        <tr>
+          <td><b>ArrowMatch (weight-mixed masks)</b></td>
+          <td>Xue et al. 2025 background</td>
+          <td>Targets schemes that mix the mask into <code>W</code> (STIP, ObfuscaTune). GELO masks the <strong>activation axis only</strong>; <code>A</code> never touches <code>W</code>. Inapplicable by construction.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p class="lede" style="margin-top:24px;">
+      <em>Not covered.</em> Side channels in the TEE itself (cache, timing, power), one-time weight upload to GPU (cleartext at startup), workload-shape inference from dispatch pattern, simultaneous SEV-SNP hardware vulnerability — all out of scope for the protocol layer.
+    </p>
+  </section>
+
+  <!-- ═════ § 3 MODEL ARCHITECTURES ═════ -->
+  <section id="models">
+    <header class="section-head">
+      <div class="section-num">§03</div>
+      <h2 class="section-title">Supported model architectures</h2>
+      <div class="section-meta">two encoder shells under one TrustedExecutor</div>
+    </header>
+    <p class="lede">
+      Every architecture below loads as <code>Arc&lt;Weights&gt;</code> from safetensors via the HuggingFace Hub. The SHA-256 of the manifest bytes is the <code>model_identity</code> that rides through every attestation report — relying parties pin specific weights, not just the architecture.
+    </p>
+
+    <table class="spec">
+      <thead>
+        <tr>
+          <th>Family</th>
+          <th>Crate path</th>
+          <th>Reference model</th>
+          <th>Layers · Hidden · Inter</th>
+          <th>Distinguishing ops</th>
+          <th>Pooling</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>BERT encoder</b></td>
+          <td class="code">gelo_embedder::bert</td>
+          <td><code>BAAI/bge-base-en-v1.5</code></td>
+          <td class="num">12 · 768 · 3072</td>
+          <td>LayerNorm · GELU FFN · multi-head attn (no causal mask)</td>
+          <td>mean + L2</td>
+        </tr>
+        <tr>
+          <td><b>Decoder-LLM as embedder</b></td>
+          <td class="code">gelo_embedder::decoder</td>
+          <td><code>Qwen/Qwen3-Embedding-0.6B</code></td>
+          <td class="num">28 · 1024 · 3072</td>
+          <td>RMSNorm · SwiGLU FFN (gate · up · down) · RoPE · GQA · causal mask</td>
+          <td>last-token + L2</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="two-col">
+      <div>
+        <h4>BERT — what crosses the matmul seam</h4>
+        <ul>
+          <li><strong>TEE-only:</strong> token-id lookup · LayerNorm · GELU · residual · attention (in-TEE at embedding shape)</li>
+          <li><strong>Offloaded (masked):</strong> Q · K · V · O · FfnUp · FfnDown — 6 GEMMs per layer × 12 layers = 72 offloaded linears per text</li>
+          <li><strong>Mask reuse:</strong> Q/K/V share one A (read the same H); O and FfnUp/Down each get fresh A</li>
+        </ul>
+      </div>
+      <div>
+        <h4>Decoder-LLM — what crosses the matmul seam</h4>
+        <ul>
+          <li><strong>TEE-only:</strong> embed lookup · RMSNorm · SwiGLU activate <code>silu(gate)·up</code> · RoPE · GQA causal attention (in-TEE at embedding shape) · residual</li>
+          <li><strong>Offloaded (masked):</strong> Q · K · V · O · FfnGate · FfnUp · FfnDown — 7 GEMMs per layer × 28 layers = 196 offloaded linears per text. Gate+Up bundled via <code>offload_linear_many</code> behind one mask apply.</li>
+          <li><strong>Long-context lever:</strong> <code>OutAttnMult</code> moves Q·Kᵀ to GPU under TwinShield's 4-partition embedding; auto-switches off at embedding shape (<code>n ≪ hidden</code>) per measured FLOP balance</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═════ § 4 COMPONENTS ═════ -->
+  <section id="components">
+    <header class="section-head">
+      <div class="section-num">§04</div>
+      <h2 class="section-title">Components</h2>
+      <div class="section-meta">GELO-side · 11 implementation units</div>
+    </header>
+    <p class="lede">
+      Each card pairs <span class="mono">[method ↦ source ↦ what it secures ↦ threat ↦ overhead]</span>. Ordered by request path: weight load → mask → offload → attention → hardening → integrity → pooling → attestation.
+    </p>
+
+    <div class="cgrid">
+
+      <article class="card">
+        <span class="tag tee">protocol kernel</span>
+        <h3>GELO mask<span class="alias">gelo_protocol :: mask</span></h3>
+        <p class="one">Per-batch Haar-uniform orthogonal <code>A</code>, applied on the token axis. <code>U=A·H</code> ships to the GPU, <code>H·W = Aᵀ·(U·W)</code> recovers on return — bit-exact in IEEE-754 modulo cancellation.</p>
+        <dl>
+          <dt>method</dt><dd>Householder QR over a fresh <code>ChaCha20Rng</code> Gaussian seed. AOCL-BLIS-backed <code>cblas_sgemm</code> in the apply/unapply hot path under the <code>blas</code> feature.</dd>
+          <dt>source</dt><dd>Belikov & Fedotov · arXiv <span class="mono">2603.05035</span></dd>
+          <dt>secures</dt><dd>activations crossing PCIe to untrusted GPU</dd>
+          <dt>threat</dt><dd>GPU is Haar-uniform-blind; survives 2026 precomputed-basis and Hidden-No-More attacks by construction</dd>
+          <dt>cost</dt><dd>≈ 100 ms apply + 173 ms unapply per Qwen3 forward across 112/196 calls; AOCL-BLIS saves 5× vs vanilla BLIS</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag tee">hardening</span>
+        <h3>Shield rows<span class="alias">gelo_protocol :: shield</span></h3>
+        <p class="one"><code>k</code> random high-energy rows spliced into <code>H</code> before masking and stripped after recovery — turns the multi-batch Gram leak <code>U⊤U = H⊤H</code> into <code>H⊤H + S⊤S</code>.</p>
+        <dl>
+          <dt>method</dt><dd><code>k=8</code> rows at energy <code>≈ 4·mean‖h‖</code> (production paper-parity). Stack into scratch · mask · recover · slice off.</dd>
+          <dt>source</dt><dd>TwinShield — Xue et al. 2025 §V-B</dd>
+          <dt>secures</dt><dd>cross-batch Gram leak that would otherwise enable a FastICA recovery</dd>
+          <dt>threat</dt><dd>persistent GPU-side observer collecting many <code>U_i</code>. <code>tests/bss_recovery.rs</code> asserts recovery succeeds without shield + fails with.</dd>
+          <dt>cost</dt><dd>+28 ms stack + 14 ms strip / forward, amortized across 112 calls</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag tee">integrity</span>
+        <h3>U-Verify<span class="alias">gelo_protocol :: integrity</span></h3>
+        <p class="one">Freivalds-style integrity probe: for asserted <code>Z = A·B</code>, check <code>A·(B·r) ≈ Z·r</code> against random <code>r</code>. Undetected tamper rate <code>≤ (2L)⁻ᵏ</code>.</p>
+        <dl>
+          <dt>method</dt><dd><code>r ∈ {-L..L}ᵖ</code>, <code>k</code> probes. Ships <code>L=3</code>; deployment picks <code>k</code>. Weight cache <code>Arc</code>-shared with embedder (saves 2.4 GB on Qwen3).</dd>
+          <dt>source</dt><dd>Freivalds 1979 · TwinShield §V-C operationalisation</dd>
+          <dt>secures</dt><dd>integrity of every offloaded GEMM — actively-malicious GPU returning crafted garbage is rejected</dd>
+          <dt>threat</dt><dd>actively-malicious untrusted GPU</dd>
+          <dt>cost</dt><dd>k=2 → ≈ 2.8% miss · <strong>k=8 → 2.4·10⁻⁷ miss</strong>. Disabled by default in throughput bench (k=0).</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag tee">attention lever</span>
+        <h3>OutAttnMult<span class="alias">gelo_protocol :: out_attn_mult</span></h3>
+        <p class="one">4-partition embedding for <code>Q·Kᵀ</code> where both operands are runtime values. GPU sees a <code>(2n,2n)</code> masked permuted matmul without the recovery scalars.</p>
+        <dl>
+          <dt>method</dt><dd>Mask <code>Q + R_Q</code>, <code>Kᵀ + R_Kt</code> with fresh matrices · scale by random scalars <code>a, b</code> · stack into <code>(2n, d)·(d, 2n)</code> · permute · TEE recovers four partitions</dd>
+          <dt>source</dt><dd>TwinShield — Xue et al. 2025 §V-A</dd>
+          <dt>secures</dt><dd>the one matmul GELO doesn't cover (no public weight)</dd>
+          <dt>threat</dt><dd>same as GELO: GPU sees Q/K only in the 4-partition form without the secret scalars</dd>
+          <dt>cost</dt><dd><span class="overhead warn">+24% wall</span> forced on at embedding shape (regime mismatch); <strong>net win at long context</strong>. Auto-switches off when <code>n &lt; hidden</code>.</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag tee">research lever</span>
+        <h3>Permuted attention<span class="alias">gelo_protocol :: attention</span></h3>
+        <p class="one">Amulet-inspired softmax-equivariance: <code>softmax(πQKᵀπᵀ/√d)·πV = π·softmax(QKᵀ/√d)·V</code>. Fresh row-permutation lets softmax + both attn matmuls run on the GPU under obfuscation.</p>
+        <dl>
+          <dt>method</dt><dd>Per-batch <code>π ∈ S_n</code> · transformed causal mask · optional <code>σ ≈ 0.01</code> Gaussian noise (Hidden No More mitigation)</dd>
+          <dt>source</dt><dd>Amulet — Wang et al. arXiv <span class="mono">2512.07495</span></dd>
+          <dt>secures</dt><dd>the in-TEE-attention bottleneck (28% of Qwen3 per-text wall at <code>n≈400</code>)</dd>
+          <dt>threat</dt><dd>survives Hidden-No-More only when paired with σ-noise + shield rows</dd>
+          <dt>cost</dt><dd><span class="overhead bad">regresses at embedding shape</span> (84 extra dispatches/text on iGPU). Defaults off; opt-in via <code>BEIR_PERM_ATTN=1</code>. Breakeven <code>n ≈ 1000–2000</code>.</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag gpu">offload engine</span>
+        <h3>WgpuVulkanEngine<span class="alias">gelo_gpu_wgpu</span></h3>
+        <p class="one">The untrusted side of the GELO protocol. <code>burn-cubecl</code> over <code>wgpu</code> → Vulkan on Linux, Metal on macOS, DX12 on Windows. Vendor-agnostic; consumer-GPU-friendly.</p>
+        <dl>
+          <dt>method</dt><dd>Real autotune with disk-persistent cache · lazy / deferred dispatch · buffer pooling + kernel fusion · <code>matmul_many</code> + <code>matmul_dynamic_batched</code> collapse cross-offload sync</dd>
+          <dt>source</dt><dd><code>burn-cubecl 0.20.1</code> · <code>cubecl-wgpu 0.9.0</code> · <code>wgpu 26</code></dd>
+          <dt>secures</dt><dd>heavy GEMMs (Q/K/V/O/Up/Gate/Down) — sees masked activations only</dd>
+          <dt>threat</dt><dd>information-theoretically blind. ArrowMatch-class attacks don't apply: <code>A</code> is on the activation axis, never mixed with <code>W</code></dd>
+          <dt>cost</dt><dd>≈ 247 ms / text of GPU GEMM on Qwen3 at <code>n≈400</code> · AMD Strix Halo iGPU (RADV)</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag tee">BERT-class embedder</span>
+        <h3>GeloBertEmbedder<span class="alias">gelo_embedder :: bert</span></h3>
+        <p class="one">12-layer BERT encoder driven through a <code>TrustedExecutor</code>. Q/K/V/O + FFN GEMMs route through the protocol; embedding lookup, LayerNorm, GELU, residual, mean-L2 pooling stay TEE-side.</p>
+        <dl>
+          <dt>method</dt><dd><code>tokenizers 0.21</code> · weights as <code>Arc&lt;BertWeights&gt;</code> · <code>provision_weight_shared</code> Arc-shares with U-Verify cache · optional <code>with_dp_forward(cfg)</code> rebinds <code>model_identity</code></dd>
+          <dt>source</dt><dd>in-house · defaults to <code>BAAI/bge-base-en-v1.5</code> via <code>hf-hub</code></dd>
+          <dt>secures</dt><dd>protocol fidelity vs the plain reference — bit-exact in fp32 modulo float associativity</dd>
+          <dt>threat</dt><dd>see GELO / Shield / U-Verify cards</dd>
+          <dt>cost</dt><dd>~6× faster per text than Qwen3 (12 vs 28 layers, 768 vs 1024 hidden)</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag tee">decoder-LLM embedder</span>
+        <h3>GeloQwenEmbedder<span class="alias">gelo_embedder :: decoder</span></h3>
+        <p class="one">Decoder-LLM-as-embedder driven through a <code>TrustedExecutor</code>. 28-layer transformer with RoPE, GQA, SwiGLU FFN, RMSNorm, last-token + L2 pooling.</p>
+        <dl>
+          <dt>method</dt><dd>Same offload schedule as BERT plus SwiGLU's gate/up/down. <code>offload_linear_many</code> bundles <code>(gate, up)</code> behind one mask apply. Causal mask handled TEE-side; in-TEE GQA attention by default at embedding shape.</dd>
+          <dt>source</dt><dd>in-house · defaults to <code>Qwen/Qwen3-Embedding-0.6B</code></dd>
+          <dt>secures</dt><dd>protocol fidelity · attestation binding</dd>
+          <dt>threat</dt><dd>see GELO / Shield / U-Verify cards</dd>
+          <dt>cost</dt><dd><strong>153 ms / text</strong> masked · parallel-rayon · paper-parity · AOCL-BLIS · iGPU · 1.27× plain</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag tee">attestation</span>
+        <h3>SEV-SNP attestation<span class="alias">gelo_tee_sev_snp</span></h3>
+        <p class="one">Production CVM evidence path. 1,184-byte SEV-SNP attestation report with <code>REPORT_DATA</code> binding <code>(model_identity, scheme_identity, nonce)</code>, signed by the per-chip VCEK in the AMD-SP.</p>
+        <dl>
+          <dt>method</dt><dd><code>HardwareReportIssuer</code> opens <code>/dev/sev-guest</code> · <code>SNP_GET_EXT_REPORT</code>. <code>MockReportIssuer</code> signs against a bundled ARK→ASK→VCEK PKI. Verifier validates ECDSA-P-384 chain + recomputes <code>REPORT_DATA</code>.</dd>
+          <dt>source</dt><dd><code>virtee/sev 7</code> (AMD-blessed)</dd>
+          <dt>secures</dt><dd>relying-party trust — CVM runs the expected weights with the expected protocol scheme</dd>
+          <dt>threat</dt><dd>cloud operator running a different binary, swapping weights, or attempting downgrade</dd>
+          <dt>cost</dt><dd><span class="overhead good">0.39 ms issue · 2.70 ms verify</span> (mock chain) · once per session · never on per-text path</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag tee">test substrate</span>
+        <h3>In-process executors<span class="alias">gelo_protocol :: sim</span></h3>
+        <p class="one">Reference executors: <code>InProcessTrustedExecutor</code> drives the full protocol on the same machine; <code>PlaintextExecutor</code> is the parity baseline; <code>RayonCpuEngine</code> is the CPU offload backend.</p>
+        <dl>
+          <dt>method</dt><dd>Identical protocol math to the SEV-SNP executor — the SEV-SNP wrapper forwards every method. Used by the BEIR bench and unit tests.</dd>
+          <dt>source</dt><dd>in-house</dd>
+          <dt>secures</dt><dd>protocol math correctness; throughput floor without TEE memory encryption overhead</dd>
+          <dt>threat</dt><dd>n/a — test substrate</dd>
+          <dt>cost</dt><dd>see §06 numbers</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag crypto">DP layer</span>
+        <h3>DP-Forward<span class="alias">dp_forward</span></h3>
+        <p class="one">Analytic Matrix Gaussian Mechanism on the pooled embedding — irreversible Gaussian noise giving formal <code>(ε, δ)</code>-Sequence-LDP. Survives any downstream encryption.</p>
+        <dl>
+          <dt>method</dt><dd>Per-row L2 clip to <code>C</code> · Balle–Wang analytic-Gaussian σ at <code>(ε, δ, Δ=2C)</code> · isotropic <code>N(0, σ²I)</code> on pooled output. Applied inside the embedder so the SEV-SNP report binds to <code>(ε, δ, C, σ)</code>.</dd>
+          <dt>source</dt><dd>Yue et al. · arXiv <span class="mono">2309.06746</span> · CCS 2023</dd>
+          <dt>secures</dt><dd>the residual after a key-holder decrypts the CAPRISE index. Only <code>e + DP_noise</code> ever leaves the embedder.</dd>
+          <dt>threat</dt><dd>compromised CAPRISE key (TEE breach, legal compulsion, key-rotation bug)</dd>
+          <dt>cost</dt><dd><span class="overhead good">µs per pooled vector</span> · <strong>empirically destroys NFCorpus retrieval at ε=4</strong> — kept available, not on by default</dd>
+        </dl>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ═════ § 5 COMPUTE FLOW ═════ -->
+  <section id="flow">
+    <header class="section-head">
+      <div class="section-num">§05</div>
+      <h2 class="section-title">Compute flow &amp; trust boundaries</h2>
+      <div class="section-meta">per-layer · TEE ⇄ GPU mask round-trip</div>
+    </header>
+    <p class="lede">
+      Inside one decoder block, the trusted side runs everything except 7 linear projections. Each projection is masked, shipped, multiplied, and unmasked. Below: one Qwen3 block in detail.
+    </p>
+
+    <!-- ── PERFORMANCE ARGUMENT ── -->
+    <div class="two-col" style="margin: 12px 0 28px;">
+      <div>
+        <h4>Why this split is fast</h4>
+        <p style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 18,'wght' 380; font-style:italic; font-size:15px; line-height:1.5; color:var(--ink-2); margin:0 0 12px;">
+          GELO is a <strong>FLOP-asymmetric split</strong>: the heavy compute goes to the GPU, the cheap compute stays in the TEE — and at embedding shape the gap is roughly two orders of magnitude per layer.
+        </p>
+        <p style="font-size:12px; line-height:1.6; color:var(--ink-2); margin:0;">
+          Per layer, attention runs as <strong>O(n²·d)</strong> (heads × sequence-pairs × head_dim) and one linear projection runs as <strong>O(n·d²)</strong> (tokens × hidden × hidden). One linear projection's work matches all of attention only when <code>n ≈ d</code>; for any <code>n &lt; d</code>, linears dominate. Embedding inputs sit at <code>n ≈ 50–400</code> tokens against <code>d = 768</code> (BGE) or <code>d = 1024</code> (Qwen3) — well into the regime where the projection bucket is ~10–20× attention.
+        </p>
+      </div>
+      <div>
+        <h4>How GELO exploits it</h4>
+        <ul style="margin:0 0 12px; padding-left:18px; font-size:12px; line-height:1.6;">
+          <li>The <strong>cheap</strong> O(n²·d) op (attention, runtime-runtime · no public weight) stays in the TEE — small absolute cost at embedding <code>n</code>.</li>
+          <li>The <strong>expensive</strong> O(n·d²) ops (Q/K/V/O/Gate/Up/Down — 7 GEMMs per layer with public weights) go to the GPU under the GELO mask.</li>
+          <li>Mask apply / unapply is <strong>O(n²·d)</strong> too, the same complexity class as in-TEE attention — bounded by the cheap side, never by the expensive side.</li>
+        </ul>
+        <p style="font-size:12px; line-height:1.6; color:var(--ink-2); margin:0;">
+          Net result on Qwen3 at <code>n ≈ 400</code>, <code>d = 1024</code>: the GPU absorbs ~247 ms of GEMM that would dominate any pure-TEE path, while the in-TEE attention bucket is only ~238 ms across all 28 layers (~0.3 ms / call amortised). The mask machinery rides along at the cheap-side complexity, never the expensive one. This is the <em>structural</em> reason GELO + commodity GPU lands at 1.27× plain instead of 5–10×.
+        </p>
+      </div>
+    </div>
+
+    <p class="lede" style="margin-top:0;">
+      The diagram below traces that split through one decoder block. Solid red arrows are operations the TEE handles directly on cleartext; dashed amber arrows are masked operations crossing PCIe.
+    </p>
+
+    <div class="diagram-frame">
+      <div class="diagram-cap">
+        <span class="l">FIG. 02 — One decoder block · TEE ⇄ GPU mask round-trip · Qwen3 shape</span>
+        <span>solid red = trusted secret · dashed amber = obfuscated transit</span>
+      </div>
+      <svg class="flow" viewBox="0 0 1320 600" xmlns="http://www.w3.org/2000/svg" role="img">
+        <defs>
+          <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
+          </marker>
+        </defs>
+
+        <!-- ZONE BANDS -->
+        <rect x="0"    y="40"  width="780"  height="540" class="zone-band zone-band-tee"/>
+        <rect x="780"  y="40"  width="540"  height="540" class="zone-band zone-band-gpu"/>
+
+        <text x="20"  y="64" class="zone-label">Trusted side · in CVM</text>
+        <text x="20"  y="80" class="zone-sublabel">embedder + protocol kernel</text>
+        <text x="800" y="64" class="zone-label">Untrusted GPU</text>
+        <text x="800" y="80" class="zone-sublabel">burn-cubecl · Vulkan</text>
+
+        <line x1="780"  y1="40" x2="780"  y2="580" class="boundary"/>
+        <text x="784"  y="576" class="boundary-label">PCIe · SWIOTLB · masked</text>
+
+        <!-- ── INPUT ── -->
+        <rect x="20" y="110" width="180" height="50" class="box box-tee"/>
+        <text x="34" y="130" class="box-label">H (residual from prev)</text>
+        <text x="34" y="146" class="box-sub">(n, 1024) f32</text>
+
+        <!-- RMSNorm 1 -->
+        <rect x="220" y="110" width="160" height="50" class="box box-tee"/>
+        <text x="234" y="130" class="box-label">RMSNorm pre-attn</text>
+        <text x="234" y="146" class="box-sub">TEE</text>
+
+        <!-- QKV mask apply -->
+        <rect x="400" y="110" width="180" height="50" class="box box-tee box-strong"/>
+        <text x="414" y="130" class="box-label">mask apply (Q/K/V)</text>
+        <text x="414" y="146" class="box-sub">A ← Haar; U = A·stack(H, S)</text>
+
+        <!-- GPU QKV matmul -->
+        <rect x="820" y="110" width="200" height="50" class="box box-gpu box-strong"/>
+        <text x="834" y="130" class="box-label">matmul_many [Q,K,V]</text>
+        <text x="834" y="146" class="box-sub">3 weights · 1 dispatch</text>
+
+        <!-- mask unapply ×3 -->
+        <rect x="400" y="190" width="180" height="50" class="box box-tee"/>
+        <text x="414" y="210" class="box-label">unapply ×3</text>
+        <text x="414" y="226" class="box-sub">Aᵀ · (U·W)</text>
+
+        <!-- RoPE + GQA -->
+        <rect x="220" y="190" width="160" height="50" class="box box-tee"/>
+        <text x="234" y="210" class="box-label">RoPE · GQA causal attn</text>
+        <text x="234" y="226" class="box-sub">TEE (Q, K never leave)</text>
+
+        <!-- O mask apply -->
+        <rect x="400" y="270" width="180" height="50" class="box box-tee"/>
+        <text x="414" y="290" class="box-label">mask apply O</text>
+        <text x="414" y="306" class="box-sub">fresh A</text>
+
+        <!-- GPU O -->
+        <rect x="820" y="270" width="200" height="50" class="box box-gpu"/>
+        <text x="834" y="290" class="box-label">matmul O</text>
+        <text x="834" y="306" class="box-sub">attn_out · W_O</text>
+
+        <!-- unapply O + residual + RMSNorm 2 -->
+        <rect x="220" y="270" width="160" height="50" class="box box-tee"/>
+        <text x="234" y="290" class="box-label">unapply · +residual</text>
+        <text x="234" y="306" class="box-sub">RMSNorm pre-FFN</text>
+
+        <!-- FFN gate+up mask apply -->
+        <rect x="400" y="350" width="180" height="50" class="box box-tee box-strong"/>
+        <text x="414" y="370" class="box-label">mask apply (gate, up)</text>
+        <text x="414" y="386" class="box-sub">offload_linear_many</text>
+
+        <!-- GPU gate+up -->
+        <rect x="820" y="350" width="200" height="50" class="box box-gpu box-strong"/>
+        <text x="834" y="370" class="box-label">matmul_many [gate, up]</text>
+        <text x="834" y="386" class="box-sub">batched on GPU</text>
+
+        <!-- unapply gate+up + swiglu -->
+        <rect x="400" y="430" width="180" height="50" class="box box-tee"/>
+        <text x="414" y="450" class="box-label">unapply · SwiGLU</text>
+        <text x="414" y="466" class="box-sub">silu(gate) · up — TEE</text>
+
+        <!-- mask apply down -->
+        <rect x="220" y="430" width="160" height="50" class="box box-tee"/>
+        <text x="234" y="450" class="box-label">mask apply down</text>
+        <text x="234" y="466" class="box-sub">fresh A</text>
+
+        <!-- GPU down -->
+        <rect x="820" y="430" width="200" height="50" class="box box-gpu"/>
+        <text x="834" y="450" class="box-label">matmul down</text>
+        <text x="834" y="466" class="box-sub">ffn_hidden · W_down</text>
+
+        <!-- unapply down + residual + repeat -->
+        <rect x="20" y="510" width="560" height="50" class="box box-tee"/>
+        <text x="34" y="530" class="box-label">unapply · +residual · → next block (×27 more)</text>
+        <text x="34" y="546" class="box-sub">final block → final RMSNorm → last-token pool → L2 normalize</text>
+
+        <!-- ARROWS -->
+        <path d="M200 135 L220 135" class="arrow arrow-secret" marker-end="url(#ah2)"/>
+        <path d="M380 135 L400 135" class="arrow arrow-secret" marker-end="url(#ah2)"/>
+        <path d="M580 135 L820 135" class="arrow arrow-masked" marker-end="url(#ah2)"/>
+        <text x="630" y="125" class="arrow-label masked">U (masked)</text>
+        <path d="M820 145 L580 195" class="arrow arrow-masked" marker-end="url(#ah2)" stroke-dasharray="4 3"/>
+        <text x="630" y="180" class="arrow-label masked">U·W (still masked)</text>
+        <path d="M400 215 L380 215" class="arrow arrow-secret" marker-end="url(#ah2)"/>
+
+        <path d="M380 295 L400 295" class="arrow arrow-secret" marker-end="url(#ah2)"/>
+        <path d="M580 295 L820 295" class="arrow arrow-masked" marker-end="url(#ah2)"/>
+        <path d="M820 305 L580 315" class="arrow arrow-masked" marker-end="url(#ah2)" stroke-dasharray="4 3"/>
+        <path d="M400 320 L300 320 L300 270" class="arrow arrow-secret" marker-end="url(#ah2)"/>
+
+        <path d="M380 375 L400 375" class="arrow arrow-secret" marker-end="url(#ah2)"/>
+        <path d="M580 375 L820 375" class="arrow arrow-masked" marker-end="url(#ah2)"/>
+        <path d="M820 385 L580 435" class="arrow arrow-masked" marker-end="url(#ah2)" stroke-dasharray="4 3"/>
+        <path d="M400 455 L380 455" class="arrow arrow-secret" marker-end="url(#ah2)"/>
+
+        <path d="M220 455 L200 455" class="arrow arrow-secret" marker-end="url(#ah2)"/>
+        <path d="M200 460 L200 510" class="arrow arrow-secret" marker-end="url(#ah2)"/>
+      </svg>
+    </div>
+
+    <table class="spec">
+      <thead>
+        <tr><th style="width:60px">Op</th><th>Where</th><th>Sees</th><th>Cost / Qwen3 fwd</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><b>RMSNorm</b></td><td>TEE</td><td>cleartext H</td><td class="num">~10.9 ms (57 calls)</td></tr>
+        <tr><td><b>Q/K/V matmul</b></td><td>GPU under mask</td><td>U · public W</td><td class="num">~142 ms (matmul_many)</td></tr>
+        <tr><td><b>RoPE + attention</b></td><td>TEE</td><td>cleartext Q, K, V</td><td class="num">~238 ms (28 layers · in-TEE)</td></tr>
+        <tr><td><b>O matmul</b></td><td>GPU under mask</td><td>U · W_O</td><td class="num">part of ~105 ms</td></tr>
+        <tr><td><b>SwiGLU activate</b></td><td>TEE</td><td>cleartext gate, up</td><td class="num">~25.5 ms</td></tr>
+        <tr><td><b>FFN gate+up · down</b></td><td>GPU under mask</td><td>U · public W</td><td class="num">part of GPU bucket</td></tr>
+        <tr><td><b>Mask apply / unapply</b></td><td>TEE (BLIS-direct)</td><td>cleartext both sides</td><td class="num">~100 + 173 ms (308 GEMMs)</td></tr>
+        <tr><td><b>Mask sample</b></td><td>TEE</td><td>fresh Haar A</td><td class="num">~8.8 ms (once / fwd)</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ═════ § 6 INTERFACES ═════ -->
+  <section id="interfaces">
+    <header class="section-head">
+      <div class="section-num">§06</div>
+      <h2 class="section-title">Interfaces</h2>
+      <div class="section-meta">substrate-agnostic seams</div>
+    </header>
+    <p class="lede">
+      Two trait pairs define every seam. The split is deliberately narrow — the GPU engine knows nothing about masking, the trusted executor knows nothing about retrieval.
+    </p>
+
+    <table class="spec">
+      <thead>
+        <tr>
+          <th>Seam</th>
+          <th>Trait</th>
+          <th>Crate</th>
+          <th>Boundary</th>
+          <th>Implementors</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>GPU offload</b></td>
+          <td class="code">GpuOffloadEngine</td>
+          <td class="code">gelo-protocol</td>
+          <td>untrusted accelerator API · sees masked activations only</td>
+          <td><code>RayonCpuEngine</code> · <code>WgpuVulkanEngine</code></td>
+        </tr>
+        <tr>
+          <td><b>Trusted protocol</b></td>
+          <td class="code">TrustedExecutor</td>
+          <td class="code">gelo-protocol</td>
+          <td>mask RNG · shield · U-Verify · sensitive-layer policy</td>
+          <td><code>PlaintextExecutor</code> · <code>InProcessTrustedExecutor</code> · <code>SnpTrustedExecutor</code></td>
+        </tr>
+        <tr>
+          <td><b>Embedder</b></td>
+          <td class="code">Embedder</td>
+          <td class="code">core (rag_core)</td>
+          <td>text → vector + <code>model_identity</code> for attestation binding</td>
+          <td><code>FastEmbedEmbedder</code> · <code>GeloBertEmbedder</code> · <code>GeloQwenEmbedder</code></td>
+        </tr>
+        <tr>
+          <td><b>Attestation</b></td>
+          <td class="code">AttestationVerifier · AttestationIssuer</td>
+          <td class="code">gelo-rag · gelo-tee-sev-snp</td>
+          <td>relying party ⇄ CVM evidence · report bytes opaque to the service</td>
+          <td><code>NoopAttestationVerifier</code> · <code>SnpVerifierAdapter</code> · <code>HardwareReportIssuer</code> · <code>MockReportIssuer</code></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="two-col">
+      <div>
+        <h4>TrustedExecutor — what flows across the GELO seam</h4>
+        <ul>
+          <li><code>provision_weight(handle, W)</code> — public weight upload at model load (once)</li>
+          <li><code>begin_forward_pass(n)</code> / <code>end_forward_pass</code> — paper-parity mask lifecycle</li>
+          <li><code>offload_linear(handle, H) → H·W</code> — single masked GEMM</li>
+          <li><code>offload_qkv(layer, H) → (Q, K, V)</code> — shared-mask 3-way</li>
+          <li><code>offload_linear_many(handles, H)</code> — SwiGLU gate+up bundled</li>
+          <li><code>offload_attention_qkt(Q, Kᵀ) → Q·Kᵀ</code> — OutAttnMult path</li>
+          <li><code>offload_attention_permuted(Q, K, V, scale, mask)</code> — Amulet-style</li>
+          <li><code>set_rng_stream(stream)</code> — rayon-worker independence</li>
+        </ul>
+      </div>
+      <div>
+        <h4>GpuOffloadEngine — what the GPU side promises</h4>
+        <ul>
+          <li><code>register_weight(handle, W)</code> — model-load · public</li>
+          <li><code>matmul(handle, U) → U·W</code> — engine's only required compute</li>
+          <li><code>matmul_many(handles, U)</code> — shared upload + sync across N GEMMs</li>
+          <li><code>matmul_dynamic(L, R)</code> — both operands runtime (OutAttnMult)</li>
+          <li><code>matmul_dynamic_batched(L, R)</code> — batched dynamic for fused dispatch</li>
+          <li><code>softmax_batched(X)</code> — permuted-attention path</li>
+          <li>Engine has <strong>no notion of correctness</strong>; integrity is the executor's job</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═════ § 7 PERFORMANCE & CORRECTNESS ═════ -->
+  <section id="numbers">
+    <header class="section-head">
+      <div class="section-num">§07</div>
+      <h2 class="section-title">Performance &amp; correctness</h2>
+      <div class="section-meta">measured · AMD Ryzen AI Max+ 395 · 2026-05-14</div>
+    </header>
+    <p class="lede">
+      All numbers from <code>crates/gelo-rag/tests/beir_accuracy.rs</code> on AMD Ryzen AI Max+ 395 with the integrated Vulkan GPU. Paper-parity mode (one Haar A per forward + 8 shield rows), <code>--features blas</code> via AOCL-BLIS, rayon parallel fan-out across texts.
+    </p>
+
+    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:24px 0 8px;">Per-text wall-clock — Qwen3-Embedding-0.6B</h4>
+    <table class="spec">
+      <thead>
+        <tr><th>Configuration</th><th class="num">per-text</th><th class="num">vs plain</th><th>Notes</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Qwen3 plain (<code>PlaintextExecutor</code>)</td><td class="num">121 ms</td><td class="num">1.00×</td><td>AOCL-BLIS · GPU offload · no mask</td></tr>
+        <tr><td>Qwen3 + GELO mask + CAPRISE <span class="accent">(production)</span></td><td class="num">153 ms</td><td class="num accent">1.27×</td><td>paper-parity · shield k=8 · U-Verify off</td></tr>
+        <tr><td>Qwen3 + permuted-attention (experimental)</td><td class="num">300 ms</td><td class="num">2.49×</td><td>regresses at n≈400 · breakeven n≈1000–2000</td></tr>
+        <tr><td>Qwen3 + GELO (vanilla BLIS, pre-AOCL)</td><td class="num">281 ms</td><td class="num">2.28×</td><td>baseline before 2026-05-14 dispatch fix</td></tr>
+      </tbody>
+    </table>
+
+    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:32px 0 8px;">Per-text cost decomposition — Qwen3, paper-parity</h4>
+    <table class="spec">
+      <thead>
+        <tr><th>Bucket</th><th class="num">ms / text</th><th class="num">% of total</th><th>What</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Model compute (would happen without GELO)</td><td class="num">527.6</td><td class="num">61.9%</td><td>tee:attn · GPU matmul_many · GPU matmul · SwiGLU · RMSNorm · residual · RoPE · embed lookup</td></tr>
+        <tr><td>GELO overhead (mask machinery)</td><td class="num">325.4</td><td class="num">38.1%</td><td>mask_apply + unapply (BLIS-direct) · shield stack/strip · mask_sample</td></tr>
+        <tr><td><b>Total sequential</b></td><td class="num">853 ms</td><td class="num">100%</td><td>BLIS_NUM_THREADS=16, single-threaded embed</td></tr>
+        <tr><td><b>Total parallel (BLIS=1, rayon)</b></td><td class="num">302 ms</td><td class="num">—</td><td>4.5× throughput vs sequential</td></tr>
+      </tbody>
+    </table>
+
+    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:32px 0 8px;">Retrieval quality — NFCorpus, 100 queries × 3,633 docs</h4>
+    <table class="spec">
+      <thead>
+        <tr><th>Configuration</th><th class="num">nDCG@10</th><th class="num">top1_base</th><th>Notes</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>FastEmbed MiniLM-L6 plain (MTEB sanity)</td><td class="num">≈ 0.30</td><td class="num">1.00</td><td>asserted within ±0.05 of published MTEB</td></tr>
+        <tr><td>GELO/BGE-base + mask + CAPRISE</td><td class="num">≈ plain BGE</td><td class="num">≥ 0.95</td><td>protocol-fidelity asserted</td></tr>
+        <tr><td>GELO/Qwen3 + mask + CAPRISE</td><td class="num">≈ plain Qwen3</td><td class="num">≥ 0.95</td><td>model-gap reported separately</td></tr>
+        <tr><td>+ DP-Forward(ε=4) on pooled output</td><td class="num" style="color:var(--tee)">≪ plain</td><td class="num">—</td><td>destroys NFCorpus retrieval — documented finding, not on by default</td></tr>
+      </tbody>
+    </table>
+
+    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:32px 0 8px;">Attestation</h4>
+    <table class="spec">
+      <thead>
+        <tr><th>Step</th><th class="num">Cost</th><th>Frequency</th><th>Notes</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Issue (<code>MockReportIssuer</code>)</td><td class="num">0.39 ms</td><td>once / session</td><td>real silicon expected within order of magnitude</td></tr>
+        <tr><td>Verify (mock ARK chain)</td><td class="num">2.70 ms</td><td>once / session</td><td>ECDSA-P-384 chain + report sig</td></tr>
+        <tr><td>Report bytes on wire</td><td class="num">1,184 B + ~733 B</td><td>once / session</td><td>SEV-SNP ABI fixed + VCEK PEM</td></tr>
+        <tr><td>Per-text overhead from SEV-SNP wrapper</td><td class="num">0 ms</td><td>—</td><td>forwarding-only <code>TrustedExecutor</code> impl</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ═════ § 8 STATUS & GAPS ═════ -->
+  <section id="status">
+    <header class="section-head">
+      <div class="section-num">§08</div>
+      <h2 class="section-title">Status &amp; gaps</h2>
+      <div class="section-meta">tier matrix · open levers · out of scope</div>
+    </header>
+    <table class="spec">
+      <thead>
+        <tr><th>Tier</th><th>Host</th><th>Binary mode</th><th>Status</th><th>Validates</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><b>T1 — in-process</b></td><td>any x86_64 Linux</td><td><code>cargo test --features mock</code></td><td class="accent">green</td><td>protocol math · report format · parser/verifier round-trip · tamper rejection</td></tr>
+        <tr><td><b>T2 — VM-sim CVM</b></td><td>regular QEMU/KVM</td><td><code>SNP_MODE=mock</code></td><td class="accent">green</td><td>OS boundary · systemd lifecycle · weight loading · full HTTP service</td></tr>
+        <tr><td><b>T3 — real silicon</b></td><td>Hetzner EPYC + VFIO GPU</td><td><code>SNP_MODE=production</code></td><td>deferred (M5.9)</td><td>real <code>/dev/sev-guest</code> · ARK chain · RMP · SWIOTLB · GPU passthrough</td></tr>
+      </tbody>
+    </table>
+
+    <div class="two-col">
+      <div>
+        <h4>Highest-impact open levers</h4>
+        <ul>
+          <li><b>Real T3 boot</b> — Hetzner EPYC provisioning + one captured VCEK + sample report for offline CI</li>
+          <li><b>GPU-side OutAttnMult stacking</b> — fused WGSL kernel for 2n-wide operand packing; long-context win</li>
+          <li><b>TDISP for DMA</b> — removes SWIOTLB bounce (~15 ms/Qwen3-text) once kernel + firmware ships</li>
+          <li><b>SCX stateless mask derivation</b> — HKDF-keyed per <code>(session, request, layer, op)</code>; unlocks horizontal scaling + mask audit</li>
+          <li><b>Amulet softmax-equivariant attention</b> — research lever; pays off at long context, regresses at embedding shape</li>
+        </ul>
+      </div>
+      <div>
+        <h4>Out of scope (explicitly)</h4>
+        <ul>
+          <li><b>Private model weights</b> — would need STIP-style weight masking; whole stack is built on openweight assumption</li>
+          <li><b>FHE / MPC inference</b> — orders of magnitude too slow for the embedding workload</li>
+          <li><b>Side-channels in the TEE</b> — SEV-SNP isolates memory but not cache / timing / power; <code>subtle</code> constant-time hardening deferred</li>
+          <li><b>Hosted generation</b> — out of scope for Approach 4; client-side LLM expected per the design doc</li>
+          <li><b>Hybrid BM25 + dense retrieval</b> — open research gap; no private scheme ships it</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── FOOTER ─── -->
+  <footer>
+    <div>
+      <h5>Cross-references</h5>
+      <ul>
+        <li><a href="index.html">← Overview / Landing</a></li>
+        <li><a href="storage.html">Storage · CAPRISE / RemoteRAG →</a></li>
+        <li><a href="caprise-two-party-kdf.md">CAPRISE two-party KDF spec</a></li>
+      </ul>
+    </div>
+    <div>
+      <h5>Source docs</h5>
+      <ul>
+        <li><code>docs/prototype/gelo.md</code></li>
+        <li><code>docs/prototype/inference-optimization.md</code></li>
+        <li><code>docs/prototype/dp-forward.md</code></li>
+      </ul>
+    </div>
+    <div>
+      <h5>Notation</h5>
+      <ul>
+        <li><code>H</code> — token activations <code>(n, d)</code></li>
+        <li><code>A</code> — Haar-uniform orthogonal mask <code>(n+k, n+k)</code></li>
+        <li><code>W</code> — public model weight</li>
+        <li><code>n</code> — token-axis length</li>
+        <li><code>k</code> — shield row count (default 8)</li>
+        <li><code>U</code> — masked activations <code>A·H</code></li>
+      </ul>
+    </div>
+  </footer>
+</div>
+</body>
+</html>

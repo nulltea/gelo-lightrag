@@ -151,69 +151,94 @@ impl<X: TrustedExecutor> GeloBertEmbedder<X> {
     }
 }
 
-impl<X: TrustedExecutor> Embedder for GeloBertEmbedder<X> {
+impl<X: TrustedExecutor + Clone + Send + Sync> Embedder for GeloBertEmbedder<X> {
     fn embed(&mut self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
-        let mut out = Vec::with_capacity(texts.len());
-        for text in texts {
-            let ids = self.tokenizer.encode(text, self.max_len)?;
-
-            // Intermediate-layer DP-Forward hook (M7.1). When
-            // `layer_index = Some(n)`, apply aMGM per token-row at the
-            // `add_and_norm_2` position of layer n — matches the paper's
-            // released-code default (`noise_layer = 10` on BERT-base 12-layer).
-            // Otherwise noise (if any) is applied at the pooled output below.
-            let hidden = {
-                #[cfg(feature = "dp-forward")]
-                {
-                    if let Some(cfg) = self.dp_forward.filter(|c| c.layer_index.is_some()) {
-                        let target = cfg.layer_index.expect("filter guarantees Some");
-                        let clip = cfg.clip_c;
-                        let sigma = cfg.sigma;
-                        let rng = &mut self.dp_rng;
-                        forward::run_with_hook(
-                            &self.cfg,
-                            &self.weights,
-                            &mut self.exec,
-                            &ids,
-                            |li, h| {
-                                if li == target {
-                                    apply_dp_per_row(h, clip, sigma, rng);
-                                }
-                            },
-                        )?
-                    } else {
-                        forward::run(&self.cfg, &self.weights, &mut self.exec, &ids)?
-                    }
-                }
-                #[cfg(not(feature = "dp-forward"))]
-                {
-                    forward::run(&self.cfg, &self.weights, &mut self.exec, &ids)?
-                }
-            };
-
-            let pooled = pool::mean_l2(hidden.view());
-            #[allow(unused_mut)]
-            let mut pooled_vec = pooled.to_vec();
-            #[cfg(feature = "dp-forward")]
-            if let Some(cfg) = &self.dp_forward {
-                // Legacy pooled-output application — only when no
-                // intermediate layer was specified.
-                if cfg.layer_index.is_none() {
-                    dp_forward::amgm::clip_l2_in_place(&mut pooled_vec, cfg.clip_c);
-                    dp_forward::amgm::add_gaussian_noise(
-                        &mut pooled_vec,
-                        cfg.sigma,
-                        &mut self.dp_rng,
-                    );
-                }
-            }
-            out.push(pooled_vec);
+        // Single-text fast path: skip the rayon scope + executor clone.
+        if texts.len() <= 1 {
+            return texts.iter().map(|t| self.embed_one(t, &mut self.exec.clone())).collect();
         }
-        Ok(out)
+
+        // Bulk-ingest path: parallel fan-out via rayon. See the matching
+        // decoder/embedder.rs::embed for the threading + privacy
+        // rationale (independent executor clone per worker; engine
+        // Arc-shares weights; caller sets BLIS_NUM_THREADS=1 when the
+        // `blas` feature is on to avoid oversubscription).
+        use rayon::prelude::*;
+        texts
+            .par_iter()
+            .enumerate()
+            .map(|(idx, text)| {
+                let mut exec = self.exec.clone();
+                exec.set_rng_stream(idx as u64);
+                self.embed_one(text, &mut exec)
+            })
+            .collect()
     }
 
     fn model_identity(&self) -> &[u8] {
         self.model_identity.as_bytes()
+    }
+}
+
+impl<X: TrustedExecutor + Clone + Send + Sync> GeloBertEmbedder<X> {
+    /// Embed a single text against a caller-supplied executor. Factored
+    /// out of `embed` so the parallel path can hand each rayon worker
+    /// its own cloned executor without touching `self.exec`.
+    fn embed_one(&self, text: &str, exec: &mut X) -> anyhow::Result<Vec<f32>> {
+        let ids = self.tokenizer.encode(text, self.max_len)?;
+
+        // Intermediate-layer DP-Forward hook (M7.1). When
+        // `layer_index = Some(n)`, apply aMGM per token-row at the
+        // `add_and_norm_2` position of layer n — matches the paper's
+        // released-code default (`noise_layer = 10` on BERT-base 12-layer).
+        // Otherwise noise (if any) is applied at the pooled output below.
+        let hidden = {
+            #[cfg(feature = "dp-forward")]
+            {
+                if let Some(cfg) = self.dp_forward.filter(|c| c.layer_index.is_some()) {
+                    let target = cfg.layer_index.expect("filter guarantees Some");
+                    let clip = cfg.clip_c;
+                    let sigma = cfg.sigma;
+                    let mut dp_rng = self.dp_rng.clone();
+                    forward::run_with_hook(
+                        &self.cfg,
+                        &self.weights,
+                        exec,
+                        &ids,
+                        |li, h| {
+                            if li == target {
+                                apply_dp_per_row(h, clip, sigma, &mut dp_rng);
+                            }
+                        },
+                    )?
+                } else {
+                    forward::run(&self.cfg, &self.weights, exec, &ids)?
+                }
+            }
+            #[cfg(not(feature = "dp-forward"))]
+            {
+                forward::run(&self.cfg, &self.weights, exec, &ids)?
+            }
+        };
+
+        let pooled = pool::mean_l2(hidden.view());
+        #[allow(unused_mut)]
+        let mut pooled_vec = pooled.to_vec();
+        #[cfg(feature = "dp-forward")]
+        if let Some(cfg) = &self.dp_forward {
+            // Legacy pooled-output application — only when no
+            // intermediate layer was specified.
+            if cfg.layer_index.is_none() {
+                let mut dp_rng = self.dp_rng.clone();
+                dp_forward::amgm::clip_l2_in_place(&mut pooled_vec, cfg.clip_c);
+                dp_forward::amgm::add_gaussian_noise(
+                    &mut pooled_vec,
+                    cfg.sigma,
+                    &mut dp_rng,
+                );
+            }
+        }
+        Ok(pooled_vec)
     }
 }
 

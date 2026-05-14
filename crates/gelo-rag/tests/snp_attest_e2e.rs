@@ -8,14 +8,14 @@
 //!    in M5.6 and isn't exercised here).
 //! 3. `SnpVerifierAdapter` accepts well-formed evidence and rejects
 //!    mismatched bindings.
-//! 4. Full `Approach4InMemoryService::ingest_chunks` → `query` cycle paired
+//! 4. Full `GeloRagInMemoryService::ingest_chunks` → `query` cycle paired
 //!    with `attest()` on a successfully verified `SnpVerifierAdapter`.
 
 #![cfg(feature = "snp-mock")]
 
 use anyhow::Result;
-use approach4::{
-    Approach4InMemoryService, AttestationEvidence, AttestationVerifier, SnpVerifierAdapter,
+use gelo_rag::{
+    GeloRagInMemoryService, AttestationEvidence, AttestationVerifier, SnpVerifierAdapter,
 };
 use gelo_tee_sev_snp::{
     ReportData, SnpAttestationVerifier, SnpRootTrust, mock::MockReportIssuer,
@@ -141,7 +141,7 @@ fn full_pipeline_with_snp_verifier() {
     let scheme = IdentityScheme;
     let verifier =
         SnpVerifierAdapter::new(SnpAttestationVerifier::new(SnpRootTrust::with_mock_root()));
-    let mut service = Approach4InMemoryService::new(embedder, scheme, verifier);
+    let mut service = GeloRagInMemoryService::new(embedder, scheme, verifier);
 
     // Cross-check that the embedder's model_identity matches what the relying
     // party expects to see in REPORT_DATA.

@@ -763,7 +763,7 @@ OutAttnMult on by default):
 - Expected: cut ~14 ms/text → ~5 ms/text on OutAttnMult config.
 
 **Q4 — Wire Qwen3 into BEIR/NFCorpus bench** (~½ day, gates Q1/Q2/Q3):
-- Currently the BEIR bench (`crates/approach4/tests/beir_accuracy.rs`)
+- Currently the BEIR bench (`crates/gelo-rag/tests/beir_accuracy.rs`)
   only has BGE-base configs. Add a `BEIR_QWEN3=1` env gate that runs
   a `GeloQwenEmbedder + GELO+mask` config alongside the BGE+mask one.
 - Validates retrieval correctness at corpus scale (the breakdown test
@@ -829,7 +829,7 @@ Every step in §3 must preserve:
 1. **Functional parity.** `cargo test -p gelo-embedder --release` green.
    Specifically: `masked_and_plaintext_executors_agree`,
    `qkv_shares_one_mask`, `mock_report_is_rejected_under_mismatched_dp_config`.
-2. **Protocol fidelity.** `cargo test -p approach4 --release --test
+2. **Protocol fidelity.** `cargo test -p gelo-rag --release --test
    beir_accuracy -- --ignored` green; `top1_vs_plain ≥ 0.95` and
    `rec@10_vs_plain ≥ 0.95` for GELO+mask configs at 1k-doc subset.
 3. **U-Verify probes green** at `verify_probes = 4`. Tolerance widening

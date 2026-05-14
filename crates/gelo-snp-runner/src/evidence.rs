@@ -5,7 +5,7 @@
 //! callers don't have to make two round-trips.
 
 use anyhow::Result;
-use approach4::AttestationEvidence;
+use gelo_rag::AttestationEvidence;
 use gelo_tee_sev_snp::executor::AttestationIssuer;
 use gelo_tee_sev_snp::report_data::ReportData;
 

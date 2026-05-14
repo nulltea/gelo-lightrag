@@ -160,7 +160,7 @@ sublinear retrieval, the real options are:
 
 1. **TEE-based (GELO / SEV-SNP path).** Docs encrypted at rest in CVM
    memory; the CVM operates on them in plaintext under hardware isolation.
-   This is what `Approach4InMemoryService` + SEV-SNP gives you — the
+   This is what `GeloRagInMemoryService` + SEV-SNP gives you — the
    cleanest architectural fit for "fully private but searchable." See
    [`gelo.md`](gelo.md).
 2. **Multi-server PIR / split-ANN.** Two or more non-colluding servers;
@@ -256,6 +256,22 @@ and the `homomorphic_dot` interface stay the same.
 
 ## 5. Other forward-looking items
 
+- **Shared-`A` multi-text batching for the GELO mask.** Today each text
+  in a corpus-ingest batch gets its own session mask `A`. A single
+  shared `A` across `B` texts would let one BLIS `cblas_sgemm` call
+  handle the whole batch — amortising the ~100 µs thread-launch floor
+  across `B·n` rows instead of `n`. **Protocol concern:** with the same
+  `A`, the GPU sees `U_i · U_jᵀ = A · H_i H_jᵀ · Aᵀ` for any pair of
+  texts in the batch, leaking pairwise text-similarity to the
+  untrusted side. For RAG retrieval this is the quantity the public
+  index reveals *eventually*, but exposing it at embed time is a new
+  threat surface. TwinShield's shield-vector defence may or may not
+  extend cross-text under shared `A` — needs a proof. Alternative:
+  block-diagonal `A` of `B` independent `(n+k)×(n+k)` blocks, which
+  collapses back to `B` separate GEMMs (no amortisation win). The
+  practical mid-point — *Approach 2A: embedder-level rayon parallelism
+  with independent per-thread `A`* — is already shipped, see
+  `gelo-embedder/src/{bert,decoder}/embedder.rs::embed_many`.
 - **HNSW over the RemoteRAG plaintext index.** Drop in `hnsw_rs` behind
   the same `Vec<IndexEntry>` interface. Linear sweep works correctly but
   does not scale past ~10⁴ docs.

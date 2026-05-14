@@ -19,7 +19,7 @@
 //!
 //! The wrapper deliberately re-implements `TrustedExecutor` rather than
 //! exposing the inner executor directly so the embedder type-erases the
-//! attestation backend (`Approach4InMemoryService<… , SnpTrustedExecutor<…>>`
+//! attestation backend (`GeloRagInMemoryService<… , SnpTrustedExecutor<…>>`
 //! is the deployment target).
 
 use std::sync::Arc;
@@ -32,8 +32,8 @@ use ndarray::{Array2, Array3, ArrayView2, ArrayView3};
 use crate::report_data::ReportData;
 
 /// Bytes carried back to a relying party. Mirrors the optional fields added
-/// to `approach4::attestation::AttestationEvidence` in M5.5; kept here as a
-/// crate-local type so `gelo-tee-sev-snp` doesn't depend on `approach4`.
+/// to `gelo_rag::attestation::AttestationEvidence` in M5.5; kept here as a
+/// crate-local type so `gelo-tee-sev-snp` doesn't depend on `gelo-rag`.
 #[derive(Clone, Debug)]
 pub struct SnpEvidence {
     /// 1184-byte SEV-SNP attestation report.
@@ -74,6 +74,26 @@ pub struct SnpTrustedExecutor<E: GpuOffloadEngine, I: AttestationIssuer> {
     issuer: I,
     model_identity: Vec<u8>,
     scheme_identity: Vec<u8>,
+}
+
+/// Clone for the SNP wrapper. Delegates to the inner executor's Clone
+/// (which Arc-shares the engine's weight cache) and clones the issuer +
+/// identity bytes. Same threading semantics as the inner executor: the
+/// session mask and stacked scratch are NOT carried across clones — each
+/// clone starts a fresh forward-pass scope.
+impl<E, I> Clone for SnpTrustedExecutor<E, I>
+where
+    E: GpuOffloadEngine + Clone,
+    I: AttestationIssuer + Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            issuer: self.issuer.clone(),
+            model_identity: self.model_identity.clone(),
+            scheme_identity: self.scheme_identity.clone(),
+        }
+    }
 }
 
 impl<E: GpuOffloadEngine, I: AttestationIssuer> SnpTrustedExecutor<E, I> {
@@ -159,6 +179,18 @@ impl<E: GpuOffloadEngine, I: AttestationIssuer> TrustedExecutor
         hidden: ArrayView2<f32>,
     ) -> Result<(Array2<f32>, Array2<f32>, Array2<f32>)> {
         self.inner.offload_qkv(layer, hidden)
+    }
+
+    fn offload_linear_many(
+        &mut self,
+        handles: &[gelo_protocol::substrate::WeightHandle],
+        hidden: ArrayView2<f32>,
+    ) -> Result<Vec<Array2<f32>>> {
+        self.inner.offload_linear_many(handles, hidden)
+    }
+
+    fn set_rng_stream(&mut self, stream: u64) {
+        self.inner.set_rng_stream(stream);
     }
 
     fn offload_attention_qkt(

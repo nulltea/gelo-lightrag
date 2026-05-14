@@ -1,0 +1,41 @@
+# Workspace-level Cargo configuration.
+#
+# Committed so a fresh clone can `cargo test --all-features` without
+# setting any environment variables by hand. The `blas` cargo feature
+# (used by `gelo-protocol::mask` and the BEIR bench) links against
+# AOCL-BLIS installed by `scripts/install-aocl-blis.sh` into
+# `vendor/aocl-install/lib/`. We make that work in two layers:
+#
+# 1. **Link time** — `LIBRARY_PATH` tells cc/ld where to find
+#    `libblis.so` when rustc invokes the linker. Cargo `[env]`
+#    propagates this to rustc subprocesses.
+#
+# 2. **Run time** — we cannot rely on `LD_LIBRARY_PATH` because Cargo's
+#    `[env]` does not propagate to test-binary executions. Instead we
+#    bake an `$ORIGIN`-relative `RUNPATH` into every binary the linker
+#    produces (via `--enable-new-dtags`). The dynamic loader resolves
+#    `$ORIGIN` to the directory of the binary at load time, so the
+#    binary finds `libblis-mt.so.5` no matter where the repo is
+#    checked out, with no env vars set.
+#
+# Bootstrap once per machine (idempotent, no sudo):
+#     ./scripts/install-aocl-blis.sh
+#
+# The `relative = true` for `LIBRARY_PATH` resolves against the
+# directory containing this file (the workspace root), so the config
+# travels with the repo.
+
+[env]
+LIBRARY_PATH = { value = "vendor/aocl-install/lib", relative = true, force = false }
+
+[build]
+# RUNPATH entries cover binary locations at both depths under `target/`:
+#   * target/{debug,release}/<bin>          (2 segments up to workspace root)
+#   * target/{debug,release}/deps/<bin>     (3 segments up — tests/examples)
+# `$ORIGIN` is a literal string the dynamic linker expands at load time
+# (not a shell variable), so it is written verbatim into the binary.
+rustflags = [
+    "-C", "link-arg=-Wl,--enable-new-dtags",
+    "-C", "link-arg=-Wl,-rpath,$ORIGIN/../../vendor/aocl-install/lib",
+    "-C", "link-arg=-Wl,-rpath,$ORIGIN/../../../vendor/aocl-install/lib",
+]

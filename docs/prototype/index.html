@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>private-rag · landing</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,300..900,0..100,0..1&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+<div class="sheet">
+  <span class="crosshair tl"></span>
+  <span class="crosshair tr"></span>
+  <span class="crosshair bl"></span>
+  <span class="crosshair br"></span>
+
+  <!-- ─── TOP NAV ─── -->
+  <nav class="topnav">
+    <a class="brand" href="index.html">
+      private-rag<span class="dot">·</span><span class="rev">prototype</span>
+    </a>
+    <div class="links">
+      <a class="current" href="index.html">Overview</a>
+      <a href="embedding.html">Embedding · GELO</a>
+      <a href="storage.html">Storage · CAPRISE / RemoteRAG</a>
+      <a href="caprise-two-party-kdf.md">KDF spec</a>
+      <a href="prototype-status.html">Status sheet</a>
+    </div>
+  </nav>
+
+  <!-- ─── MASTHEAD ─── -->
+  <header class="masthead">
+    <div>
+      <h1 class="title">private<em>·</em>rag</h1>
+      <p class="subtitle">Outsource a confidential knowledge base to an untrusted cloud, embed inside an attested SEV-SNP CVM with an information-theoretically blind GPU, store as distance-preserving ciphertext, retrieve at near-plaintext cost.</p>
+    </div>
+    <div class="colophon">
+      <div><b>workspace</b>&nbsp;&nbsp;9 Rust crates</div>
+      <div><b>tiers</b>&nbsp;&nbsp;T1 ✓ · T2 ✓ · T3 deferred</div>
+      <div><b>tests</b>&nbsp;&nbsp;150 passed · 0 failed</div>
+      <div><b>rev</b>&nbsp;&nbsp;2026·05·14</div>
+      <span class="rev">implements Approach 4</span>
+    </div>
+  </header>
+
+  <!-- ═════ § 1 WHAT THIS IS ═════ -->
+  <section id="overview">
+    <header class="section-head">
+      <div class="section-num">§01</div>
+      <h2 class="section-title">What this is</h2>
+      <div class="section-meta">scope · goal</div>
+    </header>
+    <p class="lede">
+      A working <em>retrieval-only private RAG</em> system: a regulated enterprise outsources a document corpus to a cloud provider, queries it interactively, and gets ranked results back — without the cloud ever seeing plaintext text, plaintext embeddings, or which document matched. The prototype implements <strong>Approach 4</strong> from <span class="mono">docs/research/private-rag-system-design.md</span>: a thin client, an attested embedding TEE, an untrusted-but-blind GPU, and distance-preserving ciphertext at rest.
+    </p>
+
+    <div class="prose">
+      <p><strong>The hard question this is built around:</strong> can openweight transformer embedding inference be served by an untrusted cloud GPU at near-plaintext cost, without the GPU learning the input? The literature offers three families of answer — full FHE (orders of magnitude too slow), confidential-compute GPUs (10× cost premium, vendor lock-in), and TEE-on-CPU paired with masked GPU offload. This codebase ships the third.</p>
+      <p>Two storage strategies are implemented as parallel services: <strong>GeloRAG (CAPRISE-at-rest)</strong>, where the index is encrypted and the cloud operator sees only ciphertext, and <strong>RemoteRAG (planar-Laplace + Paillier rerank)</strong>, where the index is plaintext but the <em>query</em> gets formal <code>(n, ε)</code>-DistanceDP. They protect different things and are mutually exclusive at the type level — pick one per deployment.</p>
+    </div>
+  </section>
+
+  <!-- ═════ § 2 FULL PROCESS FLOW ═════ -->
+  <section id="flow">
+    <header class="section-head">
+      <div class="section-num">§02</div>
+      <h2 class="section-title">Full process flow</h2>
+      <div class="section-meta">approach 4 step list · cross-checked against implementation</div>
+    </header>
+    <p class="lede">
+      A single request traverses four trust zones. The embedding path is shared; the storage layer forks into <em>GeloRAG</em> and <em>RemoteRAG</em>. Below the diagram, every Approach-4 step is listed with its current implementation status — green for shipped, amber for partial, grey for deferred.
+    </p>
+
+    <!-- LEGEND -->
+    <div class="legend" aria-label="Trust-zone legend">
+      <div class="cell">
+        <span class="lbl"><span class="swatch" style="background:var(--client)"></span>CLIENT</span>
+        <span class="desc">user device — holds <code>user_x_sk</code>, decrypts plaintext results</span>
+      </div>
+      <div class="cell">
+        <span class="lbl"><span class="swatch" style="background:var(--tee)"></span>TRUSTED · TEE</span>
+        <span class="desc">SEV-SNP CVM — sees text, activations, weights, derives keys per request</span>
+      </div>
+      <div class="cell">
+        <span class="lbl"><span class="swatch" style="background:var(--gpu)"></span>UNTRUSTED · GPU</span>
+        <span class="desc">commodity Vulkan — sees masked <code>U=A·H</code> + public weights only</span>
+      </div>
+      <div class="cell">
+        <span class="lbl"><span class="swatch" style="background:var(--storage)"></span>UNTRUSTED · STORAGE</span>
+        <span class="desc">vector DB — sees ciphertext (CAPRISE) or plaintext doc embeddings (RemoteRAG)</span>
+      </div>
+      <div class="cell">
+        <span class="lbl"><span class="swatch" style="background:var(--crypto)"></span>CRYPTO PRIMITIVE</span>
+        <span class="desc">value-class — HKDF, CAPRISE, Paillier, DP-Forward, planar-Laplace</span>
+      </div>
+    </div>
+
+    <!-- HORIZONTAL FLOW DIAGRAM (PROCESS, NOT MODULES) -->
+    <div class="diagram-frame">
+      <div class="diagram-cap">
+        <span class="l">FIG. 01 — End-to-end query path · GeloRAG (upper track) vs RemoteRAG (lower track)</span>
+        <span>dashed red = trust boundary · dashed amber = obfuscated · solid teal = ciphertext · solid plum = HE</span>
+      </div>
+      <svg class="flow" viewBox="0 0 1480 660" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="End-to-end process flow with two storage paths">
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
+          </marker>
+        </defs>
+
+        <!-- ZONE BANDS -->
+        <rect x="0"    y="48"  width="220"  height="568" class="zone-band zone-band-client"/>
+        <rect x="220"  y="48"  width="500"  height="568" class="zone-band zone-band-tee"/>
+        <rect x="720"  y="48"  width="240"  height="568" class="zone-band zone-band-gpu"/>
+        <rect x="960"  y="48"  width="520"  height="568" class="zone-band zone-band-storage"/>
+
+        <!-- ZONE LABELS -->
+        <text x="20"   y="72" class="zone-label">Client</text>
+        <text x="20"   y="88" class="zone-sublabel">your device</text>
+        <text x="240"  y="72" class="zone-label">Trusted Execution Environment</text>
+        <text x="240"  y="88" class="zone-sublabel">SEV-SNP CVM · attested ARK→ASK→VCEK</text>
+        <text x="740"  y="72" class="zone-label">Untrusted GPU</text>
+        <text x="740"  y="88" class="zone-sublabel">Vulkan · VFIO passthrough</text>
+        <text x="980"  y="72" class="zone-label">Untrusted Storage</text>
+        <text x="980"  y="88" class="zone-sublabel">vector DB · two paths</text>
+
+        <!-- BOUNDARIES -->
+        <line x1="220"  y1="48" x2="220"  y2="616" class="boundary"/>
+        <line x1="720"  y1="48" x2="720"  y2="616" class="boundary"/>
+        <line x1="960"  y1="48" x2="960"  y2="616" class="boundary"/>
+        <text x="224"  y="612" class="boundary-label">RATLS</text>
+        <text x="724"  y="612" class="boundary-label">PCIe · masked</text>
+        <text x="964"  y="612" class="boundary-label">HTTP · ciphertext</text>
+
+        <!-- ── CLIENT BOX ── -->
+        <rect x="30" y="270" width="170" height="80" class="box box-strong box-client"/>
+        <text x="46" y="294" class="box-label">① Client</text>
+        <text x="46" y="312" class="box-sub">holds user_x_sk · tenant_id</text>
+        <text x="46" y="328" class="box-mono">attest → ingest → query</text>
+        <text x="46" y="344" class="box-mono">decrypt top-k locally</text>
+
+        <!-- ── TEE: EMBEDDER ── -->
+        <rect x="240" y="180" width="200" height="80" class="box box-strong box-tee"/>
+        <text x="256" y="202" class="box-label">② Tokenize · embed</text>
+        <text x="256" y="218" class="box-sub">GeloBert / GeloQwen</text>
+        <text x="256" y="234" class="box-mono">model_identity SHA pinned</text>
+        <text x="256" y="250" class="box-mono">openweight + Arc-shared</text>
+
+        <!-- ── TEE: GELO MASK KERNEL ── -->
+        <rect x="240" y="290" width="200" height="80" class="box box-tee"/>
+        <text x="256" y="312" class="box-label">③ GELO mask + shield</text>
+        <text x="256" y="328" class="box-sub">Haar A per fwd · k=8 rows</text>
+        <text x="256" y="344" class="box-mono">U = A · stack(H, S)</text>
+        <text x="256" y="360" class="box-mono">apply ⇄ engine ⇄ unapply</text>
+
+        <!-- ── TEE: POOL + DP ── -->
+        <rect x="240" y="400" width="200" height="56" class="box box-tee"/>
+        <text x="256" y="422" class="box-label">④ Pool · L2-normalize</text>
+        <text x="256" y="440" class="box-sub">last-token / mean → unit vec</text>
+
+        <!-- ── TEE: KDF (SHARED) ── -->
+        <rect x="240" y="475" width="200" height="56" class="box box-tee"/>
+        <text x="256" y="497" class="box-label">⑤ Two-party HKDF</text>
+        <text x="256" y="515" class="box-sub">user_x_sk ‖ tee_user_x_sk → seed</text>
+
+        <!-- ── GPU ENGINE ── -->
+        <rect x="740" y="290" width="200" height="80" class="box box-strong box-gpu"/>
+        <text x="756" y="312" class="box-label">WgpuVulkanEngine</text>
+        <text x="756" y="328" class="box-sub">burn-cubecl · wgpu 26</text>
+        <text x="756" y="344" class="box-mono">matmul(W, U)</text>
+        <text x="756" y="360" class="box-mono">sees masked U only</text>
+
+        <rect x="740" y="400" width="200" height="56" class="box box-gpu"/>
+        <text x="756" y="422" class="box-label">Public weights</text>
+        <text x="756" y="440" class="box-sub">Qwen3-Emb · BGE-base · SHA-pinned</text>
+
+        <!-- ── BRANCH PILL ── -->
+        <rect x="455" y="497" width="60" height="22" class="pill"/>
+        <text x="464" y="512" class="pill-text">CHOOSE</text>
+        <path d="M440 503 L455 508" class="arrow" stroke="var(--ink)"/>
+        <path d="M515 503 L555 240" class="arrow arrow-cipher" marker-end="url(#ah)"/>
+        <path d="M515 515 L555 420" class="arrow arrow-rrag" marker-end="url(#ah)"/>
+
+        <!-- ── GELORAG TRACK (UPPER) ── -->
+        <rect x="555" y="170" width="160" height="60" class="box box-tee" style="fill:#faeae6;"/>
+        <text x="565" y="190" class="box-label">⑥a CAPRISE-enc</text>
+        <text x="565" y="206" class="box-sub">doc 3/8 · query 1/8</text>
+        <text x="565" y="222" class="box-mono">+ AES chunk text</text>
+
+        <rect x="980" y="170" width="220" height="60" class="box box-strong box-storage"/>
+        <text x="998" y="190" class="box-label">⑦a Encrypted ANN</text>
+        <text x="998" y="206" class="box-sub">cosine over CAPRISE ciphertext</text>
+        <text x="998" y="222" class="box-mono">InMemoryEncryptedIndex / HNSW</text>
+
+        <rect x="1210" y="170" width="240" height="60" class="box box-storage"/>
+        <text x="1224" y="190" class="box-label">⑧a Top-k ciphertexts</text>
+        <text x="1224" y="206" class="box-sub">(CAPRISE-vec, AES-chunk)</text>
+        <text x="1224" y="222" class="box-mono">TEE decrypts → plain over RATLS</text>
+
+        <!-- arrows GeloRAG -->
+        <path d="M715 200 L980 200" class="arrow arrow-cipher" marker-end="url(#ah)"/>
+        <text x="780" y="192" class="arrow-label cipher">encrypted query</text>
+        <path d="M1200 200 L1210 200" class="arrow arrow-cipher" marker-end="url(#ah)"/>
+        <path d="M1450 200 C 1470 100, 100 80, 100 270" class="arrow arrow-cipher" marker-end="url(#ah)"/>
+        <text x="600" y="100" class="arrow-label cipher">plaintext top-k over RATLS</text>
+
+        <!-- TRACK LABEL: GELO -->
+        <rect x="555" y="135" width="120" height="22" class="pill" style="fill:var(--storage);"/>
+        <text x="565" y="150" class="pill-text">GeloRAG path</text>
+
+        <!-- ── REMOTERAG TRACK (LOWER) ── -->
+        <rect x="555" y="400" width="160" height="60" class="box box-crypto" style="fill:#ecdef0;"/>
+        <text x="565" y="420" class="box-label">⑥b planar-Laplace</text>
+        <text x="565" y="436" class="box-sub">q′ = q + r·v · r ~ Γ(n,1/ε)</text>
+        <text x="565" y="452" class="box-mono">(n, ε)-DistanceDP</text>
+
+        <rect x="555" y="480" width="160" height="60" class="box box-crypto" style="fill:#ecdef0;"/>
+        <text x="565" y="500" class="box-label">⑥b Paillier-enc q</text>
+        <text x="565" y="516" class="box-sub">256-bit · CRT precompute</text>
+        <text x="565" y="532" class="box-mono">∏ Enc(qᵢ)^{e[i]_int}</text>
+
+        <rect x="980" y="430" width="220" height="60" class="box box-strong box-crypto" style="fill:#ecdef0;"/>
+        <text x="998" y="450" class="box-label">⑦b Plaintext ANN + PHE</text>
+        <text x="998" y="466" class="box-sub">HNSW DistCosine ≥256 docs</text>
+        <text x="998" y="482" class="box-mono">Stage1: q′ · Stage2: rerank clean q</text>
+
+        <rect x="1210" y="430" width="240" height="60" class="box box-crypto" style="fill:#ecdef0;"/>
+        <text x="1224" y="450" class="box-label">⑧b Paillier hits + AES chunks</text>
+        <text x="1224" y="466" class="box-sub">client decrypts each ⟨q, e_d⟩</text>
+        <text x="1224" y="482" class="box-mono">~100% recall at ε ≈ 10n</text>
+
+        <!-- arrows RemoteRAG -->
+        <path d="M715 510 L980 470" class="arrow arrow-rrag" marker-end="url(#ah)"/>
+        <text x="780" y="500" class="arrow-label rrag">q′ + Enc(q)</text>
+        <path d="M1200 460 L1210 460" class="arrow arrow-rrag" marker-end="url(#ah)"/>
+        <path d="M1450 460 C 1470 600, 100 600, 100 350" class="arrow arrow-rrag" marker-end="url(#ah)"/>
+        <text x="600" y="608" class="arrow-label rrag">encrypted top-k · client decrypts</text>
+
+        <!-- TRACK LABEL: RemoteRAG -->
+        <rect x="555" y="365" width="140" height="22" class="pill" style="fill:var(--crypto);"/>
+        <text x="565" y="380" class="pill-text">RemoteRAG path</text>
+
+        <!-- ── CLIENT → TEE (top of fwd) ── -->
+        <path d="M200 290 L240 220" class="arrow arrow-secret" marker-end="url(#ah)"/>
+        <text x="206" y="252" class="arrow-label secret">text + user_x_sk</text>
+
+        <!-- ── TEE ↔ GPU LOOP ── -->
+        <path d="M440 320 L740 320" class="arrow arrow-masked" marker-end="url(#ah)"/>
+        <text x="540" y="312" class="arrow-label masked">U = A·H (masked)</text>
+        <path d="M740 350 L440 350" class="arrow arrow-masked" marker-end="url(#ah)"/>
+        <text x="560" y="370" class="arrow-label masked">U·W (still masked)</text>
+
+        <!-- ── INTERNAL TEE FLOW ── -->
+        <path d="M340 370 L340 400" class="arrow arrow-secret" marker-end="url(#ah)"/>
+        <path d="M340 456 L340 475" class="arrow arrow-secret" marker-end="url(#ah)"/>
+
+        <!-- ── ATTESTATION (CLIENT ← TEE) ── -->
+        <path d="M240 130 L200 130" class="arrow arrow-attest" marker-end="url(#ah)"/>
+        <text x="210" y="124" class="arrow-label attest">SEV-SNP report + VCEK</text>
+
+      </svg>
+    </div>
+
+    <!-- APPROACH-4 STEP CHECKLIST -->
+    <table class="spec">
+      <thead>
+        <tr>
+          <th style="width:28px">#</th>
+          <th>Approach-4 step</th>
+          <th>Current implementation</th>
+          <th style="width:90px">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td class="num">1</td><td><b>Ingestion / chunking</b></td><td>Client passes raw text to TEE over RATLS; TEE chunk-encrypts AES-256-GCM with the derived <code>aes_chunk_key</code></td><td class="accent">green</td></tr>
+        <tr><td class="num">2</td><td><b>Session setup / attestation</b></td><td>SEV-SNP attestation via <code>/attest</code>; <code>SnpAttestationVerifier</code> chain validates ARK→ASK→VCEK; <code>REPORT_DATA</code> binds <code>(model_id, scheme_id, nonce)</code></td><td class="accent">green</td></tr>
+        <tr><td class="num">3</td><td><b>Embedding (TEE-side)</b></td><td><strong>Primary variant</strong> chosen: full embedding model in TEE with GELO mask offloading linears to GPU. ObfuscaTune-encoder + GELO-encoder variants not built.</td><td class="accent">green</td></tr>
+        <tr><td class="num">4</td><td><b>Storage — CAPRISE key management</b></td><td><strong>Option 3 chosen</strong>: two-party HKDF (<code>user_x_sk</code> client + <code>tee_user_x_sk</code> TEE → <code>caprise_seed_key</code> + <code>aes_chunk_key</code>). Variant A in-memory persistence today; Variant B (KMS-released) deferred.</td><td class="accent">green</td></tr>
+        <tr><td class="num">5</td><td><b>Query submission</b></td><td>Client POSTs <code>(tenant_id, user_x_sk, text, top_k)</code> over RATLS; TEE re-derives same keys, embeds, CAPRISE-encrypts with the query coefficient (1/8) — or planar-Laplace + Paillier on the RemoteRAG path</td><td class="accent">green</td></tr>
+        <tr><td class="num">6</td><td><b>Retrieval</b></td><td>Cosine over CAPRISE ciphertext (in-memory linear ANN) — GeloRAG. HNSW DistCosine over plaintext doc embeddings ≥ 256 docs + Paillier PHE rerank — RemoteRAG.</td><td class="accent">green</td></tr>
+        <tr><td class="num">7</td><td><b>Decryption / handoff</b></td><td>GeloRAG: TEE CAPRISE-decrypts top-k inside the CVM, returns plaintext over RATLS. RemoteRAG: client holds Paillier private key, decrypts the rerank ciphertexts itself.</td><td class="accent">green</td></tr>
+        <tr><td class="num">8</td><td><b>DistanceDP — defence in depth</b></td><td>DP-Forward (Recipe-B aMGM) implemented in <code>crates/dp-forward</code>, callable on the pooled output. <strong>Empirically destroys NFCorpus retrieval at ε=4</strong> — kept available, not on by default. Planar-Laplace on the RemoteRAG path is on by default.</td><td>partial</td></tr>
+        <tr><td class="num">9</td><td><b>Reranking / filtering</b></td><td>Not implemented in-TEE; client-side cross-encoder rerank is the design intent (TEE returns plaintext top-k that the client reranks locally). The TEE re-ranks Stage-1 candidates against the clean embedding only for accuracy verification in the bench.</td><td style="color:var(--ink-3)">deferred</td></tr>
+        <tr><td class="num">10</td><td><b>Answer generation</b></td><td>Out of scope for the prototype — client-side LLM is the assumed architecture. ObfuscaTune / GELO+OSNIP variants for hosted generation are designed in the spec, not built.</td><td style="color:var(--ink-3)">deferred</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ═════ § 3 HIGH-LEVEL COMPONENTS ═════ -->
+  <section id="components">
+    <header class="section-head">
+      <div class="section-num">§03</div>
+      <h2 class="section-title">High-level components</h2>
+      <div class="section-meta">map of the boxes above · click through for detail</div>
+    </header>
+    <p class="lede">
+      Each entry below is a box in the diagram. Detail pages cover the per-component method, threat model, source paper, and measured overhead.
+    </p>
+
+    <div class="path-grid">
+      <a class="path-card" href="embedding.html">
+        <div class="num">§A</div>
+        <h3>Embedding · GELO</h3>
+        <p class="tagline">An attested SEV-SNP CVM runs a transformer encoder; every Q/K/V/O + FFN GEMM is masked with a Haar-uniform orthogonal A per forward pass and offloaded to a commodity Vulkan GPU. The GPU sees only U=A·H plus public weights.</p>
+        <ul>
+          <li><code>gelo-protocol</code> · mask · shield · U-Verify · OutAttnMult · permuted attention</li>
+          <li><code>gelo-embedder</code> · GeloBertEmbedder · GeloQwenEmbedder</li>
+          <li><code>gelo-gpu-wgpu</code> · WgpuVulkanEngine</li>
+          <li><code>gelo-tee-sev-snp</code> · SnpTrustedExecutor · SnpAttestationVerifier</li>
+          <li><code>dp-forward</code> · aMGM Gaussian on pooled output (optional)</li>
+        </ul>
+        <span class="arrow">read more</span>
+      </a>
+      <a class="path-card" href="storage.html">
+        <div class="num">§B</div>
+        <h3>Storage · CAPRISE / RemoteRAG</h3>
+        <p class="tagline">Two parallel implementations of "private retrieval". GeloRAG encrypts the index with CAPRISE (key derived per-request from two-party HKDF). RemoteRAG keeps the index plaintext but the query is planar-Laplace-perturbed + Paillier-reranked.</p>
+        <ul>
+          <li><code>core::caprise</code> · CAPRISE distance-preserving encryption</li>
+          <li><code>core::keying</code> · HkdfPolicy · two-party HKDF (Option 3)</li>
+          <li><code>gelo-rag</code> · GeloRagTwoPartyService (current runner shape)</li>
+          <li><code>remote-rag</code> · planar-Laplace · Paillier · RemoteRagService</li>
+          <li><code>core::content</code> · AES-256-GCM chunk-text cipher</li>
+        </ul>
+        <span class="arrow">read more</span>
+      </a>
+      <a class="path-card" href="#hardware">
+        <div class="num">§C</div>
+        <h3>Hardware</h3>
+        <p class="tagline">AMD EPYC SEV-SNP for the TEE, commodity Vulkan GPU via VFIO passthrough for offload. No confidential-compute GPU needed — GELO masks make the GPU information-theoretically blind regardless.</p>
+        <ul>
+          <li>AMD EPYC Genoa / Turin · SEV-SNP · attestation via virtee/sev</li>
+          <li>Vulkan via wgpu 26 · burn-cubecl · autotune cache</li>
+          <li>AOCL-BLIS (CPU mask GEMMs) · skx_asm AVX-512 dispatch on Zen</li>
+          <li>3 simulation tiers — T1 in-process · T2 QEMU mock · T3 real silicon (deferred)</li>
+        </ul>
+        <span class="arrow">jump to section</span>
+      </a>
+    </div>
+  </section>
+
+  <!-- ═════ § 4 HARDWARE ═════ -->
+  <section id="hardware">
+    <header class="section-head">
+      <div class="section-num">§04</div>
+      <h2 class="section-title">Hardware</h2>
+      <div class="section-meta">silicon · GPU stack · simulation tiers</div>
+    </header>
+    <p class="lede">
+      The prototype is built for <em>commodity</em> hardware on both ends — EPYC SEV-SNP for the trusted side, any Vulkan-capable accelerator on the untrusted side.
+    </p>
+
+    <div class="hw-grid">
+      <div class="hw-col">
+        <h4>SEV-SNP CVM<span class="role">trusted · CPU</span></h4>
+        <p class="one">Encrypted-RAM VM with hardware attestation by the AMD Secure Processor.</p>
+        <dl>
+          <dt>vendor</dt><dd>AMD · EPYC 9004 (Genoa) / 9005 (Turin) — production target</dd>
+          <dt>technology</dt><dd>Secure Encrypted Virtualization with Secure Nested Paging (SEV-SNP)</dd>
+          <dt>attestation</dt><dd><span class="mono">ARK → ASK → VCEK</span> via <code>/dev/sev-guest</code> · <code>SNP_GET_EXT_REPORT</code></dd>
+          <dt>Rust SDK</dt><dd><code>virtee/sev 7</code> (Apache-2.0) · DCAP byte format · ECDSA-P-384 sig</dd>
+          <dt>memory</dt><dd>RMP-protected · per-CVM key never leaves AMD-SP · ~3.2 GB encrypted footprint for Qwen3 with Arc-share</dd>
+          <dt>SKU economics</dt><dd>Hetzner AX42 EPYC dedicated (~€100/mo) vs ~$5,800/mo for managed confidential-GPU SKUs</dd>
+          <dt>dev box</dt><dd>AMD Strix Halo (Ryzen AI Max+ 395) — non-SEV-SNP, same vendor; T2 uses QEMU mock</dd>
+        </dl>
+      </div>
+      <div class="hw-col">
+        <h4>GPU offload<span class="role">untrusted · accelerator</span></h4>
+        <p class="one">Commodity Vulkan device — sees only masked activations + public weights.</p>
+        <dl>
+          <dt>API</dt><dd>Vulkan via <code>wgpu 26</code> · Linux RADV / NVIDIA / Intel Mesa</dd>
+          <dt>kernel stack</dt><dd><code>burn-cubecl 0.20.1</code> over <code>cubecl-wgpu 0.9.0</code> · SPIR-V codegen</dd>
+          <dt>autotune</dt><dd><code>cubecl-runtime::TuneCache</code> · disk-persistent · configured by workspace <code>cubecl.toml</code></dd>
+          <dt>precision</dt><dd>f32 (default) · f16 path behind <code>new_fp16()</code></dd>
+          <dt>dev card</dt><dd>AMD Strix Halo iGPU (integrated; shared LPDDR5X) — no PCIe, no SWIOTLB</dd>
+          <dt>target</dt><dd>discrete GPU via VFIO passthrough: RTX 4090 / RX 7900 XTX / Intel Arc</dd>
+          <dt>DMA cost</dt><dd>~15 ms / Qwen3-text SWIOTLB bounce on real silicon; vanishes under TDISP</dd>
+        </dl>
+      </div>
+    </div>
+
+    <table class="spec">
+      <thead>
+        <tr><th>Tier</th><th>Host</th><th>Binary mode</th><th>Status</th><th>Validates</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><b>T1 — in-process</b></td><td>any x86_64 Linux</td><td><code>cargo test --features mock</code></td><td class="accent">green</td><td>protocol math · report format · parser/verifier round-trip · tamper rejection</td></tr>
+        <tr><td><b>T2 — VM-sim CVM</b></td><td>regular QEMU/KVM</td><td><code>SNP_MODE=mock</code></td><td class="accent">green</td><td>OS boundary · systemd lifecycle · weight loading · full HTTP service</td></tr>
+        <tr><td><b>T3 — real silicon</b></td><td>Hetzner EPYC + VFIO GPU</td><td><code>SNP_MODE=production</code></td><td>deferred (M5.9)</td><td>real <code>/dev/sev-guest</code> · ARK chain · RMP · SWIOTLB · GPU passthrough</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ─── FOOTER ─── -->
+  <footer>
+    <div>
+      <h5>Drill into the parts</h5>
+      <ul>
+        <li><a href="embedding.html">Embedding · GELO</a> — TEE↔GPU split-inference protocol, mask + shield + U-Verify</li>
+        <li><a href="storage.html">Storage · CAPRISE / RemoteRAG</a> — two private-retrieval implementations</li>
+        <li><a href="caprise-two-party-kdf.md">CAPRISE two-party KDF spec</a> — Option 3 design + delivery</li>
+        <li><a href="prototype-status.html">Legacy status sheet</a> — single-page snapshot</li>
+      </ul>
+    </div>
+    <div>
+      <h5>Source docs (markdown)</h5>
+      <ul>
+        <li><code>docs/research/private-rag-system-design.md</code></li>
+        <li><code>docs/prototype/gelo.md</code></li>
+        <li><code>docs/prototype/dp-forward.md</code></li>
+        <li><code>docs/prototype/remote-rag.md</code></li>
+        <li><code>docs/prototype/inference-optimization.md</code></li>
+        <li><code>docs/prototype/caprise-two-party-kdf.md</code></li>
+      </ul>
+    </div>
+    <div>
+      <h5>External papers</h5>
+      <ul>
+        <li>GELO · <a href="https://arxiv.org/abs/2603.05035">arXiv 2603.05035</a></li>
+        <li>TwinShield · Xue et al. 2025</li>
+        <li>CAPRISE / prRAG · Ye et al. 2026</li>
+        <li>DP-Forward · <a href="https://arxiv.org/abs/2309.06746">arXiv 2309.06746</a></li>
+        <li>RemoteRAG · <a href="https://arxiv.org/abs/2412.12775">arXiv 2412.12775</a></li>
+      </ul>
+    </div>
+  </footer>
+</div>
+</body>
+</html>

@@ -34,4 +34,4 @@ RemoteRAG-PHE-rerank *or* CAPRISE-at-rest, not both.
 - `paillier` (M6.4 — pending) — fixed-point quantization, Enc/Dec, and
   homomorphic dot-product `Σᵢ Enc(qᵢ)^{e_d[i]_q}`.
 - `service` (M6.5 — pending) — `RemoteRagService`, a parallel service to
-  `Approach4InMemoryService` that runs the two-stage protocol.
+  `GeloRagInMemoryService` that runs the two-stage protocol.

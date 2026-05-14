@@ -1,6 +1,6 @@
 # private-rag
 
-Rust workspace for the Approach 4 prototype in `docs/private-rag-system-design.md`.
+Rust workspace for the GeloRAG prototype in `docs/private-rag-system-design.md`.
 
 Current focus:
 - vector DB storage encryption
@@ -10,7 +10,7 @@ Current focus:
 
 Workspace layout:
 - `crates/core`: shared domain types, crypto, embedding adapter, and in-memory encrypted storage
-- `crates/approach4`: orchestration layer standing in for the future embedding TEE boundary
+- `crates/gelo-rag`: orchestration layer standing in for the future embedding TEE boundary
 
 Commands:
 

@@ -221,7 +221,7 @@ crates/dp-forward/                DP-Forward paper primitives (see dp-forward.md
 crates/remote-rag/                this crate
                 ▲
                 │
-(parallel to `approach4`, not consumed by it)
+(parallel to `gelo-rag`, not consumed by it)
 ```
 
 `remote-rag` owns:
@@ -292,7 +292,7 @@ their ε's against each other, which is meaningless. Keeping the
 planar-Laplace module `pub(crate)`-scoped inside `remote-rag` enforces
 the boundary by construction.
 
-### 5.2 RemoteRAG is a separate service, not a flag on `Approach4InMemoryService`
+### 5.2 RemoteRAG is a separate service, not a flag on `GeloRagInMemoryService`
 
 The mutual-exclusion property of §3 (CAPRISE-at-rest vs PHE-rerank) means
 the two protocols have fundamentally different storage models. Trying to
@@ -481,7 +481,7 @@ corpus.
 — the ingest path is intentionally minimal. Operators who want doc-side
 noise compose it at the embedder layer (the same `with_dp_forward`
 builder on `GeloQwenEmbedder` applies whether the service is
-`Approach4InMemoryService` or `RemoteRagService`).
+`GeloRagInMemoryService` or `RemoteRagService`).
 
 ---
 

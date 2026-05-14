@@ -17,7 +17,7 @@ mod common;
 
 use std::time::{Duration, Instant};
 
-use approach4::{Approach4InMemoryService, NoopAttestationVerifier};
+use gelo_rag::{GeloRagInMemoryService, NoopAttestationVerifier};
 use rag_core::{
     AesChunkCipher, Caprise, CapriseKey, ChunkCiphertext, ChunkId, DocumentChunk, Embedder,
     EmbeddingEncryptionScheme, EncryptedEmbedding, InMemoryEncryptedIndex, SapKey, SapScheme,
@@ -320,7 +320,7 @@ fn sap_caprise_encrypt_decrypt_retrieve_perf() {
     caprise_timings.print();
 }
 
-// ── Sanity wiring: quickly prove the `Approach4InMemoryService` path also
+// ── Sanity wiring: quickly prove the `GeloRagInMemoryService` path also
 // works end-to-end against Ollama + each scheme. Not a perf measurement,
 // just a regression guard that the service wrapper composes correctly with
 // the real 1024-dim model. ─────────────────────────────────────────────────
@@ -343,7 +343,7 @@ where
 {
     let prepared = prepare();
     let embedder = OllamaEmbedder::new(EMBEDDING_MODEL).expect("ollama embedder");
-    let mut service = Approach4InMemoryService::new(embedder, scheme, NoopAttestationVerifier);
+    let mut service = GeloRagInMemoryService::new(embedder, scheme, NoopAttestationVerifier);
 
     // Re-embed inside the service so we actually exercise the ingest path.
     // The `prepare()` embeddings are ignored here on purpose; we only reuse

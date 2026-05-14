@@ -1,0 +1,759 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>private-rag · storage (CAPRISE / RemoteRAG)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,300..900,0..100,0..1&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+<div class="sheet">
+  <span class="crosshair tl"></span>
+  <span class="crosshair tr"></span>
+  <span class="crosshair bl"></span>
+  <span class="crosshair br"></span>
+
+  <!-- ─── TOP NAV ─── -->
+  <nav class="topnav">
+    <a class="brand" href="index.html">
+      private-rag<span class="dot">·</span><span class="rev">prototype</span>
+    </a>
+    <div class="links">
+      <a href="index.html">Overview</a>
+      <a href="embedding.html">Embedding · GELO</a>
+      <a class="current" href="storage.html">Storage · CAPRISE / RemoteRAG</a>
+      <a href="caprise-two-party-kdf.md">KDF spec</a>
+      <a href="prototype-status.html">Status sheet</a>
+    </div>
+  </nav>
+
+  <!-- ─── MASTHEAD ─── -->
+  <header class="masthead">
+    <div>
+      <h1 class="title">storage<br><em>· two paths</em></h1>
+      <p class="subtitle">Where vectors land. <em>GeloRAG</em> encrypts the index with CAPRISE under a per-request HKDF-derived key (Option 3). <em>RemoteRAG</em> keeps the index plaintext but DP-perturbs queries and reranks with Paillier. Mutually exclusive at the type level — pick one per deployment.</p>
+    </div>
+    <div class="colophon">
+      <div><b>GeloRAG</b>&nbsp;&nbsp;CAPRISE-at-rest · current runner</div>
+      <div><b>RemoteRAG</b>&nbsp;&nbsp;parallel service · ACL Findings 2025</div>
+      <div><b>shared</b>&nbsp;&nbsp;AES-GCM chunk text</div>
+      <div><b>retrieval latency</b>&nbsp;&nbsp;sub-second at 10k docs</div>
+      <span class="rev">two protections · one threat surface</span>
+    </div>
+  </header>
+
+  <!-- ═════ § 1 ROLE ═════ -->
+  <section id="role">
+    <header class="section-head">
+      <div class="section-num">§01</div>
+      <h2 class="section-title">Role in the project</h2>
+      <div class="section-meta">where this fits</div>
+    </header>
+    <p class="lede">
+      Once the <a href="embedding.html">embedding layer</a> has produced a pooled unit vector, the storage layer answers two questions: <em>what gets persisted</em> and <em>what does the operator see when a query arrives?</em> The literature has two practically-distinct answers; this prototype ships both as parallel services and lets the deployment pick at the type level.
+    </p>
+    <div class="prose">
+      <p><strong>GeloRAG (CAPRISE-at-rest)</strong> — the index server holds <em>distance-preserving ciphertext vectors</em>. Cosine ANN runs directly on the ciphertext; decryption only happens inside the TEE (or on the client, in alternative key models). The cloud operator with full DB access learns ciphertext geometry and access patterns but not the documents themselves. The current SEV-SNP runner ships this path with <strong>Option 3</strong> key management (two-party HKDF — <a href="caprise-two-party-kdf.md">spec</a>).</p>
+      <p><strong>RemoteRAG (planar-Laplace + Paillier rerank)</strong> — the index server holds <em>plaintext</em> doc embeddings (chunk text still AES-encrypted). The <em>query</em> gets formal <code>(n, ε)</code>-DistanceDP via planar-Laplace noise; a second-stage Paillier homomorphic dot-product reranks against the clean query, recovering ~100% recall. The cloud operator with full DB access can read the doc embeddings but cannot learn what was queried.</p>
+      <p>The two paths protect different things and trade off opposite directions: <strong>CAPRISE keeps embeddings encrypted at rest but leaks distance ordering</strong>; <strong>RemoteRAG keeps embeddings plaintext at rest but gives the query a formal DP guarantee</strong>. They cannot be stacked: Paillier's additive homomorphism needs plaintext doc embeddings as exponents, and CAPRISE's <code>s·e + r·u</code> form destroys that structure.</p>
+    </div>
+  </section>
+
+  <!-- ═════ § 2 THREAT MODEL COMPARISON ═════ -->
+  <section id="threats">
+    <header class="section-head">
+      <div class="section-num">§02</div>
+      <h2 class="section-title">Threat model</h2>
+      <div class="section-meta">CAPRISE vs RemoteRAG · pick on what you're protecting</div>
+    </header>
+    <p class="lede">
+      Both paths share the same trust-zone model — client + TEE trusted, GPU + storage + network untrusted. They differ on <em>what an untrusted-storage adversary actually recovers</em> from full DB access.
+    </p>
+
+    <table class="spec">
+      <thead>
+        <tr>
+          <th>Axis</th>
+          <th>GeloRAG · CAPRISE-at-rest</th>
+          <th>RemoteRAG · plaintext-doc + PHE rerank</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>Primitive</b></td>
+          <td>Property-preserving scale + radial-Gaussian noise on the unit sphere, keyed via PRF</td>
+          <td>IND-CPA additively-homomorphic public-key encryption (Paillier) + planar-Laplace noise on query</td>
+        </tr>
+        <tr>
+          <td><b>Server-side index</b></td>
+          <td>CAPRISE-encrypted ciphertext vectors · same dimensionality as plaintext</td>
+          <td>Plaintext doc embeddings (chunk text still AES-encrypted)</td>
+        </tr>
+        <tr>
+          <td><b>Server-side compute</b></td>
+          <td>Plain cosine over ciphertext — that's the point of "distance-preserving"</td>
+          <td>HNSW DistCosine over plaintext doc embeddings + Paillier dot-product rerank</td>
+        </tr>
+        <tr>
+          <td><b>What the operator learns</b></td>
+          <td>Ciphertext geometry · access patterns · which CAPRISE-ciphertext "wins" per query</td>
+          <td>Doc embeddings · access patterns · the noisy query <code>q′</code> · Paillier ciphertexts (IND-CPA — no information)</td>
+        </tr>
+        <tr>
+          <td><b>What it does NOT learn</b></td>
+          <td>Plaintext docs · plaintext queries · which plaintext vector each ciphertext encodes</td>
+          <td>Plaintext docs · clean query <code>q</code> · the dot-product <code>⟨q, e_d⟩</code> (Paillier-encrypted)</td>
+        </tr>
+        <tr>
+          <td><b>Formal guarantee</b></td>
+          <td>None — distance-preserving by construction <em>leaks geometry</em>. Defensible only as a key-rotation / data-residency control.</td>
+          <td><strong><code>(n, ε)</code>-DistanceDP</strong> on queries; <code>n = embedding dim</code> (not cluster count — common misreading)</td>
+        </tr>
+        <tr>
+          <td><b>Failure mode if key-holder is compromised</b></td>
+          <td>Vec2Text-style text reconstruction on the recovered embedding (mitigated by composing with <code>DP-Forward</code> at the embedder)</td>
+          <td>DP budget exhausts after enough queries; doc-side breach exposes plaintext doc embeddings</td>
+        </tr>
+        <tr>
+          <td><b>Latency overhead per query</b></td>
+          <td>~µs — one affine transform + cosine over plain floats</td>
+          <td>~750 ms CRT-encrypt + ~47 ms × k′ Paillier rerank (rayon-parallel); 23.5 ms end-to-end at 10k docs (HNSW Stage-1 + Stage-2 PHE)</td>
+        </tr>
+        <tr>
+          <td><b>Ciphertext size</b></td>
+          <td>1 × n floats (same as plaintext)</td>
+          <td>n × ~256 B per Paillier ciphertext (one per dim)</td>
+        </tr>
+        <tr>
+          <td><b>Composes with DP-Forward</b></td>
+          <td>✓ at the embedder, pre-encryption — survives CAPRISE decryption</td>
+          <td>✓ on the doc side at ingest, or on the query alongside planar-Laplace</td>
+        </tr>
+        <tr>
+          <td><b>Composes with the other</b></td>
+          <td colspan="2" style="text-align:center;"><strong>✗ Mutually exclusive.</strong> Paillier needs plaintext doc exponents · CAPRISE's <code>s·e + r·u</code> destroys that structure.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p class="lede" style="margin-top:32px;">
+      <strong>Picker.</strong> Curious server + trusted key-holder + want fast retrieval → CAPRISE. Untrusted retrieval server + willing to trade query latency for formal DP + doc embeddings are not the secret you're protecting → RemoteRAG.
+    </p>
+  </section>
+
+  <!-- ═════ § 3 COMPONENTS ═════ -->
+  <section id="components">
+    <header class="section-head">
+      <div class="section-num">§03</div>
+      <h2 class="section-title">Components</h2>
+      <div class="section-meta">10 storage-side implementation units · shared / CAPRISE-only / RemoteRAG-only</div>
+    </header>
+    <p class="lede">
+      Each card pairs <span class="mono">[method ↦ source ↦ what it secures ↦ threat ↦ overhead]</span>. The cards are grouped by which path they belong to.
+    </p>
+
+    <div class="cgrid">
+
+      <!-- ── SHARED ── -->
+      <article class="card">
+        <span class="tag crypto">shared · at rest</span>
+        <h3>AES-GCM chunks<span class="alias">rag_core :: content</span></h3>
+        <p class="one">AES-256-GCM authenticated encryption of document chunk text. Used by both storage paths. Key under Option 3 is HKDF-derived from <code>user_x_sk ‖ tee_user_x_sk</code>; under RemoteRAG it's client-generated.</p>
+        <dl>
+          <dt>method</dt><dd>32-byte key · fresh 96-bit nonce per chunk · GCM authenticator. <code>AesChunkCipher::from_key</code> built per-request inside the TEE under Option 3; <code>::generate()</code> for the test path.</dd>
+          <dt>source</dt><dd>RustCrypto <code>aes-gcm 0.10</code></dd>
+          <dt>secures</dt><dd>raw chunk text returned alongside top-k embeddings</dd>
+          <dt>threat</dt><dd>passive adversary with index access; GCM tag catches mutation</dd>
+          <dt>cost</dt><dd><span class="overhead good">negligible</span> — bandwidth-bound; AES-NI ≫ network</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag crypto">shared · DP layer</span>
+        <h3>DP-Forward<span class="alias">dp_forward</span></h3>
+        <p class="one">Analytic Matrix Gaussian Mechanism — irreversible Gaussian noise on the pooled embedding for formal <code>(ε, δ)</code>-Sequence-LDP. Survives any downstream encryption.</p>
+        <dl>
+          <dt>method</dt><dd>L2 clip · Balle–Wang analytic σ · isotropic <code>N(0, σ²I)</code>. <code>DpForwardConfig::config_digest()</code> folds into <code>model_identity</code> so the SEV-SNP report commits to <code>(ε, δ, C, σ)</code>.</dd>
+          <dt>source</dt><dd>Yue et al. · arXiv <span class="mono">2309.06746</span> · CCS 2023</dd>
+          <dt>secures</dt><dd>the residual after a key-holder decrypts the CAPRISE index (defence-in-depth); doc-side noise at RemoteRAG ingest</dd>
+          <dt>threat</dt><dd>compromised CAPRISE key / TEE breach / legal compulsion / key-rotation bug</dd>
+          <dt>cost</dt><dd><span class="overhead good">µs per pooled vector</span> · <strong>destroys NFCorpus retrieval at ε=4</strong> — kept callable, off by default</dd>
+        </dl>
+      </article>
+
+      <!-- ── CAPRISE PATH ── -->
+      <article class="card">
+        <span class="tag storage">GeloRAG · at-rest cipher</span>
+        <h3>CAPRISE<span class="alias">rag_core :: caprise</span></h3>
+        <p class="one">Distance-preserving embedding encryption — server runs plain cosine over ciphertext, recovers cleartext only with the key. Asymmetric noise coefficients keep query-doc rank order intact.</p>
+        <dl>
+          <dt>method</dt><dd>scale + radial-Gaussian noise on the unit sphere · PRF-derived per-nonce direction · <code>3/8</code> coefficient for docs, <code>1/8</code> for queries</dd>
+          <dt>source</dt><dd>Ye et al. 2026 / prRAG — arXiv. Built with seeded path <code>CapriseKey::from_seed</code> for HKDF-derived material.</dd>
+          <dt>secures</dt><dd>stored embedding vectors against a curious operator without the key</dd>
+          <dt>threat</dt><dd>curious cloud operator with full DB access. NOT secure against a key-holder running Vec2Text — that's what DP-Forward catches.</dd>
+          <dt>cost</dt><dd><span class="overhead good">~0 retrieval overhead</span> · 2,339 vec/s encryption · Vec2Text BLEU drops 83 → 12.4 (paper)</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag storage">GeloRAG · legacy cipher</span>
+        <h3>SAP<span class="alias">rag_core :: sap</span></h3>
+        <p class="one">Earlier port of the CAPRISE construction; symmetric coefficients on query and doc sides. Kept as a parity baseline; CAPRISE supersedes it in the bench.</p>
+        <dl>
+          <dt>method</dt><dd>Same scale + radial-Gaussian on the unit sphere · <code>β/4</code> radius · no asymmetry</dd>
+          <dt>source</dt><dd>in-house port of the SAP / DCPE family</dd>
+          <dt>secures</dt><dd>same as CAPRISE</dd>
+          <dt>threat</dt><dd>same as CAPRISE</dd>
+          <dt>cost</dt><dd><span class="overhead good">~0 retrieval overhead</span></dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag crypto">GeloRAG · KDF</span>
+        <h3>HkdfPolicy<span class="alias">rag_core :: keying</span></h3>
+        <p class="one">The two-party KDF type. One Extract + two Expands over RustCrypto's <code>hkdf 0.12</code> + <code>hmac</code> + <code>sha2</code> — <strong>no hand-rolled crypto</strong> at any layer.</p>
+        <dl>
+          <dt>method</dt><dd><code>derive(user_x_sk, tee_user_x_sk, tenant_id) → (caprise_seed, aes_chunk_key)</code> · both outputs <code>Zeroizing&lt;[u8; 32]&gt;</code> · versioned info strings (<code>gelo-rag.v1.…</code>)</dd>
+          <dt>source</dt><dd>in-house · realises design-doc <strong>Option 3</strong> · spec at <a href="caprise-two-party-kdf.md">caprise-two-party-kdf.md</a></dd>
+          <dt>secures</dt><dd>cross-session determinism (same inputs ⇒ same keys) so ingest & query share a key without persisting it · tenant_id as HKDF salt gives cross-tenant separation</dd>
+          <dt>threat</dt><dd>downgrade between versions — pin the policy in attested <code>scheme_identity</code></dd>
+          <dt>cost</dt><dd><span class="overhead good">µs per call</span> · <code>scheme_identity_digest()</code> = sha256 of canonical policy bytes, goes into <code>REPORT_DATA[32..64]</code></dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag tee">GeloRAG · service</span>
+        <h3>GeloRagTwoPartyService<span class="alias">gelo_rag :: two_party_service</span></h3>
+        <p class="one">Multi-tenant CAPRISE-in-TEE orchestrator. Holds <strong>no per-tenant scheme at idle</strong>. Every <code>ingest_chunks_for</code> / <code>query_for</code> derives the keys, zeroizes them at return.</p>
+        <dl>
+          <dt>method</dt><dd>Per-tenant <code>tee_user_x_sk</code> + index map. Client sends <code>(tenant_id, user_x_sk)</code> per request; missing tenant → <code>TwoPartyError::UnknownTenant</code> → HTTP 410 Gone.</dd>
+          <dt>source</dt><dd>in-house. Implements design-doc Option 3.</dd>
+          <dt>secures</dt><dd>forward-security against TEE-only compromise: a future seal break recovers <code>tee_user_x_sk</code> but not <code>user_x_sk</code> — past sessions remain undecryptable</dd>
+          <dt>threat</dt><dd>untrusted cloud operator (TEE memory dump, CVM rollback). Breaks only under simultaneous TEE + client compromise.</dd>
+          <dt>cost</dt><dd>HKDF µs + CAPRISE µs per request. <strong>Variant A</strong> persistence today (in-memory tenants); Variants B/C deferred.</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag storage">GeloRAG · ANN</span>
+        <h3>InMemoryEncryptedIndex<span class="alias">rag_core :: storage</span></h3>
+        <p class="one">In-memory ANN substitute. Cosine search runs directly over CAPRISE ciphertexts (distance-preserving — no decryption). Top-k returns pairs of <code>(ChunkCiphertext, EncryptedEmbedding)</code>.</p>
+        <dl>
+          <dt>method</dt><dd>Linear top-k by cosine — fine at the BEIR scale we benchmark (3,633 docs). Production swap is HNSW (the RemoteRAG service already does this for ≥256 docs).</dd>
+          <dt>source</dt><dd>in-house</dd>
+          <dt>secures</dt><dd>retrieval correctness over encrypted vectors; the index never decrypts</dd>
+          <dt>threat</dt><dd>same as surrounding service — untrusted storage process sees ciphertext only</dd>
+          <dt>cost</dt><dd><span class="overhead good">O(N·d)</span> · sub-ms at N = 3.6k</dd>
+        </dl>
+      </article>
+
+      <!-- ── REMOTERAG PATH ── -->
+      <article class="card">
+        <span class="tag crypto">RemoteRAG · query DP</span>
+        <h3>Planar-Laplace<span class="alias">remote_rag :: planar_laplace</span></h3>
+        <p class="one">Query-side <code>(n, ε)</code>-DistanceDP — perturb <code>q</code> to <code>q′ = q + r·v</code>. <code>r ~ Gamma(n, 1/ε)</code>, <code>v</code> uniform on <code>S^{n−1}</code>. The server cannot distinguish the true query within radius <code>n/ε</code>.</p>
+        <dl>
+          <dt>method</dt><dd>Gamma-distributed radius · Gaussian-normalised direction. <strong>n is embedding dim</strong>, not cluster count — calibration is <code>ε ∼ 10n…50n</code>.</dd>
+          <dt>source</dt><dd>RemoteRAG — Cheng et al. · ACL Findings 2025 · arXiv <span class="mono">2412.12775</span></dd>
+          <dt>secures</dt><dd>the query operand on its way to a plaintext-index server. Stage-2 Paillier rerank recovers exact ranking under the clean query.</dd>
+          <dt>threat</dt><dd>untrusted retrieval server. Mutually exclusive with CAPRISE-at-rest.</dd>
+          <dt>cost</dt><dd><span class="overhead good">µs</span> per query · latency budget lives in Paillier (Stage 2)</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag crypto">RemoteRAG · PHE rerank</span>
+        <h3>Paillier rerank<span class="alias">remote_rag :: paillier</span></h3>
+        <p class="one">Additively-homomorphic dot-product. <code>∏ᵢ Enc(qᵢ)^{e_d[i]_int} = Enc(⟨q, e_d⟩)</code>. Stage 2: reranks Stage-1 candidates against the <em>clean</em> query without revealing it.</p>
+        <dl>
+          <dt>method</dt><dd>Custom Paillier on <code>num-bigint</code> (pure-Rust, no GMP). Full CRT factor precompute · fixed-point quantisation · signed-result decode · rayon hot path.</dd>
+          <dt>source</dt><dd>RemoteRAG protocol. Algorithms adapted from <code>fast-paillier 0.3.2</code> (LFDT-Lockness, Apache/MIT). Pure-Rust backend, no LGPL footgun.</dd>
+          <dt>secures</dt><dd>exact query–doc cosine on a plaintext-index server without revealing the query</dd>
+          <dt>threat</dt><dd>untrusted retrieval server</dd>
+          <dt>cost</dt><dd><span class="overhead warn">~750 ms CRT-encrypt + ~47 ms × k′ rerank</span> @ 256-bit · HNSW Stage 1 → 23.5 ms end-to-end @ 10k docs</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag client">RemoteRAG · service</span>
+        <h3>RemoteRagService<span class="alias">remote_rag :: service</span></h3>
+        <p class="one">The RemoteRAG two-stage protocol against a plaintext-index storage server. Parallel to <code>GeloRagTwoPartyService</code>; mutually exclusive at the type level.</p>
+        <dl>
+          <dt>method</dt><dd>Client- and server-state in one struct (boundaries documented in source). HNSW <code>DistCosine</code> over plaintext doc embeddings ≥ 256 docs · linear sweep below · Stage-2 Paillier rerank with over-fetch factor.</dd>
+          <dt>source</dt><dd>in-house · Cheng et al. 2025 protocol</dd>
+          <dt>secures</dt><dd><code>(n, ε)</code>-DistanceDP on queries with ~100% recall · chunk text still AES-encrypted</dd>
+          <dt>threat</dt><dd>untrusted retrieval server. Client holds the Paillier private key + chunk key.</dd>
+          <dt>cost</dt><dd>23.5 ms end-to-end at 10k docs (Stage 1 + 2 · 15-over-fetch · 256-bit Paillier · rayon)</dd>
+        </dl>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ═════ § 4 COMPUTE FLOWS ═════ -->
+  <section id="flow">
+    <header class="section-head">
+      <div class="section-num">§04</div>
+      <h2 class="section-title">Compute flow &amp; trust boundaries</h2>
+      <div class="section-meta">two distinct shapes · same trust zones</div>
+    </header>
+    <p class="lede">
+      Both paths share the embedding step. They diverge at "what happens to the pooled vector"; they share the AES-encrypted chunk-payload mechanism throughout.
+    </p>
+
+    <!-- ── DIAGRAM 1: GELORAG CAPRISE ── -->
+    <div class="diagram-frame">
+      <div class="diagram-cap">
+        <span class="l">FIG. 03 — GeloRAG · CAPRISE-at-rest with two-party HKDF · query path</span>
+        <span>solid red = trusted secret · solid teal = ciphertext over wire · dashed = boundary</span>
+      </div>
+      <svg class="flow" viewBox="0 0 1320 480" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="ah3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
+          </marker>
+        </defs>
+        <!-- ZONES -->
+        <rect x="0"    y="40"  width="220"  height="420" class="zone-band zone-band-client"/>
+        <rect x="220"  y="40"  width="640"  height="420" class="zone-band zone-band-tee"/>
+        <rect x="860"  y="40"  width="460"  height="420" class="zone-band zone-band-storage"/>
+        <text x="20"  y="62" class="zone-label">Client</text>
+        <text x="240" y="62" class="zone-label">TEE (SEV-SNP CVM)</text>
+        <text x="880" y="62" class="zone-label">Storage server</text>
+        <line x1="220" y1="40" x2="220" y2="460" class="boundary"/>
+        <line x1="860" y1="40" x2="860" y2="460" class="boundary"/>
+        <text x="224" y="456" class="boundary-label">RATLS · TLS 1.3 ECDHE</text>
+        <text x="864" y="456" class="boundary-label">HTTP · CAPRISE ciphertext</text>
+
+        <!-- CLIENT -->
+        <rect x="20" y="160" width="180" height="60" class="box box-strong box-client"/>
+        <text x="34" y="180" class="box-label">① Request</text>
+        <text x="34" y="196" class="box-sub">tenant_id · user_x_sk</text>
+        <text x="34" y="212" class="box-mono">"What does CAPRISE do?"</text>
+
+        <rect x="20" y="280" width="180" height="60" class="box box-client"/>
+        <text x="34" y="300" class="box-label">⑦ Decode</text>
+        <text x="34" y="316" class="box-sub">plaintext top-k over RATLS</text>
+        <text x="34" y="332" class="box-mono">no client crypto in Option 3</text>
+
+        <!-- TEE PIPELINE -->
+        <rect x="240" y="100" width="200" height="50" class="box box-tee"/>
+        <text x="254" y="120" class="box-label">② Embed (GELO)</text>
+        <text x="254" y="136" class="box-sub">→ pooled unit vector</text>
+
+        <rect x="240" y="170" width="200" height="50" class="box box-tee box-strong"/>
+        <text x="254" y="190" class="box-label">③ Two-party HKDF</text>
+        <text x="254" y="206" class="box-sub">tee_user_x_sk[tenant] ‖ user_x_sk</text>
+
+        <rect x="240" y="240" width="200" height="50" class="box box-tee"/>
+        <text x="254" y="260" class="box-label">④ CAPRISE encrypt query</text>
+        <text x="254" y="276" class="box-sub">1/8 coefficient · fresh nonce</text>
+
+        <rect x="240" y="310" width="200" height="50" class="box box-tee"/>
+        <text x="254" y="330" class="box-label">⑥ CAPRISE-decrypt · AES-decrypt</text>
+        <text x="254" y="346" class="box-sub">top-k inside CVM</text>
+
+        <rect x="500" y="170" width="160" height="50" class="box box-tee" style="fill:#f8f1de;"/>
+        <text x="514" y="190" class="box-label">tee_user_x_sk table</text>
+        <text x="514" y="206" class="box-sub">per-tenant · in encrypted RAM</text>
+
+        <!-- STORAGE -->
+        <rect x="880" y="170" width="200" height="80" class="box box-strong box-storage"/>
+        <text x="894" y="190" class="box-label">⑤ Encrypted ANN</text>
+        <text x="894" y="208" class="box-sub">cosine over CAPRISE ciphertext</text>
+        <text x="894" y="224" class="box-mono">distance-preserving</text>
+        <text x="894" y="240" class="box-mono">no decryption ever</text>
+
+        <rect x="1110" y="170" width="180" height="50" class="box box-storage"/>
+        <text x="1124" y="190" class="box-label">CAPRISE rows</text>
+        <text x="1124" y="206" class="box-sub">(scheme, vec, nonce, dim)</text>
+
+        <rect x="1110" y="240" width="180" height="50" class="box box-storage"/>
+        <text x="1124" y="260" class="box-label">AES-GCM chunks</text>
+        <text x="1124" y="276" class="box-sub">(chunk_id, nonce, ct)</text>
+
+        <!-- ARROWS -->
+        <path d="M200 190 L240 130" class="arrow arrow-secret" marker-end="url(#ah3)"/>
+        <text x="206" y="160" class="arrow-label secret">text + user_x_sk</text>
+        <path d="M340 150 L340 170" class="arrow arrow-secret" marker-end="url(#ah3)"/>
+        <path d="M340 220 L340 240" class="arrow arrow-secret" marker-end="url(#ah3)"/>
+        <path d="M440 195 L500 195" class="arrow arrow-secret" marker-end="url(#ah3)"/>
+        <path d="M500 220 L440 240" class="arrow arrow-secret" marker-end="url(#ah3)"/>
+        <path d="M440 260 L880 200" class="arrow arrow-cipher" marker-end="url(#ah3)"/>
+        <text x="500" y="234" class="arrow-label cipher">encrypted query</text>
+        <path d="M880 230 L440 320" class="arrow arrow-cipher" marker-end="url(#ah3)"/>
+        <text x="500" y="306" class="arrow-label cipher">top-k ciphertexts</text>
+        <path d="M240 330 L200 310" class="arrow arrow-secret" marker-end="url(#ah3)"/>
+        <text x="100" y="270" class="arrow-label secret">plain top-k over RATLS</text>
+
+        <!-- ATTEST -->
+        <path d="M240 70 L200 100" class="arrow arrow-attest" marker-end="url(#ah3)"/>
+        <text x="80" y="92" class="arrow-label attest">SEV-SNP report</text>
+      </svg>
+    </div>
+
+    <!-- ── DIAGRAM 2: REMOTERAG ── -->
+    <div class="diagram-frame">
+      <div class="diagram-cap">
+        <span class="l">FIG. 04 — RemoteRAG · planar-Laplace + Paillier rerank · query path</span>
+        <span>solid plum = Paillier homomorphic transit · solid red = trusted secret</span>
+      </div>
+      <svg class="flow" viewBox="0 0 1320 480" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="ah4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
+          </marker>
+        </defs>
+        <!-- ZONES -->
+        <rect x="0"    y="40"  width="280"  height="420" class="zone-band zone-band-client"/>
+        <rect x="280"  y="40"  width="540"  height="420" class="zone-band zone-band-tee"/>
+        <rect x="820"  y="40"  width="500"  height="420" class="zone-band zone-band-storage"/>
+        <text x="20"  y="62" class="zone-label">Client</text>
+        <text x="20"  y="78" class="zone-sublabel">holds Paillier sk · chunk key</text>
+        <text x="300" y="62" class="zone-label">TEE (optional; client-side acceptable)</text>
+        <text x="840" y="62" class="zone-label">Storage server — plaintext index</text>
+        <line x1="280" y1="40" x2="280" y2="460" class="boundary"/>
+        <line x1="820" y1="40" x2="820" y2="460" class="boundary"/>
+        <text x="284" y="456" class="boundary-label">RATLS or TLS</text>
+        <text x="824" y="456" class="boundary-label">HTTP · noisy q′ + Paillier(q)</text>
+
+        <!-- CLIENT -->
+        <rect x="20" y="120" width="240" height="80" class="box box-strong box-client"/>
+        <text x="34" y="142" class="box-label">① Embed (locally or in TEE)</text>
+        <text x="34" y="158" class="box-sub">→ pooled query q</text>
+        <text x="34" y="174" class="box-mono">q′ ← q + r·v · r ~ Γ(n, 1/ε)</text>
+        <text x="34" y="190" class="box-mono">enc_q ← Paillier.encrypt_each(q)</text>
+
+        <rect x="20" y="240" width="240" height="100" class="box box-client"/>
+        <text x="34" y="262" class="box-label">⑥ Decrypt rerank</text>
+        <text x="34" y="278" class="box-sub">Paillier.decrypt(result_i)</text>
+        <text x="34" y="294" class="box-mono">⟨q, e_d⟩ for each candidate</text>
+        <text x="34" y="310" class="box-sub">sort · AES-decrypt chunks</text>
+        <text x="34" y="326" class="box-mono">→ ranked plaintext top-k</text>
+
+        <!-- TEE OPTIONAL -->
+        <rect x="300" y="200" width="200" height="40" class="box box-tee" style="opacity:0.7;"/>
+        <text x="314" y="220" class="box-label">(optional embedder TEE)</text>
+        <text x="314" y="234" class="box-sub">use Approach-4 attestation</text>
+
+        <rect x="540" y="160" width="240" height="120" class="box box-crypto" style="fill:#ecdef0;"/>
+        <text x="554" y="180" class="box-label">② Paillier keypair</text>
+        <text x="554" y="196" class="box-sub">256-bit · CRT factor table</text>
+        <text x="554" y="216" class="box-mono">sk = (p, q, λ, μ_p, μ_q)</text>
+        <text x="554" y="232" class="box-mono">pk = (n, g)</text>
+        <text x="554" y="254" class="box-sub">⚠ private key on client only</text>
+
+        <!-- SERVER -->
+        <rect x="840" y="100" width="220" height="60" class="box box-strong box-storage"/>
+        <text x="854" y="120" class="box-label">③ Stage 1 — HNSW ANN</text>
+        <text x="854" y="136" class="box-sub">DistCosine over plaintext</text>
+        <text x="854" y="152" class="box-mono">k′ candidates @ over_fetch · 3</text>
+
+        <rect x="840" y="180" width="220" height="60" class="box box-strong box-storage"/>
+        <text x="854" y="200" class="box-label">④ Stage 2 — Paillier rerank</text>
+        <text x="854" y="216" class="box-sub">∏ Enc(qᵢ)^{e_d[i]_int}</text>
+        <text x="854" y="232" class="box-mono">= Enc(⟨q, e_d⟩) — server-blind</text>
+
+        <rect x="1080" y="100" width="220" height="60" class="box box-storage"/>
+        <text x="1094" y="120" class="box-label">plaintext doc index</text>
+        <text x="1094" y="136" class="box-sub">unit-norm embeddings</text>
+        <text x="1094" y="152" class="box-mono">+ AES-GCM chunk blobs</text>
+
+        <rect x="1080" y="180" width="220" height="60" class="box box-storage"/>
+        <text x="1094" y="200" class="box-label">⑤ Encrypted hits</text>
+        <text x="1094" y="216" class="box-sub">k′ × Paillier(⟨q, e_d⟩) + AES</text>
+
+        <!-- ARROWS -->
+        <path d="M260 170 L840 130" class="arrow arrow-rrag" marker-end="url(#ah4)"/>
+        <text x="350" y="148" class="arrow-label rrag">q′ + enc_q (Stage 1 + 2 payload)</text>
+        <path d="M1080 210 L260 280" class="arrow arrow-rrag" marker-end="url(#ah4)"/>
+        <text x="280" y="270" class="arrow-label rrag">Paillier(⟨q, e_d⟩) + AES</text>
+        <path d="M1060 130 L1080 130" class="arrow" marker-end="url(#ah4)"/>
+        <path d="M1060 210 L1080 210" class="arrow" marker-end="url(#ah4)"/>
+        <path d="M950 160 L950 180" class="arrow"/>
+      </svg>
+    </div>
+
+    <!-- ── STEP TABLES SIDE BY SIDE ── -->
+    <div class="two-col">
+      <div>
+        <h4>GeloRAG steps (FIG. 03)</h4>
+        <ul>
+          <li><b>①</b> Client opens RATLS, verifies attestation, sends <code>{tenant_id, user_x_sk, text}</code></li>
+          <li><b>②</b> TEE embeds via GELO mask</li>
+          <li><b>③</b> TEE looks up (or creates) <code>tee_user_x_sk[tenant]</code>, runs <code>HkdfPolicy::derive</code></li>
+          <li><b>④</b> TEE CAPRISE-encrypts the query with the 1/8 coefficient</li>
+          <li><b>⑤</b> Storage server runs cosine ANN over CAPRISE ciphertext, returns top-k′</li>
+          <li><b>⑥</b> TEE CAPRISE-decrypts + AES-decrypts; zeroizes derived keys</li>
+          <li><b>⑦</b> Client gets plaintext ranked top-k over the same RATLS session</li>
+        </ul>
+      </div>
+      <div>
+        <h4>RemoteRAG steps (FIG. 04)</h4>
+        <ul>
+          <li><b>①</b> Client embeds (locally or via TEE) → <code>q</code>; samples <code>r ~ Γ(n, 1/ε)</code>, <code>v ~ U(S^{n−1})</code>; computes <code>q′ = q + r·v</code> and <code>enc_q = Paillier(q)</code></li>
+          <li><b>②</b> Client holds the Paillier <code>sk</code>; only <code>pk</code> is sent to the server (at ingest)</li>
+          <li><b>③</b> Server runs Stage-1 HNSW DistCosine on plaintext doc embeddings using the noisy <code>q′</code> → top-k′ candidates</li>
+          <li><b>④</b> Server runs Stage-2 Paillier rerank: <code>∏ᵢ enc_q[i]^{e_d[i]_int}</code> per candidate</li>
+          <li><b>⑤</b> Server returns Paillier ciphertexts + AES chunk blobs</li>
+          <li><b>⑥</b> Client decrypts each <code>⟨q, e_d⟩</code> with <code>sk</code>, sorts to true top-k, AES-decrypts chunk text</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═════ § 5 INTERFACES ═════ -->
+  <section id="interfaces">
+    <header class="section-head">
+      <div class="section-num">§05</div>
+      <h2 class="section-title">Interfaces</h2>
+      <div class="section-meta">storage seams · HTTP surface</div>
+    </header>
+
+    <table class="spec">
+      <thead>
+        <tr><th>Seam</th><th>Trait / type</th><th>Crate</th><th>Boundary</th><th>Implementors / variants</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>Embedding cipher</b></td>
+          <td class="code">EmbeddingEncryptionScheme</td>
+          <td class="code">core (rag_core)</td>
+          <td>vector encryption with distinct doc / query forms</td>
+          <td><code>Caprise</code> · <code>SapScheme</code> · constructed via <code>CapriseKey::from_seed</code></td>
+        </tr>
+        <tr>
+          <td><b>Two-party KDF</b></td>
+          <td class="code">HkdfPolicy</td>
+          <td class="code">core (rag_core::keying)</td>
+          <td>deterministic <code>(user_x_sk, tee_sk, tenant) → (caprise_seed, aes_key)</code> + canonical <code>scheme_identity</code> encoder</td>
+          <td><code>HkdfPolicy::V1</code> · pinned in attestation REPORT_DATA</td>
+        </tr>
+        <tr>
+          <td><b>Tenant id</b></td>
+          <td class="code">TenantId</td>
+          <td class="code">core (rag_core::keying)</td>
+          <td>typed wrapper · scopes per-tenant <code>tee_user_x_sk</code> + index map · HKDF salt</td>
+          <td>opaque client-chosen utf-8 string</td>
+        </tr>
+        <tr>
+          <td><b>Chunk cipher</b></td>
+          <td class="code">AesChunkCipher</td>
+          <td class="code">core (rag_core::content)</td>
+          <td>AES-256-GCM authenticated chunk text</td>
+          <td><code>::generate()</code> for tests · <code>::from_key</code> for HKDF-derived path</td>
+        </tr>
+        <tr>
+          <td><b>GeloRAG storage</b></td>
+          <td class="code">InMemoryEncryptedIndex</td>
+          <td class="code">core (rag_core::storage)</td>
+          <td>cosine top-k over CAPRISE ciphertext</td>
+          <td>linear sweep today · HNSW swap planned</td>
+        </tr>
+        <tr>
+          <td><b>RemoteRAG storage</b></td>
+          <td class="code">RemoteRagService::IndexEntry</td>
+          <td class="code">remote-rag (service.rs)</td>
+          <td>plaintext doc embedding + AES chunk · HNSW ≥256 docs · linear below</td>
+          <td><code>Hnsw&lt;f32, DistCosine&gt;</code> via hnsw_rs 0.3</td>
+        </tr>
+        <tr>
+          <td><b>HTTP surface (runner)</b></td>
+          <td class="code">axum routes</td>
+          <td class="code">gelo-snp-runner</td>
+          <td>operator-facing service · <code>SNP_MODE</code> fail-closed</td>
+          <td><code>GET /health</code> · <code>GET /attest</code> · <code>POST /ingest</code> · <code>POST /query</code> · <code>POST /rotate</code> (501 stub)</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="two-col">
+      <div>
+        <h4>GeloRagTwoPartyService — what the runner binds</h4>
+        <ul>
+          <li><code>new(embedder, verifier)</code> · <code>with_params(...)</code> — no scheme field; derived per request</li>
+          <li><code>ingest_chunks_for(tenant_id, user_x_sk, chunks)</code> — HKDF · CAPRISE · AES · index, zeroize at return</li>
+          <li><code>query_for(tenant_id, user_x_sk, text, top_k)</code> — re-derive same keys deterministically · search · decrypt</li>
+          <li><code>rotate_tenant(...)</code> — stub; runner returns 501. Full re-key flow in M8.</li>
+          <li><code>forget_tenant(tenant_id)</code> · <code>tenant_known</code> · <code>scheme_identity() → [u8;32]</code></li>
+          <li><code>TwoPartyError::UnknownTenant</code> → HTTP 410 Gone (loud failure on CVM restart)</li>
+        </ul>
+      </div>
+      <div>
+        <h4>RemoteRagService — what the parallel service binds</h4>
+        <ul>
+          <li><code>new(embedder, planar_laplace_cfg)</code> · <code>with_paillier_bits(256)</code> · <code>with_over_fetch_factor(3)</code> · <code>with_seed([..32])</code></li>
+          <li><code>ingest_chunks(chunks)</code> — embed → AES-chunk-encrypt → index plaintext embedding + ciphertext chunk</li>
+          <li><code>query(text, top_k)</code> — Stage 1 planar-Laplace ANN → Stage 2 Paillier rerank → return Paillier ciphertexts</li>
+          <li>Internal: <code>IndexEntry { chunk_ct, embedding: Vec&lt;f32&gt; }</code> · HNSW <code>DistCosine</code> ≥ 256 docs</li>
+          <li>Client holds Paillier <code>sk</code> + chunk AES key; private key NEVER reaches the server</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═════ § 6 PERFORMANCE & CORRECTNESS ═════ -->
+  <section id="numbers">
+    <header class="section-head">
+      <div class="section-num">§06</div>
+      <h2 class="section-title">Performance &amp; correctness</h2>
+      <div class="section-meta">measured · BEIR/NFCorpus · 2026-05-14</div>
+    </header>
+
+    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:24px 0 8px;">Retrieval accuracy</h4>
+    <table class="spec">
+      <thead>
+        <tr><th>Configuration</th><th class="num">nDCG@10</th><th class="num">top1_base</th><th>Notes</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>FastEmbed MiniLM-L6 plain cosine <span class="accent">(MTEB sanity)</span></td><td class="num">≈ 0.30</td><td class="num">1.00</td><td>assertion in bench: within ±0.05 of published MTEB</td></tr>
+        <tr><td>CAPRISE only (no DP)</td><td class="num">matches plain</td><td class="num">≥ 0.95</td><td>distance-preserving — protocol-fidelity asserted</td></tr>
+        <tr><td>RemoteRAG (planar-Laplace ε=10n + Paillier rerank)</td><td class="num">—</td><td class="num">≥ 0.85</td><td>~100% recall claim from paper validated</td></tr>
+        <tr><td>+ DP-Forward(ε=4) on pooled output</td><td class="num" style="color:var(--tee)">≪ plain</td><td class="num">—</td><td>destroys retrieval — documented finding, off by default</td></tr>
+      </tbody>
+    </table>
+
+    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:32px 0 8px;">RemoteRAG end-to-end @ 10k docs</h4>
+    <table class="spec">
+      <thead>
+        <tr><th>Stage</th><th class="num">Cost</th><th>Notes</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Ingest (HNSW build + AES-GCM + Paillier keygen)</td><td class="num">18.3 s total · ~1.83 ms / doc</td><td>10k docs · 256-bit Paillier with full CRT factor precompute</td></tr>
+        <tr><td>Stage 1 — planar-Laplace + HNSW DistCosine</td><td class="num">~ms / query</td><td><code>ef_search = max(64, k′)</code> · <code>M=16</code></td></tr>
+        <tr><td>Stage 2 — Paillier PHE rerank</td><td class="num">~47 ms × k′ candidates</td><td>rayon-parallel across candidates</td></tr>
+        <tr><td><b>Total end-to-end mean</b></td><td class="num accent">23.5 ms / query</td><td>15-over-fetch · recall vs linear ground truth = 96.0%</td></tr>
+        <tr><td>Paillier CRT-encrypt of one 1024-dim query</td><td class="num">~750 ms</td><td>once per query · 1024 ciphertexts at 256-bit · cached when re-queried</td></tr>
+      </tbody>
+    </table>
+
+    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:32px 0 8px;">CAPRISE-in-TEE two-party KDF (Option 3) — test suite</h4>
+    <table class="spec">
+      <thead>
+        <tr><th>Test</th><th>What it asserts</th><th>Status</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>happy_path_ingest_then_query</code></td><td>ingest under tenant A, query later with same user_x_sk → expected chunk returned</td><td class="accent">passing</td></tr>
+        <tr><td><code>query_re_derives_same_keys_across_sessions</code></td><td>two separate ingest calls with same user_x_sk both queryable</td><td class="accent">passing</td></tr>
+        <tr><td><code>cvm_restart_drops_tenant_loud_failure</code></td><td>fresh service after drop → <code>UnknownTenant</code> error fires (clients see HTTP 410)</td><td class="accent">passing</td></tr>
+        <tr><td><code>fresh_tee_secret_under_same_user_sk_yields_unrecoverable_index</code></td><td>same plaintext + same user_x_sk + different <code>tee_user_x_sk</code> → different CAPRISE ciphertexts ⇒ forward security proven</td><td class="accent">passing</td></tr>
+        <tr><td><code>cross_tenant_isolation</code></td><td>same user_x_sk under tenant-A and tenant-B → different ciphertexts via HKDF salt</td><td class="accent">passing</td></tr>
+        <tr><td><code>unknown_tenant_is_observable</code> · <code>forget_tenant_zeroes_state</code></td><td>introspection + explicit lifecycle</td><td class="accent">passing</td></tr>
+        <tr><td><code>scheme_identity_is_stable_and_param_sensitive</code></td><td>canonical encoding deterministic and param-sensitive · attestation pin works</td><td class="accent">passing</td></tr>
+        <tr><td><code>rotate_is_stubbed_but_distinguishes_unknown_tenant</code></td><td>stub correctly returns UnknownTenant vs NotImplemented</td><td class="accent">passing</td></tr>
+        <tr><td colspan="3" style="text-align:center;"><strong>9 / 9 passing</strong> · workspace-wide: 150 passed · 0 failed · 31 ignored</td></tr>
+      </tbody>
+    </table>
+
+    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:32px 0 8px;">Cryptographic dependencies (no hand-rolled primitives)</h4>
+    <table class="spec">
+      <thead>
+        <tr><th>Primitive</th><th>Crate</th><th>Org</th><th>Status in workspace</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>HKDF (Extract + Expand)</td><td><code>hkdf 0.12</code></td><td>RustCrypto</td><td>added M1 · pure-Rust</td></tr>
+        <tr><td>HMAC-SHA256 (HKDF backbone)</td><td><code>hmac 0.12</code></td><td>RustCrypto</td><td>already in workspace</td></tr>
+        <tr><td>SHA-256</td><td><code>sha2 0.10</code></td><td>RustCrypto</td><td>already in workspace</td></tr>
+        <tr><td>AES-256-GCM</td><td><code>aes-gcm 0.10</code></td><td>RustCrypto</td><td>already in workspace</td></tr>
+        <tr><td>Secret zeroization</td><td><code>zeroize 1.x</code></td><td>RustCrypto</td><td>added M1 · <code>Zeroizing&lt;T&gt;</code></td></tr>
+        <tr><td>Paillier algorithms</td><td><code>num-bigint 0.4</code> · in-house composition</td><td>derived from <code>fast-paillier 0.3.2</code> (LFDT-Lockness)</td><td>pure-Rust path · no LGPL</td></tr>
+        <tr><td>TLS 1.3 ECDHE</td><td><code>rustls</code> via <code>reqwest/rustls-tls</code></td><td>rustls.dev</td><td>already in workspace</td></tr>
+        <tr><td>SEV-SNP report parsing</td><td><code>sev 7</code></td><td>virtee (AMD)</td><td>already in workspace</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ═════ § 7 STATUS & GAPS ═════ -->
+  <section id="status">
+    <header class="section-head">
+      <div class="section-num">§07</div>
+      <h2 class="section-title">Status &amp; gaps</h2>
+      <div class="section-meta">CAPRISE-in-TEE milestones · RemoteRAG state · open deferred items</div>
+    </header>
+
+    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:24px 0 8px;">CAPRISE-in-TEE (Option 3) delivery</h4>
+    <table class="spec">
+      <thead>
+        <tr><th>Milestone</th><th>What landed</th><th>Status</th><th>Reference</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><b>M1</b></td><td>HKDF + zeroize deps · <code>CapriseKey::from_seed</code> · <code>AesChunkCipher::from_key</code> · drop-zeroize + redacted <code>Debug</code></td><td class="accent">green</td><td><code>core/src/caprise.rs</code> · <code>content.rs</code></td></tr>
+        <tr><td><b>M2</b></td><td><code>HkdfPolicy::V1</code> · <code>SchemeParams</code> · <code>TenantId</code> · canonical <code>scheme_identity_digest</code> · 6 unit tests</td><td class="accent">green</td><td><code>core/src/keying.rs</code></td></tr>
+        <tr><td><b>M3</b></td><td><code>GeloRagTwoPartyService</code> · <code>TwoPartyError::UnknownTenant</code> · per-tenant <code>tee_user_x_sk</code> + index maps · rotate stub</td><td class="accent">green</td><td><code>gelo-rag/src/two_party_service.rs</code></td></tr>
+        <tr><td><b>M4</b></td><td>Runner swap · <code>UserXskB64</code> redact-Debug newtype · <code>/rotate</code> stub → 501 · <code>UnknownTenant</code> → 410</td><td class="accent">green</td><td><code>gelo-snp-runner/src/main.rs</code></td></tr>
+        <tr><td><b>M5</b></td><td><code>compose_scheme_identity(cfg ‖ 0x00 ‖ HkdfPolicy::digest)</code> → <code>REPORT_DATA[32..64]</code></td><td class="accent">green</td><td>runner main</td></tr>
+        <tr><td><b>M6</b></td><td>E2E test suite (9 tests) — happy path · CVM-restart loud failure · forward security · cross-tenant separation · scheme_identity stability · rotation stub</td><td class="accent">green</td><td><code>gelo-rag/tests/two_party_kdf_e2e.rs</code></td></tr>
+        <tr><td><b>M7</b></td><td>KMS-released <code>tee_user_x_sk</code> persistence (Variant B) · survives CVM restart at same <code>MEASUREMENT</code></td><td>deferred</td><td>spec'd, blocked on attested-KMS spike</td></tr>
+        <tr><td><b>M8</b></td><td>Tenant key rotation flow · decrypt-under-old · re-encrypt-under-new · atomic swap</td><td>deferred</td><td>spec'd in <code>caprise-two-party-kdf.md §5.3</code></td></tr>
+      </tbody>
+    </table>
+
+    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:32px 0 8px;">RemoteRAG state</h4>
+    <table class="spec">
+      <thead>
+        <tr><th>Piece</th><th>What works</th><th>Notes</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Planar-Laplace</td><td>Gamma radius + uniform direction · validated against empirical moment checks</td><td><code>tests/planar_laplace</code> module tests in <code>remote-rag/src</code></td></tr>
+        <tr><td>Paillier</td><td>Keygen with CRT factor table · Enc / Dec · homomorphic add / scalar-mul · multi-exp dot product · signed-result decode</td><td>pure-Rust on <code>num-bigint</code></td></tr>
+        <tr><td><code>RemoteRagService</code></td><td>Full two-stage protocol · HNSW + Paillier-rerank · over-fetch factor knob</td><td>load-bearing unit test asserts Stage-2 rerank actually changes ranking under ε=4 noise</td></tr>
+        <tr><td>10k-doc scale test</td><td>HNSW recall vs linear-cosine ground truth = 96.0% · mean query latency 23.5 ms</td><td><code>tests/remote_rag_scale.rs</code> (ignored — multi-second wall-clock)</td></tr>
+        <tr><td>Runner wiring</td><td>—</td><td>RemoteRAG is a parallel service today; the SEV-SNP runner ships the CAPRISE path. Wiring a second route is straightforward when needed.</td></tr>
+      </tbody>
+    </table>
+
+    <div class="two-col">
+      <div>
+        <h4>Open levers (Storage layer)</h4>
+        <ul>
+          <li><b>HNSW swap in <code>InMemoryEncryptedIndex</code></b> — sub-ms search at 100k+ encrypted docs. RemoteRAG already does this for plaintext docs.</li>
+          <li><b>Variant-B persistence</b> for <code>tee_user_x_sk</code> — KMS-released disk-sealed secret, survives CVM restart at same <code>MEASUREMENT</code>. M7.</li>
+          <li><b>Rotation flow</b> — <code>/rotate</code> decrypts-under-old + re-encrypts-under-new atomically. M8.</li>
+          <li><b>Server-side ZK proof of correct ANN</b> — V3DB-style. Open research gap; would close the integrity story for the storage side analogous to U-Verify on the GPU side.</li>
+        </ul>
+      </div>
+      <div>
+        <h4>Out of scope (explicitly)</h4>
+        <ul>
+          <li><b>Encrypted-everywhere ANN</b> — would require FHE on the doc-side embedding while preserving Paillier composability. No practical scheme.</li>
+          <li><b>Cross-encoder rerank server-side</b> — running a transformer under FHE is not practical. Client-side cross-encoder rerank on the recovered plaintext top-k is the design intent.</li>
+          <li><b>Stacking CAPRISE + RemoteRAG</b> — mutually exclusive by construction. Documented in <code>docs/prototype/remote-rag.md</code>.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── FOOTER ─── -->
+  <footer>
+    <div>
+      <h5>Cross-references</h5>
+      <ul>
+        <li><a href="index.html">← Overview / Landing</a></li>
+        <li><a href="embedding.html">← Embedding · GELO</a></li>
+        <li><a href="caprise-two-party-kdf.md">CAPRISE two-party KDF spec (Option 3)</a></li>
+      </ul>
+    </div>
+    <div>
+      <h5>Source docs</h5>
+      <ul>
+        <li><code>docs/prototype/remote-rag.md</code></li>
+        <li><code>docs/prototype/dp-forward.md</code></li>
+        <li><code>docs/prototype/caprise-two-party-kdf.md</code></li>
+      </ul>
+    </div>
+    <div>
+      <h5>External papers</h5>
+      <ul>
+        <li>CAPRISE / prRAG · Ye et al. 2026</li>
+        <li>RemoteRAG · <a href="https://arxiv.org/abs/2412.12775">arXiv 2412.12775</a></li>
+        <li>DP-Forward · <a href="https://arxiv.org/abs/2309.06746">arXiv 2309.06746</a></li>
+        <li>Paillier · <a href="https://en.wikipedia.org/wiki/Paillier_cryptosystem">Paillier 1999</a></li>
+      </ul>
+    </div>
+  </footer>
+</div>
+</body>
+</html>

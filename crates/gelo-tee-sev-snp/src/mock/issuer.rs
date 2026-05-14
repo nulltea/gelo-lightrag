@@ -28,6 +28,7 @@ pub struct IssuedAttestation {
     pub vcek_cert_pem: Vec<u8>,
 }
 
+#[derive(Clone)]
 pub struct MockReportIssuer {
     vcek_signing_key: SigningKey,
 }

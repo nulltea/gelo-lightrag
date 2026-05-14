@@ -6,7 +6,7 @@ use rag_core::{
 
 use crate::attestation::{AttestationEvidence, AttestationVerifier};
 
-pub struct Approach4InMemoryService<E, S, V> {
+pub struct GeloRagInMemoryService<E, S, V> {
     embedder: E,
     scheme: S,
     verifier: V,
@@ -14,7 +14,7 @@ pub struct Approach4InMemoryService<E, S, V> {
     index: InMemoryEncryptedIndex,
 }
 
-impl<E, S, V> Approach4InMemoryService<E, S, V>
+impl<E, S, V> GeloRagInMemoryService<E, S, V>
 where
     E: Embedder,
     S: EmbeddingEncryptionScheme,
@@ -77,7 +77,7 @@ mod tests {
         ChunkId, DocumentChunk, Embedder, EmbeddingEncryptionScheme, EncryptedEmbedding,
     };
 
-    use crate::{Approach4InMemoryService, NoopAttestationVerifier};
+    use crate::{GeloRagInMemoryService, NoopAttestationVerifier};
 
     struct StubEmbedder;
 
@@ -125,9 +125,9 @@ mod tests {
     }
 
     #[test]
-    fn approach4_service_retrieves_expected_chunk() {
+    fn gelo_rag_service_retrieves_expected_chunk() {
         let mut service =
-            Approach4InMemoryService::new(StubEmbedder, IdentityScheme, NoopAttestationVerifier);
+            GeloRagInMemoryService::new(StubEmbedder, IdentityScheme, NoopAttestationVerifier);
 
         service
             .ingest_chunks(vec![

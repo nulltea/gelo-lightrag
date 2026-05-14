@@ -1,5 +1,5 @@
 //! M6.2 integration test — GELO + DP-Forward + CAPRISE through
-//! `Approach4InMemoryService`. Three assertions:
+//! `GeloRagInMemoryService`. Three assertions:
 //!
 //! 1. `Embedder::model_identity` rebinds when DP is enabled (so a SEV-SNP
 //!    attestation report's `expected_model_id` pin catches a parameter
@@ -10,7 +10,7 @@
 //!    decrypted embedding — proof that the irreversible noise actually rides
 //!    through CAPRISE re-encryption rather than getting collapsed somewhere.
 
-use approach4::{Approach4InMemoryService, NoopAttestationVerifier};
+use gelo_rag::{GeloRagInMemoryService, NoopAttestationVerifier};
 use dp_forward::DpForwardConfig;
 use gelo_embedder::GeloQwenEmbedder;
 use gelo_protocol::rng::MaskSeed;
@@ -78,7 +78,7 @@ fn dp_forward_preserves_top_hit_at_moderate_epsilon() {
         .with_dp_forward(DpForwardConfig::calibrate(4.0, 1e-5, 1.0));
 
     let scheme = Caprise::new(CapriseKey::generate(32.0, 0.15));
-    let mut service = Approach4InMemoryService::new(embedder, scheme, NoopAttestationVerifier);
+    let mut service = GeloRagInMemoryService::new(embedder, scheme, NoopAttestationVerifier);
     service.ingest_chunks(corpus()).expect("ingest");
 
     let hits = service

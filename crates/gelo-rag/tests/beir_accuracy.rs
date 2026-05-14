@@ -25,7 +25,7 @@
 //! ## Run
 //!
 //! ```text
-//! cargo test -p approach4 --release --test beir_accuracy \
+//! cargo test -p gelo-rag --release --test beir_accuracy \
 //!     -- --ignored --nocapture
 //! ```
 //!
@@ -35,7 +35,7 @@ mod common;
 
 use std::collections::HashMap;
 
-use approach4::{Approach4InMemoryService, NoopAttestationVerifier};
+use gelo_rag::{GeloRagInMemoryService, NoopAttestationVerifier};
 use common::beir::{BeirDataset, load_nfcorpus};
 use common::embed_cache::CachingEmbedder;
 use dp_forward::DpForwardConfig;
@@ -300,8 +300,8 @@ fn aggregate(
 
 // ─────────────────────────────────────────────────────────────────────
 
-fn run_via_approach4<E: Embedder, S: rag_core::EmbeddingEncryptionScheme>(
-    mut service: Approach4InMemoryService<E, S, NoopAttestationVerifier>,
+fn run_via_gelo_rag<E: Embedder, S: rag_core::EmbeddingEncryptionScheme>(
+    mut service: GeloRagInMemoryService<E, S, NoopAttestationVerifier>,
     dataset: &BeirDataset,
     queries: &[(String, String)],
     k: usize,
@@ -408,8 +408,8 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
     }
 
     eprintln!("[run] CAPRISE (no DP)...");
-    let caprise_rankings = run_via_approach4(
-        Approach4InMemoryService::new(
+    let caprise_rankings = run_via_gelo_rag(
+        GeloRagInMemoryService::new(
             cached_fastembed("fastembed-minilm-l6-plain")?,
             Caprise::new(CapriseKey::generate(32.0, 0.15)),
             NoopAttestationVerifier,
@@ -422,8 +422,8 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
 
     eprintln!("[run] CAPRISE + DP-Forward(ε=4) at pooled output...");
     let dp_cfg = DpForwardConfig::calibrate(4.0, 1e-5, 1.0);
-    let caprise_dp_rankings = run_via_approach4(
-        Approach4InMemoryService::new(
+    let caprise_dp_rankings = run_via_gelo_rag(
+        GeloRagInMemoryService::new(
             DpForwardWrapper::new(
                 cached_fastembed("fastembed-minilm-l6-plain")?,
                 dp_cfg,
@@ -523,8 +523,8 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
                 )?,
                 "bge-base-en-v1.5",
             )?;
-            let bge_plain_rankings = run_via_approach4(
-                Approach4InMemoryService::new(
+            let bge_plain_rankings = run_via_gelo_rag(
+                GeloRagInMemoryService::new(
                     bge_plain_emb,
                     Caprise::new(CapriseKey::generate(32.0, 0.15)),
                     NoopAttestationVerifier,
@@ -556,8 +556,8 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
                 .with_dp_forward(dp_layer_cfg),
                 "bge-base-en-v1.5-dp-layer10",
             )?;
-            let bge_dp_layer_rankings = run_via_approach4(
-                Approach4InMemoryService::new(
+            let bge_dp_layer_rankings = run_via_gelo_rag(
+                GeloRagInMemoryService::new(
                     bge_dp_layer_emb,
                     Caprise::new(CapriseKey::generate(32.0, 0.15)),
                     NoopAttestationVerifier,
@@ -579,8 +579,8 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
                 .with_dp_forward(dp_pooled_cfg),
                 "bge-base-en-v1.5-dp-pooled",
             )?;
-            let bge_dp_pooled_rankings = run_via_approach4(
-                Approach4InMemoryService::new(
+            let bge_dp_pooled_rankings = run_via_gelo_rag(
+                GeloRagInMemoryService::new(
                     bge_dp_pooled_emb,
                     Caprise::new(CapriseKey::generate(32.0, 0.15)),
                     NoopAttestationVerifier,
@@ -642,8 +642,8 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
                 )?,
                 cache_label,
             )?;
-            let bge_mask_rankings = run_via_approach4(
-                Approach4InMemoryService::new(
+            let bge_mask_rankings = run_via_gelo_rag(
+                GeloRagInMemoryService::new(
                     bge_mask_emb,
                     Caprise::new(CapriseKey::generate(32.0, 0.15)),
                     NoopAttestationVerifier,
@@ -682,7 +682,16 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
     // scale retrieval correctness of the decoder path, not to gate
     // anything we're shipping.
     let run_qwen3 = std::env::var("BEIR_QWEN3").map(|v| v == "1").unwrap_or(false);
-    let qwen3_mask_metrics: Option<MetricSummary> = if run_qwen3 {
+    // BEIR_QWEN3_PLAIN=1 enables a Qwen3 + PlaintextExecutor row alongside
+    // the masked one. Used to isolate "Qwen3 vs MiniLM model disagreement"
+    // from "GELO mask drift": top1_base of the plain row tells you the
+    // model-vs-model floor, the masked row's gap below that is the mask's
+    // contribution. Default on when BEIR_QWEN3=1.
+    let run_qwen3_plain = std::env::var("BEIR_QWEN3_PLAIN")
+        .map(|v| v != "0")
+        .unwrap_or(true);
+    let (qwen3_plain_metrics, qwen3_mask_metrics): (Option<MetricSummary>, Option<MetricSummary>) =
+    if run_qwen3 {
         let gpu = WgpuVulkanEngine::new()
             .map_err(|e| anyhow::anyhow!("Vulkan adapter unavailable: {e}"))?;
         anyhow::ensure!(
@@ -694,19 +703,87 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
             gpu.adapter_info().name,
             gpu.adapter_info().device_type,
         );
-        eprintln!("[run] Qwen3-Embedding-0.6B + GELO mask (Vulkan + in-process TEE) — first run downloads ~1.2 GB...");
-        let qwen3_emb = maybe_cache(
-            GeloQwenEmbedder::from_pretrained(
-                "Qwen/Qwen3-Embedding-0.6B",
-                InProcessTrustedExecutor::with_seed(
-                    gpu.clone_shared(),
-                    MaskSeed::from_bytes([11u8; 32]),
+        let paper_parity = std::env::var("BEIR_PAPER_PARITY")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+
+        let qwen3_plain = if run_qwen3_plain {
+            eprintln!("[run] Qwen3-Embedding-0.6B (plain, no mask) — model-vs-MiniLM floor for top1_base");
+            let plain_emb = maybe_cache(
+                GeloQwenEmbedder::from_pretrained(
+                    "Qwen/Qwen3-Embedding-0.6B",
+                    PlaintextExecutor::new(gpu.clone_shared()),
+                )?,
+                "qwen3-embedding-0.6b-plain",
+            )?;
+            let t0 = std::time::Instant::now();
+            let plain_rankings = run_via_gelo_rag(
+                GeloRagInMemoryService::new(
+                    plain_emb,
+                    Caprise::new(CapriseKey::generate(32.0, 0.15)),
+                    NoopAttestationVerifier,
                 ),
-            )?,
-            "qwen3-embedding-0.6b-gelo-mask",
+                &dataset,
+                &queries,
+                K_RECALL,
+            )?;
+            let elapsed = t0.elapsed();
+            let n_texts = dataset.docs.len() + queries.len();
+            eprintln!(
+                "[qwen3-plain] {} texts in {:.1}s ⇒ {:.0} ms/text",
+                n_texts,
+                elapsed.as_secs_f64(),
+                1000.0 * elapsed.as_secs_f64() / n_texts as f64,
+            );
+            Some(aggregate(
+                &queries,
+                &plain_rankings,
+                &dataset,
+                &baseline.rankings,
+            ))
+        } else {
+            None
+        };
+
+        eprintln!("[run] Qwen3-Embedding-0.6B + GELO mask (Vulkan + in-process TEE) — first run downloads ~1.2 GB...");
+        let executor = if paper_parity {
+            eprintln!("[qwen3] paper-parity mode: one A per forward + shield(k=8, e=4)");
+            InProcessTrustedExecutor::with_seed(
+                gpu.clone_shared(),
+                MaskSeed::from_bytes([11u8; 32]),
+            )
+            .with_per_forward_mask(ShieldConfig::new(8, 4.0))
+        } else {
+            InProcessTrustedExecutor::with_seed(
+                gpu.clone_shared(),
+                MaskSeed::from_bytes([11u8; 32]),
+            )
+        };
+        let cache_label = if paper_parity {
+            "qwen3-embedding-0.6b-gelo-mask-paper"
+        } else {
+            "qwen3-embedding-0.6b-gelo-mask"
+        };
+        let use_perm_attn = std::env::var("BEIR_PERM_ATTN")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        if use_perm_attn {
+            eprintln!("[qwen3] permutation-shielded attention enabled (BEIR_PERM_ATTN=1)");
+        }
+        let mut qwen3_inner = GeloQwenEmbedder::from_pretrained(
+            "Qwen/Qwen3-Embedding-0.6B",
+            executor,
         )?;
-        let qwen3_rankings = run_via_approach4(
-            Approach4InMemoryService::new(
+        if use_perm_attn {
+            qwen3_inner = qwen3_inner
+                .with_perm_attention(true)
+                .with_perm_attention_min_seq_len(Some(64));
+        }
+        let qwen3_emb = maybe_cache(qwen3_inner, cache_label)?;
+        gelo_protocol::profile::reset();
+        let t0 = std::time::Instant::now();
+        let qwen3_rankings = run_via_gelo_rag(
+            GeloRagInMemoryService::new(
                 qwen3_emb,
                 Caprise::new(CapriseKey::generate(32.0, 0.15)),
                 NoopAttestationVerifier,
@@ -715,14 +792,25 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
             &queries,
             K_RECALL,
         )?;
-        Some(aggregate(
+        let elapsed = t0.elapsed();
+        let n_texts = dataset.docs.len() + queries.len();
+        eprintln!(
+            "[qwen3-mask] {} texts in {:.1}s ⇒ {:.0} ms/text",
+            n_texts,
+            elapsed.as_secs_f64(),
+            1000.0 * elapsed.as_secs_f64() / n_texts as f64,
+        );
+        gelo_protocol::profile::snapshot()
+            .dump("qwen3-mask per-bucket cumulative (across all texts)");
+        let qwen3_mask = Some(aggregate(
             &queries,
             &qwen3_rankings,
             &dataset,
             &baseline.rankings,
-        ))
+        ));
+        (qwen3_plain, qwen3_mask)
     } else {
-        None
+        (None, None)
     };
 
     eprintln!();
@@ -759,9 +847,22 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
             print_row("  + DP-Forward(ε=4) @ pooled output", dp_pooled);
         }
     }
-    if let Some(qwen3) = &qwen3_mask_metrics {
+    if qwen3_plain_metrics.is_some() || qwen3_mask_metrics.is_some() {
         eprintln!();
+    }
+    if let Some(p) = &qwen3_plain_metrics {
+        print_row("GELO/Qwen3-Embedding-0.6B (plain) + CAPRISE", p);
+    }
+    if let Some(qwen3) = &qwen3_mask_metrics {
         print_row("GELO/Qwen3-Embedding-0.6B + GELO mask + CAPRISE", qwen3);
+    }
+    if let (Some(plain), Some(mask)) = (&qwen3_plain_metrics, &qwen3_mask_metrics) {
+        eprintln!(
+            "[qwen3] plain   top1_base = {:.3} (model-vs-MiniLM floor)\n[qwen3] +mask  top1_base = {:.3} (gap vs floor = {:+.3})",
+            plain.top1_base_match,
+            mask.top1_base_match,
+            mask.top1_base_match - plain.top1_base_match,
+        );
     }
     eprintln!();
 

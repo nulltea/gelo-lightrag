@@ -4,18 +4,39 @@ use aes_gcm::{
 };
 use anyhow::{Context, Result, anyhow, bail};
 use rand::Rng;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{ChunkCiphertext, DocumentChunk};
 
-#[derive(Debug, Clone)]
+/// AES-256-GCM chunk-text cipher. The 32-byte key is zeroized on drop
+/// and redacted from `Debug` output.
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct AesChunkCipher {
     key: [u8; 32],
 }
 
+impl std::fmt::Debug for AesChunkCipher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AesChunkCipher")
+            .field("key", &"<redacted 32B>")
+            .finish()
+    }
+}
+
 impl AesChunkCipher {
+    /// Generate a fresh AES-256 key from `OsRng`. Non-deterministic;
+    /// use [`Self::from_key`] from inside the CVM where the key is
+    /// HKDF-derived.
     pub fn generate() -> Self {
         let mut key = [0_u8; 32];
         rand::rng().fill(&mut key);
+        Self { key }
+    }
+
+    /// Build a cipher from a caller-provided 32-byte key. The intended
+    /// caller is [`crate::HkdfPolicy::derive`] (see the two-party-KDF
+    /// design in `docs/prototype/caprise-two-party-kdf.md`).
+    pub fn from_key(key: [u8; 32]) -> Self {
         Self { key }
     }
 

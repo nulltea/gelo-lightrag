@@ -1,20 +1,60 @@
 use anyhow::{Result, bail};
 use rand::Rng;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::prf::{derive_rng, sample_uniform_open01, sample_unit_vector};
 use crate::{EmbeddingEncryptionScheme, EncryptedEmbedding};
 
-#[derive(Debug, Clone)]
+/// Per-tenant CAPRISE secret material. `seed_key` is the PRF input
+/// driving every direction / radius noise draw on every encrypted
+/// vector; `scale_factor` and `beta` are public scheme constants.
+///
+/// `seed_key` is zeroized on drop and redacted from `Debug` output to
+/// avoid the classic "secret in panic backtrace / log line" footgun.
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct CapriseKey {
+    #[zeroize(skip)]
     pub scale_factor: f32,
+    #[zeroize(skip)]
     pub beta: f32,
     pub seed_key: [u8; 32],
 }
 
+impl std::fmt::Debug for CapriseKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CapriseKey")
+            .field("scale_factor", &self.scale_factor)
+            .field("beta", &self.beta)
+            .field("seed_key", &"<redacted 32B>")
+            .finish()
+    }
+}
+
 impl CapriseKey {
+    /// Generate a fresh key from `OsRng`. The seed cannot be reproduced
+    /// — use this only when no deterministic derivation path is needed
+    /// (e.g. early-stage tests). Production paths derive via
+    /// [`crate::HkdfPolicy`] and `from_seed`.
     pub fn generate(scale_factor: f32, beta: f32) -> Self {
         let mut seed_key = [0_u8; 32];
         rand::rng().fill(&mut seed_key);
+        Self {
+            scale_factor,
+            beta,
+            seed_key,
+        }
+    }
+
+    /// Build a key from a caller-provided 32-byte seed. The intended
+    /// caller is [`crate::HkdfPolicy::derive`] which produces the seed
+    /// deterministically from a `(user_x_sk, tee_user_x_sk, tenant_id)`
+    /// tuple inside the SEV-SNP CVM.
+    ///
+    /// The returned `CapriseKey` carries `seed_key` as a 32-byte field
+    /// and zeroes it on drop. The caller's source buffer (typically a
+    /// `Zeroizing<[u8; 32]>` from `HkdfPolicy::derive`) is consumed
+    /// here and remains responsible for its own zeroize-on-drop.
+    pub fn from_seed(scale_factor: f32, beta: f32, seed_key: [u8; 32]) -> Self {
         Self {
             scale_factor,
             beta,

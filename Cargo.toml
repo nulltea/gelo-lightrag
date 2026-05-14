@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "crates/core",
-    "crates/approach4",
+    "crates/gelo-rag",
     "crates/dp-forward",
     "crates/gelo-protocol",
     "crates/gelo-embedder",
@@ -25,6 +25,15 @@ bytemuck = "1.21"
 fastembed = { version = "5.13.3", default-features = true }
 hf-hub = { version = "0.4", default-features = false, features = ["ureq", "rustls-tls"] }
 hmac = "0.12.1"
+# RustCrypto HKDF — composed over `hmac` + `sha2` we already pull in.
+# Used by `core/src/keying.rs` for the two-party CAPRISE key derivation.
+# Pure-Rust, MIT/Apache-2.0.
+hkdf = "0.12"
+# RustCrypto zeroize — drop-time wipe for secret 32-byte buffers
+# (`user_x_sk`, `tee_user_x_sk`, derived `caprise_seed_key`,
+# `aes_chunk_key`). `derive` feature enables `#[derive(Zeroize,
+# ZeroizeOnDrop)]`.
+zeroize = { version = "1", features = ["derive"] }
 half = { version = "2", features = ["bytemuck", "num-traits"] }
 matrixmultiply = "0.3"
 ndarray = "0.16"

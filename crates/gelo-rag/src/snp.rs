@@ -1,7 +1,7 @@
 //! SEV-SNP attestation adapter.
 //!
 //! Bridges [`gelo_tee_sev_snp::SnpAttestationVerifier`] into the
-//! [`AttestationVerifier`] trait used by [`Approach4InMemoryService`].
+//! [`AttestationVerifier`] trait used by [`GeloRagInMemoryService`].
 //!
 //! The adapter pulls `report` and `vcek_cert` from
 //! [`AttestationEvidence`] (added as non-breaking `Option` fields in M5.5)
@@ -9,7 +9,7 @@
 //! `(model_identity, scheme_identity)` pair the relying party expects.
 //!
 //! Compiled only when the `snp` feature is enabled so the default
-//! `approach4` build doesn't drag in the SEV-SNP dependency graph.
+//! `gelo-rag` build doesn't drag in the SEV-SNP dependency graph.
 
 use anyhow::{Result, anyhow};
 use gelo_tee_sev_snp::{AttestedBinding, SnpAttestationVerifier};

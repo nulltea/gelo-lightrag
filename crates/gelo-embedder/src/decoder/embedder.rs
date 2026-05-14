@@ -71,15 +71,13 @@ impl<X: TrustedExecutor> GeloQwenEmbedder<X> {
             exec.provision_weight(WeightHandle::new(li16, WeightKind::K), layer.wk.view())?;
             exec.provision_weight(WeightHandle::new(li16, WeightKind::V), layer.wv.view())?;
             exec.provision_weight(WeightHandle::new(li16, WeightKind::O), layer.wo.view())?;
-            // SwiGLU has three matmuls: gate, up, down. We reuse the existing
-            // WeightKind variants by encoding the "gate" slot in the high bit
-            // of the layer index (see forward.rs for the matching call site).
+            // SwiGLU has three matmuls: gate, up, down.
             exec.provision_weight(
-                WeightHandle::new(li16, WeightKind::FfnUp),
+                WeightHandle::new(li16, WeightKind::FfnGate),
                 layer.w_gate.view(),
             )?;
             exec.provision_weight(
-                WeightHandle::new(li16 | 0x8000, WeightKind::FfnUp),
+                WeightHandle::new(li16, WeightKind::FfnUp),
                 layer.w_up.view(),
             )?;
             exec.provision_weight(
@@ -195,6 +193,20 @@ impl<X: TrustedExecutor> GeloQwenEmbedder<X> {
         self
     }
 
+    /// Master switch for Tier 1 permutation-shielded attention. Default
+    /// off; opt in to engage the path between
+    /// `perm_attention_min_seq_len` and `out_attn_mult_min_seq_len`.
+    pub fn with_perm_attention(mut self, enabled: bool) -> Self {
+        self.cfg.use_perm_attention = enabled;
+        self
+    }
+
+    /// Override the permuted-attention threshold. `None` resolves to 64.
+    pub fn with_perm_attention_min_seq_len(mut self, min_seq_len: Option<usize>) -> Self {
+        self.cfg.perm_attention_min_seq_len = min_seq_len;
+        self
+    }
+
     pub fn config(&self) -> &DecoderConfig {
         &self.cfg
     }
@@ -248,76 +260,124 @@ fn find_safetensors_shards(repo: &hf_hub::api::sync::ApiRepo) -> Result<Vec<Path
     Ok(paths)
 }
 
-impl<X: TrustedExecutor> Embedder for GeloQwenEmbedder<X> {
+impl<X: TrustedExecutor + Clone + Send + Sync> Embedder for GeloQwenEmbedder<X> {
     fn embed(&mut self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
-        let mut out = Vec::with_capacity(texts.len());
-        for text in texts {
-            let ids = self.tokenizer.encode(text, self.max_len)?;
-
-            // Resolve DP-Forward configuration once per text.
-            #[cfg(feature = "dp-forward")]
-            let dp_cfg = self.dp_forward;
-            #[cfg(not(feature = "dp-forward"))]
-            let dp_cfg: Option<()> = None;
-
-            // Intermediate-layer hook (M7.1): if `layer_index = Some(n)`,
-            // apply aMGM per token-row at the end of layer n. Otherwise the
-            // hook is a no-op and noise is applied at the pooled output
-            // below (legacy / not-recommended-for-retrieval path).
-            let hidden = {
-                #[cfg(feature = "dp-forward")]
-                {
-                    if let Some(cfg) = dp_cfg.filter(|c| c.layer_index.is_some()) {
-                        let target = cfg.layer_index.expect("filter guarantees Some");
-                        let clip = cfg.clip_c;
-                        let sigma = cfg.sigma;
-                        let rng = &mut self.dp_rng;
-                        forward::run_with_hook(
-                            &self.cfg,
-                            &self.weights,
-                            &self.rope,
-                            &mut self.exec,
-                            &ids,
-                            |li, h| {
-                                if li == target {
-                                    apply_dp_per_row(h, clip, sigma, rng);
-                                }
-                            },
-                        )?
-                    } else {
-                        forward::run(&self.cfg, &self.weights, &self.rope, &mut self.exec, &ids)?
-                    }
-                }
-                #[cfg(not(feature = "dp-forward"))]
-                {
-                    let _ = dp_cfg;
-                    forward::run(&self.cfg, &self.weights, &self.rope, &mut self.exec, &ids)?
-                }
-            };
-
-            let pooled = pool::last_l2(hidden.view());
-            #[allow(unused_mut)]
-            let mut pooled_vec = pooled.to_vec();
-            #[cfg(feature = "dp-forward")]
-            if let Some(cfg) = &self.dp_forward {
-                // Legacy pooled-output application — only when no
-                // intermediate layer was specified.
-                if cfg.layer_index.is_none() {
-                    dp_forward::amgm::clip_l2_in_place(&mut pooled_vec, cfg.clip_c);
-                    dp_forward::amgm::add_gaussian_noise(
-                        &mut pooled_vec,
-                        cfg.sigma,
-                        &mut self.dp_rng,
-                    );
-                }
-            }
-            out.push(pooled_vec);
+        // Single-text fast path: skip the rayon scope + executor clone.
+        // Online-query latency stays identical to the pre-parallel build.
+        if texts.len() <= 1 {
+            return texts.iter().map(|t| self.embed_one(t, &mut self.exec.clone())).collect();
         }
-        Ok(out)
+
+        // Bulk-ingest path: parallel fan-out via rayon. Each worker gets a
+        // freshly-cloned executor whose RNG is moved to its own ChaCha20
+        // stream (worker_idx), so the per-text mask `A` differs across
+        // workers — no shared-A leak across the batch (see
+        // `docs/prototype/future-rnd.md` §5 "Shared-A multi-text
+        // batching"). Engine clones share the Arc-backed weight cache,
+        // so no weight duplication.
+        //
+        // Caller is responsible for setting `BLIS_NUM_THREADS=1` if the
+        // `blas` feature is on; with BLIS_NUM_THREADS=16 + rayon 16, the
+        // 256-way thread oversubscription thrashes more than it helps.
+        use rayon::prelude::*;
+        texts
+            .par_iter()
+            .enumerate()
+            .map(|(idx, text)| {
+                let mut exec = self.exec.clone();
+                // Move each worker's RNG to its own ChaCha20 stream so
+                // the per-text mask `A` differs across the batch. Without
+                // this, all workers would inherit identical RNG state
+                // from the clone and sample identical `A` — the
+                // shared-A leak that future-rnd.md §5 calls out.
+                exec.set_rng_stream(idx as u64);
+                self.embed_one(text, &mut exec)
+            })
+            .collect()
     }
 
     fn model_identity(&self) -> &[u8] {
         self.model_identity.as_bytes()
+    }
+}
+
+impl<X: TrustedExecutor + Clone + Send + Sync> GeloQwenEmbedder<X> {
+    /// Embed a single text against a caller-supplied executor. Factored
+    /// out of `embed` so the parallel path can hand each rayon worker its
+    /// own cloned executor without touching `self.exec`.
+    ///
+    /// `&self` (not `&mut`) because all model state (`cfg`, `tokenizer`,
+    /// `weights`, `rope`) is read-only or `Arc`-shared. The mutable bits
+    /// (executor session mask + RNG, optional DP-Forward RNG) live on
+    /// the caller's `exec` argument and on a temporary worker-local
+    /// `dp_rng` derived below (only relevant when the `dp-forward`
+    /// feature is enabled).
+    fn embed_one(&self, text: &str, exec: &mut X) -> anyhow::Result<Vec<f32>> {
+        let ids = self.tokenizer.encode(text, self.max_len)?;
+
+        // Resolve DP-Forward configuration once per text.
+        #[cfg(feature = "dp-forward")]
+        let dp_cfg = self.dp_forward;
+        #[cfg(not(feature = "dp-forward"))]
+        let dp_cfg: Option<()> = None;
+
+        // Intermediate-layer hook (M7.1): if `layer_index = Some(n)`,
+        // apply aMGM per token-row at the end of layer n. Otherwise the
+        // hook is a no-op and noise is applied at the pooled output
+        // below (legacy / not-recommended-for-retrieval path).
+        let hidden = {
+            #[cfg(feature = "dp-forward")]
+            {
+                if let Some(cfg) = dp_cfg.filter(|c| c.layer_index.is_some()) {
+                    let target = cfg.layer_index.expect("filter guarantees Some");
+                    let clip = cfg.clip_c;
+                    let sigma = cfg.sigma;
+                    // Per-text DP RNG clone — keeps the parallel embed
+                    // path deterministic given the base seed, at the
+                    // cost of identical noise across workers within a
+                    // batch when called via the par_iter path.
+                    let mut dp_rng = self.dp_rng.clone();
+                    forward::run_with_hook(
+                        &self.cfg,
+                        &self.weights,
+                        &self.rope,
+                        exec,
+                        &ids,
+                        |li, h| {
+                            if li == target {
+                                apply_dp_per_row(h, clip, sigma, &mut dp_rng);
+                            }
+                        },
+                    )?
+                } else {
+                    forward::run(&self.cfg, &self.weights, &self.rope, exec, &ids)?
+                }
+            }
+            #[cfg(not(feature = "dp-forward"))]
+            {
+                let _ = dp_cfg;
+                forward::run(&self.cfg, &self.weights, &self.rope, exec, &ids)?
+            }
+        };
+
+        let pooled = pool::last_l2(hidden.view());
+        #[allow(unused_mut)]
+        let mut pooled_vec = pooled.to_vec();
+        #[cfg(feature = "dp-forward")]
+        if let Some(cfg) = &self.dp_forward {
+            // Legacy pooled-output application — only when no
+            // intermediate layer was specified.
+            if cfg.layer_index.is_none() {
+                let mut dp_rng = self.dp_rng.clone();
+                dp_forward::amgm::clip_l2_in_place(&mut pooled_vec, cfg.clip_c);
+                dp_forward::amgm::add_gaussian_noise(
+                    &mut pooled_vec,
+                    cfg.sigma,
+                    &mut dp_rng,
+                );
+            }
+        }
+        Ok(pooled_vec)
     }
 }
 

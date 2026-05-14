@@ -33,7 +33,7 @@
 //! Run:
 //!
 //! ```text
-//! cargo test -p approach4 --features snp-mock --release \
+//! cargo test -p gelo-rag --features snp-mock --release \
 //!     --test obfuscation_bench -- --ignored --nocapture
 //! ```
 
@@ -42,7 +42,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use approach4::{Approach4InMemoryService, NoopAttestationVerifier};
+use gelo_rag::{GeloRagInMemoryService, NoopAttestationVerifier};
 use dp_forward::DpForwardConfig;
 use gelo_embedder::decoder::rope::RopeTables;
 use gelo_embedder::{DecoderConfig, DecoderWeights, GeloQwenEmbedder};
@@ -159,7 +159,7 @@ fn obfuscation_path_wall_clock_comparison() {
         let embedder = make_gelo_embedder(&cfg, &tokenizer, &weights, &rope, &gpu);
         let scheme = Caprise::new(CapriseKey::generate(32.0, 0.15));
         let mut service =
-            Approach4InMemoryService::new(embedder, scheme, NoopAttestationVerifier);
+            GeloRagInMemoryService::new(embedder, scheme, NoopAttestationVerifier);
 
         // Warmup pass through the full ingest+query flow.
         service.ingest_chunks(corpus()).expect("warmup ingest");
@@ -193,7 +193,7 @@ fn obfuscation_path_wall_clock_comparison() {
             .with_dp_forward(dp_cfg);
         let scheme = Caprise::new(CapriseKey::generate(32.0, 0.15));
         let mut service =
-            Approach4InMemoryService::new(embedder, scheme, NoopAttestationVerifier);
+            GeloRagInMemoryService::new(embedder, scheme, NoopAttestationVerifier);
 
         service.ingest_chunks(corpus()).expect("warmup ingest");
         let _ = service.query(QUERY, TOP_K).expect("warmup query");

@@ -1,4 +1,4 @@
-use ndarray::{Array1, Array2, ArrayView2, ArrayViewMut2, Axis, s};
+use ndarray::{Array2, ArrayView2, Axis, s};
 use rand::RngCore;
 use rand_distr::{Distribution, StandardNormal};
 
@@ -51,6 +51,11 @@ impl GeloMask {
             self.n(),
             "hidden row count must equal mask n"
         );
+        #[cfg(feature = "blas")]
+        {
+            return sgemm_blis(self.a.view(), hidden, false);
+        }
+        #[cfg(not(feature = "blas"))]
         self.a.dot(&hidden)
     }
 
@@ -63,8 +68,77 @@ impl GeloMask {
             self.n(),
             "masked output row count must equal mask n"
         );
+        #[cfg(feature = "blas")]
+        {
+            return sgemm_blis(self.a.view(), masked_output, true);
+        }
+        #[cfg(not(feature = "blas"))]
         self.a.t().dot(&masked_output)
     }
+
+}
+
+/// BLIS-backed `C = α · op(A) · B` for the GELO mask apply/unapply.
+///
+/// Called only with `α = 1.0, β = 0.0`. `a` is the (n × n) mask matrix
+/// (always row-major); `b` is a (n × d) row-major view of the
+/// stacked/masked operand. If `transpose_a` is `true`, computes
+/// `C = Aᵀ · B` (the unapply path); otherwise `C = A · B` (apply).
+///
+/// We bypass `ndarray::dot` (which would dispatch to matrixmultiply or
+/// to ndarray's `blas` feature globally) and call `cblas_sgemm`
+/// directly so only the mask hot path picks up BLIS — the small per-
+/// head attention matmuls keep matrixmultiply.
+#[cfg(feature = "blas")]
+fn sgemm_blis(
+    a: ArrayView2<'_, f32>,
+    b: ArrayView2<'_, f32>,
+    transpose_a: bool,
+) -> Array2<f32> {
+    use cblas_sys::{cblas_sgemm, CBLAS_LAYOUT, CBLAS_TRANSPOSE};
+    let n = a.nrows();
+    debug_assert_eq!(a.ncols(), n, "mask must be square");
+    debug_assert_eq!(b.nrows(), n);
+    let d = b.ncols();
+    // Both operands are row-major standard-layout from the call sites
+    // (`a` is the mask; `b` is the stacked scratch or an engine output).
+    let a_slice = a
+        .to_slice()
+        .expect("mask must be row-major contiguous");
+    let b_slice = b
+        .to_slice()
+        .expect("operand must be row-major contiguous");
+    let mut c = Array2::<f32>::zeros((n, d));
+    {
+        let c_slice = c.as_slice_mut().expect("fresh Array2 is contiguous");
+        let transa = if transpose_a {
+            CBLAS_TRANSPOSE::CblasTrans
+        } else {
+            CBLAS_TRANSPOSE::CblasNoTrans
+        };
+        // SAFETY: cblas_sgemm reads (n×n) from `a_slice`, (n×d) from
+        // `b_slice`, and writes (n×d) into `c_slice`. All three lengths
+        // are guaranteed by the row-major slice views above.
+        unsafe {
+            cblas_sgemm(
+                CBLAS_LAYOUT::CblasRowMajor,
+                transa,
+                CBLAS_TRANSPOSE::CblasNoTrans,
+                n as i32,                // M = rows of op(A)
+                d as i32,                // N = cols of B
+                n as i32,                // K = cols of op(A) = rows of B
+                1.0,                     // alpha
+                a_slice.as_ptr(),
+                n as i32,                // lda = cols of A (row-major)
+                b_slice.as_ptr(),
+                d as i32,                // ldb = cols of B
+                0.0,                     // beta
+                c_slice.as_mut_ptr(),
+                d as i32,                // ldc = cols of C
+            );
+        }
+    }
+    c
 }
 
 /// Haar-uniform orthogonal sampler via Householder QR with Mezzadri-2007

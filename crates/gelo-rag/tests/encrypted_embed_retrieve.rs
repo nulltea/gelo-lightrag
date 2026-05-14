@@ -1,4 +1,4 @@
-use approach4::{Approach4InMemoryService, NoopAttestationVerifier};
+use gelo_rag::{GeloRagInMemoryService, NoopAttestationVerifier};
 use gelo_embedder::{GeloBertEmbedder, GeloQwenEmbedder};
 use gelo_protocol::rng::MaskSeed;
 use gelo_protocol::{InProcessTrustedExecutor, RayonCpuEngine, ShieldConfig};
@@ -9,7 +9,7 @@ use rag_core::{Caprise, CapriseKey, ChunkId, DocumentChunk, FastEmbedEmbedder, S
 fn fastembed_sap_retrieval_smoke_test() {
     let embedder = FastEmbedEmbedder::new_smallest().expect("small fastembed model");
     let scheme = SapScheme::new(SapKey::generate(32.0, 0.15));
-    let mut service = Approach4InMemoryService::new(embedder, scheme, NoopAttestationVerifier);
+    let mut service = GeloRagInMemoryService::new(embedder, scheme, NoopAttestationVerifier);
 
     service
         .ingest_chunks(vec![
@@ -40,7 +40,7 @@ fn fastembed_sap_retrieval_smoke_test() {
 fn fastembed_caprise_retrieval_smoke_test() {
     let embedder = FastEmbedEmbedder::new_smallest().expect("small fastembed model");
     let scheme = Caprise::new(CapriseKey::generate(32.0, 0.15));
-    let mut service = Approach4InMemoryService::new(embedder, scheme, NoopAttestationVerifier);
+    let mut service = GeloRagInMemoryService::new(embedder, scheme, NoopAttestationVerifier);
 
     service
         .ingest_chunks(vec![
@@ -74,7 +74,7 @@ fn gelo_embedder_sap_retrieval_smoke_test() {
     let embedder = GeloBertEmbedder::from_pretrained("BAAI/bge-small-en-v1.5", exec)
         .expect("download bge-small");
     let scheme = SapScheme::new(SapKey::generate(32.0, 0.15));
-    let mut service = Approach4InMemoryService::new(embedder, scheme, NoopAttestationVerifier);
+    let mut service = GeloRagInMemoryService::new(embedder, scheme, NoopAttestationVerifier);
 
     service
         .ingest_chunks(vec![
@@ -117,7 +117,7 @@ fn gelo_qwen3_full_stack_retrieval_smoke_test() {
     let embedder = GeloQwenEmbedder::from_pretrained("Qwen/Qwen3-Embedding-0.6B", exec)
         .expect("download Qwen3-Embedding-0.6B");
     let scheme = SapScheme::new(SapKey::generate(32.0, 0.15));
-    let mut service = Approach4InMemoryService::new(embedder, scheme, NoopAttestationVerifier);
+    let mut service = GeloRagInMemoryService::new(embedder, scheme, NoopAttestationVerifier);
 
     service
         .ingest_chunks(vec![

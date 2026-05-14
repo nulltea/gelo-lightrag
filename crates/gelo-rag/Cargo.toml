@@ -1,5 +1,5 @@
 [package]
-name = "approach4"
+name = "gelo-rag"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,18 +7,26 @@ license.workspace = true
 [features]
 default = []
 # Wire the SEV-SNP backend (gelo-tee-sev-snp::SnpAttestationVerifier) in
-# behind the `snp` feature so the default approach4 build doesn't pull in
+# behind the `snp` feature so the default gelo-rag build doesn't pull in
 # the sev/p384/rcgen graph for users who don't need attestation.
 snp = ["dep:gelo-tee-sev-snp"]
 # Layered on top of `snp`: pulls in the mock issuer + test PKI so tests
 # (and the T2 VM simulator) can exercise the full attestation pipeline
 # without real silicon.
 snp-mock = ["snp", "gelo-tee-sev-snp/mock"]
+# Light up the BLIS fast path for the GELO mask CPU GEMMs (gelo-protocol's
+# `blas` feature). Used by the BEIR bench in `tests/beir_accuracy.rs` to
+# pull the apply/unapply cost down at stacked_n ≈ 400. Off by default
+# because building BLIS from source adds ~5 min to the first cargo build.
+blas = ["gelo-protocol/blas"]
 
 [dependencies]
 anyhow.workspace = true
 gelo-tee-sev-snp = { path = "../gelo-tee-sev-snp", optional = true }
 rag_core = { path = "../core", package = "core" }
+rand.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 dp-forward = { workspace = true }
