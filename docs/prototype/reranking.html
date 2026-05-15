@@ -47,14 +47,14 @@
   <!-- ─── HEADLINE STATS ─── -->
   <div class="stat-strip">
     <div class="stat">
-      <div class="k">Qwen3 rerank · GPU</div>
-      <div class="v"><em>2.95</em><span class="unit">s/pair</span></div>
-      <div class="sub">Qwen3-Reranker-0.6B · GELO+mask · Vulkan iGPU · NFCorpus n≈256</div>
+      <div class="k">bge rerank · k′=1</div>
+      <div class="v"><em>1.19</em><span class="unit">s/pair</span></div>
+      <div class="sub">bge-reranker-v2-m3 · GELO+mask · Vulkan iGPU · NFCorpus n≈256 · single-pair</div>
     </div>
     <div class="stat">
-      <div class="k">bge rerank · GPU</div>
-      <div class="v"><em>2.29</em><span class="unit">s/pair</span></div>
-      <div class="sub">bge-reranker-v2-m3 · GELO+mask · Vulkan iGPU · NFCorpus n≈256</div>
+      <div class="k">bge rerank · k′=20</div>
+      <div class="v"><em>3.02</em><span class="unit">s batch</span></div>
+      <div class="sub">bge-reranker-v2-m3 · rayon-parallel candidates · 151 ms/pair effective</div>
     </div>
     <div class="stat">
       <div class="k">bundle k_max</div>
@@ -765,27 +765,30 @@ Content-Type: application/json
       Hardware: AMD Ryzen AI Max+ 395 (Strix Halo). Vulkan adapter: <code>AMD Radeon Graphics (RADV GFX1151)</code> (IntegratedGpu). All numbers under <code>InProcessTrustedExecutor</code> with GELO+mask enabled.
     </p>
 
-    <h4>Per-pair rerank latency</h4>
+    <h4>BGE rerank latency — two regimes</h4>
+    <p class="prose">"Per-pair" alone is ambiguous for a cross-encoder: it depends on whether the candidate batch fans out across CPU workers (k′ &gt; 1) or runs sequentially (k′ = 1). Both regimes are reported.</p>
     <table class="spec">
       <thead>
         <tr>
           <th>Workload</th>
-          <th>bge-reranker-v2-m3</th>
-          <th>Qwen3-Reranker-0.6B</th>
+          <th>Single-pair (k′=1)</th>
+          <th>Batch (k′=20)</th>
         </tr>
       </thead>
       <tbody>
-        <tr><td>NFCorpus n≈256, <b>Vulkan</b></td><td class="num accent">2.29 s/pair</td><td class="num accent">2.95 s/pair</td></tr>
+        <tr><td>NFCorpus n≈256, <b>Vulkan</b></td><td class="num accent">1.19 s/pair</td><td class="num accent">3.02 s · 151 ms/pair</td></tr>
       </tbody>
     </table>
 
-    <p class="prose" style="margin-top:24px;">The wall-clock breakdown from a traced rerank forward (20 pairs, n≈256, see <code>E2E_TRACE=1</code> on <code>rerank_e2e_bench.rs</code>):</p>
+    <p class="prose" style="margin-top:24px;">Wall-clock breakdown of the single-pair (k′=1) forward — traced with <code>E2E_TRACE=1</code> on <code>rerank_e2e_bench.rs</code>. (Batch trace is empty by design: <code>profile::time</code> is thread-local and rayon workers don't roll up to the main thread.)</p>
     <ul>
-      <li><strong>Mask <code>apply</code> + <code>unapply</code> GEMMs — 63% combined</strong> (35% unapply, 28% apply). <code>(n+k)×(n+k)×d</code> CPU matmul per offload, run on the default <code>matrixmultiply</code> backend; AOCL-BLIS lights this up 5× per bucket on the embedder, not yet wired on the reranker (lever 1 in §08).</li>
-      <li><strong>In-TEE attention — 14% (bge) / 21% (Qwen3).</strong> Bidirectional or causal-GQA at n≈256–512 stays in the TEE because OutAttnMult's auto-switch threshold defaults to <code>hidden_size = 1024</code>. Lowering it would offload attention but at a 4× FLOPs cost — only a net win at longer n.</li>
-      <li><strong>GPU matmul — 13% (bge) / 15% (Qwen3).</strong> Eight offloaded projections per layer × N layers, dispatched through cubecl. ~30–40 µs sync per matmul × ~120 GEMMs per forward = ~4 ms of pure dispatch tax per pair.</li>
-      <li><strong>Element-wise (GELU / SwiGLU / RMSNorm / residual) — ~7%.</strong> Single-threaded ndarray.</li>
-      <li><strong>Mask sample (Haar QR) — &lt;1%.</strong> One per forward — see §05 cadence table.</li>
+      <li><strong>Mask <code>apply</code> + <code>unapply</code> GEMMs — 49% combined</strong> (28% unapply, 21% apply, 138 + 92 calls per forward). <code>(n+k)×(n+k)×d</code> on AOCL-BLIS AVX-512 with thread-local single-thread pin. This is the floor without rewriting the mask protocol — already on the AVX-512 fast path.</li>
+      <li><strong>GPU matmul (Vulkan iGPU) — 27%</strong> (18% single, 9% bundled QKV). Eight offloaded projections per layer × 23 layers (last layer skipped). ~3 ms per matmul × 92 dispatches per forward — bandwidth-bound on the integrated GPU.</li>
+      <li><strong>In-TEE attention — 4.7%</strong> (24 calls × 2.3 ms). 16 heads parallelised via rayon (lever L3); previously 24% of wall before the parallel heads landed.</li>
+      <li><strong>Last-block in-TEE projections — 6.7%</strong> (qkv_direct + ffn_up_direct + ffn_down_direct + o_direct). The skip-last-layer config (GELO §3.2 sensitive-layer exclusion) keeps these in the TEE.</li>
+      <li><strong>Element-wise (GELU, LayerNorm, add_bias) — 5%.</strong> Rayon-parallel at rerank shape (lever L4/L5) via shape-conditional threshold.</li>
+      <li><strong>Mask sample (Haar QR) — 2.5%.</strong> One per forward — see §05 cadence table.</li>
+      <li><strong>Tokenize / classifier head / lookup — &lt;0.5%.</strong></li>
     </ul>
 
     <h4 style="margin-top:32px;">End-to-end stages (R7 GPU, 100 docs, 1 query, k'=20, k=10)</h4>
@@ -798,12 +801,38 @@ Content-Type: application/json
         </tr>
       </thead>
       <tbody>
-        <tr><td>A · Ingest (BGE-base GELO+mask+Vulkan + CAPRISE)</td><td class="num">7.6 s</td><td class="num">13.1 docs/s</td></tr>
-        <tr><td>B · Retrieve (BGE-base query embed + CAPRISE cosine, k'=20)</td><td class="num">176 ms</td><td class="num">176 ms/query</td></tr>
-        <tr><td>C · Rerank bge (20 pairs)</td><td class="num">45.7 s</td><td class="num">2.29 s/pair</td></tr>
-        <tr><td>C · Rerank Qwen3 (20 pairs)</td><td class="num">58.9 s</td><td class="num">2.95 s/pair</td></tr>
+        <tr><td>A · Ingest (BGE-base GELO+mask+Vulkan + CAPRISE)</td><td class="num">7.7 s</td><td class="num">13.0 docs/s</td></tr>
+        <tr><td>B · Retrieve (BGE-base query embed + CAPRISE cosine, k'=20)</td><td class="num">178 ms</td><td class="num">178 ms/query</td></tr>
+        <tr><td>C · Rerank bge (20 pairs)</td><td class="num accent">3.02 s</td><td class="num accent">151 ms/pair</td></tr>
       </tbody>
     </table>
+
+    <h4 style="margin-top:32px;">Optimization headroom landed</h4>
+    <p class="prose">All numbers below ride the paper-parity executor default (per-forward Haar mask + shield k=8) and AOCL-BLIS via the <code>blas</code> feature (now default-on for <code>gelo-rag</code> / <code>gelo-reranker</code> / <code>gelo-snp-runner</code>).</p>
+    <table class="spec">
+      <thead>
+        <tr>
+          <th>Stack</th>
+          <th>Single-pair (k′=1)</th>
+          <th>Batch (k′=20)</th>
+          <th>vs T0</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>T0 baseline — per-offload mask, no BLAS</td><td class="num">2.29 s</td><td class="num">45.7 s</td><td class="num">—</td></tr>
+        <tr><td>+ paper-parity default</td><td class="num">2.29 s</td><td class="num">45.7 s</td><td class="num">(same — measured pre-flip)</td></tr>
+        <tr><td>+ L1 (AOCL-BLIS, thread-local single-thread pin)</td><td class="num">1.74 s</td><td class="num">27.1 s</td><td class="num">1.32× / 1.69×</td></tr>
+        <tr><td>+ L2 (rayon-parallel candidates)</td><td class="num">1.74 s</td><td class="num">3.23 s</td><td class="num">1.32× / <b>14.2×</b></td></tr>
+        <tr><td>+ L4/L5/L6 (rayon GELU/LN/bias, skip-last)</td><td class="num">1.62 s</td><td class="num">3.22 s</td><td class="num">1.41× / 14.2×</td></tr>
+        <tr><td><b>+ L3 (rayon-parallel attention heads)</b></td><td class="num accent">1.19 s</td><td class="num accent">3.02 s</td><td class="num accent"><b>1.92× / 15.1×</b></td></tr>
+      </tbody>
+    </table>
+
+    <p class="prose" style="margin-top:24px;">Two non-default options tried and judged not worth turning on:</p>
+    <ul>
+      <li><strong>L3a · <code>ndarray/blas</code> globally</strong> — routes every workspace <code>.dot()</code> through cblas. Marginal: 1.62 → 1.57 s single-pair, 3.22 → 3.18 s batch (~3% / ~1%). Per-head attention shape <code>(256, 64) · (64, 256)</code> sits on the BLIS-vs-matrixmultiply crossover. Kept as an opt-in <code>blas-ndarray</code> feature for users to try on their own hardware; the global blast radius doesn't justify default-on for a 3% gain.</li>
+      <li><strong>L3b · OutAttnMult for the BERT path</strong> — plumbed (new <code>BertConfig::use_out_attn_mult</code> + <code>multi_head_attention_with_offload</code> mirroring the decoder path), but on this iGPU at our shapes it regressed both regimes (single-pair 1.74 → 4.33 s; batch 3.23 → 17.83 s — the iGPU serialises per-layer Q·Kᵀ dispatches across rayon workers). Code stays — earns its keep at <code>n ≥ 512</code> or on a dGPU — but the bench default keeps it off.</li>
+    </ul>
 
     <h4 style="margin-top:32px;">Ranking metrics on the same run</h4>
     <p class="prose">Baseline = BGE-base GELO+mask+Vulkan cosine over CAPRISE index. Subset of 100 NFCorpus docs constructed to retain qrel-relevant docs (<code>subset_corpus</code> in the bench). Single-digit query counts make these numbers high-variance per-stage; the relative deltas matter more than the absolute values at this scale.</p>
@@ -862,40 +891,64 @@ Content-Type: application/json
         <tr>
           <th>#</th>
           <th>Lever</th>
-          <th>Expected impact</th>
-          <th>Effort</th>
+          <th>Status</th>
+          <th>Measured impact</th>
         </tr>
       </thead>
       <tbody>
         <tr>
-          <td>1</td>
-          <td>Wire <code>blas</code> feature for the reranker mask GEMMs (AOCL-BLIS); mirror <code>gelo.md</code> §8 lever 4. <code>mask_apply</code> + <code>mask_unapply</code> are 63% of rerank wall time — AOCL-BLIS measured 5× per-bucket on the embedder.</td>
-          <td>bge per-pair 2.29 s → ~1 s; Qwen3 2.95 s → ~1.3 s at n≈256</td>
-          <td>1 day</td>
+          <td>L1</td>
+          <td>AOCL-BLIS for mask GEMMs (<code>blas</code> default feature) + thread-local single-thread pin in <code>sgemm_blis</code> so rayon workers don't oversubscribe.</td>
+          <td class="accent">landed</td>
+          <td>−24% single-pair · −41% batch</td>
         </tr>
         <tr>
-          <td>2</td>
-          <td>Fix <code>QWEN3_RERANKER_TEMPLATE</code> — add <code>&lt;Instruct&gt;:</code> line per HF model card.</td>
-          <td>Most likely cause of Qwen3 −0.247 nDCG regression</td>
-          <td>1 hour + bench rerun</td>
+          <td>L2</td>
+          <td>Rayon-parallel candidate loop in <code>CrossEncoderRerankService::rerank</code>; one cloned executor per worker, single-candidate fast path.</td>
+          <td class="accent">landed</td>
+          <td>−88% batch · per-pair unchanged</td>
         </tr>
         <tr>
-          <td>3</td>
-          <td>Parallelise per-candidate rerank loop with rayon, following <code>embed_many</code>.</td>
-          <td>~3× wall-clock improvement before iGPU saturation</td>
-          <td>1 day</td>
+          <td>L3</td>
+          <td>Rayon-parallel attention heads in <code>bert::attention::multi_head_attention</code> when <code>n ≥ 64</code>; embedder shape stays serial.</td>
+          <td class="accent">landed</td>
+          <td>−27% single-pair (bucket 7.1× shrink)</td>
         </tr>
         <tr>
-          <td>4</td>
-          <td>Lower <code>out_attn_mult_min_seq_len</code> toward 256 so attention offloads at rerank lengths.</td>
-          <td>Crossover-dependent; needs empirical measurement at n=200/300/500</td>
-          <td>1 day (incl. measurement)</td>
+          <td>L3a</td>
+          <td>Route every <code>ndarray::dot()</code> through BLIS (<code>blas-ndarray</code> opt-in feature).</td>
+          <td>opt-in</td>
+          <td>−3% single-pair · −1% batch — kept opt-in for hardware-specific tuning</td>
         </tr>
         <tr>
-          <td>5</td>
-          <td>Bucket-pad input tokens to <code>{128, 256, 512}</code> to keep cubecl autotune cache hot.</td>
-          <td>~10–20% per-pair</td>
-          <td>1 day</td>
+          <td>L3b</td>
+          <td>OutAttnMult for the BERT path (<code>BertConfig::use_out_attn_mult</code>); plumbed end-to-end.</td>
+          <td>plumbed, default off</td>
+          <td>regresses on this iGPU at <code>n ≈ 256</code>; useful at <code>n ≥ 512</code> or on a dGPU</td>
+        </tr>
+        <tr>
+          <td>L4 / L5</td>
+          <td>Rayon-parallel GELU, LayerNorm, add_bias in <code>bert::forward</code> with a shape-conditional threshold (<code>n × d ≥ 32 768</code>).</td>
+          <td class="accent">landed</td>
+          <td>~−7% single-pair (combined)</td>
+        </tr>
+        <tr>
+          <td>L6</td>
+          <td><code>BertConfig::skip_last_layer</code> on the reranker — GELO §3.2 sensitive-layer exclusion.</td>
+          <td class="accent">landed</td>
+          <td>−1.5% wall · paper-aligned default</td>
+        </tr>
+        <tr>
+          <td>Qwen3 template</td>
+          <td>Fix <code>QWEN3_RERANKER_TEMPLATE</code> — add the missing <code>&lt;Instruct&gt;:</code> line per the HF model card. Tracked separately because Qwen3 was descoped from the BGE perf sweep.</td>
+          <td>open</td>
+          <td>most likely cause of the Qwen3 −0.247 nDCG regression</td>
+        </tr>
+        <tr>
+          <td>Bucket-pad seq</td>
+          <td>Bucket-pad input tokens to <code>{128, 256, 512}</code> to keep cubecl's autotune cache hot.</td>
+          <td>open</td>
+          <td>p99 stabilisation, mean wall unchanged</td>
         </tr>
       </tbody>
     </table>
