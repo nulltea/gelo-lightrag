@@ -6,16 +6,23 @@ license.workspace = true
 
 [features]
 default = []
-# `blas` calls into BLIS for the mask apply/unapply CPU GEMMs **only**
-# (via a direct cblas_sgemm dispatch in `mask::apply` / `mask::unapply`).
-# We intentionally do NOT enable `ndarray/blas` here: that would re-route
-# every `.dot()` in the workspace through BLIS, which regresses the
-# per-head attention matmuls (small shapes pay BLIS thread-spawn
-# overhead). Pulls in `blas-src + blis-src` to build BLIS from source.
+# `blas` calls into BLIS for the mask apply/unapply CPU GEMMs (via a
+# direct cblas_sgemm dispatch in `mask::apply` / `mask::unapply`).
+# Pulls in `blas-src + blis-src` to build BLIS from source.
 # At stacked_n ≈ 400 and d ∈ {1024, 3072} this is ~2× faster than the
-# matrixmultiply default on AMD Zen, when `BLIS_NUM_THREADS` is set
-# (suggest 16 on 32-core hosts).
+# matrixmultiply default on AMD Zen with thread-local single-thread
+# pinning (see `mask::ensure_blis_single_thread`).
 blas = ["dep:blas-src", "dep:blis-src", "dep:cblas-sys"]
+
+# Layered on top of `blas`: also routes every `ndarray::dot()` in the
+# workspace through BLIS (via `ndarray/blas`). Off by default at the
+# embedder shape (small per-head attention matmuls pay BLIS thread-
+# spawn overhead — see commit history for the original measurement).
+# Worth turning on for the **rerank** shape (n ≈ 256, d_head = 64,
+# 16 heads × 2 GEMMs × 24 layers per pair) where the per-head GEMM
+# clears the BLIS-vs-matrixmultiply crossover. Empirically measured
+# 2026-05-15 on AMD Strix Halo iGPU.
+blas-ndarray = ["blas", "ndarray/blas"]
 
 [dependencies]
 anyhow.workspace = true

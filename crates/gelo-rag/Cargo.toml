@@ -21,6 +21,10 @@ snp-mock = ["snp", "gelo-tee-sev-snp/mock"]
 # with `--no-default-features` if the ~5 min first-build BLIS-from-source
 # cost is unacceptable.
 blas = ["gelo-protocol/blas"]
+# Layered on top of `blas`: route every `ndarray::dot()` through BLIS
+# (covers the per-head bert attention matmuls). Measurement gate; not
+# default. See `gelo-protocol/Cargo.toml` for the rationale.
+blas-ndarray = ["gelo-protocol/blas-ndarray"]
 
 [dependencies]
 anyhow.workspace = true

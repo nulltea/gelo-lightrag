@@ -13,6 +13,11 @@ default = ["blas"]
 # build adds ~5 min to compile BLIS from source; disable with
 # `--no-default-features` if that's a problem.
 blas = ["gelo-protocol/blas"]
+# Layered on top of `blas`: route every `ndarray::dot()` through BLIS
+# (including the per-head Q·Kᵀ / scores·V attention matmuls inside
+# `bert::attention::multi_head_attention`). Worth measuring on the
+# rerank path; see `gelo-protocol/Cargo.toml` for the rationale.
+blas-ndarray = ["gelo-protocol/blas-ndarray"]
 
 [dependencies]
 aes-gcm.workspace = true
