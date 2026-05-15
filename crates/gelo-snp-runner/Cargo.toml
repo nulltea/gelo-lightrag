@@ -9,7 +9,7 @@ name = "gelo-snp-runner"
 path = "src/main.rs"
 
 [features]
-default = ["snp"]
+default = ["snp", "blas"]
 # Wires the SEV-SNP hardware path (`/dev/sev-guest`) via gelo-tee-sev-snp's
 # `sev-snp` feature. Always on for the production binary; off for fast
 # local iteration where only the mock path is exercised.
@@ -17,6 +17,10 @@ snp = ["gelo-tee-sev-snp/sev-snp"]
 # Mock attestation issuer + bundled test PKI. Required at runtime under
 # `SNP_MODE=mock`.
 mock = ["gelo-tee-sev-snp/mock"]
+# AOCL-BLIS for the GELO mask SGEMMs. Default-on for the production
+# runner. Disable with `--no-default-features` for the bare-bones build
+# (loses the ~5× mask-bucket speedup).
+blas = ["gelo-protocol/blas"]
 # Both — the default development build so a single `cargo run` can serve
 # either mode based on the SNP_MODE env var.
 all-issuers = ["snp", "mock"]

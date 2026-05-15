@@ -124,6 +124,42 @@ impl<X: TrustedExecutor> CrossEncoderRerankService<X> {
         self
     }
 
+    /// Run the final transformer block fully inside the TEE (no
+    /// offload). GELO §3.2 lists this alongside `skip_first_layers` as
+    /// a defence against known-plaintext attacks that pivot off the
+    /// final-layer's high-information hidden state. For BGE-rerank-v2-m3
+    /// (24 layers) this removes 4 mask GEMMs + 2 GPU offloads per pair
+    /// — small (~1.5% wall) but free, and aligns the rerank path with
+    /// the paper's recommendation.
+    pub fn with_skip_last_layer(mut self, enabled: bool) -> Self {
+        self.cfg.skip_last_layer = enabled;
+        self
+    }
+
+    /// Enable OutAttnMult routing of `Q·Kᵀ` through the GPU engine for
+    /// rerank forwards whose sequence length reaches the auto-switch
+    /// threshold (see [`Self::with_out_attn_mult_min_seq_len`]).
+    /// Cross-encoder rerank shapes (`n ≈ 256+`) are precisely the
+    /// regime where this earns its keep — the in-TEE bidirectional
+    /// MHA bucket is ~24% of post-BLIS rerank wall, and OutAttnMult
+    /// moves it to the GPU at the 4×-FLOPs cost (still net-faster on
+    /// the iGPU because the GPU is amortising the dispatch).
+    pub fn with_out_attn_mult(mut self, enabled: bool) -> Self {
+        self.cfg.use_out_attn_mult = enabled;
+        self
+    }
+
+    /// Override the OutAttnMult auto-switch threshold. `None` resolves
+    /// to `hidden_size` (the FLOP balance point). For
+    /// bge-reranker-v2-m3 (`hidden_size = 1024`) at typical rerank
+    /// shapes (`n ≈ 256–512`), setting `Some(256)` is what actually
+    /// engages the offload — the default of `hidden_size` keeps
+    /// attention in-TEE for most realistic rerank inputs.
+    pub fn with_out_attn_mult_min_seq_len(mut self, min_seq_len: Option<usize>) -> Self {
+        self.cfg.out_attn_mult_min_seq_len = min_seq_len;
+        self
+    }
+
     pub fn config(&self) -> &BertConfig {
         &self.cfg
     }
@@ -133,7 +169,8 @@ impl<X: TrustedExecutor> CrossEncoderRerankService<X> {
     }
 
     /// Score one `(query, doc)` pair through the GELO-protected
-    /// forward. Returns a scalar — used internally by [`Self::rerank`].
+    /// forward. Returns a scalar — used internally by [`Self::rerank`]
+    /// on the sequential (single-candidate) path.
     pub fn score_pair(&mut self, query: &str, document: &str) -> Result<f32> {
         let ids = profile::time("tee:tokenize", || {
             self.tokenizer.encode_pair(query, document, self.max_len)
@@ -170,7 +207,7 @@ fn load_from_paths<X: TrustedExecutor>(
     CrossEncoderRerankService::new(cfg, tokenizer, weights, head, exec)
 }
 
-impl<X: TrustedExecutor> RerankService for CrossEncoderRerankService<X> {
+impl<X: TrustedExecutor + Clone + Send + Sync> RerankService for CrossEncoderRerankService<X> {
     fn model_identity(&self) -> &[u8] {
         &self.model_identity
     }
@@ -194,17 +231,7 @@ impl<X: TrustedExecutor> RerankService for CrossEncoderRerankService<X> {
             )));
         }
 
-        let mut scored: Vec<ScoredCandidate> = Vec::with_capacity(request.candidates.len());
-        for cand in request.candidates {
-            let score = self
-                .score_pair(request.query, &cand.text)
-                .map_err(RerankError::Forward)?;
-            scored.push(ScoredCandidate {
-                chunk_id: cand.chunk_id.clone(),
-                text: cand.text.clone(),
-                score,
-            });
-        }
+        let scored = score_candidates_parallel(self, request).map_err(RerankError::Forward)?;
 
         // RNG for tie-shuffle + bundle nonce sampling. Derived from
         // the per-query key so two runs against the same session +
@@ -227,4 +254,60 @@ impl<X: TrustedExecutor> RerankService for CrossEncoderRerankService<X> {
 
         EncryptedRerankBundle::seal(&qkey, &ranked, request.k_max, &mut rng, decoy_len)
     }
+}
+
+/// Score every candidate against the query, returning `ScoredCandidate`s
+/// in the input order. Single-candidate calls run sequentially on the
+/// service's own executor; multi-candidate calls fan out via rayon with
+/// one cloned executor per worker (independent RNG stream, independent
+/// mask state — same pattern as `gelo_embedder::bert::embedder::embed`).
+fn score_candidates_parallel<X: TrustedExecutor + Clone + Send + Sync>(
+    svc: &mut CrossEncoderRerankService<X>,
+    request: &RerankRequest<'_>,
+) -> Result<Vec<ScoredCandidate>> {
+    // Single-candidate fast path: skip the rayon scope and the executor
+    // clone. Online (k′ = 1) reranks land here.
+    if request.candidates.len() <= 1 {
+        let mut scored = Vec::with_capacity(request.candidates.len());
+        for cand in request.candidates {
+            let score = svc.score_pair(request.query, &cand.text)?;
+            scored.push(ScoredCandidate {
+                chunk_id: cand.chunk_id.clone(),
+                text: cand.text.clone(),
+                score,
+            });
+        }
+        return Ok(scored);
+    }
+
+    // Multi-candidate path: rayon fan-out, one executor clone per worker.
+    // Each worker gets its own RNG stream so per-forward Haar masks stay
+    // independent across candidates — see the matching rationale in
+    // `gelo_embedder::bert::embedder::embed` for why this is the right
+    // privacy property (independent mask sampling means no cross-candidate
+    // correlation in the masked PCIe traffic).
+    use rayon::prelude::*;
+    let query = request.query;
+    request
+        .candidates
+        .par_iter()
+        .enumerate()
+        .map(|(idx, cand)| {
+            let mut worker_exec = svc.exec.clone();
+            worker_exec.set_rng_stream(idx as u64);
+            let ids = profile::time("tee:tokenize", || {
+                svc.tokenizer.encode_pair(query, &cand.text, svc.max_len)
+            })?;
+            let hidden =
+                forward::run(&svc.cfg, &svc.weights, &mut worker_exec, &ids)?;
+            let score = profile::time("tee:classifier_head", || {
+                svc.head.score(hidden.row(0))
+            });
+            Ok(ScoredCandidate {
+                chunk_id: cand.chunk_id.clone(),
+                text: cand.text.clone(),
+                score,
+            })
+        })
+        .collect()
 }

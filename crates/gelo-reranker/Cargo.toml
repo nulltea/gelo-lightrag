@@ -5,10 +5,13 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-default = []
-# Light up the BLIS fast path inside the inner embedder forward pass.
-# Off by default for the same reason as `gelo-rag`: BLIS-from-source adds
-# ~5 min to the first build.
+default = ["blas"]
+# Light up the BLIS fast path for the GELO mask SGEMMs. The reranker
+# default-on this because at rerank shapes (n≈256, hidden=1024) the
+# AOCL-BLIS AVX-512 path is ~5× faster per mask GEMM than the
+# matrixmultiply fallback, and mask GEMMs are >50% of wall-time. First
+# build adds ~5 min to compile BLIS from source; disable with
+# `--no-default-features` if that's a problem.
 blas = ["gelo-protocol/blas"]
 
 [dependencies]
@@ -23,6 +26,7 @@ ndarray.workspace = true
 rag_core = { path = "../core", package = "core" }
 rand.workspace = true
 rand_chacha.workspace = true
+rayon.workspace = true
 safetensors.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true

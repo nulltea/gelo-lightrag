@@ -28,7 +28,7 @@ pub mod sim;
 pub mod substrate;
 
 pub use attention::PermAttnConfig;
-pub use mask::{GeloMask, MaskSeed};
+pub use mask::{GeloMask, MaskSeed, ensure_blis_single_thread, set_blis_num_threads};
 pub use shield::ShieldConfig;
 pub use sim::{InProcessTrustedExecutor, PlaintextExecutor, RayonCpuEngine};
 pub use substrate::{GpuOffloadEngine, TrustedExecutor, WeightHandle, WeightKind};

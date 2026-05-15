@@ -44,6 +44,8 @@ fn tiny_config(num_layers: usize, hidden: usize, heads: usize, ffn: usize) -> Be
         max_seq_len: 32,
         skip_first_layers: 0,
         skip_last_layer: false,
+        use_out_attn_mult: false,
+        out_attn_mult_min_seq_len: None,
     }
 }
 
@@ -139,9 +141,13 @@ const STUB_TOKENIZER_JSON: &str = r#"{
 }"#;
 
 fn stub_tokenizer() -> HfTokenizer {
+    // pid + rand because tests run in parallel within one process →
+    // process id alone collides between concurrent stub_tokenizer
+    // callers.
     let tmp = std::env::temp_dir().join(format!(
-        "gelo-reranker-stub-tok-{}.json",
-        std::process::id()
+        "gelo-reranker-stub-tok-cross-{}-{}.json",
+        std::process::id(),
+        rand::random::<u32>()
     ));
     std::fs::write(&tmp, STUB_TOKENIZER_JSON).expect("write stub tokenizer");
     let tok = HfTokenizer::from_file(&tmp).expect("load stub tokenizer");

@@ -167,6 +167,13 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
     /// as [`Self::new`]. The seed reproducibility is preserved
     /// across the per-forward / per-offload toggle.
     pub fn with_seed(engine: E, seed: MaskSeed) -> Self {
+        // Pin BLIS to single-thread BEFORE any rayon worker spawns and
+        // BEFORE any mask GEMM fires. `bli_thread_set_num_threads`
+        // applied lazily inside `sgemm_blis` is too late on the ingest
+        // path: rayon workers have already allocated against the
+        // multi-thread BLIS pool by the time the first GEMM runs.
+        // Idempotent — OnceLock guards subsequent calls.
+        crate::mask::ensure_blis_single_thread();
         Self {
             engine,
             rng: ChaCha20Rng::from_seed(seed.0),

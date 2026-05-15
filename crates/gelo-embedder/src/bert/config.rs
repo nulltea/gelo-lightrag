@@ -29,6 +29,22 @@ pub struct BertConfig {
     /// trusted side.
     #[serde(default = "default_skip_last")]
     pub skip_last_layer: bool,
+    /// Master kill-switch for routing Q·Kᵀ through TwinShield OutAttnMult
+    /// on the BERT encoder. Mirrors `DecoderConfig::use_out_attn_mult`.
+    /// Off by default — at embedder shapes (n ≈ 30) the in-TEE per-head
+    /// MHA is already fast and OutAttnMult's operand widening loses.
+    /// Cross-encoder reranker shapes (n ≈ 256+) are where this earns
+    /// its keep; opt in via the builder on
+    /// `CrossEncoderRerankService`.
+    #[serde(default = "default_use_out_attn_mult")]
+    pub use_out_attn_mult: bool,
+    /// Length threshold at which the OutAttnMult auto-switch fires.
+    /// `None` resolves to `hidden_size` (the FLOP-balance crossover —
+    /// attention is `O(n² · head_dim)` and one projection is
+    /// `O(n · d²)`, so `n ≈ d` is where attention starts matching one
+    /// projection's work).
+    #[serde(default)]
+    pub out_attn_mult_min_seq_len: Option<usize>,
 }
 
 const fn default_max_position_embeddings() -> usize {
@@ -52,6 +68,9 @@ const fn default_skip_first() -> usize {
 const fn default_skip_last() -> bool {
     false
 }
+const fn default_use_out_attn_mult() -> bool {
+    false
+}
 
 impl BertConfig {
     pub fn head_dim(&self) -> usize {
@@ -67,5 +86,18 @@ impl BertConfig {
             return false;
         }
         true
+    }
+
+    /// Effective OutAttnMult auto-switch threshold. `None` resolves to
+    /// `hidden_size` (FLOP balance between attention and one
+    /// projection — see field doc).
+    pub fn out_attn_mult_threshold(&self) -> usize {
+        self.out_attn_mult_min_seq_len.unwrap_or(self.hidden_size)
+    }
+
+    /// True iff the dispatch layer should route Q·Kᵀ through
+    /// OutAttnMult for a forward pass of sequence length `n`.
+    pub fn out_attn_mult_enabled_for(&self, n: usize) -> bool {
+        self.use_out_attn_mult && n >= self.out_attn_mult_threshold()
     }
 }

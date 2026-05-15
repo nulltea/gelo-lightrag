@@ -34,6 +34,8 @@ fn tiny_config(num_layers: usize, hidden: usize, heads: usize, ffn: usize) -> Be
         max_seq_len: 32,
         skip_first_layers: 0,
         skip_last_layer: false,
+        use_out_attn_mult: false,
+        out_attn_mult_min_seq_len: None,
     }
 }
 

@@ -78,6 +78,75 @@ impl GeloMask {
 
 }
 
+#[cfg(feature = "blas")]
+unsafe extern "C" {
+    /// BLIS thread-count setter. The default (BLIS_NUM_THREADS=N if set,
+    /// else all cores) over-subscribes here: each mask GEMM is small
+    /// enough that BLIS's per-call thread barrier costs more than the
+    /// parallel work saves. We pin to 1 at the first sgemm_blis call.
+    fn bli_thread_set_num_threads(n_threads: i64);
+}
+
+/// Lazily pin BLIS to single-thread on first call. Process-global state
+/// (BLIS owns its own thread pool), but a OnceLock guard means we set it
+/// exactly once even under concurrent first-call races.
+/// Per-thread idempotent pin of BLIS to single-thread. AOCL-BLIS keeps
+/// the active thread count in **thread-local** state (despite the
+/// `bli_thread_set_num_threads` name) — calls from the main thread
+/// don't propagate to rayon workers spawned later, so the right place
+/// to pin is *inside* `sgemm_blis` (which every worker thread enters
+/// on its own). The thread-local OnceLock means we pay the C-call cost
+/// exactly once per thread that ever runs a mask GEMM.
+#[cfg(feature = "blas")]
+fn blis_init_single_thread() {
+    use std::cell::Cell;
+    thread_local! {
+        static PINNED: Cell<bool> = const { Cell::new(false) };
+    }
+    PINNED.with(|p| {
+        if !p.get() {
+            set_blis_num_threads(1);
+            p.set(true);
+        }
+    });
+}
+
+/// Eagerly pin BLIS to single-thread on the calling thread. Idempotent:
+/// subsequent calls on the same thread are a thread-local atomic read.
+/// Note that AOCL-BLIS holds the active thread count per-thread, so
+/// every rayon worker needs its own first-call init — which happens
+/// automatically inside `mask::apply` / `mask::unapply`. Calling this
+/// from your `main()` is harmless but only affects the main thread.
+///
+/// No-op when the `blas` feature is disabled.
+pub fn ensure_blis_single_thread() {
+    #[cfg(feature = "blas")]
+    blis_init_single_thread();
+}
+
+/// Override BLIS's thread count for the mask SGEMMs. The default
+/// (auto-pinned to 1 on first `mask::apply` / `mask::unapply` call) is
+/// the right choice for the embedder + rerank paths because each mask
+/// GEMM is small enough that BLIS's per-call thread barrier dominates;
+/// multi-thread BLIS over-subscribes when rayon already owns the outer
+/// loop. If you have a different workload — e.g. a single very large
+/// SGEMM benchmark — call this with `n > 1` from `main()` BEFORE the
+/// first mask GEMM and the auto-init becomes a no-op (OnceLock fires
+/// once).
+///
+/// No-op when the `blas` feature is disabled (matrixmultiply has no
+/// global thread setting; rayon owns its scheduling).
+#[cfg(feature = "blas")]
+pub fn set_blis_num_threads(n: i64) {
+    // SAFETY: `bli_thread_set_num_threads` is thread-safe per BLIS docs.
+    unsafe { bli_thread_set_num_threads(n) };
+}
+
+/// No-op stub for the non-`blas` build so callers can call this
+/// unconditionally without `#[cfg]` gates of their own.
+#[cfg(not(feature = "blas"))]
+pub fn set_blis_num_threads(_n: i64) {}
+
 /// BLIS-backed `C = α · op(A) · B` for the GELO mask apply/unapply.
 ///
 /// Called only with `α = 1.0, β = 0.0`. `a` is the (n × n) mask matrix
@@ -95,6 +164,7 @@ fn sgemm_blis(
     b: ArrayView2<'_, f32>,
     transpose_a: bool,
 ) -> Array2<f32> {
+    blis_init_single_thread();
     use cblas_sys::{cblas_sgemm, CBLAS_LAYOUT, CBLAS_TRANSPOSE};
     let n = a.nrows();
     debug_assert_eq!(a.ncols(), n, "mask must be square");

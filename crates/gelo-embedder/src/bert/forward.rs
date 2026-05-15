@@ -4,7 +4,7 @@ use ndarray::{Array1, Array2, ArrayView2, Axis};
 use gelo_protocol::profile;
 use gelo_protocol::{TrustedExecutor, WeightHandle, WeightKind};
 
-use super::attention::multi_head_attention;
+use super::attention::{multi_head_attention, multi_head_attention_with_offload};
 use super::config::BertConfig;
 use super::weights::{BertLayerWeights, BertWeights};
 
@@ -101,9 +101,24 @@ fn encoder_block(
         )
     });
 
-    let ctx = profile::time("tee:bert_mha", || {
-        multi_head_attention(q.view(), k.view(), v.view(), cfg.num_attention_heads)
-    });
+    // Attention: route through OutAttnMult when offload is on AND the
+    // BERT-side auto-switch fires (`n ≥ out_attn_mult_min_seq_len`).
+    // Otherwise compute attention inside the TEE (Q, K never cross
+    // PCIe even at the long-context path — equally confidential).
+    let n = q.shape()[0];
+    let ctx = if offload && cfg.out_attn_mult_enabled_for(n) {
+        multi_head_attention_with_offload(
+            exec,
+            q.view(),
+            k.view(),
+            v.view(),
+            cfg.num_attention_heads,
+        )?
+    } else {
+        profile::time("tee:bert_mha", || {
+            multi_head_attention(q.view(), k.view(), v.view(), cfg.num_attention_heads)
+        })
+    };
 
     let proj = if offload {
         exec.offload_linear(WeightHandle::new(layer_idx, WeightKind::O), ctx.view())?
@@ -157,11 +172,22 @@ fn add(a: ArrayView2<'_, f32>, b: ArrayView2<'_, f32>) -> Array2<f32> {
     &a + &b
 }
 
+/// Total-elements threshold above which we hand the row loop to rayon.
+/// Empirically tuned: at < ~32k elements (e.g. n=12 × d=768 embedder
+/// shape), rayon's ~20 µs scope-setup beats the parallel work; above
+/// it (e.g. rerank n=256 × ffn=4096 = 1M elements) the parallel path
+/// wins ~10×. Used by `add_bias`, `layer_norm`, and `gelu` below.
+const PAR_THRESHOLD_ELEMS: usize = 32_768;
+
 fn add_bias(mut m: Array2<f32>, bias: &Array1<f32>) -> Array2<f32> {
-    // Single-thread; broadcast-add auto-vectorises in LLVM. Rayon overhead
-    // at our per-call work size (typ. 128×768) costs more than it saves.
-    for mut row in m.axis_iter_mut(Axis(0)) {
-        row += bias;
+    use ndarray::parallel::prelude::*;
+    let elems = m.nrows() * m.ncols();
+    if elems >= PAR_THRESHOLD_ELEMS {
+        m.axis_iter_mut(Axis(0)).into_par_iter().for_each(|mut row| row += bias);
+    } else {
+        for mut row in m.axis_iter_mut(Axis(0)) {
+            row += bias;
+        }
     }
     m
 }
@@ -169,12 +195,15 @@ fn add_bias(mut m: Array2<f32>, bias: &Array1<f32>) -> Array2<f32> {
 fn layer_norm(x: ArrayView2<'_, f32>, gamma: &Array1<f32>, beta: &Array1<f32>, eps: f32) -> Array2<f32> {
     // Single-pass mean+variance (E[X²] − E[X]²) per row, then a single
     // multiply-add per element using a precomputed `inv_denom`. Avoids the
-    // 2× pass + per-element division of the textbook formulation. Single-
-    // threaded; per-row work is too small to amortise rayon overhead.
+    // 2× pass + per-element division of the textbook formulation. Rows
+    // are independent → parallelise when the matrix clears the rayon
+    // breakeven threshold (typical rerank shape n=256, d=1024 = 262 k
+    // elements → parallel; embedder shape n=12, d=768 = 9 k → serial).
     let d = x.ncols() as f32;
     let inv_d = d.recip();
     let mut out = Array2::<f32>::zeros(x.raw_dim());
-    for (mut dst, row) in out.axis_iter_mut(Axis(0)).zip(x.axis_iter(Axis(0))) {
+    let elems = x.nrows() * x.ncols();
+    let compute = |mut dst: ndarray::ArrayViewMut1<f32>, row: ndarray::ArrayView1<f32>| {
         let mut s = 0.0_f32;
         let mut ss = 0.0_f32;
         for &v in row.iter() {
@@ -189,18 +218,42 @@ fn layer_norm(x: ArrayView2<'_, f32>, gamma: &Array1<f32>, beta: &Array1<f32>, e
         {
             *d_v = (x_v - mean) * inv_denom * g + b;
         }
+    };
+    if elems >= PAR_THRESHOLD_ELEMS {
+        use ndarray::parallel::prelude::*;
+        ndarray::Zip::from(out.axis_iter_mut(Axis(0)))
+            .and(x.axis_iter(Axis(0)))
+            .into_par_iter()
+            .for_each(|(dst, row)| compute(dst, row));
+    } else {
+        for (dst, row) in out.axis_iter_mut(Axis(0)).zip(x.axis_iter(Axis(0))) {
+            compute(dst, row);
+        }
     }
     out
 }
 
 fn gelu(mut m: Array2<f32>) -> Array2<f32> {
     // erf-based GELU (matches HF BERT's "gelu" activation exactly):
-    // 0.5 * x * (1 + erf(x / sqrt(2))). Single-threaded; element work
-    // is too small to benefit from rayon scheduling.
+    // 0.5 * x * (1 + erf(x / sqrt(2))). At rerank shapes
+    // (n=256 × ffn=4096 = 1 M elements per call × 24 layers) the
+    // bucket lands at ~11% of post-BLIS rerank wall — well past the
+    // rayon breakeven, so parallelise by contiguous chunks. Embedder
+    // shapes (49 k elements) stay serial.
     let inv_sqrt_2 = 1.0_f32 / 2.0_f32.sqrt();
-    for v in m.iter_mut() {
+    let f = |v: &mut f32| {
         let y = *v * inv_sqrt_2;
         *v = 0.5 * *v * (1.0 + erf(y));
+    };
+    let elems = m.nrows() * m.ncols();
+    if elems >= PAR_THRESHOLD_ELEMS {
+        use rayon::prelude::*;
+        let slice = m.as_slice_mut().expect("Array2 is row-major contiguous");
+        slice.par_iter_mut().for_each(f);
+    } else {
+        for v in m.iter_mut() {
+            f(v);
+        }
     }
     m
 }

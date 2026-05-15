@@ -353,10 +353,23 @@ fn ingest_query_rerank_bge_and_qwen3_on_nfcorpus() -> Result<()> {
     } else {
         eprintln!("[e2e][C/bge] loading BAAI/bge-reranker-v2-m3 ...");
         let t0 = Instant::now();
+        // OutAttnMult-BERT is plumbed (lever L3b) but kept OFF here:
+        // - **Batch wall**: 16 rayon workers each enqueue per-layer
+        //   Q·Kᵀ GPU dispatches; the iGPU serialises them across
+        //   workers, regressing 3.23 s → 17.83 s at k′=20.
+        // - **Single-pair latency**: OutAttnMult's 4× FLOP widening
+        //   and 24-layer dispatch overhead lose to in-TEE
+        //   matrixmultiply at n≈256 on this iGPU (1.74 s → 4.33 s).
+        // The lever earns its keep at longer `n` (≥512) and on
+        // stronger GPUs; opt in via `with_out_attn_mult(true)` when
+        // those regimes apply.
         let mut bge = CrossEncoderRerankService::from_pretrained(
             "BAAI/bge-reranker-v2-m3",
             InProcessTrustedExecutor::with_seed(gpu.clone_shared(), MaskSeed::from_bytes([7u8; 32])),
-        )?;
+        )?
+        // Lever L6: GELO §3.2 sensitive-layer exclusion. Removes the
+        // final block's mask + offload round-trips (~1.5% wall).
+        .with_skip_last_layer(true);
         let bge_load = t0.elapsed();
         eprintln!("[e2e][C/bge] loaded in {bge_load:.2?}");
 
