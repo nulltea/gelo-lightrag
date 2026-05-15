@@ -131,6 +131,11 @@ fn detect_prefix(st: &SafeTensors<'_>) -> String {
     let names: Vec<&str> = st.names().into_iter().map(String::as_str).collect();
     if names.iter().any(|n| n.starts_with("bert.")) {
         "bert.".to_string()
+    } else if names.iter().any(|n| n.starts_with("roberta.")) {
+        // XLM-RoBERTa-based rerankers (e.g. bge-reranker-v2-m3) export
+        // their backbone under this prefix; the BERT forward shape
+        // applies unchanged.
+        "roberta.".to_string()
     } else {
         String::new()
     }

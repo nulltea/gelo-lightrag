@@ -603,12 +603,14 @@ where OutAttnMult is meant to operate.
 
 The above is per-text wall-clock with a small, 3-text micro-benchmark.
 At realistic corpus-ingest sizes the bench in
-`crates/gelo-rag/tests/beir_accuracy.rs` runs with **`BEIR_PAPER_PARITY=1`**
-(one Haar `A` per forward, paired with shield rows — see §3.2) and
-the `blas` cargo feature (CBLAS-direct in `mask::apply`/`unapply` via
-BLIS), and parallel-fan-out `embed()` via rayon (one cloned executor
-per worker, each with its own ChaCha20 stream so cross-text `A` stays
-independent — see also `future-rnd.md` §5):
+`crates/gelo-rag/tests/beir_accuracy.rs` runs against the
+**paper-parity executor default** (since 2026-05-15: one Haar `A` per
+forward, paired with 8 shield rows — see §3.2; opt-out via
+`.with_per_offload_mask()`), the `blas` cargo feature (CBLAS-direct in
+`mask::apply`/`unapply` via BLIS), and parallel-fan-out `embed()` via
+rayon (one cloned executor per worker, each with its own ChaCha20
+stream so cross-text `A` stays independent — see also `future-rnd.md`
+§5):
 
 | Stage | Vanilla BLIS (AVX2 dispatch) | **AOCL-BLIS (AVX-512 via `skx_asm`)** |
 |---|---:|---:|
@@ -618,7 +620,7 @@ independent — see also `future-rnd.md` §5):
 | `gelo:mask_unapply` aggregate | 586.7 ms | **121.4 ms (4.83×)** |
 | Total bench wall (100 docs + 100 queries) | 129.6 s | **88.7 s (−31.5%)** |
 
-Both columns use **`BEIR_PAPER_PARITY=1`**, parallel-fan-out `embed()` via
+Both columns run under the paper-parity executor default, parallel-fan-out `embed()` via
 rayon, `BLIS_NUM_THREADS=1` (rayon owns the parallelism), and the
 `blas` cargo feature.
 

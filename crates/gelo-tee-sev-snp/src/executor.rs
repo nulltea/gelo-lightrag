@@ -286,7 +286,7 @@ mod tests {
     /// and still gives a working matmul through the wrapper.
     #[test]
     fn provision_weight_shared_through_wrapper() {
-        use gelo_protocol::substrate::{WeightHandle, WeightKind};
+        use gelo_protocol::substrate::{TrustedExecutor, WeightHandle, WeightKind};
         use ndarray::Array2;
 
         let mut exec = mk_executor();
@@ -298,7 +298,9 @@ mod tests {
             .unwrap();
 
         let hidden = Array2::<f32>::from_shape_fn((2, 4), |(i, j)| (i + j) as f32);
+        exec.begin_forward_pass(hidden.nrows()).unwrap();
         let out = exec.offload_linear(handle, hidden.view()).unwrap();
+        exec.end_forward_pass().unwrap();
         let expected = hidden.dot(weight.as_ref());
         for ((i, j), e) in expected.indexed_iter() {
             assert!((out[[i, j]] - e).abs() < 1e-3, "({i},{j}) got {} want {e}", out[[i, j]]);

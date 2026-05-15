@@ -39,6 +39,9 @@ use axum::{
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use gelo_rag::{GeloRagTwoPartyService, NoopAttestationVerifier, TwoPartyError};
+use gelo_reranker::output::EncryptedRerankBundle;
+use gelo_reranker::service::{RerankCandidate, RerankError, RerankRequest, RerankService};
+use gelo_reranker::session::{QueryId, SessionKey, SessionKeyPolicy};
 use rag_core::{ChunkId, DocumentChunk, Embedder, TenantId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -88,15 +91,13 @@ async fn main() -> Result<()> {
         issuer: Arc::new(issuer),
         model_identity: model_identity_b,
         scheme_identity: scheme_identity_b,
+        // M5 ships without a loaded reranker model; the /rerank route
+        // surfaces 501 until R6/M8 wires a concrete model loader. The
+        // route is registered so clients can probe for support.
+        reranker: None,
     };
 
-    let app = Router::new()
-        .route("/health", get(health))
-        .route("/attest", get(attest))
-        .route("/ingest", post(ingest))
-        .route("/query", post(query))
-        .route("/rotate", post(rotate))
-        .with_state(state);
+    let app = build_router(state);
 
     let addr: SocketAddr = cfg.listen.parse().context("parsing listen address")?;
     info!("listening on http://{addr}");
@@ -155,12 +156,34 @@ async fn shutdown_signal() {
     }
 }
 
+/// Box-erased reranker capability. The concrete service is one of
+/// `gelo_reranker::CrossEncoderRerankService` or
+/// `gelo_reranker::CausalDiscriminatorRerankService` constructed at
+/// boot time. `None` means the runner was started without a reranker
+/// model — `/rerank` returns 501.
+type RerankerHandle = Option<Arc<Mutex<Box<dyn RerankService + Send>>>>;
+
 #[derive(Clone)]
 struct AppState {
     service: Arc<Mutex<GeloRagTwoPartyService<StubEmbedder, NoopAttestationVerifier>>>,
     issuer: Arc<IssuerHandle>,
     model_identity: Vec<u8>,
     scheme_identity: Vec<u8>,
+    reranker: RerankerHandle,
+}
+
+/// Build the HTTP router for a given `AppState`. Lifted out of `main`
+/// so integration tests can construct a state with a real reranker
+/// without spawning a full process.
+fn build_router(state: AppState) -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/attest", get(attest))
+        .route("/ingest", post(ingest))
+        .route("/query", post(query))
+        .route("/rotate", post(rotate))
+        .route("/rerank", post(rerank))
+        .with_state(state)
 }
 
 async fn health() -> &'static str {
@@ -314,6 +337,137 @@ async fn query(
     Ok(Json(QueryResponse { hits, attestation }))
 }
 
+/// Per-request session secret used to derive the rerank-output
+/// AES-GCM key. For M5 the client supplies a 32-byte secret directly
+/// (paralleling `user_x_sk` on the embedding path). The full
+/// attestation-bound ECDH key agreement lands in M5.9.
+#[derive(Deserialize)]
+#[serde(transparent)]
+struct SessionSecretB64(String);
+
+impl std::fmt::Debug for SessionSecretB64 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted session_secret : base64-32B>")
+    }
+}
+
+impl SessionSecretB64 {
+    fn decode(&self) -> anyhow::Result<Zeroizing<Vec<u8>>> {
+        let bytes = Zeroizing::new(
+            B64.decode(self.0.as_bytes())
+                .context("session_secret: base64 decode failed")?,
+        );
+        if bytes.len() < 16 {
+            anyhow::bail!(
+                "session_secret must be ≥ 16 bytes after base64 decode (got {})",
+                bytes.len()
+            );
+        }
+        Ok(bytes)
+    }
+}
+
+#[derive(Deserialize, Debug)]
+struct RerankCandidateJson {
+    id: String,
+    text: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct RerankRequestJson {
+    /// 32-byte HKDF root secret. Stand-in until M5.9's ECDH handshake.
+    session_secret: SessionSecretB64,
+    /// Caller-supplied unique tag, replays produce reused AES-GCM
+    /// nonces under the same key — guard against this on the client.
+    query_id_b64: String,
+    query: String,
+    candidates: Vec<RerankCandidateJson>,
+    top_k: usize,
+    k_max: usize,
+}
+
+#[derive(Serialize)]
+struct RerankBundleItemJson {
+    nonce_b64: String,
+    ciphertext_b64: String,
+}
+
+#[derive(Serialize)]
+struct RerankResponse {
+    /// Always `"aes-256-gcm.v1"` (matches `EncryptedRerankBundle::scheme`).
+    scheme: String,
+    items: Vec<RerankBundleItemJson>,
+    family: String,
+    model_identity_b64: String,
+}
+
+async fn rerank(
+    State(state): State<AppState>,
+    Json(req): Json<RerankRequestJson>,
+) -> Result<axum::response::Response, AppError> {
+    let Some(handle) = state.reranker.clone() else {
+        return Ok((
+            StatusCode::NOT_IMPLEMENTED,
+            "rerank not configured on this CVM — load a reranker model and re-attest",
+        )
+            .into_response());
+    };
+    let session_secret = req.session_secret.decode()?;
+    let session = SessionKey::derive(&session_secret, SessionKeyPolicy::V1);
+    let query_id_bytes = B64
+        .decode(req.query_id_b64.as_bytes())
+        .context("query_id_b64: base64 decode failed")?;
+    let query_id = QueryId::new(query_id_bytes);
+    let candidates: Vec<RerankCandidate> = req
+        .candidates
+        .into_iter()
+        .map(|c| RerankCandidate {
+            chunk_id: ChunkId(c.id),
+            text: c.text,
+        })
+        .collect();
+    let request = RerankRequest {
+        query: &req.query,
+        candidates: &candidates,
+        top_k: req.top_k,
+        k_max: req.k_max,
+        query_id,
+    };
+    let bundle = {
+        let mut svc = handle.lock().await;
+        svc.rerank(&session, &request).map_err(|e| match e {
+            RerankError::InvalidRequest(msg) => AppError(AppErrorKind::Other(anyhow::anyhow!(msg))),
+            other => AppError(AppErrorKind::Other(anyhow::anyhow!(other))),
+        })?
+    };
+    let (family, model_identity_b64) = {
+        let svc = handle.lock().await;
+        (svc.family().to_string(), B64.encode(svc.model_identity()))
+    };
+    let resp = RerankResponse {
+        scheme: bundle.scheme.to_string(),
+        items: bundle
+            .items
+            .into_iter()
+            .map(|i| RerankBundleItemJson {
+                nonce_b64: B64.encode(&i.nonce),
+                ciphertext_b64: B64.encode(&i.ciphertext),
+            })
+            .collect(),
+        family,
+        model_identity_b64,
+    };
+    Ok(Json(resp).into_response())
+}
+
+// Suppress dead-code warning when an integration test exercises
+// `EncryptedRerankBundle::open` on the response — the production
+// runner emits but never consumes a bundle.
+#[allow(dead_code)]
+fn _bundle_type_witness() -> EncryptedRerankBundle {
+    unreachable!()
+}
+
 #[derive(Deserialize, Debug)]
 struct RotateRequest {
     tenant_id: String,
@@ -451,4 +605,261 @@ fn text_to_vec(text: &str) -> Vec<f32> {
         v.iter_mut().for_each(|x| *x /= norm);
     }
     v
+}
+
+#[cfg(all(test, feature = "mock"))]
+mod tests {
+    use super::*;
+    use axum::body::{Body, to_bytes};
+    use axum::http::{Method, Request};
+    use ndarray::{Array1, Array2};
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha20Rng;
+    use rand_distr::{Distribution, StandardNormal};
+    use tower::ServiceExt;
+
+    use gelo_embedder::bert::config::BertConfig;
+    use gelo_embedder::bert::weights::{BertLayerWeights, BertWeights};
+    use gelo_embedder::common::tokenizer::HfTokenizer;
+    use gelo_protocol::rng::MaskSeed;
+    use gelo_protocol::{
+        GpuOffloadEngine, InProcessTrustedExecutor, RayonCpuEngine, WeightHandle, WeightKind,
+    };
+    use gelo_reranker::cross_encoder::CrossEncoderRerankService;
+    use gelo_reranker::head::ClassifierHead;
+    use gelo_reranker::session::{QueryId, SessionKey, SessionKeyPolicy};
+
+    fn tiny_cfg() -> BertConfig {
+        BertConfig {
+            vocab_size: 64,
+            hidden_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            intermediate_size: 64,
+            max_position_embeddings: 32,
+            type_vocab_size: 2,
+            layer_norm_eps: 1e-12,
+            hidden_act: "gelu".into(),
+            max_seq_len: 32,
+            skip_first_layers: 0,
+            skip_last_layer: false,
+        }
+    }
+
+    fn rand2(rows: usize, cols: usize, rng: &mut impl rand::RngCore, scale: f32) -> Array2<f32> {
+        let normal = StandardNormal;
+        Array2::from_shape_fn((rows, cols), |_| {
+            <StandardNormal as Distribution<f32>>::sample(&normal, rng) * scale
+        })
+    }
+    fn rand1(n: usize, rng: &mut impl rand::RngCore, scale: f32) -> Array1<f32> {
+        let normal = StandardNormal;
+        Array1::from_shape_fn(n, |_| {
+            <StandardNormal as Distribution<f32>>::sample(&normal, rng) * scale
+        })
+    }
+
+    fn synth_weights(cfg: &BertConfig, rng: &mut impl rand::RngCore) -> BertWeights {
+        let d = cfg.hidden_size;
+        let f = cfg.intermediate_size;
+        let layers = (0..cfg.num_hidden_layers)
+            .map(|_| BertLayerWeights {
+                wq: rand2(d, d, rng, 0.05),
+                bq: rand1(d, rng, 0.01),
+                wk: rand2(d, d, rng, 0.05),
+                bk: rand1(d, rng, 0.01),
+                wv: rand2(d, d, rng, 0.05),
+                bv: rand1(d, rng, 0.01),
+                wo: rand2(d, d, rng, 0.05),
+                bo: rand1(d, rng, 0.01),
+                attn_ln_w: Array1::from_elem(d, 1.0),
+                attn_ln_b: Array1::zeros(d),
+                w_ffn_up: rand2(d, f, rng, 0.05),
+                b_ffn_up: rand1(f, rng, 0.01),
+                w_ffn_down: rand2(f, d, rng, 0.05),
+                b_ffn_down: rand1(d, rng, 0.01),
+                ffn_ln_w: Array1::from_elem(d, 1.0),
+                ffn_ln_b: Array1::zeros(d),
+            })
+            .collect();
+        BertWeights {
+            word_embedding: rand2(cfg.vocab_size, d, rng, 0.05),
+            position_embedding: rand2(cfg.max_position_embeddings, d, rng, 0.05),
+            token_type_embedding: rand2(cfg.type_vocab_size, d, rng, 0.0),
+            embeddings_ln_w: Array1::from_elem(d, 1.0),
+            embeddings_ln_b: Array1::zeros(d),
+            layers,
+            model_identity: [0u8; 32],
+        }
+    }
+
+    fn provision<E: GpuOffloadEngine>(w: &BertWeights, cfg: &BertConfig, e: &mut E) {
+        for (li, layer) in w.layers.iter().enumerate() {
+            if !cfg.offload_layer(li) {
+                continue;
+            }
+            let li16 = li as u16;
+            e.register_weight(WeightHandle::new(li16, WeightKind::Q), layer.wq.view()).unwrap();
+            e.register_weight(WeightHandle::new(li16, WeightKind::K), layer.wk.view()).unwrap();
+            e.register_weight(WeightHandle::new(li16, WeightKind::V), layer.wv.view()).unwrap();
+            e.register_weight(WeightHandle::new(li16, WeightKind::O), layer.wo.view()).unwrap();
+            e.register_weight(WeightHandle::new(li16, WeightKind::FfnUp), layer.w_ffn_up.view()).unwrap();
+            e.register_weight(WeightHandle::new(li16, WeightKind::FfnDown), layer.w_ffn_down.view()).unwrap();
+        }
+    }
+
+    const STUB_TOKENIZER_JSON: &str = r#"{
+      "version": "1.0",
+      "truncation": null,
+      "padding": null,
+      "added_tokens": [],
+      "normalizer": null,
+      "pre_tokenizer": { "type": "Whitespace" },
+      "post_processor": null,
+      "decoder": null,
+      "model": {
+        "type": "WordLevel",
+        "vocab": { "[UNK]": 0 },
+        "unk_token": "[UNK]"
+      }
+    }"#;
+
+    fn stub_tokenizer() -> HfTokenizer {
+        let tmp = std::env::temp_dir().join(format!(
+            "gelo-snp-runner-test-tok-{}-{}.json",
+            std::process::id(),
+            rand::random::<u32>()
+        ));
+        std::fs::write(&tmp, STUB_TOKENIZER_JSON).unwrap();
+        let tok = HfTokenizer::from_file(&tmp).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+        tok
+    }
+
+    fn build_test_state() -> AppState {
+        // Embedder side — reuse the StubEmbedder.
+        let embedder = StubEmbedder::from_model_id("test-model@v1");
+        let service = GeloRagTwoPartyService::new(embedder, NoopAttestationVerifier);
+
+        // Mock issuer (the runner's `mock` feature gates this module).
+        let issuer = IssuerHandle::for_mode(gelo_tee_sev_snp::runtime_mode::RuntimeMode::Mock)
+            .expect("mock issuer should construct");
+
+        // Synthetic reranker.
+        let cfg = tiny_cfg();
+        let mut rng = ChaCha20Rng::from_seed([7u8; 32]);
+        let weights = std::sync::Arc::new(synth_weights(&cfg, &mut rng));
+        let head = ClassifierHead::from_arrays(
+            rand2(cfg.hidden_size, cfg.hidden_size, &mut rng, 0.05),
+            rand1(cfg.hidden_size, &mut rng, 0.0),
+            rand2(cfg.hidden_size, 1, &mut rng, 0.05),
+            rand1(1, &mut rng, 0.0),
+        );
+        let mut engine = RayonCpuEngine::new();
+        provision(&weights, &cfg, &mut engine);
+        let exec = InProcessTrustedExecutor::with_seed(engine, MaskSeed::from_bytes([19u8; 32]));
+        let reranker_svc =
+            CrossEncoderRerankService::new(cfg, stub_tokenizer(), weights, head, exec).unwrap();
+        let reranker_box: Box<dyn RerankService + Send> = Box::new(reranker_svc);
+
+        AppState {
+            service: Arc::new(Mutex::new(service)),
+            issuer: Arc::new(issuer),
+            model_identity: b"test-model-identity".to_vec(),
+            scheme_identity: b"test-scheme-identity".to_vec(),
+            reranker: Some(Arc::new(Mutex::new(reranker_box))),
+        }
+    }
+
+    #[tokio::test]
+    async fn rerank_returns_501_when_unconfigured() {
+        let mut state = build_test_state();
+        state.reranker = None;
+        let app = build_router(state);
+        let body = serde_json::json!({
+            "session_secret": B64.encode([1u8; 32]),
+            "query_id_b64": B64.encode(b"qid"),
+            "query": "q",
+            "candidates": [{"id": "a", "text": "alpha"}],
+            "top_k": 1,
+            "k_max": 4,
+        });
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/rerank")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+    }
+
+    #[tokio::test]
+    async fn rerank_emits_padded_bundle_when_configured() {
+        let state = build_test_state();
+        let app = build_router(state);
+
+        let session_secret = [0xab_u8; 32];
+        let query_id = b"qid-001".to_vec();
+        let body = serde_json::json!({
+            "session_secret": B64.encode(session_secret),
+            "query_id_b64": B64.encode(&query_id),
+            "query": "what is rust",
+            "candidates": [
+                {"id": "c-alpha", "text": "Rust is a systems language"},
+                {"id": "c-beta",  "text": "Memory safety without GC"},
+                {"id": "c-gamma", "text": "Borrow checker"},
+            ],
+            "top_k": 2,
+            "k_max": 6,
+        });
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/rerank")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed["scheme"], "aes-256-gcm.v1");
+        assert_eq!(parsed["family"], "cross-encoder");
+        let items = parsed["items"].as_array().unwrap();
+        assert_eq!(items.len(), 6, "must always emit exactly k_max items");
+
+        // Reconstruct the bundle client-side and decrypt to confirm
+        // the response is structurally correct.
+        let session = SessionKey::derive(
+            &zeroize::Zeroizing::new(session_secret.to_vec()),
+            SessionKeyPolicy::V1,
+        );
+        let qkey = session.derive_query_key(&QueryId::new(query_id));
+        let recon = gelo_reranker::output::EncryptedRerankBundle {
+            scheme: "aes-256-gcm.v1",
+            items: items
+                .iter()
+                .map(|i| gelo_reranker::output::EncryptedRerankItem {
+                    nonce: B64.decode(i["nonce_b64"].as_str().unwrap()).unwrap(),
+                    ciphertext: B64.decode(i["ciphertext_b64"].as_str().unwrap()).unwrap(),
+                })
+                .collect(),
+        };
+        let opened = recon.open(&qkey).expect("client can open with derived qkey");
+        assert_eq!(opened.len(), 2);
+        let known: std::collections::HashSet<String> =
+            ["c-alpha", "c-beta", "c-gamma"].iter().map(|s| s.to_string()).collect();
+        for it in &opened {
+            assert!(known.contains(&it.chunk_id));
+        }
+    }
 }

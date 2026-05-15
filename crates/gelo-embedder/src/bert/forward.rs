@@ -1,6 +1,7 @@
 use anyhow::Result;
 use ndarray::{Array1, Array2, ArrayView2, Axis};
 
+use gelo_protocol::profile;
 use gelo_protocol::{TrustedExecutor, WeightHandle, WeightKind};
 
 use super::attention::multi_head_attention;
@@ -35,8 +36,10 @@ pub fn run_with_hook<F: FnMut(usize, &mut Array2<f32>)>(
     mut after_layer: F,
 ) -> Result<Array2<f32>> {
     let n = input_ids.len();
-    let mut h = build_embedding(cfg, weights, input_ids);
-    h = layer_norm(h.view(), &weights.embeddings_ln_w, &weights.embeddings_ln_b, cfg.layer_norm_eps);
+    let mut h = profile::time("tee:embed_lookup", || build_embedding(cfg, weights, input_ids));
+    h = profile::time("tee:layernorm", || {
+        layer_norm(h.view(), &weights.embeddings_ln_w, &weights.embeddings_ln_b, cfg.layer_norm_eps)
+    });
 
     // GELO paper §3.2 forward-pass session: bracket every per-text
     // forward with begin/end so executors running in paper-parity
@@ -82,41 +85,51 @@ fn encoder_block(
     let (q, k, v) = if offload {
         exec.offload_qkv(layer_idx, hidden)?
     } else {
-        (
-            hidden.dot(&layer.wq),
-            hidden.dot(&layer.wk),
-            hidden.dot(&layer.wv),
-        )
+        profile::time("tee:qkv_direct", || {
+            (
+                hidden.dot(&layer.wq),
+                hidden.dot(&layer.wk),
+                hidden.dot(&layer.wv),
+            )
+        })
     };
-    let q = add_bias(q, &layer.bq);
-    let k = add_bias(k, &layer.bk);
-    let v = add_bias(v, &layer.bv);
+    let (q, k, v) = profile::time("tee:add_bias", || {
+        (
+            add_bias(q, &layer.bq),
+            add_bias(k, &layer.bk),
+            add_bias(v, &layer.bv),
+        )
+    });
 
-    let ctx = multi_head_attention(q.view(), k.view(), v.view(), cfg.num_attention_heads);
+    let ctx = profile::time("tee:bert_mha", || {
+        multi_head_attention(q.view(), k.view(), v.view(), cfg.num_attention_heads)
+    });
 
     let proj = if offload {
         exec.offload_linear(WeightHandle::new(layer_idx, WeightKind::O), ctx.view())?
     } else {
-        ctx.dot(&layer.wo)
+        profile::time("tee:o_direct", || ctx.dot(&layer.wo))
     };
-    let proj = add_bias(proj, &layer.bo);
+    let proj = profile::time("tee:add_bias", || add_bias(proj, &layer.bo));
 
     // Post-LN around residual
-    let h_attn = layer_norm(
-        add(hidden, proj.view()).view(),
-        &layer.attn_ln_w,
-        &layer.attn_ln_b,
-        cfg.layer_norm_eps,
-    );
+    let h_attn = profile::time("tee:layernorm", || {
+        layer_norm(
+            add(hidden, proj.view()).view(),
+            &layer.attn_ln_w,
+            &layer.attn_ln_b,
+            cfg.layer_norm_eps,
+        )
+    });
 
     // FFN
     let intermediate = if offload {
         exec.offload_linear(WeightHandle::new(layer_idx, WeightKind::FfnUp), h_attn.view())?
     } else {
-        h_attn.dot(&layer.w_ffn_up)
+        profile::time("tee:ffn_up_direct", || h_attn.dot(&layer.w_ffn_up))
     };
-    let intermediate = add_bias(intermediate, &layer.b_ffn_up);
-    let intermediate = gelu(intermediate);
+    let intermediate = profile::time("tee:add_bias", || add_bias(intermediate, &layer.b_ffn_up));
+    let intermediate = profile::time("tee:gelu", || gelu(intermediate));
 
     let ffn_out = if offload {
         exec.offload_linear(
@@ -124,16 +137,18 @@ fn encoder_block(
             intermediate.view(),
         )?
     } else {
-        intermediate.dot(&layer.w_ffn_down)
+        profile::time("tee:ffn_down_direct", || intermediate.dot(&layer.w_ffn_down))
     };
-    let ffn_out = add_bias(ffn_out, &layer.b_ffn_down);
+    let ffn_out = profile::time("tee:add_bias", || add_bias(ffn_out, &layer.b_ffn_down));
 
-    let h_out = layer_norm(
-        add(h_attn.view(), ffn_out.view()).view(),
-        &layer.ffn_ln_w,
-        &layer.ffn_ln_b,
-        cfg.layer_norm_eps,
-    );
+    let h_out = profile::time("tee:layernorm", || {
+        layer_norm(
+            add(h_attn.view(), ffn_out.view()).view(),
+            &layer.ffn_ln_w,
+            &layer.ffn_ln_b,
+            cfg.layer_norm_eps,
+        )
+    });
 
     Ok(h_out)
 }

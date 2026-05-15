@@ -56,6 +56,29 @@ impl HfTokenizer {
     pub fn token_id(&self, token: &str) -> Option<u32> {
         self.inner.token_to_id(token)
     }
+
+    /// Encode a `(query, document)` pair with the tokenizer's
+    /// post-processor inserting the appropriate `[CLS]/<s>` /
+    /// `[SEP]/</s>` markers between the two segments. Used by the
+    /// cross-encoder rerank path in `gelo-reranker::cross_encoder`.
+    /// Truncation works the same as [`Self::encode`].
+    pub fn encode_pair(&self, query: &str, document: &str, max_len: usize) -> Result<Vec<u32>> {
+        let encoded = self
+            .inner
+            .encode((query, document), true)
+            .map_err(|e| anyhow!("tokenizer encode_pair failure: {e}"))
+            .context("encoding (query, document) pair")?;
+        let mut ids: Vec<u32> = encoded.get_ids().to_vec();
+        if ids.len() > max_len {
+            ids.truncate(max_len);
+            if let (Some(last), Some(close)) =
+                (ids.last_mut(), self.truncation_close_token)
+            {
+                *last = close;
+            }
+        }
+        Ok(ids)
+    }
 }
 
 /// Back-compat alias preserved while we finish moving callers off the BERT-only

@@ -99,7 +99,8 @@ fn bare_orthogonal_mask_leaks_gram_matrix() {
     let handle = WeightHandle::new(0, WeightKind::Q);
     engine.register_weight(handle, weight.view()).unwrap();
 
-    let mut exec = InProcessTrustedExecutor::with_seed(engine, MaskSeed::from_bytes([1u8; 32]));
+    let mut exec = InProcessTrustedExecutor::with_seed(engine, MaskSeed::from_bytes([1u8; 32]))
+        .with_per_offload_mask();
     exec.offload_linear(handle, hidden.view()).unwrap();
 
     let u = exec.engine().last_capture();

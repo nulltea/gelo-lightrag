@@ -153,27 +153,41 @@ struct SessionMask {
 }
 
 impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
-    /// Construct with a fresh OS-seeded mask RNG and no shield.
+    /// Construct with a fresh OS-seeded mask RNG. Paper-parity defaults
+    /// apply: one Haar `A` per forward pass, shield `k=8` rows at
+    /// energy scale 4× — the GELO paper §3.2 / §4.2 protocol. Callers
+    /// who need a per-offload Haar for parity / BSS-recovery testing
+    /// should chain [`Self::with_per_offload_mask`] (clears the
+    /// paper-parity flag and the shield).
     pub fn new(engine: E) -> Self {
         Self::with_seed(engine, MaskSeed::from_os_rng())
     }
 
-    /// Construct with a deterministic seed (used by parity / regression tests).
+    /// Construct with a deterministic seed. Same paper-parity defaults
+    /// as [`Self::new`]. The seed reproducibility is preserved
+    /// across the per-forward / per-offload toggle.
     pub fn with_seed(engine: E, seed: MaskSeed) -> Self {
         Self {
             engine,
             rng: ChaCha20Rng::from_seed(seed.0),
-            shield: ShieldConfig::NONE,
+            shield: ShieldConfig::new(8, 4.0),
             verify_probes: 0,
             weights: HashMap::new(),
-            per_forward_mask: false,
+            per_forward_mask: true,
             session: None,
             stacked_scratch: HashMap::new(),
             perm_attn: PermAttnConfig::default(),
         }
     }
 
-    /// Construct with both a deterministic seed and a shield configuration.
+    /// Construct with both a deterministic seed and a **custom shield**
+    /// configuration in **per-offload** mode (legacy / safety-test
+    /// path). Used by the BSS-recovery and DP-Forward tests that
+    /// intentionally exercise the without-paper-parity construction so
+    /// they can prove their respective claims (correlated-cross-offload
+    /// attacks need per-offload masks; DP-Forward noise injection
+    /// targets a specific layer position rather than the masked
+    /// product). Production code should prefer [`Self::with_seed`].
     pub fn with_shield(engine: E, seed: MaskSeed, shield: ShieldConfig) -> Self {
         Self {
             engine,
@@ -222,6 +236,22 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
     /// Whether this executor is in paper-parity per-forward-pass mode.
     pub fn is_per_forward_mask(&self) -> bool {
         self.per_forward_mask
+    }
+
+    /// Opt out of the paper-parity default and run in the per-offload
+    /// mode (a fresh Haar `A` and fresh shield rows per offload, or no
+    /// shield at all if not separately configured). Intended for
+    /// parity / BSS-recovery / DP-Forward tests that need to exercise
+    /// the alternative construction directly. Also clears the shield —
+    /// most opt-out callers want raw per-offload Haar without shield
+    /// rows; those that want per-offload with shield should use
+    /// [`Self::with_shield`] instead.
+    pub fn with_per_offload_mask(mut self) -> Self {
+        self.per_forward_mask = false;
+        self.shield = ShieldConfig::NONE;
+        self.session = None;
+        self.stacked_scratch.clear();
+        self
     }
 
 
@@ -741,7 +771,9 @@ mod tests {
             MaskSeed::from_bytes([9u8; 32]),
         );
         masked.provision_weight(handle, weight.view()).unwrap();
+        masked.begin_forward_pass(n).unwrap();
         let masked_out = masked.offload_linear(handle, hidden.view()).unwrap();
+        masked.end_forward_pass().unwrap();
 
         for ((i, j), p) in plain_out.indexed_iter() {
             assert!(
@@ -775,7 +807,9 @@ mod tests {
         exec.provision_weight(WeightHandle::new(0, WeightKind::V), wv.view())
             .unwrap();
 
+        exec.begin_forward_pass(n).unwrap();
         let (q, k, v) = exec.offload_qkv(0, hidden.view()).unwrap();
+        exec.end_forward_pass().unwrap();
 
         let expected_q = hidden.dot(&wq);
         let expected_k = hidden.dot(&wk);

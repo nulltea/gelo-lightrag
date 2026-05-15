@@ -6,6 +6,7 @@ members = [
     "crates/gelo-protocol",
     "crates/gelo-embedder",
     "crates/gelo-gpu-wgpu",
+    "crates/gelo-reranker",
     "crates/gelo-tee-sev-snp",
     "crates/gelo-snp-runner",
     "crates/remote-rag",

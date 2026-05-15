@@ -95,7 +95,9 @@ fn u_verify_catches_tampered_offload_linear() {
         .with_verify_probes(8);
     exec.provision_weight(handle, weight.view()).unwrap();
 
+    exec.begin_forward_pass(hidden.nrows()).unwrap();
     let result = exec.offload_linear(handle, hidden.view());
+    let _ = exec.end_forward_pass();
     assert!(
         result.is_err(),
         "U-Verify failed to catch eps=0.5 tampering on offload_linear",
@@ -122,7 +124,9 @@ fn u_verify_passes_honest_engine_offload_linear() {
         .with_verify_probes(8);
     exec.provision_weight(handle, weight.view()).unwrap();
 
+    exec.begin_forward_pass(hidden.nrows()).unwrap();
     let result = exec.offload_linear(handle, hidden.view());
+    let _ = exec.end_forward_pass();
     assert!(result.is_ok(), "U-Verify rejected an honest engine: {:?}", result.err());
 }
 

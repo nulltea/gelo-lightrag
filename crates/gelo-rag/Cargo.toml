@@ -35,7 +35,9 @@ zip = { workspace = true }
 gelo-embedder = { path = "../gelo-embedder", features = ["dp-forward"] }
 gelo-gpu-wgpu = { path = "../gelo-gpu-wgpu" }
 gelo-protocol = { path = "../gelo-protocol" }
+gelo-reranker = { path = "../gelo-reranker" }
 gelo-tee-sev-snp = { path = "../gelo-tee-sev-snp", features = ["mock"] }
+zeroize = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }

@@ -25,6 +25,7 @@
       <a class="current" href="index.html">Overview</a>
       <a href="embedding.html">Embedding · GELO</a>
       <a href="storage.html">Storage · CAPRISE</a>
+      <a href="reranking.html">Reranking · GELO</a>
     </div>
   </nav>
 
@@ -89,10 +90,10 @@
     <header class="section-head">
       <div class="section-num">§02</div>
       <h2 class="section-title">Full process flow</h2>
-      <div class="section-meta">two stages · ingest then query · approach 4 checklist below</div>
+      <div class="section-meta">three stages · ingest then retrieval then rerank · approach 4 checklist below</div>
     </header>
     <p class="lede">
-      A request traverses four trust zones, in two stages. <em>Stage 1 · Ingest</em> takes raw chunks from the client, embeds them inside the attested TEE (offloading the matmuls to a blind GPU under the GELO mask), derives the CAPRISE + AES keys via two-party HKDF, and writes the resulting ciphertext records to the untrusted vector DB. <em>Stage 2 · Query</em> embeds the query through the same shape, encrypts it under the <em>query</em> CAPRISE coefficient, runs cosine ANN over the ciphertext on the server, then decrypts the top-k′ hits back inside the TEE before returning plaintext to the client over RATLS.
+      A request traverses four trust zones, in three stages. <em>Stage 1 · Ingest</em> takes raw chunks from the client, embeds them inside the attested TEE (offloading the matmuls to a blind GPU under the GELO mask), derives the CAPRISE + AES keys via two-party HKDF, and writes the resulting ciphertext records to the untrusted vector DB. <em>Stage 2 · Retrieval</em> embeds the query through the same shape, encrypts it under the <em>query</em> CAPRISE coefficient, runs cosine ANN over the ciphertext on the server, then decrypts the top-k′ hits back inside the TEE. <em>Stage 3 · Rerank</em> derives a per-session <code>SessionKey</code> via HKDF, scores each <code>(query, chunk)</code> pair under GELO+mask, sorts in the TEE, and AES-GCM-seals the top-k final list (padded with decoys to <code>k_max</code>, shuffled) under a per-query key — scores never leave the CVM.
     </p>
 
     <!-- LEGEND -->
@@ -122,21 +123,21 @@
     <!-- ══════════ FIG. 01 — combined two-stage flow ══════════ -->
     <div class="diagram-frame">
       <div class="diagram-cap">
-        <span class="l">FIG. 01 — End-to-end process flow · Stage 1 Ingest (top) + Stage 2 Query (bottom)</span>
+        <span class="l">FIG. 01 — End-to-end process flow · Stage 1 Ingest + Stage 2 Retrieval + Stage 3 Rerank</span>
         <span>dashed red = trust boundary · dashed amber = masked PCIe · solid teal = ciphertext · dashed navy = attestation</span>
       </div>
-      <svg class="flow" viewBox="0 0 1480 940" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="End-to-end flow · ingest + query">
+      <svg class="flow" viewBox="0 0 1480 1340" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="End-to-end flow · ingest + retrieval + rerank">
         <defs>
           <marker id="ahflow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
             <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
           </marker>
         </defs>
 
-        <!-- ZONE BANDS (full height — shared across both stages) -->
-        <rect x="0"    y="40"  width="220"  height="880" class="zone-band zone-band-client"/>
-        <rect x="220"  y="40"  width="600"  height="880" class="zone-band zone-band-tee"/>
-        <rect x="820"  y="40"  width="260"  height="880" class="zone-band zone-band-gpu"/>
-        <rect x="1080" y="40"  width="400"  height="880" class="zone-band zone-band-storage"/>
+        <!-- ZONE BANDS (full height — shared across all three stages) -->
+        <rect x="0"    y="40"  width="220"  height="1280" class="zone-band zone-band-client"/>
+        <rect x="220"  y="40"  width="600"  height="1280" class="zone-band zone-band-tee"/>
+        <rect x="820"  y="40"  width="260"  height="1280" class="zone-band zone-band-gpu"/>
+        <rect x="1080" y="40"  width="400"  height="1280" class="zone-band zone-band-storage"/>
 
         <!-- ZONE LABELS -->
         <text x="20"   y="62" class="zone-label">Client</text>
@@ -149,12 +150,12 @@
         <text x="1100" y="78" class="zone-sublabel">vector DB · ciphertext only</text>
 
         <!-- TRUST BOUNDARIES -->
-        <line x1="220"  y1="40" x2="220"  y2="920" class="boundary"/>
-        <line x1="820"  y1="40" x2="820"  y2="920" class="boundary"/>
-        <line x1="1080" y1="40" x2="1080" y2="920" class="boundary"/>
-        <text x="224"  y="916" class="boundary-label">RATLS</text>
-        <text x="824"  y="916" class="boundary-label">PCIe · masked</text>
-        <text x="1084" y="916" class="boundary-label">HTTP · ciphertext</text>
+        <line x1="220"  y1="40" x2="220"  y2="1320" class="boundary"/>
+        <line x1="820"  y1="40" x2="820"  y2="1320" class="boundary"/>
+        <line x1="1080" y1="40" x2="1080" y2="1320" class="boundary"/>
+        <text x="224"  y="1316" class="boundary-label">RATLS</text>
+        <text x="824"  y="1316" class="boundary-label">PCIe · masked</text>
+        <text x="1084" y="1316" class="boundary-label">HTTP · ciphertext</text>
 
         <!-- ════════════ STAGE 1 · INGEST ════════════ -->
 
@@ -235,11 +236,11 @@
         <!-- ════════════ SEPARATOR ════════════ -->
         <line x1="0" y1="470" x2="1480" y2="470" stroke="var(--ink)" stroke-width="1" stroke-dasharray="6 4" opacity="0.6"/>
 
-        <!-- ════════════ STAGE 2 · QUERY ════════════ -->
+        <!-- ════════════ STAGE 2 · RETRIEVAL ════════════ -->
 
         <rect x="0" y="490" width="1480" height="28" fill="var(--ink)" opacity="0.88"/>
-        <text x="20"   y="509" font-family="JetBrains Mono" font-size="11" font-weight="700" fill="var(--paper)" letter-spacing="0.22em">STAGE 2 · QUERY</text>
-        <text x="240"  y="509" font-family="Fraunces" font-style="italic" font-size="13" fill="var(--paper)">attest → embed query → CAPRISE-encrypt → cosine over ciphertext → decrypt hits → plaintext top-k</text>
+        <text x="20"   y="509" font-family="JetBrains Mono" font-size="11" font-weight="700" fill="var(--paper)" letter-spacing="0.22em">STAGE 2 · RETRIEVAL</text>
+        <text x="240"  y="509" font-family="Fraunces" font-style="italic" font-size="13" fill="var(--paper)">attest → embed query → CAPRISE-encrypt → cosine over ciphertext → decrypt hits → top-k′ candidates inside CVM</text>
 
         <path d="M240 540 L200 540" class="arrow arrow-attest" marker-end="url(#ahflow)"/>
         <text x="40" y="536" class="arrow-label attest">SEV-SNP report + VCEK</text>
@@ -294,24 +295,83 @@
         <path d="M1000 695 C 1000 680, 370 680, 370 630" class="arrow arrow-masked" marker-end="url(#ahflow)" stroke-dasharray="4 3"/>
         <text x="520" y="700" class="arrow-label masked">unmix: Aᵀ·(U·W)</text>
 
-        <!-- Stage 2 return row -->
-        <rect x="630" y="820" width="180" height="60" class="box box-tee"/>
-        <text x="644" y="840" class="box-label">⑥ Decrypt inside CVM</text>
-        <text x="644" y="856" class="box-sub">CAPRISE-decrypt embeddings</text>
-        <text x="644" y="872" class="box-mono">AES-decrypt chunk text · zeroize</text>
+        <!-- Stage 2 return row · CVM keeps the encrypted candidates and hands them straight to Stage 3 — nothing crosses the trust boundary at the end of Stage 2 -->
+        <rect x="630" y="820" width="180" height="60" class="box box-strong box-tee"/>
+        <text x="644" y="840" class="box-label">⑥ Hand off to Stage 3</text>
+        <text x="644" y="856" class="box-sub">candidates remain encrypted</text>
+        <text x="644" y="872" class="box-mono">(EncryptedEmbedding, ChunkCiphertext)</text>
 
-        <rect x="20" y="820" width="180" height="60" class="box box-strong box-client"/>
-        <text x="34" y="840" class="box-label">⑦ Top-k results</text>
-        <text x="34" y="856" class="box-sub">ranked plaintext passages</text>
-        <text x="34" y="872" class="box-mono">(id, score, text)</text>
-
-        <!-- ⑤ → ⑥ : encrypted hits flow back -->
+        <!-- ⑤ → ⑥ : encrypted hits flow back into the CVM -->
         <path d="M1100 660 C 950 770, 900 820, 810 845" class="arrow arrow-cipher" marker-end="url(#ahflow)"/>
         <text x="860" y="760" class="arrow-label cipher">top-k′ ciphertexts</text>
 
-        <!-- ⑥ → ⑦ -->
-        <path d="M630 850 L200 850" class="arrow arrow-secret" marker-end="url(#ahflow)"/>
-        <text x="260" y="843" class="arrow-label secret">plaintext top-k over RATLS</text>
+        <!-- ════════════ SEPARATOR (Stage 2 → Stage 3) ════════════ -->
+        <line x1="0" y1="900" x2="1480" y2="900" stroke="var(--ink)" stroke-width="1" stroke-dasharray="6 4" opacity="0.6"/>
+
+        <!-- ════════════ STAGE 3 · RERANK ════════════ -->
+
+        <rect x="0" y="920" width="1480" height="28" fill="var(--ink)" opacity="0.88"/>
+        <text x="20"   y="939" font-family="JetBrains Mono" font-size="11" font-weight="700" fill="var(--paper)" letter-spacing="0.22em">STAGE 3 · RERANK</text>
+        <text x="240"  y="939" font-family="Fraunces" font-style="italic" font-size="13" fill="var(--paper)">no new client request · CVM decrypts candidates internally → score (q, doc) under GELO+mask → in-TEE sort → AES-GCM seal · padded · shuffled</text>
+
+        <!-- Stage 2 ⑥ hands off to Stage 3 ① — fully internal to the CVM, never crosses RATLS -->
+        <path d="M720 880 C 720 920, 330 940, 330 970" class="arrow arrow-secret" marker-end="url(#ahflow)"/>
+        <text x="430" y="918" class="arrow-label secret">stays inside CVM · same session</text>
+
+        <!-- ── Stage 3 forward row (y ≈ 1000) — all TEE-side, no client involvement ── -->
+
+        <rect x="240" y="970" width="180" height="60" class="box box-strong box-tee"/>
+        <text x="254" y="990" class="box-label">① Decrypt candidates</text>
+        <text x="254" y="1006" class="box-sub">CAPRISE-decrypt embeddings</text>
+        <text x="254" y="1022" class="box-mono">AES-decrypt chunk text · in-CVM</text>
+
+        <rect x="440" y="970" width="170" height="60" class="box box-tee"/>
+        <text x="454" y="990" class="box-label">② Score (q, doc) pairs</text>
+        <text x="454" y="1006" class="box-sub">GELO-masked forward × k′</text>
+        <text x="454" y="1022" class="box-mono">cross-enc · or yes/no-disc</text>
+
+        <rect x="630" y="970" width="180" height="60" class="box box-tee"/>
+        <text x="644" y="990" class="box-label">③ In-TEE sort + top-k</text>
+        <text x="644" y="1006" class="box-sub">tie-shuffle · scores zeroized</text>
+        <text x="644" y="1022" class="box-mono">ranked chunk list</text>
+
+        <!-- forward arrows ① → ② → ③ -->
+        <path d="M420 1000 L440 1000" class="arrow arrow-secret" marker-end="url(#ahflow)"/>
+        <path d="M610 1000 L630 1000" class="arrow arrow-secret" marker-end="url(#ahflow)"/>
+
+        <!-- Stage 3 GPU row -->
+        <rect x="840" y="1080" width="220" height="120" class="box box-strong box-gpu"/>
+        <text x="854" y="1100" class="box-label">GPU · masked matmuls</text>
+        <text x="854" y="1118" class="box-sub">Q · K · V · O · FfnUp · FfnDown</text>
+        <text x="854" y="1136" class="box-mono">(per (q, doc) joint forward)</text>
+        <text x="854" y="1154" class="box-sub">× layers · × k′ candidates</text>
+        <text x="854" y="1172" class="box-mono">U · public W → masked output</text>
+        <text x="854" y="1190" class="box-sub">scores never cross PCIe</text>
+
+        <!-- mask roundtrip arrows (Stage 3) -->
+        <path d="M530 1030 C 530 1055, 880 1060, 880 1080" class="arrow arrow-masked" marker-end="url(#ahflow)"/>
+        <text x="600" y="1050" class="arrow-label masked">mix: U = A·H</text>
+        <path d="M1000 1080 C 1000 1060, 570 1055, 570 1030" class="arrow arrow-masked" marker-end="url(#ahflow)" stroke-dasharray="4 3"/>
+        <text x="600" y="1075" class="arrow-label masked">unmix: Aᵀ·(U·W)</text>
+
+        <!-- Stage 3 seal step + client return — the ONE point at which something crosses RATLS back to the client -->
+        <rect x="630" y="1235" width="180" height="60" class="box box-strong box-tee"/>
+        <text x="644" y="1255" class="box-label">④ Seal + pad + shuffle</text>
+        <text x="644" y="1271" class="box-sub">HKDF QueryKey · AES-GCM-256</text>
+        <text x="644" y="1287" class="box-mono">k_max items · rank in payload</text>
+
+        <rect x="20" y="1235" width="180" height="60" class="box box-strong box-client"/>
+        <text x="34" y="1255" class="box-label">⑤ Bundle response</text>
+        <text x="34" y="1271" class="box-sub">EncryptedRerankBundle over RATLS</text>
+        <text x="34" y="1287" class="box-mono">client decrypts · sorts by rank</text>
+
+        <!-- ③ → ④ : ranked list flows from sort to seal (vertical inside TEE) -->
+        <path d="M720 1030 L720 1235" class="arrow arrow-secret" marker-end="url(#ahflow)"/>
+        <text x="730" y="1140" class="arrow-label secret">ranked chunks (plaintext)</text>
+
+        <!-- ④ → ⑤ : sealed bundle crosses RATLS back to client -->
+        <path d="M630 1265 L200 1265" class="arrow arrow-cipher" marker-end="url(#ahflow)"/>
+        <text x="260" y="1258" class="arrow-label cipher">k_max AES-GCM ciphertexts</text>
       </svg>
     </div>
 
@@ -336,14 +396,20 @@
         <tr><td class="num">⑥</td><td>TEE zeroizes <code>caprise_seed</code>, <code>aes_chunk_key</code>, and the incoming <code>user_x_sk</code> at end of request</td><td>TEE</td><td>—</td></tr>
         <tr><td class="num">⑦</td><td>TEE returns <code>200 OK { ingested: N }</code> over the same RATLS session</td><td>TEE → Client</td><td>response over RATLS</td></tr>
 
-        <tr><td rowspan="7" style="vertical-align:top;"><b>2 · Query</b></td>
-            <td class="num">①</td><td>Client opens RATLS, verifies attestation (fresh nonce), posts <code>{tenant_id, user_x_sk, text, top_k}</code></td><td>Client → TEE</td><td>plaintext query + 32-byte secret over RATLS</td></tr>
+        <tr><td rowspan="6" style="vertical-align:top;"><b>2 · Retrieval</b></td>
+            <td class="num">①</td><td>Client opens RATLS, verifies attestation (fresh nonce), posts <code>{tenant_id, user_x_sk, text, top_k′, k_final, k_max}</code> — a single request that drives Stages 2 + 3 together</td><td>Client → TEE</td><td>plaintext query + 32-byte secret over RATLS</td></tr>
         <tr><td class="num">②</td><td>Same embed pipeline as Stage 1 — GELO-masked matmuls offload to GPU for one input</td><td>TEE + GPU</td><td>masked <code>U</code> on PCIe outbound · <code>U·W</code> back</td></tr>
         <tr><td class="num">③</td><td>TEE re-derives the <strong>same</strong> <code>(caprise_seed, aes_chunk_key)</code> deterministically from <code>tee_user_x_sk[tenant] ‖ user_x_sk</code> — that's the property that lets queries decrypt what ingest encrypted</td><td>TEE</td><td>—</td></tr>
         <tr><td class="num">④</td><td>TEE CAPRISE-encrypts the query with the <em>query</em> coefficient (1/8) and a fresh nonce</td><td>TEE</td><td>—</td></tr>
         <tr><td class="num">⑤</td><td>Storage server runs cosine ANN <strong>over the ciphertext</strong> — CAPRISE is distance-preserving, so no decryption is needed. Returns top-k′ pairs <code>(EncryptedEmbedding, ChunkCiphertext)</code></td><td>Storage server</td><td>encrypted query in · encrypted hits out</td></tr>
-        <tr><td class="num">⑥</td><td>TEE CAPRISE-decrypts each hit's embedding (for optional rerank against the clean query) and AES-decrypts the chunk texts inside the CVM; zeroizes derived keys + <code>user_x_sk</code></td><td>TEE</td><td>—</td></tr>
-        <tr><td class="num">⑦</td><td>Client receives ranked plaintext top-k <code>[(id, score, text), …]</code> over the same RATLS session</td><td>TEE → Client</td><td>plaintext top-k over RATLS</td></tr>
+        <tr><td class="num">⑥</td><td>Encrypted top-k′ candidates flow from the storage response back into the CVM and feed Stage 3 in the <strong>same in-CVM session</strong>; the CVM does not decrypt yet, and nothing crosses RATLS at this point</td><td>TEE (internal)</td><td>— (no boundary crossed)</td></tr>
+
+        <tr><td rowspan="5" style="vertical-align:top;"><b>3 · Rerank</b></td>
+            <td class="num">①</td><td>TEE CAPRISE-decrypts each candidate embedding and AES-decrypts its chunk text inside the CVM; decrypted bytes never leave the trust boundary</td><td>TEE</td><td>—</td></tr>
+        <tr><td class="num">②</td><td>For each of the k′ candidates the reranker (cross-encoder or causal-LM discriminator) runs the GELO-masked forward pass; matmuls offload to GPU under the same mask as Stage 1/2</td><td>TEE + GPU</td><td>masked <code>U</code> on PCIe outbound · <code>U·W</code> back</td></tr>
+        <tr><td class="num">③</td><td>Scores stay inside the CVM. In-TEE sort + tie-shuffle picks top-k_final; scores then zeroized</td><td>TEE</td><td>—</td></tr>
+        <tr><td class="num">④</td><td>TEE derives <code>QueryKey</code> via HKDF (info <code>"gelo-rerank.query.v1"</code>) and AES-GCM-encrypts each ranked chunk under it; the list is padded with decoys to <code>k_max</code> and shuffled so emission order conveys no rank</td><td>TEE</td><td>—</td></tr>
+        <tr><td class="num">⑤</td><td>Client receives the <code>EncryptedRerankBundle</code> as the response to the original Stage 2 request, decrypts each item with the locally-re-derived <code>QueryKey</code>, drops decoys, sorts by the embedded <code>rank</code>, and forwards the ordered plaintext to its generator</td><td>TEE → Client</td><td>k_max AES-GCM ciphertexts over RATLS</td></tr>
       </tbody>
     </table>
 
