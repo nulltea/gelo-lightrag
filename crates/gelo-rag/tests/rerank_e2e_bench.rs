@@ -429,7 +429,9 @@ fn ingest_query_rerank_bge_and_qwen3_on_nfcorpus() -> Result<()> {
         let mut qwen3 = CausalDiscriminatorRerankService::from_pretrained(
             "Qwen/Qwen3-Reranker-0.6B",
             InProcessTrustedExecutor::with_seed(gpu.clone_shared(), MaskSeed::from_bytes([8u8; 32])),
-        )?;
+        )?
+        // GELO §3.2 sensitive-layer exclusion, mirror of the bge path.
+        .with_skip_last_layer(true);
         let qw_load = t0.elapsed();
         eprintln!("[e2e][C/qwen3] loaded in {qw_load:.2?}");
 

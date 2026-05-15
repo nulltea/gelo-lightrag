@@ -171,6 +171,35 @@ impl<X: TrustedExecutor> CausalDiscriminatorRerankService<X> {
         self
     }
 
+    /// Run the final transformer block fully inside the TEE (no
+    /// offload). GELO §3.2 sensitive-layer exclusion: the final block
+    /// contains the highest-information hidden state for the chat-
+    /// templated prompt, and keeping it TEE-resident raises the bar
+    /// for known-plaintext attacks. Mirrors
+    /// `CrossEncoderRerankService::with_skip_last_layer`.
+    pub fn with_skip_last_layer(mut self, enabled: bool) -> Self {
+        self.cfg.skip_last_layer = enabled;
+        self
+    }
+
+    /// Toggle OutAttnMult routing of `Q·Kᵀ` through the GPU engine
+    /// for the decoder attention. Default-on at the
+    /// `DecoderConfig::use_out_attn_mult = true` level; this builder
+    /// is the explicit toggle on the reranker for shape-specific
+    /// tuning. See the cross-encoder counterpart for the iGPU-vs-dGPU
+    /// trade-off reasoning.
+    pub fn with_out_attn_mult(mut self, enabled: bool) -> Self {
+        self.cfg.use_out_attn_mult = enabled;
+        self
+    }
+
+    /// Override the OutAttnMult auto-switch threshold (`None` resolves
+    /// to `hidden_size`).
+    pub fn with_out_attn_mult_min_seq_len(mut self, min_seq_len: Option<usize>) -> Self {
+        self.cfg.out_attn_mult_min_seq_len = min_seq_len;
+        self
+    }
+
     pub fn config(&self) -> &DecoderConfig {
         &self.cfg
     }
@@ -220,7 +249,7 @@ impl<X: TrustedExecutor> CausalDiscriminatorRerankService<X> {
     }
 }
 
-impl<X: TrustedExecutor> RerankService for CausalDiscriminatorRerankService<X> {
+impl<X: TrustedExecutor + Clone + Send + Sync> RerankService for CausalDiscriminatorRerankService<X> {
     fn model_identity(&self) -> &[u8] {
         &self.model_identity
     }
@@ -244,17 +273,7 @@ impl<X: TrustedExecutor> RerankService for CausalDiscriminatorRerankService<X> {
             )));
         }
 
-        let mut scored: Vec<ScoredCandidate> = Vec::with_capacity(request.candidates.len());
-        for cand in request.candidates {
-            let score = self
-                .score_pair(request.query, &cand.text)
-                .map_err(RerankError::Forward)?;
-            scored.push(ScoredCandidate {
-                chunk_id: cand.chunk_id.clone(),
-                text: cand.text.clone(),
-                score,
-            });
-        }
+        let scored = score_candidates_parallel(self, request).map_err(RerankError::Forward)?;
 
         let qkey = session.derive_query_key(&request.query_id);
         let mut rng = ChaCha20Rng::from_seed(*qkey.as_bytes());
@@ -269,6 +288,70 @@ impl<X: TrustedExecutor> RerankService for CausalDiscriminatorRerankService<X> {
 
         EncryptedRerankBundle::seal(&qkey, &ranked, request.k_max, &mut rng, decoy_len)
     }
+}
+
+/// Score every candidate against the query, returning `ScoredCandidate`s
+/// in the input order. Mirrors `cross_encoder::score_candidates_parallel`:
+/// single-candidate fast path runs sequentially on the service's own
+/// executor; multi-candidate fan-out via rayon, one cloned executor per
+/// worker with an independent RNG stream.
+fn score_candidates_parallel<X: TrustedExecutor + Clone + Send + Sync>(
+    svc: &mut CausalDiscriminatorRerankService<X>,
+    request: &RerankRequest<'_>,
+) -> Result<Vec<ScoredCandidate>> {
+    if request.candidates.len() <= 1 {
+        let mut scored = Vec::with_capacity(request.candidates.len());
+        for cand in request.candidates {
+            let score = svc.score_pair(request.query, &cand.text)?;
+            scored.push(ScoredCandidate {
+                chunk_id: cand.chunk_id.clone(),
+                text: cand.text.clone(),
+                score,
+            });
+        }
+        return Ok(scored);
+    }
+
+    use rayon::prelude::*;
+    let query = request.query;
+    request
+        .candidates
+        .par_iter()
+        .enumerate()
+        .map(|(idx, cand)| {
+            let mut worker_exec = svc.exec.clone();
+            worker_exec.set_rng_stream(idx as u64);
+            let ids = profile::time("tee:tokenize", || {
+                let prompt = QWEN3_RERANKER_TEMPLATE
+                    .replace("{query}", query)
+                    .replace("{document}", &cand.text);
+                svc.tokenizer.encode(&prompt, svc.max_len)
+            })?;
+            let hidden = forward::run(
+                &svc.cfg,
+                &svc.weights,
+                &svc.rope,
+                &mut worker_exec,
+                &ids,
+            )?;
+            let score = profile::time("tee:yesno_head", || {
+                let last = hidden.row(hidden.shape()[0] - 1);
+                let yes_logit =
+                    last.dot(&svc.weights.token_embedding.row(svc.head.yes_token_id as usize));
+                let no_logit =
+                    last.dot(&svc.weights.token_embedding.row(svc.head.no_token_id as usize));
+                let mx = yes_logit.max(no_logit);
+                let e_yes = (yes_logit - mx).exp();
+                let e_no = (no_logit - mx).exp();
+                e_yes / (e_yes + e_no)
+            });
+            Ok(ScoredCandidate {
+                chunk_id: cand.chunk_id.clone(),
+                text: cand.text.clone(),
+                score,
+            })
+        })
+        .collect()
 }
 
 fn find_safetensors_shards(repo: &hf_hub::api::sync::ApiRepo) -> Result<Vec<PathBuf>> {

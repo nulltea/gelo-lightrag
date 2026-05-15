@@ -35,7 +35,7 @@ pub fn causal_gqa_attention(
 
     let mut output = Array2::<f32>::zeros((n, num_q_heads * head_dim));
 
-    for qh in 0..num_q_heads {
+    let per_head = |qh: usize, mut dst: ndarray::ArrayViewMut2<f32>| {
         let kvh = qh / group;
         let q_off = qh * head_dim;
         let kv_off = kvh * head_dim;
@@ -49,9 +49,28 @@ pub fn causal_gqa_attention(
         apply_causal_mask(&mut scores);
         softmax_inplace(&mut scores);
         let ctx = scores.dot(&vh_view);
-
-        let mut dst = output.slice_mut(ndarray::s![.., q_off..q_off + head_dim]);
         dst.assign(&ctx);
+    };
+
+    // Same rayon threshold as `bert::attention::multi_head_attention`:
+    // per-head work scales as `2 · n² · head_dim` flops + softmax. At
+    // Qwen3 rerank shape (n ≈ 400, head_dim = 128, 16 heads) one head
+    // is ~16 M flops ≈ 1 ms — well past rayon break-even. Embedder shape
+    // (n ≈ 30, 16 heads) gets ~100 k flops per head ≈ 5 µs — sequential
+    // wins.
+    if n >= 64 {
+        use ndarray::parallel::prelude::*;
+        output
+            .axis_chunks_iter_mut(Axis(1), head_dim)
+            .into_par_iter()
+            .enumerate()
+            .for_each(|(qh, dst)| per_head(qh, dst));
+    } else {
+        for qh in 0..num_q_heads {
+            let q_off = qh * head_dim;
+            let dst = output.slice_mut(ndarray::s![.., q_off..q_off + head_dim]);
+            per_head(qh, dst);
+        }
     }
     output
 }
@@ -101,8 +120,7 @@ pub fn causal_gqa_attention_with_offload(
     // Per-head softmax + causal mask + V multiply, all in TEE.
     let mut output = Array2::<f32>::zeros((n, num_q_heads * head_dim));
     profile::time("tee:softmax_av", || {
-        for qh in 0..num_q_heads {
-            let q_off = qh * head_dim;
+        let per_head = |qh: usize, mut dst: ndarray::ArrayViewMut2<f32>| {
             let kvh = qh / group;
             let kv_off = kvh * head_dim;
             let vh_view = v.slice(ndarray::s![.., kv_off..kv_off + head_dim]);
@@ -112,9 +130,21 @@ pub fn causal_gqa_attention_with_offload(
             apply_causal_mask(&mut scores);
             softmax_inplace(&mut scores);
             let ctx = scores.dot(&vh_view);
+            dst.assign(&ctx);
+        };
+        if n >= 64 {
+            use ndarray::parallel::prelude::*;
             output
-                .slice_mut(ndarray::s![.., q_off..q_off + head_dim])
-                .assign(&ctx);
+                .axis_chunks_iter_mut(Axis(1), head_dim)
+                .into_par_iter()
+                .enumerate()
+                .for_each(|(qh, dst)| per_head(qh, dst));
+        } else {
+            for qh in 0..num_q_heads {
+                let q_off = qh * head_dim;
+                let dst = output.slice_mut(ndarray::s![.., q_off..q_off + head_dim]);
+                per_head(qh, dst);
+            }
         }
     });
     Ok(output)
