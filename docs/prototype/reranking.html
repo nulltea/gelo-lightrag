@@ -657,7 +657,14 @@
 
     <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:32px 0 8px;">Mask sampling cadence — three modes, one default</h4>
     <p class="prose">A Haar-uniform orthogonal mask <code>A</code> protects each masked PCIe round-trip. <em>How often</em> <code>A</code> is resampled is a separate dial from <em>where</em> it gets used. Three cadences are coherent at the protocol level; the executor in <code>gelo-protocol</code> ships the first one as the default and exposes the third as an explicit opt-in for the BSS-recovery / parity tests.</p>
-    <table class="spec">
+    <table class="spec" style="table-layout:fixed;">
+      <colgroup>
+        <col style="width:14%;">
+        <col style="width:14%;">
+        <col style="width:26%;">
+        <col style="width:24%;">
+        <col style="width:22%;">
+      </colgroup>
       <thead>
         <tr>
           <th>Cadence</th>
