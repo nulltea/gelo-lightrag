@@ -27,7 +27,7 @@ pub fn multi_head_attention(
 
     let mut output = Array2::<f32>::zeros((n, d));
 
-    for h in 0..num_heads {
+    let per_head = |h: usize, mut dst: ndarray::ArrayViewMut2<f32>| {
         let col_start = h * head_dim;
         let col_end = col_start + head_dim;
         let qh = q.slice(ndarray::s![.., col_start..col_end]);
@@ -43,9 +43,34 @@ pub fn multi_head_attention(
 
         // (n, hd) = (n, n) · (n, hd) — matrixmultiply-backed GEMM.
         let ctx = scores.dot(&vh);
-
-        let mut dst = output.slice_mut(ndarray::s![.., col_start..col_end]);
         dst.assign(&ctx);
+    };
+
+    // Threshold for rayon-parallel head distribution. Heads are
+    // independent (own GEMMs, own softmax, own output slice), so the
+    // parallel speedup is bounded by the lower of num_heads and CPU
+    // cores. Rayon's per-scope setup is ~10–20 µs; for the parallel
+    // path to win, per-head wall-time must clear that threshold.
+    //
+    // Per-head work ≈ 2 · n² · head_dim FLOPs + softmax. At rerank
+    // shape (n=256, head_dim=64) one head is ~8 M FLOPs ≈ 0.4 ms
+    // single-thread — well past rayon's break-even. At embedder shape
+    // (n≈12, head_dim=64) one head is ~18 k FLOPs ≈ 1 µs — sequential
+    // wins. Cut at `n ≥ 64` to keep embedder serial.
+    if n >= 64 {
+        use ndarray::parallel::prelude::*;
+        output
+            .axis_chunks_iter_mut(Axis(1), head_dim)
+            .into_par_iter()
+            .enumerate()
+            .for_each(|(h, dst)| per_head(h, dst));
+    } else {
+        for h in 0..num_heads {
+            let col_start = h * head_dim;
+            let col_end = col_start + head_dim;
+            let dst = output.slice_mut(ndarray::s![.., col_start..col_end]);
+            per_head(h, dst);
+        }
     }
     output
 }
