@@ -471,53 +471,45 @@ binary stays decoupled from a concrete model loader.
 
 ## 7. Performance & correctness
 
-### Per-pair rerank latency (measured 2026-05-15)
+### Per-pair rerank latency
 
-Four data points across (CPU rayon vs Vulkan iGPU) × (synthetic
-n≈30 vs NFCorpus n≈300). All under `InProcessTrustedExecutor` with
-GELO+mask enabled. Hardware: AMD Ryzen AI Max+ 395 (Strix Halo)
-iGPU `AMD Radeon Graphics (RADV GFX1151)`.
+Measured on `InProcessTrustedExecutor` with GELO+mask enabled.
+Hardware: AMD Ryzen AI Max+ 395 (Strix Halo) iGPU
+`AMD Radeon Graphics (RADV GFX1151)`.
 
 | Workload | bge-reranker-v2-m3 | Qwen3-Reranker-0.6B |
 |---|---:|---:|
-| Synthetic 6 docs (n≈30), CPU rayon  | 399 ms/pair | 779 ms/pair |
-| Synthetic 6 docs (n≈30), **Vulkan** | **187 ms/pair** | **492 ms/pair** |
-| NFCorpus n≈300, CPU rayon           | 4.67 s/pair | 6.75 s/pair |
-| NFCorpus n≈300, **Vulkan, per-offload mask** (pre-2026-05-15) | 4.27 s/pair | 5.43 s/pair |
-| NFCorpus n≈256, **Vulkan, paper-parity default** (post-2026-05-15) | **2.29 s/pair** | **2.95 s/pair** |
+| NFCorpus n≈256, **Vulkan** | **2.29 s/pair** | **2.95 s/pair** |
 
-The GPU/CPU ratio is **~2× at n≈30** but only **~1.1–1.24× at n≈300**.
-The cause is structural and tracked in `gelo.md` §3.5 and
-`inference-optimization.md` §1:
+Wall-clock breakdown from a traced rerank forward (20 pairs, n≈256,
+see `E2E_TRACE=1` on `rerank_e2e_bench.rs`):
 
-- `OutAttnMult` auto-switch threshold defaults to `hidden_size = 1024`.
-  At rerank sequence length n ≈ 300, attention runs in-TEE on CPU
-  (`O(n²·d_head)`), and only the linear projections offload to GPU.
-- Cubecl dispatch overhead (~30–40 µs sync per matmul) × ~120 GEMMs
-  per forward = ~4 ms of pure dispatch tax per pair before any
-  matmul work.
-- The `blas` cargo feature (AOCL-BLIS for mask GEMMs) is wired on
-  `gelo-embedder` but not yet on `gelo-reranker` — the embedder's
-  5× mask-bucket speedup is currently absent from the reranker.
+- **Mask `apply` + `unapply` GEMMs — 63% combined** (35% unapply, 28%
+  apply). `(n+k)×(n+k)×d` CPU matmul per offload, run on the default
+  `matrixmultiply` backend; AOCL-BLIS lights this up 5× per bucket
+  on the embedder, not yet wired on the reranker (lever 1 in §8).
+- **In-TEE attention — 14% (bge) / 21% (Qwen3).** Bidirectional or
+  causal-GQA at n≈256–512 stays in the TEE because `OutAttnMult`'s
+  auto-switch threshold defaults to `hidden_size = 1024`. Lowering it
+  would offload attention but at a 4× FLOPs cost — only a net win at
+  longer n.
+- **GPU matmul — 13% (bge) / 15% (Qwen3).** Eight offloaded
+  projections per layer × N layers, dispatched through cubecl. ~30–40
+  µs sync per matmul × ~120 GEMMs per forward = ~4 ms of pure dispatch
+  tax per pair.
+- **Element-wise (GELU / SwiGLU / RMSNorm / residual) — ~7%.**
+  Single-threaded ndarray.
+- **Mask sample (Haar QR) — <1%.** One per forward — see §5 cadence
+  discussion.
 
-**Paper-parity default flip (2026-05-15).** The `InProcessTrustedExecutor`
-default switched from per-offload Haar sampling (fresh `A` per offload,
-no shield) to the paper §3.2 construction (one `A` per forward + 8
-shield rows). Per-bench profile trace showed `gelo:mask_sample`
-dropping from 46–48% of rerank wall time to <1%. Net per-pair impact:
-bge 3.57 s → 2.29 s (1.56×), Qwen3 5.39 s → 2.95 s (1.83×). Ingest
-also benefited (1.96× speedup on the same bench). The two surviving
-top buckets — `gelo:mask_apply` (28%) and `gelo:mask_unapply` (35%) —
-are now the right target for `blas`-feature plumbing on the reranker
-(lever 1 below).
-
-### End-to-end stages (R7 GPU, 100 docs, 10 queries, k′=20, k=10)
+### End-to-end stages (R7 GPU, 100 docs, 1 query, k′=20, k=10)
 
 | Stage | Wall | Per-unit |
 |---|---:|---:|
-| A · Ingest (BGE-base GELO+mask+Vulkan + CAPRISE) | 15.0 s | 6.7 docs/s |
-| B · Retrieve (BGE-base query embed + CAPRISE cosine, k′=20) | 472 ms | 47 ms/query |
-| C · Rerank bge (200 pairs) | 854 s | 4.27 s/pair |
+| A · Ingest (BGE-base GELO+mask+Vulkan + CAPRISE) | 7.6 s | 13.1 docs/s |
+| B · Retrieve (BGE-base query embed + CAPRISE cosine, k′=20) | 176 ms | 176 ms/query |
+| C · Rerank bge (20 pairs) | 45.7 s | 2.29 s/pair |
+| C · Rerank Qwen3 (20 pairs) | 58.9 s | 2.95 s/pair |
 
 ### Ranking metrics on the same run
 
@@ -592,10 +584,11 @@ ignored release-gate tests run on demand.
 1. **Wire AOCL-BLIS for the reranker mask GEMMs.** The `blas`
    cargo feature is in `gelo-protocol` and lit up on `gelo-embedder`
    per `gelo.md` §8 lever 4 — measured 5× per-bucket on mask
-   apply/unapply. Mirroring it on `gelo-reranker` should drop bge
-   per-pair from 4.27 s toward ~2 s at n≈300, and Qwen3 from
-   5.43 s toward ~2.5 s. Effort: 1 day. The mask-GEMM hot path is
-   identical to the embedder's; only the feature plumbing is new.
+   apply/unapply, which are 63% of rerank wall time today.
+   Mirroring it on `gelo-reranker` should drop bge per-pair from
+   2.29 s toward ~1 s at n≈256, and Qwen3 from 2.95 s toward
+   ~1.3 s. Effort: 1 day. The mask-GEMM hot path is identical to
+   the embedder's; only the feature plumbing is new.
 
 2. **Fix `QWEN3_RERANKER_TEMPLATE` to match the HF model-card recipe.**
    Add the `<Instruct>: Given a web search query, retrieve relevant

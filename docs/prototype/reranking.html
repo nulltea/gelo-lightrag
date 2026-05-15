@@ -48,13 +48,13 @@
   <div class="stat-strip">
     <div class="stat">
       <div class="k">Qwen3 rerank · GPU</div>
-      <div class="v"><em>5.43</em><span class="unit">s/pair</span></div>
-      <div class="sub">Qwen3-Reranker-0.6B · GELO+mask · Vulkan iGPU · NFCorpus n≈300</div>
+      <div class="v"><em>2.95</em><span class="unit">s/pair</span></div>
+      <div class="sub">Qwen3-Reranker-0.6B · GELO+mask · Vulkan iGPU · NFCorpus n≈256</div>
     </div>
     <div class="stat">
       <div class="k">bge rerank · GPU</div>
-      <div class="v"><em>4.27</em><span class="unit">s/pair</span></div>
-      <div class="sub">bge-reranker-v2-m3 · GELO+mask · Vulkan iGPU · NFCorpus n≈300</div>
+      <div class="v"><em>2.29</em><span class="unit">s/pair</span></div>
+      <div class="sub">bge-reranker-v2-m3 · GELO+mask · Vulkan iGPU · NFCorpus n≈256</div>
     </div>
     <div class="stat">
       <div class="k">bundle k_max</div>
@@ -676,7 +676,7 @@
       </thead>
       <tbody>
         <tr>
-          <td><b>Per forward pass</b> <span class="accent">(default since 2026-05-15)</span></td>
+          <td><b>Per forward pass</b> <span class="accent">(default)</span></td>
           <td>1</td>
           <td>Requires <code>ShieldConfig</code> (8 Gaussian rows at energy <code>4·mean‖h‖</code>) — the appended noise rows break the cross-offload Gram-matrix correlation an ICA / BSS attacker would otherwise exploit when the same <code>A</code> protects QKV, O, gate/up, and down within a forward.</td>
           <td>1 Haar QR / forward. At n+k=520 that's ~18 ms once, then amortised across ~96 mask-apply / mask-unapply GEMMs per forward. ~&lt;1% of rerank wall time on Vulkan iGPU.</td>
@@ -758,7 +758,7 @@ Content-Type: application/json
     <header class="section-head">
       <div class="section-num">§07</div>
       <h2 class="section-title">Performance &amp; correctness</h2>
-      <div class="section-meta">measured 2026-05-15 on AMD Strix Halo iGPU</div>
+      <div class="section-meta">measured on AMD Strix Halo iGPU</div>
     </header>
 
     <p class="lede">
@@ -775,24 +775,20 @@ Content-Type: application/json
         </tr>
       </thead>
       <tbody>
-        <tr><td>Synthetic 6 docs (n≈30), CPU rayon</td><td class="num">399 ms/pair</td><td class="num">779 ms/pair</td></tr>
-        <tr><td>Synthetic 6 docs (n≈30), <b>Vulkan</b></td><td class="num accent">187 ms/pair</td><td class="num accent">492 ms/pair</td></tr>
-        <tr><td>NFCorpus n≈300, CPU rayon</td><td class="num">4.67 s/pair</td><td class="num">6.75 s/pair</td></tr>
-        <tr><td>NFCorpus n≈300, <b>Vulkan, per-offload</b> (pre-2026-05-15)</td><td class="num">4.27 s/pair</td><td class="num">5.43 s/pair</td></tr>
-        <tr><td>NFCorpus n≈256, <b>Vulkan, paper-parity default</b> (post-2026-05-15)</td><td class="num accent">2.29 s/pair</td><td class="num accent">2.95 s/pair</td></tr>
+        <tr><td>NFCorpus n≈256, <b>Vulkan</b></td><td class="num accent">2.29 s/pair</td><td class="num accent">2.95 s/pair</td></tr>
       </tbody>
     </table>
 
-    <p class="prose" style="margin-top:24px;">The GPU/CPU ratio is <strong>~2× at n≈30</strong> but only <strong>~1.1–1.24× at n≈300</strong>. Three structural reasons, all tracked in <code>gelo.md</code> §3.5 and <code>inference-optimization.md</code> §1:</p>
+    <p class="prose" style="margin-top:24px;">The wall-clock breakdown from a traced rerank forward (20 pairs, n≈256, see <code>E2E_TRACE=1</code> on <code>rerank_e2e_bench.rs</code>):</p>
     <ul>
-      <li><strong>OutAttnMult auto-switch.</strong> The threshold defaults to <code>hidden_size = 1024</code>. At rerank n ≈ 300 attention runs in-TEE on CPU (<code>O(n²·d_head)</code>); only the linear projections offload to GPU.</li>
-      <li><strong>Per-call dispatch overhead.</strong> ~30–40 µs cubecl sync per matmul × ~120 GEMMs per forward = ~4 ms of pure dispatch tax per pair before any matmul work.</li>
-      <li><strong>AOCL-BLIS not yet wired.</strong> <code>gelo-embedder</code> lights up <code>blas</code> for the mask GEMMs and gets a 5× per-bucket speedup; <code>gelo-reranker</code> does not, and the mask machinery runs on the slower default <code>matrixmultiply</code> backend.</li>
+      <li><strong>Mask <code>apply</code> + <code>unapply</code> GEMMs — 63% combined</strong> (35% unapply, 28% apply). <code>(n+k)×(n+k)×d</code> CPU matmul per offload, run on the default <code>matrixmultiply</code> backend; AOCL-BLIS lights this up 5× per bucket on the embedder, not yet wired on the reranker (lever 1 in §08).</li>
+      <li><strong>In-TEE attention — 14% (bge) / 21% (Qwen3).</strong> Bidirectional or causal-GQA at n≈256–512 stays in the TEE because OutAttnMult's auto-switch threshold defaults to <code>hidden_size = 1024</code>. Lowering it would offload attention but at a 4× FLOPs cost — only a net win at longer n.</li>
+      <li><strong>GPU matmul — 13% (bge) / 15% (Qwen3).</strong> Eight offloaded projections per layer × N layers, dispatched through cubecl. ~30–40 µs sync per matmul × ~120 GEMMs per forward = ~4 ms of pure dispatch tax per pair.</li>
+      <li><strong>Element-wise (GELU / SwiGLU / RMSNorm / residual) — ~7%.</strong> Single-threaded ndarray.</li>
+      <li><strong>Mask sample (Haar QR) — &lt;1%.</strong> One per forward — see §05 cadence table.</li>
     </ul>
 
-    <p class="prose" style="margin-top:24px;"><strong>Paper-parity default flip (2026-05-15).</strong> <code>InProcessTrustedExecutor</code> defaults switched from per-offload Haar sampling to the paper §3.2 construction (one <code>A</code> per forward + 8 shield rows — see §05 cadence table). Profile traces showed <code>gelo:mask_sample</code> dropping from <strong>46–48% to &lt;1%</strong> of rerank wall time, yielding <strong>1.56× per-pair speedup on bge</strong> and <strong>1.83× on Qwen3</strong>. Ingest (rayon-parallel, 100-doc) also picked up <strong>1.96×</strong>. The frontier now sits in <code>gelo:mask_apply</code> + <code>gelo:mask_unapply</code> (63% combined) — the natural target for lever 1 below.</p>
-
-    <h4 style="margin-top:32px;">End-to-end stages (R7 GPU, 100 docs, 10 queries, k'=20, k=10)</h4>
+    <h4 style="margin-top:32px;">End-to-end stages (R7 GPU, 100 docs, 1 query, k'=20, k=10)</h4>
     <table class="spec">
       <thead>
         <tr>
@@ -802,9 +798,10 @@ Content-Type: application/json
         </tr>
       </thead>
       <tbody>
-        <tr><td>A · Ingest (BGE-base GELO+mask+Vulkan + CAPRISE)</td><td class="num">15.0 s</td><td class="num">6.7 docs/s</td></tr>
-        <tr><td>B · Retrieve (BGE-base query embed + CAPRISE cosine, k'=20)</td><td class="num">472 ms</td><td class="num">47 ms/query</td></tr>
-        <tr><td>C · Rerank bge (200 pairs)</td><td class="num">854 s</td><td class="num">4.27 s/pair</td></tr>
+        <tr><td>A · Ingest (BGE-base GELO+mask+Vulkan + CAPRISE)</td><td class="num">7.6 s</td><td class="num">13.1 docs/s</td></tr>
+        <tr><td>B · Retrieve (BGE-base query embed + CAPRISE cosine, k'=20)</td><td class="num">176 ms</td><td class="num">176 ms/query</td></tr>
+        <tr><td>C · Rerank bge (20 pairs)</td><td class="num">45.7 s</td><td class="num">2.29 s/pair</td></tr>
+        <tr><td>C · Rerank Qwen3 (20 pairs)</td><td class="num">58.9 s</td><td class="num">2.95 s/pair</td></tr>
       </tbody>
     </table>
 
@@ -872,7 +869,7 @@ Content-Type: application/json
       <tbody>
         <tr>
           <td>1</td>
-          <td>Wire <code>blas</code> feature for the reranker mask GEMMs (AOCL-BLIS); mirror <code>gelo.md</code> §8 lever 4. After the paper-parity flip, <code>mask_apply</code> + <code>mask_unapply</code> are 63% of rerank wall time — AOCL-BLIS measured 5× per-bucket on the embedder.</td>
+          <td>Wire <code>blas</code> feature for the reranker mask GEMMs (AOCL-BLIS); mirror <code>gelo.md</code> §8 lever 4. <code>mask_apply</code> + <code>mask_unapply</code> are 63% of rerank wall time — AOCL-BLIS measured 5× per-bucket on the embedder.</td>
           <td>bge per-pair 2.29 s → ~1 s; Qwen3 2.95 s → ~1.3 s at n≈256</td>
           <td>1 day</td>
         </tr>
