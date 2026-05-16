@@ -1,9 +1,11 @@
 //! `CompassIndex` — the encrypted graph-ANN index. Wraps a
-//! [`RingOramClient`] holding HNSW node blocks.
+//! [`RingOramClient`] holding HNSW layer-0 node blocks; layers ≥ 1
+//! live cleartext inside the CVM.
 
 use ring_oram::{
     BlockBackend, BlockId, InMemoryBlockBackend, OramError, RingOramClient, RingOramParams,
 };
+use std::collections::HashMap;
 use thiserror::Error;
 
 use crate::codec::{CodecError, deserialise_node, serialise_node};
@@ -19,71 +21,96 @@ pub enum CompassIndexError {
     MissingEntry,
 }
 
-/// Per-index configuration: combines the HNSW parameters (D, M) and
-/// the Ring-ORAM parameters (Z, S, A, block_bytes, n_leaves). These
-/// must be self-consistent — `block_bytes` must accommodate a
-/// serialised node of (D, M) plus zero padding.
+/// Per-index configuration: combines the HNSW parameters and the
+/// Ring-ORAM parameters. They must be self-consistent — `block_bytes`
+/// must accommodate a serialised layer-0 node (D-vector + neighbour
+/// list of length `max_neighbors_l0`) plus zero padding.
 #[derive(Debug, Clone, Copy)]
 pub struct CompassIndexParams {
     pub hnsw: PlainHnswParams,
     pub oram: RingOramParams,
-    /// Greedy-search candidate-list width. Affects recall and the
-    /// number of ORAM reads per query.
+    /// Greedy-search candidate-list width at layer 0. Affects recall
+    /// and the number of ORAM reads per query.
     pub ef_search: usize,
 }
 
 impl Default for CompassIndexParams {
-    /// M3 defaults: 128-dim embeddings, 16-degree HNSW, ef=64. Tree
-    /// sized for a ~1K-vector test fixture.
+    /// M4 defaults: 128-dim embeddings, M=16 (so M_l0=32). Tree sized
+    /// for a ~1K-vector test fixture.
     fn default() -> Self {
         Self {
-            hnsw: PlainHnswParams { dim: 128, max_neighbors: 16 },
+            hnsw: PlainHnswParams::paper_defaults(128, 16),
             oram: RingOramParams {
                 z: 4,
                 s: 5,
                 a: 3,
-                block_bytes: 1024, // 128·4 + 4 + 16·4 = 580; pad to 1024
-                n_leaves: 2048, // ≥ 1K real blocks + headroom
+                // 128·4 + 4 + 32·4 = 644 — pad to 1024.
+                block_bytes: 1024,
+                n_leaves: 2048,
             },
             ef_search: 64,
         }
     }
 }
 
+/// Cleartext-cached upper layer: per-node `(embedding, neighbours)`.
+/// Stored inside the CVM; never reaches the storage server.
+#[derive(Debug)]
+pub(crate) struct UpperLayer {
+    pub(crate) nodes: HashMap<u32, UpperNode>,
+}
+
+#[derive(Debug)]
+pub(crate) struct UpperNode {
+    pub(crate) embedding: Vec<f32>,
+    pub(crate) neighbours: Vec<u32>,
+}
+
 pub struct CompassIndex<B: BlockBackend> {
     pub(crate) oram: RingOramClient<B>,
     pub(crate) params: CompassIndexParams,
     pub(crate) entry: BlockId,
-    /// Embedding-of-the-entry-node cached cleartext inside the CVM.
-    /// HNSW's greedy search needs the entry distance to bootstrap; we
-    /// cache it to avoid an ORAM read in the very first hop. Tiny —
-    /// `dim · 4` bytes.
-    pub(crate) entry_embedding: Vec<f32>,
+    pub(crate) top_layer: u32,
+    /// Cleartext upper-layer cache. `upper_layers[l - 1]` is the
+    /// adjacency + embeddings at layer `l`. Bottom layer (0) is in
+    /// ORAM and not present here.
+    pub(crate) upper_layers: Vec<UpperLayer>,
 }
 
 impl CompassIndex<InMemoryBlockBackend> {
     /// `compass_init` analog using the in-memory backend. Builds a
-    /// plaintext HNSW from `embeddings`, encodes every node as one
-    /// ORAM block, admits all blocks. Returns the ready-to-query
-    /// index. Consumes the plaintext build state.
+    /// layered HNSW from `embeddings`, caches upper layers cleartext,
+    /// encodes layer-0 nodes as ORAM blocks, admits them.
     pub fn from_plaintext_corpus(
         embeddings: Vec<Vec<f32>>,
         params: CompassIndexParams,
     ) -> Result<Self, CompassIndexError> {
         let hnsw = PlainHnsw::build(embeddings, params.hnsw);
         let backend = InMemoryBlockBackend::new(params.oram.num_buckets());
-        let key = [0x33u8; 32];
-        let rng_seed = [0x55u8; 32];
+        // Use the HNSW build seed to derive the ORAM key + RNG seed
+        // deterministically. Production tenants will swap these for
+        // the V2 HKDF children (oram_entities_key etc.).
+        let key = derive_test_key(&hnsw.params.build_seed, b"oram-key");
+        let rng_seed = derive_test_key(&hnsw.params.build_seed, b"oram-rng");
         let mut oram = RingOramClient::new(backend, params.oram, key, rng_seed);
 
         let entry = hnsw.entry;
-        let entry_embedding = hnsw.nodes[entry as usize].embedding.clone();
+        let top_layer = hnsw.top_layer;
 
-        for (id, node) in hnsw.nodes.iter().enumerate() {
+        // Cache upper layers cleartext.
+        let upper_layers = build_upper_layer_cache(&hnsw);
+
+        // Push every layer-0 node into ORAM as a fixed-size block.
+        let blocks = hnsw.layer0_blocks();
+        for (id, node) in blocks.iter().enumerate() {
+            // Truncate neighbour list to fit the ORAM block. The
+            // CompassParams encoding caps at max_neighbors_l0.
+            let mut node = node.clone();
+            node.neighbors.truncate(params.hnsw.max_neighbors_l0);
             let bytes = serialise_node(
-                node,
+                &node,
                 params.hnsw.dim,
-                params.hnsw.max_neighbors,
+                params.hnsw.max_neighbors_l0,
                 params.oram.block_bytes as usize,
             )?;
             oram.admit(BlockId(id as u32), bytes)?;
@@ -93,22 +120,61 @@ impl CompassIndex<InMemoryBlockBackend> {
             oram,
             params,
             entry: BlockId(entry),
-            entry_embedding,
+            top_layer,
+            upper_layers,
         })
     }
 }
 
+fn build_upper_layer_cache(hnsw: &PlainHnsw) -> Vec<UpperLayer> {
+    hnsw.upper
+        .iter()
+        .map(|adj| {
+            let nodes: HashMap<u32, UpperNode> = adj
+                .iter()
+                .map(|(&id, neighbours)| {
+                    (
+                        id,
+                        UpperNode {
+                            embedding: hnsw.embeddings[id as usize].clone(),
+                            neighbours: neighbours.clone(),
+                        },
+                    )
+                })
+                .collect();
+            UpperLayer { nodes }
+        })
+        .collect()
+}
+
+/// Trivial key derivation for tests/integration — replaced by the
+/// V2 HKDF children at the `light-kg-store` boundary (M6).
+fn derive_test_key(seed: &[u8; 32], label: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(seed);
+    hasher.update(label);
+    hasher.finalize().into()
+}
+
 impl<B: BlockBackend> CompassIndex<B> {
-    /// Search interface: returns the top-k node ids ordered by
-    /// ascending cosine distance to the query.
+    /// Top-k search. Layered routing through cleartext upper layers,
+    /// then ef-bounded beam search in the ORAM-resident layer 0.
     pub fn search(&mut self, query: &[f32], k: usize) -> Result<Vec<u32>, CompassIndexError> {
-        crate::search::strawman_search(self, query, k)
+        crate::search::layered_search(self, query, k)
     }
 
     /// Internal accessor: decode block `id` from the ORAM.
-    pub(crate) fn read_node(&mut self, id: BlockId) -> Result<crate::codec::NodeBlock, CompassIndexError> {
+    pub(crate) fn read_layer0_node(
+        &mut self,
+        id: BlockId,
+    ) -> Result<crate::codec::NodeBlock, CompassIndexError> {
         let bytes = self.oram.read(id)?;
-        let node = deserialise_node(&bytes, self.params.hnsw.dim, self.params.hnsw.max_neighbors)?;
+        let node = deserialise_node(
+            &bytes,
+            self.params.hnsw.dim,
+            self.params.hnsw.max_neighbors_l0,
+        )?;
         Ok(node)
     }
 }

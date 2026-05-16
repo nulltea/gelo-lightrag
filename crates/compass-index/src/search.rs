@@ -1,23 +1,17 @@
-//! Strawman ORAM-mediated greedy HNSW search.
+//! Layered Compass search (M4.6).
 //!
-//! Algorithm (paper §4.3, no optimisations):
+//! 1. **Upper-layer descent (cleartext).** Start at the entry node
+//!    at `top_layer`. At each layer, ef=1 greedy descent over the
+//!    in-CVM cleartext cache. No ORAM traffic.
+//! 2. **Layer-0 beam search (ORAM-mediated).** Standard
+//!    `ef_search`-bounded beam search; every visited node = one
+//!    Ring-ORAM `read`. Return top-k.
 //!
-//! 1. Start at the entry node. Push (dist(entry, query), entry) onto
-//!    a min-heap `candidates` and a max-heap `top_k`.
-//! 2. While `candidates` is non-empty:
-//!    a. Pop the closest unvisited `current` from `candidates`.
-//!    b. If `current.dist > top_k.peek().dist` and `top_k.len() ≥ ef`,
-//!       break — no closer node can improve the result.
-//!    c. ORAM-read `current.block` to get its neighbours.
-//!    d. For each unvisited neighbour `n`, ORAM-read its block, compute
-//!       `dist(n.embedding, query)`, push to both heaps.
-//!    e. Bound `top_k` to `ef` by dropping the farthest.
-//! 3. Return the `k` smallest from `top_k`.
-//!
-//! Each visited node requires one ORAM read for its neighbour list +
-//! D-vector. Each unvisited neighbour evaluated requires another. For
-//! ef=64 / M=16 the typical search visits ~50 nodes ⇒ ~50 reads.
-//! M4 reduces this with Directional Filter + Speculative Prefetch.
+//! Compared to the M3 strawman (paper §4.3), this is the natural
+//! layered traversal — same number of layer-0 reads but the upper
+//! layers no longer cost ORAM round-trips. M4.1–M4.5 will further
+//! reduce layer-0 reads via Directional Filter + Speculative
+//! Prefetch + Lazy Eviction.
 
 use ring_oram::{BlockBackend, BlockId};
 use std::cmp::Reverse;
@@ -45,7 +39,6 @@ impl PartialOrd for Candidate {
 }
 impl Ord for Candidate {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Smaller dist = "less" (we want min-heap for candidates).
         self.dist
             .partial_cmp(&other.dist)
             .unwrap_or(std::cmp::Ordering::Equal)
@@ -53,7 +46,7 @@ impl Ord for Candidate {
     }
 }
 
-pub(crate) fn strawman_search<B: BlockBackend>(
+pub(crate) fn layered_search<B: BlockBackend>(
     index: &mut CompassIndex<B>,
     query: &[f32],
     k: usize,
@@ -64,42 +57,60 @@ pub(crate) fn strawman_search<B: BlockBackend>(
         "query dim mismatch with CompassIndex"
     );
 
-    let ef = index.params.ef_search.max(k);
-    let entry_dist = cosine_distance(query, &index.entry_embedding);
-    let entry_cand = Candidate { dist: entry_dist, id: index.entry.0 };
+    // ─── 1. Upper-layer descent (cleartext) ────────────────────────
+    let mut current = index.entry.0;
+    let entry_emb = upper_layer_embedding(index, current, index.top_layer)
+        .expect("entry must exist at top_layer");
+    let mut cur_dist = cosine_distance(query, entry_emb);
 
-    // candidates: min-heap by dist (use Reverse to make BinaryHeap min-style).
+    // Walk down through all upper layers (top_layer, top_layer-1, …, 1).
+    for l in (1..=index.top_layer).rev() {
+        loop {
+            let nbrs = upper_layer_neighbours(index, current, l).to_vec();
+            let mut improved = false;
+            for n in nbrs {
+                if let Some(emb) = upper_layer_embedding(index, n, l) {
+                    let d = cosine_distance(query, emb);
+                    if d < cur_dist {
+                        current = n;
+                        cur_dist = d;
+                        improved = true;
+                    }
+                }
+            }
+            if !improved {
+                break;
+            }
+        }
+    }
+
+    // ─── 2. Layer-0 beam search (ORAM-mediated) ─────────────────────
+    let ef = index.params.ef_search.max(k);
+    let entry_cand = Candidate { id: current, dist: cur_dist };
+
     let mut candidates: BinaryHeap<Reverse<Candidate>> = BinaryHeap::new();
     candidates.push(Reverse(entry_cand));
-    // top_k: max-heap by dist; size bounded by ef. Largest at top.
     let mut top_k: BinaryHeap<Candidate> = BinaryHeap::new();
     top_k.push(entry_cand);
 
     let mut visited: HashSet<u32> = HashSet::new();
-    visited.insert(index.entry.0);
+    visited.insert(current);
 
-    while let Some(Reverse(current)) = candidates.pop() {
-        // Early termination: if current is farther than the worst of
-        // the current top_k AND top_k is full, we can't improve.
+    while let Some(Reverse(c)) = candidates.pop() {
         if top_k.len() >= ef {
             let farthest = top_k.peek().expect("non-empty top_k").dist;
-            if current.dist > farthest {
+            if c.dist > farthest {
                 break;
             }
         }
-
-        // ORAM-read current's neighbour list.
-        let node = index.read_node(BlockId(current.id))?;
-
-        // Visit each neighbour: ORAM-read its embedding, score, push.
+        let node = index.read_layer0_node(BlockId(c.id))?;
         for &nb_id in &node.neighbors {
             if !visited.insert(nb_id) {
                 continue;
             }
-            let nb_node = index.read_node(BlockId(nb_id))?;
+            let nb_node = index.read_layer0_node(BlockId(nb_id))?;
             let nb_dist = cosine_distance(query, &nb_node.embedding);
             let cand = Candidate { dist: nb_dist, id: nb_id };
-            // Maybe add to top_k.
             if top_k.len() < ef {
                 top_k.push(cand);
                 candidates.push(Reverse(cand));
@@ -114,8 +125,44 @@ pub(crate) fn strawman_search<B: BlockBackend>(
         }
     }
 
-    // Extract top-k smallest from the max-heap (need to invert).
     let mut all: Vec<Candidate> = top_k.into_iter().collect();
     all.sort_by(|a, b| a.cmp(b));
     Ok(all.into_iter().take(k).map(|c| c.id).collect())
+}
+
+fn upper_layer_embedding<'a, B: BlockBackend>(
+    index: &'a CompassIndex<B>,
+    id: u32,
+    layer: u32,
+) -> Option<&'a [f32]> {
+    if layer == 0 {
+        return None;
+    }
+    let l_idx = (layer - 1) as usize;
+    if l_idx >= index.upper_layers.len() {
+        return None;
+    }
+    index.upper_layers[l_idx]
+        .nodes
+        .get(&id)
+        .map(|n| n.embedding.as_slice())
+}
+
+fn upper_layer_neighbours<'a, B: BlockBackend>(
+    index: &'a CompassIndex<B>,
+    id: u32,
+    layer: u32,
+) -> &'a [u32] {
+    if layer == 0 {
+        return &[];
+    }
+    let l_idx = (layer - 1) as usize;
+    if l_idx >= index.upper_layers.len() {
+        return &[];
+    }
+    index.upper_layers[l_idx]
+        .nodes
+        .get(&id)
+        .map(|n| n.neighbours.as_slice())
+        .unwrap_or(&[])
 }

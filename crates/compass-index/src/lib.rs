@@ -36,6 +36,6 @@ mod index;
 mod search;
 
 pub use codec::NodeBlock;
-pub use hnsw_plain::{PlainHnsw, PlainHnswParams};
+pub use hnsw_plain::{NeighbourHeuristic, PlainHnsw, PlainHnswParams};
 pub use index::{CompassIndex, CompassIndexParams, CompassIndexError};
 pub use ring_oram::RingOramParams;
