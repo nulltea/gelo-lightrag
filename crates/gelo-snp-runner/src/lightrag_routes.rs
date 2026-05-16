@@ -218,15 +218,23 @@ pub async fn ingest(
 #[derive(Deserialize, Debug)]
 pub struct LightRagQueryRequest {
     pub tenant_id: String,
-    /// Low-level keyword embedding. The client computed it; the
-    /// runner threads it through `search_perturb`. M7.x adds the
-    /// hl path + the chunks-vdb path for Hybrid/Mix modes.
+    /// Low-level keyword embedding. Local + Hybrid modes use it.
     pub ll_query_embedding: Vec<f32>,
+    /// High-level keyword embedding. Hybrid mode only — pass `[]`
+    /// or omit for Local mode.
+    #[serde(default)]
+    pub hl_query_embedding: Vec<f32>,
+    /// Retrieval mode. Defaults to "local". M7.2 ships "local" and
+    /// "hybrid". M7.x will add the remaining modes.
+    #[serde(default = "default_mode")]
+    pub mode: String,
     /// 16-byte session nonce. Same nonce within a session ensures
     /// `search_perturb` produces the same output each call.
     pub session_nonce_b64: String,
     #[serde(default = "default_top_k_entities")]
     pub top_k_entities: usize,
+    #[serde(default = "default_top_k_relations")]
+    pub top_k_relations: usize,
     #[serde(default = "default_top_k_chunks")]
     pub top_k_chunks_per_entity: usize,
 }
@@ -234,8 +242,14 @@ pub struct LightRagQueryRequest {
 fn default_top_k_entities() -> usize {
     5
 }
+fn default_top_k_relations() -> usize {
+    5
+}
 fn default_top_k_chunks() -> usize {
     2
+}
+fn default_mode() -> String {
+    "local".to_string()
 }
 
 #[derive(Serialize)]
@@ -260,13 +274,29 @@ pub async fn query(
     let session_nonce = B64
         .decode(req.session_nonce_b64.as_bytes())
         .map_err(|e| anyhow::anyhow!("session_nonce_b64: base64 decode: {e}"))?;
+    let shape = match req.mode.as_str() {
+        "local" => QueryShape::Local,
+        "hybrid" => QueryShape::Hybrid,
+        other => {
+            return Err(AppError::from(anyhow::anyhow!(
+                "unsupported mode {other:?} — M7.2 supports 'local' and 'hybrid'"
+            )));
+        }
+    };
     let params = KgQueryParams {
         top_k_entities: req.top_k_entities,
         top_k_chunks_per_entity: req.top_k_chunks_per_entity,
-        shape: QueryShape::Local,
+        shape,
+        top_k_relations: req.top_k_relations,
     };
     let ctx = lightrag
-        .query_for(&tenant, &req.ll_query_embedding, &params, &session_nonce)
+        .query_for(
+            &tenant,
+            &req.ll_query_embedding,
+            &req.hl_query_embedding,
+            &params,
+            &session_nonce,
+        )
         .await
         .map_err(|e| anyhow::anyhow!("query_for: {e}"))?;
     let context_string = ctx.to_context_string();

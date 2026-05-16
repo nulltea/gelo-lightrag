@@ -82,6 +82,11 @@ pub struct LightKgStore<B: BlockBackend, BS: ByteStoreBackend> {
     pub entity_block_id: HashMap<String, u32>,
     /// `relation.canonical_key() → relations[].block_id`.
     pub relation_block_id: HashMap<String, u32>,
+    /// `relation_block_id → (src_name, tgt_name)`. Inverse-direction
+    /// of `relation_block_id`. Cleartext inside the CVM; pseudonymising
+    /// is M9 hardening (Risk F). Used by Hybrid-mode `kg_query` to
+    /// fan from a relation hit out to its endpoint entities.
+    pub relation_endpoints: HashMap<u32, (String, String)>,
     /// `chunk_id → chunks[].block_id`.
     pub chunk_block_id: HashMap<String, u32>,
     /// Master keys, kept in-RAM for sub-key derivation. Wiped on drop
@@ -170,6 +175,16 @@ impl<B: BlockBackend, BS: ByteStoreBackend> LightKgStore<B, BS> {
         k: usize,
     ) -> Result<Vec<u32>, LightKgError> {
         Ok(self.entities.search(query, k).await?)
+    }
+
+    /// Top-k relations by embedding similarity. Hybrid mode drives
+    /// this with the high-level keyword embedding.
+    pub async fn query_relations_topk(
+        &mut self,
+        query: &[f32],
+        k: usize,
+    ) -> Result<Vec<u32>, LightKgError> {
+        Ok(self.relations.search(query, k).await?)
     }
 
     /// Adjacency lookup — returns the canonical-key strings of the
@@ -282,6 +297,12 @@ where
         .enumerate()
         .map(|(i, r)| (r.canonical_key(), i as u32))
         .collect();
+    let relation_endpoints: HashMap<u32, (String, String)> = kg
+        .relations
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (i as u32, (r.src.clone(), r.tgt.clone())))
+        .collect();
     let chunk_block_id: HashMap<String, u32> = kg
         .chunks
         .iter()
@@ -347,6 +368,7 @@ where
         chunk_text,
         entity_block_id,
         relation_block_id,
+        relation_endpoints,
         chunk_block_id,
         keys: bundle,
     })

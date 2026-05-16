@@ -151,10 +151,11 @@ async fn local_kg_query_threads_all_stages() {
         top_k_entities: 3,
         top_k_chunks_per_entity: 2,
         shape: QueryShape::Local,
+        top_k_relations: 3,
     };
     let mut svc = LightRagPrivateService::new(&mut store);
     let ctx = svc
-        .kg_query(&target_embedding, &query_params, &session_key)
+        .kg_query(&target_embedding, &[], &query_params, &session_key)
         .await
         .expect("kg_query");
 

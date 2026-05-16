@@ -1003,6 +1003,116 @@ mod tests {
         assert!(ctx_string.contains("# Source chunks"));
     }
 
+    /// M7.2 — hybrid mode threads through both embedding axes.
+    #[tokio::test]
+    async fn lightrag_hybrid_mode_threads_hl_and_ll() {
+        let state = build_test_state();
+        let app = build_router(state);
+
+        fn one_hot(i: usize, dim: usize) -> Vec<f32> {
+            let mut v = vec![0.0f32; dim];
+            v[i % dim] = 1.0;
+            v
+        }
+        let dim = 16usize;
+
+        // Ingest the same 4/2/4 KG as the Local-mode test.
+        let kg = serde_json::json!({
+            "tenant_id": "hybrid-tenant",
+            "user_x_sk": B64.encode([0xBB_u8; 32]),
+            "dim": dim,
+            "extracted_kg": {
+                "chunks": (0..4).map(|i| serde_json::json!({
+                    "id": format!("chunk-{i}"),
+                    "text": format!("body of chunk {i}"),
+                    "embedding": one_hot(i, dim),
+                })).collect::<Vec<_>>(),
+                "entities": (0..4).map(|i| serde_json::json!({
+                    "name": format!("entity-{i}"),
+                    "description": format!("desc {i}"),
+                    "embedding": one_hot(i, dim),
+                    "source_chunks": [format!("chunk-{i}")],
+                })).collect::<Vec<_>>(),
+                "relations": [
+                    {
+                        "src": "entity-0",
+                        "tgt": "entity-1",
+                        "description": "e0—e1",
+                        "embedding": one_hot(0, dim),
+                        "source_chunks": ["chunk-0"]
+                    },
+                    {
+                        "src": "entity-2",
+                        "tgt": "entity-3",
+                        "description": "e2—e3",
+                        "embedding": one_hot(2, dim),
+                        "source_chunks": ["chunk-2"]
+                    }
+                ]
+            }
+        });
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/lightrag/ingest")
+                    .header("content-type", "application/json")
+                    .body(Body::from(kg.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Hybrid query: ll points to entity-3, hl points to the
+        // entity-0—entity-1 relation. The merged result should
+        // include entity-3 (from ll search) AND entity-0/entity-1
+        // (from the hl relation's endpoint fan-out).
+        let q = serde_json::json!({
+            "tenant_id": "hybrid-tenant",
+            "ll_query_embedding": one_hot(3, dim),
+            "hl_query_embedding": one_hot(0, dim),
+            "mode": "hybrid",
+            "session_nonce_b64": B64.encode(b"nonce-hybrid"),
+            "top_k_entities": 2,
+            "top_k_relations": 1,
+            "top_k_chunks_per_entity": 1,
+        });
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/lightrag/query")
+                    .header("content-type", "application/json")
+                    .body(Body::from(q.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let entity_names: Vec<String> = v["entities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e.as_str().unwrap().to_string())
+            .collect();
+        // ll path: entity-3 must be present (its own embedding query).
+        assert!(
+            entity_names.contains(&"entity-3".to_string()),
+            "ll hit missing: {entity_names:?}"
+        );
+        // hl path: the entity-0—entity-1 relation's endpoints must
+        // surface even though we only ll-queried for entity-3.
+        assert!(
+            entity_names.contains(&"entity-0".to_string())
+                || entity_names.contains(&"entity-1".to_string()),
+            "hl-relation endpoints missing: {entity_names:?}"
+        );
+    }
+
     #[tokio::test]
     async fn lightrag_query_unknown_tenant_500s_for_now() {
         // M8.x: rotate AppError → 410 Gone for unknown tenants in

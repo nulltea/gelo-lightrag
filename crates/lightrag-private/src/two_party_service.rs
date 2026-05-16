@@ -128,12 +128,13 @@ impl LightRagTwoPartyService {
     }
 
     /// Query path. Returns a `KgContext` ready to render with
-    /// `.to_context_string()`. Mode is Local-only in M8.0; the
-    /// other modes light up as M7.x adds their shapes.
+    /// `.to_context_string()`. `hl_query_embedding` is ignored in
+    /// Local mode (pass `&[]`).
     pub async fn query_for(
         &self,
         tenant_id: &TenantId,
         ll_query_embedding: &[f32],
+        hl_query_embedding: &[f32],
         params: &KgQueryParams,
         session_nonce: &[u8],
     ) -> Result<KgContext, LightRagServiceError> {
@@ -149,7 +150,7 @@ impl LightRagTwoPartyService {
         let session_key = SessionKey::derive(&tenant.search_pattern_key, session_nonce);
         let mut svc = LightRagPrivateService::new(&mut tenant.store);
         Ok(svc
-            .kg_query(ll_query_embedding, params, &session_key)
+            .kg_query(ll_query_embedding, hl_query_embedding, params, &session_key)
             .await?)
     }
 
