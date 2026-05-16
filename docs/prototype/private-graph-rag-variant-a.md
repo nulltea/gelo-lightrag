@@ -871,17 +871,77 @@ critical path. DistanceDP adds another ~µs when enabled.
    CAPRISE/AES keys. Compass needs per-tenant position maps and stash
    *inside* the TEE; that's 16-108 MB per tenant. Set a per-CVM tenant
    cap; allow horizontal scale by sharding tenants across CVMs.
-4. ~~**What does the storage server actually look like?**~~ **Parked
-   (2026-05-16):** `InMemoryBlockBackend` remains the only backend
-   through M4. Every M4 sub-milestone (M4.1 lazy eviction, M4.2
-   treetop, M4.4 directional filter, M4.5 speculative prefetch,
-   M4.6 layered HNSW) is testable end-to-end without leaving the
-   process. **M4.3 (batched ORAM reads) is therefore deferred to
-   M5** — batching only buys round-trips on a networked backend; on
-   the in-memory backend it's a refactor without measurable benefit.
-   The full backend-shape decision (S3 vs REST vs in-process,
-   async vs sync trait) lives at M5 when the deployment shape is
-   actually wired up.
+4. ~~**What does the storage server actually look like?**~~ **Decided
+   (2026-05-16):** the storage server is a **thin async REST service**
+   colocated with `gelo-snp-runner`. Concretely:
+
+   - **`BlockBackend` trait** promoted to `async fn` via
+     `#[async_trait]`. Propagates `async` through `RingOramClient::{read,
+     write, admit, evict_path, flush_evictions}` and
+     `CompassIndex::{search, from_plaintext_corpus}`. Tokio runtime
+     inside the CVM; `InMemoryBlockBackend` keeps its current
+     semantics behind a synchronous-looking wrapper for tests
+     (`tokio::runtime::Runtime::block_on` at the boundary).
+   - **Wire format:** HTTP/1.1, msgpack body, two endpoints —
+     `POST /v1/{tenant}/{index}/read_path` (request: `{ bucket_ids:
+     [u32] }`; response: array of `EncryptedBucket`) and
+     `POST /v1/{tenant}/{index}/write_buckets` (request: array of
+     `EncryptedBucket`; response: 200 OK). Bucket ciphertext is
+     opaque to the server — the wire format only carries `bucket_id`
+     u32, `write_counter` u32, `ciphertext` bytes per bucket.
+   - **Server side:** axum + tokio. Persistence via `sled` (embedded
+     KV) by default; `object_store` (Apache Arrow's S3/GCS/R2 facade)
+     adapter behind an opt-in feature flag for cloud durability. The
+     server is a thin data plane — no crypto, no auth state beyond
+     the per-tenant URL namespace.
+   - **Client side:** `compass-rest-backend` crate exposing a single
+     `RestBlockBackend` type that implements the async
+     `BlockBackend` trait. Built on `reqwest`'s async client; reuses
+     a `Client` across calls for connection pooling.
+   - **Multi-tenant isolation:** per-tenant URL namespace
+     (`/v1/{tenant_id}/...`); the server enforces no cross-tenant
+     reads at the routing layer. Confidentiality is already covered
+     by per-tenant `oram_keys × 3` and `emm_keys × 2` (HKDF v2,
+     M0.6); the server's tenant gate is a defense-in-depth + a
+     blast-radius cap.
+   - **Crash-recovery:** the existing M1 `(bucket_id,
+     write_counter)`-derived AES-GCM nonce + per-bucket monotone
+     counter is durable in sled; if the CVM restarts, it re-reads
+     the latest counter from the backend on the first ORAM access
+     and resumes. Same pattern as M1's `initialize_tree`.
+   - **Async colours half the codebase but keeps the trust seam
+     intact.** The `RingOramClient` API surface stays small (M1's
+     three methods + lazy-eviction toggle); they just become async
+     and return `Result<…, OramError>` instead of `Result<…>`.
+     `gelo-tee-sev-snp` and the rest of the existing stack are
+     unaffected — only `ring-oram` and `compass-index` need to
+     async-propagate.
+
+   **Why this over S3-direct:** the S3 PUT/GET-per-bucket pattern
+   fragments one Ring-ORAM operation into N round-trips, which would
+   silently degrade us 5–10× off the paper's LAION baseline and
+   break the M4.7 parity tests' expected round-trip counts. REST
+   gives us one round-trip per ORAM operation while keeping S3
+   available as a *deployment recipe* (REST server can proxy to S3
+   internally) rather than baking S3 semantics into the wire
+   protocol.
+
+   **What unblocks at this decision:** M4.3 (batched ORAM reads —
+   union-of-paths into one REST call) and M4.5 (Speculative Neighbor
+   Prefetch, which depends on M4.3) become meaningful and ship
+   alongside M5.0/M5.1.
+
+   **M5 sub-plan implied:**
+
+   | Sub | Effort | What |
+   |---|---|---|
+   | M5.0 | 0.5d | `#[async_trait]` on `BlockBackend`; tokio in CVM; `InMemoryBlockBackend` adapted |
+   | M5.1 | 3-4d | `compass-rest-backend` crate (server: axum + sled, client: reqwest); msgpack codec |
+   | M5.2 | 0.5d | Integration test: spin up REST server in tokio task; recall test passes within 2× of in-memory latency on localhost |
+   | M5.3 | 1-2d | `gelo-snp-runner` route wiring + per-tenant URL gate |
+   | M5.4 | (deferred) | `object_store` adapter (S3/GCS/R2 persistence behind a feature flag) |
+
+   Total: ~1 week, matching the plan's existing M5 estimate.
 5. **Where does the plaintext KG come from?** For v1 we accept it as
    an input to `ingest_documents` (i.e., entity extraction is done
    *before* the CVM call). Long-term, we want the extraction LLM to
