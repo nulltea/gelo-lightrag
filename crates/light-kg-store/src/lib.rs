@@ -1,17 +1,30 @@
-//! LightRAG-shaped storage facade — skeleton (M0).
+//! LightRAG-shaped storage facade — M6 wiring.
 //!
-//! Spec: `docs/prototype/private-graph-rag-variant-a.md` §4.4.
+//! Spec: `docs/prototype/private-graph-rag-variant-a.md` §4.4, §7 M6.
 //!
-//! Composes:
+//! Composes the six encrypted stores that back the LightRAG retrieval
+//! surface (`kg_query`, chunk fan-out, adjacency lookup):
+//!
 //! - 3× [`compass_index::CompassIndex`] — entities, relations, chunks
-//! - 2× [`xormm_emm::XorMmClient`] — adjacency, `source_id`
-//! - 2× encrypted KV stores — node props, edge props (also Ring-ORAM)
-//! - 1× AES-GCM chunk store
+//! - 2× [`xormm_emm::XorMmClient`] — adjacency, source_chunks
+//! - 1× [`AesChunkStore`] — chunk text under AES-GCM
 //!
-//! Per-tenant keys derived once via
-//! [`rag_core::keying::HkdfPolicyV2`]; eight child keys total —
-//! `caprise_seed`, `aes_chunk_key`, `oram_keys × 3`, `emm_keys × 2`,
-//! `search_pattern_key`.
+//! Per-tenant keys are derived once via
+//! [`rag_core::keying::HkdfPolicyV2`]; the eight V2 child keys split:
+//! `caprise_seed` and `search_pattern_key` are consumed elsewhere
+//! (embedder + retrieval respectively), the remaining six are held by
+//! [`LightKgStore::keys`].
+//!
+//! See [`LightKgStore::build_from_kg`] for the build entry point.
 
-pub use compass_index::RingOramParams;
+mod aes_chunk_store;
+mod keys;
+mod store;
+mod types;
+
+pub use aes_chunk_store::{AesChunkStore, ChunkStoreError};
+pub use compass_index::{CompassIndexParams, RingOramParams};
+pub use keys::{derive_logical_key, label};
+pub use store::{KeyBundle, LightKgError, LightKgParams, LightKgStore};
+pub use types::{Chunk, Entity, ExtractedKg, Relation};
 pub use xormm_emm::XorMmParams;

@@ -13,8 +13,17 @@ license.workspace = true
 [dependencies]
 aes-gcm.workspace = true
 anyhow.workspace = true
+async-trait.workspace = true
 compass-index = { path = "../compass-index" }
-core = { path = "../core" }
+hmac.workspace = true
+rag_core = { path = "../core", package = "core" }
+ring-oram = { path = "../ring-oram" }
+sha2.workspace = true
 thiserror.workspace = true
 xormm-emm = { path = "../xormm-emm" }
 zeroize.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
