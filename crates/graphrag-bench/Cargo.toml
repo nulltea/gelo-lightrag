@@ -1,0 +1,24 @@
+[package]
+name = "graphrag-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# E2E benchmark harness for the Compass GraphRAG stack — drives
+# ingest + query through `LightKgStore`, captures per-stage timings
+# and ORAM layer-0 read counts. Three scenarios: `in_memory`,
+# `local_rest`, `runner_http`. CSV out to stdout.
+
+[[bin]]
+name = "compass-rag-bench"
+path = "src/bin/compass_rag_bench.rs"
+
+[dependencies]
+anyhow.workspace = true
+light-kg-store = { path = "../light-kg-store" }
+lightrag-private = { path = "../lightrag-private" }
+rag_core = { path = "../core", package = "core" }
+rand.workspace = true
+rand_chacha.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+zeroize.workspace = true
