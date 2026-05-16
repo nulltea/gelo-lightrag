@@ -29,6 +29,15 @@ pub struct RunnerConfig {
     /// embedder backends are wired up in a follow-up commit).
     #[allow(dead_code)]
     pub weights_path: Option<PathBuf>,
+    /// Compass storage-backend root URL — points at a
+    /// `compass-storage-server` instance. Per-tenant URLs are formed
+    /// by `compass::backend_url(root, tenant, index)`. `None` means
+    /// the runner won't construct any REST backends (M5.3 wiring
+    /// gate); attempting to ingest/query a Compass-backed tenant in
+    /// that state surfaces 503. Wired in earnest at M6
+    /// (`light-kg-store` integration).
+    #[serde(default)]
+    pub compass_backend_url: Option<String>,
 }
 
 fn default_listen() -> String {
@@ -62,6 +71,7 @@ impl RunnerConfig {
                 scheme_identity: default_scheme_identity(),
                 embedder: default_embedder(),
                 weights_path: None,
+                compass_backend_url: None,
             });
         }
         let txt = std::fs::read_to_string(&path)

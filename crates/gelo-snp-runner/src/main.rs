@@ -50,6 +50,7 @@ use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 use zeroize::Zeroizing;
 
+mod compass;
 mod config;
 mod evidence;
 mod issuer;
@@ -67,9 +68,16 @@ async fn main() -> Result<()> {
     let cfg = RunnerConfig::load()
         .context("loading runner config (/etc/gelo-snp/runner.toml or $GELO_SNP_RUNNER_CONFIG)")?;
     info!(
-        "loaded config: listen={} scheme_identity={:?} embedder={:?}",
-        cfg.listen, cfg.scheme_identity, cfg.embedder
+        "loaded config: listen={} scheme_identity={:?} embedder={:?} compass_backend={:?}",
+        cfg.listen, cfg.scheme_identity, cfg.embedder, cfg.compass_backend_url
     );
+    if cfg.compass_backend_url.is_none() {
+        info!(
+            "compass_backend_url is unset — Compass-backed indices will be \
+             refused. Set [compass_backend_url] in runner.toml or env to a \
+             reachable compass-storage-server URL before M6 ships."
+        );
+    }
 
     let embedder = StubEmbedder::from_model_id(&cfg.model_identity);
     let model_identity_b = cfg.model_identity.clone().into_bytes();
