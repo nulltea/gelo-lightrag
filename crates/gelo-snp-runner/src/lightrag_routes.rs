@@ -209,8 +209,7 @@ pub async fn ingest(
 
     lightrag
         .ingest_kg_for(&tenant, user_x_sk, kg, params)
-        .await
-        .map_err(|e| anyhow::anyhow!("ingest_kg_for: {e}"))?;
+        .await?;
     info!(tenant = %tenant, ?stats, "lightrag ingest complete");
     Ok(Json(LightRagIngestResponse { ingested: stats }))
 }
@@ -297,8 +296,7 @@ pub async fn query(
             &params,
             &session_nonce,
         )
-        .await
-        .map_err(|e| anyhow::anyhow!("query_for: {e}"))?;
+        .await?;
     let context_string = ctx.to_context_string();
     Ok(Json(LightRagQueryResponse {
         entities: ctx.entities,

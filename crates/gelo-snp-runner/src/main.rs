@@ -552,6 +552,17 @@ impl From<TwoPartyError> for AppError {
     }
 }
 
+impl From<lightrag_private::LightRagServiceError> for AppError {
+    fn from(e: lightrag_private::LightRagServiceError) -> Self {
+        use lightrag_private::LightRagServiceError as L;
+        match e {
+            L::UnknownTenant(t) => Self(AppErrorKind::UnknownTenant(t)),
+            L::Store(inner) => Self(AppErrorKind::Other(anyhow::anyhow!(inner))),
+            L::Inner(inner) => Self(AppErrorKind::Other(inner)),
+        }
+    }
+}
+
 impl From<anyhow::Error> for AppError {
     fn from(e: anyhow::Error) -> Self {
         Self(AppErrorKind::Other(e))
@@ -1114,11 +1125,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lightrag_query_unknown_tenant_500s_for_now() {
-        // M8.x: rotate AppError → 410 Gone for unknown tenants in
-        // /lightrag/query, matching the /query route. For M8.0 the
-        // mapping goes through `anyhow::anyhow!("query_for: {e}")`
-        // which lands as 500.
+    async fn lightrag_query_unknown_tenant_returns_410_gone() {
+        // 410 Gone matches the existing /query route's loud-failure
+        // contract: lets the client detect a CVM restart and re-
+        // bootstrap rather than silently re-encrypting under a fresh
+        // tee_user_x_sk.
         let state = build_test_state();
         let app = build_router(state);
         let q_payload = serde_json::json!({
@@ -1139,6 +1150,6 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(resp.status(), StatusCode::GONE);
     }
 }
