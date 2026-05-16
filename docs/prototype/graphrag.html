@@ -81,16 +81,82 @@
     </p>
   </section>
 
-  <!-- ═════ § 2 THREAT MODEL ═════ -->
-  <section id="threat-model">
+  <!-- ═════ § 2 DEFINITIONS ═════ -->
+  <section id="definitions">
     <header class="section-head">
       <div class="section-num">§02</div>
+      <h2 class="section-title">Definitions &amp; glossary</h2>
+      <div class="section-meta">acronyms and load-bearing terms used on this page</div>
+    </header>
+
+    <table class="spec">
+      <thead>
+        <tr><th style="width:18%">Term</th><th>Definition</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>LightRAG</strong></td><td>graph-augmented RAG (<a href="https://github.com/HKUDS/LightRAG">HKUDS/LightRAG</a>, Guo et al. EMNLP 2025). Corpus → KG of entities + relations + chunk pointers; query → dual keyword extraction + 1-hop expansion + chunk fan-out</td></tr>
+        <tr><td><strong>Variant A / Variant B</strong></td><td>two parallel deployments of the same Compass protocol with different trust anchors. A: client role inside SEV-SNP CVM (this page). B: paper-faithful Compass on the user's own device</td></tr>
+        <tr><td><strong>kg_query</strong></td><td>LightRAG's retrieval entry point (<code>lightrag/operate.py:3164</code>). Returns the assembled context for one of five modes: local · global · hybrid · mix · naive</td></tr>
+        <tr><td><strong>hl / ll keywords</strong></td><td>high-level (global, thematic) and low-level (local, specific entity) keywords extracted from the query by an LLM. Drive the relations VDB and entities VDB respectively</td></tr>
+        <tr><td><strong>HNSW</strong></td><td>Hierarchical Navigable Small World graph (Malkov &amp; Yashunin) — the graph-based ANN index Compass wraps. Multi-layer; top layer holds the entry point</td></tr>
+        <tr><td><strong>ef</strong></td><td>HNSW dynamic candidate-list width — the beam width during greedy search. Larger ef ⇒ higher recall, more work. In Compass, the number of batched ORAM round-trips per query is <code>n = ⌈ef / ef_spec⌉</code>, so ef is publicly observable via RPC count</td></tr>
+        <tr><td><strong>ef_spec</strong></td><td>Compass speculation-set size — the number of candidates whose neighbours are fetched in one batched ORAM request (<em>Speculative Neighbor Prefetch</em>)</td></tr>
+        <tr><td><strong>ef_n</strong></td><td>Compass directional-filter size — after quantised hints prune neighbours by query direction, only the top <code>ef_n</code> per candidate are fetched</td></tr>
+        <tr><td><strong>M</strong></td><td>HNSW degree bound — max number of neighbours per node at each layer. Determines per-block payload size in the ORAM (<code>D · f32 + M · u32</code>)</td></tr>
+        <tr><td><strong>Compass</strong></td><td>Zhu, Patel, Zaharia, Popa (OSDI 2025). HNSW-over-Ring-ORAM with three optimisations: Directional Neighbor Filtering, Speculative Neighbor Prefetch, Graph-Traversal-Tailored ORAM</td></tr>
+        <tr><td><strong>Ring ORAM</strong></td><td>Ren et al. — tree-based ORAM with <code>Z + S</code> blocks per bucket (Z real + S dummy). Constant <em>online</em> bandwidth via the XOR trick; eviction is amortised every <code>A</code> accesses (off the user's critical path)</td></tr>
+        <tr><td><strong>Z, S, A</strong></td><td>Ring-ORAM bucket parameters — real-block slots, dummy slots, eviction rate. Tuned per index</td></tr>
+        <tr><td><strong>ORAM</strong></td><td>Oblivious RAM (Goldreich-Ostrovsky). Protocol that makes a remote storage server's view of access patterns computationally indistinguishable from random</td></tr>
+        <tr><td><strong>EMM</strong></td><td>Encrypted Multi-Map. Key → list-of-values primitive. The natural shape for an adjacency list or a <code>source_id</code> list</td></tr>
+        <tr><td><strong>XorMM</strong></td><td>Patel-Persiano-Yeo (CCS 2022). Non-lossy <em>volume-hiding</em> EMM: response size independent of the queried key. 1.5–2× storage overhead</td></tr>
+        <tr><td><strong>source_id</strong></td><td>LightRAG field on each entity / relation prop bag: a <code>GRAPH_FIELD_SEP</code>-delimited list of chunk IDs the entity appears in. Variable length ⇒ length leaks the entity's identity unless hidden</td></tr>
+        <tr><td><strong>AP / QP / SP</strong></td><td>SSE leakage profiles: Access Pattern (which records returned), Query Pattern (which records matched), Search Pattern (whether two queries match the same set). ORAM hides AP; XorMM hides volume / partial QP; HMAC perturbation hides SP across sessions</td></tr>
+        <tr><td><strong>CVM</strong></td><td>Confidential VM. The encrypted-memory virtual machine the trusted code runs in. AMD SEV-SNP in this codebase</td></tr>
+        <tr><td><strong>SEV-SNP</strong></td><td>AMD Secure Encrypted Virtualization — Secure Nested Paging. CVM technology providing memory encryption + attestation</td></tr>
+        <tr><td><strong>RATLS</strong></td><td>Remote-Attested TLS. Client verifies the SEV-SNP attestation report inside the TLS handshake before sending plaintext. Existing transport in <code>gelo-rag::two_party_service</code></td></tr>
+        <tr><td><strong>VCEK</strong></td><td>Versioned Chip Endorsement Key. The SEV-SNP attestation root, signed by AMD</td></tr>
+        <tr><td><strong>HKDF</strong></td><td>HMAC-based Key Derivation Function (RFC 5869). Used for the two-party (<code>user_x_sk</code>, <code>tee_user_x_sk</code>) → per-tenant child key chain</td></tr>
+        <tr><td><strong>CAPRISE / DPE</strong></td><td>Distance-Preserving Encryption — server can run cosine over ciphertext directly (Ye et al. 2026). In Variant A, CAPRISE wraps the embedding <em>inside</em> the Compass block as defence in depth</td></tr>
+        <tr><td><strong>DistanceDP</strong></td><td>RemoteRAG's <code>(n, ε)</code>-DP construction — planar-Laplace noise on the embedding such that any two queries within radius <code>r</code> are formally indistinguishable. Already lives in <code>crates/remote-rag::planar_laplace</code></td></tr>
+        <tr><td><strong>HMAC perturbation</strong></td><td>This page's per-session deterministic embedding perturbation — see §05 FIG. 05 inset and the <code>search-perturb</code> card in §04</td></tr>
+        <tr><td><strong>Opal</strong></td><td>Kaviani et al. 2026, private memory for personal AI. Runs Compass inside a TEE; cited because its security proof imports Compass's batched-access lemma into the <code>G_att</code>-hybrid model — formal precedent for the client-role swap on this page</td></tr>
+        <tr><td><strong>AGEA</strong></td><td>Agentic Graph Extraction Attack (arXiv 2601.14662, 2026). Reconstructs the KG over many legitimate API calls — defended at the generation layer (PrivGemo / DP-RAG), not by retrieval crypto</td></tr>
+        <tr><td><strong>GRAGPOISON / LogicPoison</strong></td><td>Integrity attacks on GraphRAG corpora — defeated by Compass's malicious-server mode (Merkle over the ORAM tree) combined with in-CVM ingest</td></tr>
+        <tr><td><strong>Vec2Text</strong></td><td>Morris et al., EMNLP 2023. Inverts embedding vectors back to near-exact source text — the canonical motivation for keeping embeddings off the storage server</td></tr>
+        <tr><td><strong>PrivGemo / DP-RAG</strong></td><td>Generation-layer defences composed on top of Variant A retrieval (out of scope here): structural KG anonymisation (PrivGemo, arXiv 2601.08739) and output-side DP (DP-RAG, arXiv 2602.14374)</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ═════ § 3 THREAT MODEL ═════ -->
+  <section id="threat-model">
+    <header class="section-head">
+      <div class="section-num">§03</div>
       <h2 class="section-title">Threat model</h2>
       <div class="section-meta">extends storage-CAPRISE · adds graph-specific surfaces</div>
     </header>
     <p class="lede">
       Same trust geometry as the CAPRISE path (<a href="storage.html">storage page</a>): the CVM is trusted, the storage server and network operator are not, the client endpoint is trusted for the duration of an RATLS session. GraphRAG introduces <em>structural</em> attack surfaces the flat vector path does not have — every entity, every relation, every per-node degree, every adjacency list is now a distinct side channel. Variant A neutralises those by routing every server-visible operation through one of three primitives: Ring-ORAM (over an encrypted HNSW or KV blob), XorMM volume-hiding multi-map (over adjacency &amp; source-id lists), AES-GCM blob fetch (over chunk bodies).
     </p>
+
+    <p class="lede" style="margin-top:24px;">
+      <strong>Departure from the Compass paper.</strong> Compass's paper places its protocol "client" — the party holding the position map, stash, treetop cache, and ORAM key — on the <em>user's own device</em> (laptop / phone / browser), explicitly avoiding TEEs because enclave side channels weaken the story. This design <em>shifts that client role into the SEV-SNP CVM</em>. The Compass protocol is unchanged; the <strong>trust anchor moves</strong> from "user owns the hardware" to "SEV-SNP attestation + AMD vendor." Opal (Kaviani et al. 2026) already does this composition and formally imports Compass's batched-access lemma into its <code>G_att</code>-hybrid proof — the security property holds because it's a property of the protocol, not of which silicon hosts the client. We adopt the swap because Approach 4's thin-client / multi-tenant SaaS shape cannot put 5–500 MB of ORAM state on every user's browser, and SEV-SNP attestation is the trust anchor this codebase already relies on for CAPRISE-at-rest. Deployments that cannot accept SEV-SNP trust should use <em>Variant B</em> from the design doc instead — paper-faithful Compass on the user's device. Variant A and Variant B are parallel deployments of the same protocol with different trust anchors, not primary and fallback.
+    </p>
+
+    <table class="spec" style="margin-top:24px;">
+      <thead>
+        <tr><th>Aspect</th><th>Paper-faithful Compass</th><th>Variant A (this design)</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Trust anchor</td><td>user owns the hardware</td><td>SEV-SNP attestation + AMD vendor</td></tr>
+        <tr><td>Compass client state lives</td><td>device RAM</td><td>encrypted CVM RAM · hidden from host OS</td></tr>
+        <tr><td>Side-channel exposure</td><td>device-local</td><td>SEV-SNP side channels in-scope (CVE-2023-20593, Hertzbleed, PSP firmware)</td></tr>
+        <tr><td>User-facing client</td><td>thick · 5–500 MB ORAM state</td><td>thin · RATLS + plaintext requests only</td></tr>
+        <tr><td>State portability</td><td>per-device, user-managed sync</td><td>centralised · switch devices freely</td></tr>
+        <tr><td>Multi-tenant</td><td>one user per device</td><td>many tenants per CVM · HKDF-isolated</td></tr>
+        <tr><td>Forward security</td><td>OS-process isolation</td><td>two-party KDF Option 3 · TEE-seal break alone does not recover past sessions</td></tr>
+      </tbody>
+    </table>
 
     <table class="spec">
       <thead>
@@ -132,6 +198,7 @@
         <tr><td>Client endpoint compromise</td><td><code>user_x_sk</code> · plaintext context returned over RATLS</td><td>everything earlier in the session’s ORAM history</td><td class="accent">safe — needs both halves</td></tr>
         <tr><td>TEE + client compromised simultaneously</td><td>both halves · all derivable keys · all stored ciphertext</td><td>—</td><td>broken (accepted in design)</td></tr>
         <tr><td>Attacker farming AGEA-style queries through the legitimate API</td><td>reconstructed KG over many sessions</td><td>retrieval crypto · raw stored data</td><td>broken at the API layer; mitigated by the generation-side defences (out of scope here)</td></tr>
+        <tr><td>Network / host observer correlating execution fingerprints (timing · round count · batch sizes · SEV-SNP-leaky perf counters) across sessions of the same tenant</td><td>which sessions issued the same query</td><td>query content · access pattern · retrieval results</td><td class="accent">safe — per-session HMAC perturbation on each embedding randomises the HNSW traversal across sessions; same tenant + same query in two sessions produces two different execution fingerprints</td></tr>
       </tbody>
     </table>
 
@@ -140,10 +207,10 @@
     </p>
   </section>
 
-  <!-- ═════ § 3 COMPONENTS ═════ -->
+  <!-- ═════ § 4 COMPONENTS ═════ -->
   <section id="components">
     <header class="section-head">
-      <div class="section-num">§03</div>
+      <div class="section-num">§04</div>
       <h2 class="section-title">Components</h2>
       <div class="section-meta">Variant A · 5 new + 3 changed crates</div>
     </header>
@@ -219,11 +286,24 @@
       </article>
 
       <article class="card">
+        <span class="tag crypto">PLAN · search privacy</span>
+        <h3>search-perturb<span class="alias">crates/lightrag-private :: search_perturb</span></h3>
+        <p class="one">Per-session HMAC perturbation on every embedding before it enters Compass. Breaks <em>cross-session linkability</em> — Compass + Ring-ORAM hides the storage-side access pattern, but two sessions issuing the same query still produce identical <em>execution</em> fingerprints (round count · batch sizes · timing · SEV-SNP-leaky perf counters). This step randomises the start vertex of the HNSW traversal per session, closing that residual.</p>
+        <dl>
+          <dt>method</dt><dd><code>s_search = HKDF.Expand(prk, "gelo-rag.v2.search-pattern")</code> · runner-issued <code>session_nonce</code> per RATLS session · <code>session_key = HMAC(s_search, session_nonce)</code> · per-embedding <code>direction = unit_vector(HMAC(session_key, kind ‖ quantize(e)))</code> · <code>e' = normalize(e + ε · direction)</code> · <code>kind ∈ {q, ll, hl}</code> · ε tuned at 1–5 % to stay within the 5 % recall-parity budget</dd>
+          <dt>composes with</dt><dd><strong>DistanceDP</strong> from <code>remote-rag::planar_laplace</code> — opt-in formal <code>(ε, δ)</code>-bound per call · stacks cleanly: HMAC fixes session origin (deterministic), DistanceDP adds per-call randomness (formal DP)</dd>
+          <dt>secures</dt><dd>execution-pattern correlation across sessions · session-origin linkability of repeated queries</dd>
+          <dt>threat</dt><dd>network / host observer correlating timing &amp; perf-counter fingerprints across sessions · classical search-pattern leakage in the SSE sense</dd>
+          <dt>cost</dt><dd><span class="overhead good">~µs / embedding</span> · one HMAC-SHA256 + one unit-vector projection · invisible against the ~1 s Compass critical path · DistanceDP adds ~µs more when enabled</dd>
+        </dl>
+      </article>
+
+      <article class="card">
         <span class="tag tee">EXTEND · KDF</span>
         <h3>HkdfPolicy · v2<span class="alias">crates/core :: keying</span></h3>
-        <p class="one">Extends today's two-info-string derivation (<code>caprise_seed</code> · <code>aes_chunk_key</code>) to a seven-child set: + <code>oram_keys × 3</code> + <code>emm_keys × 2</code>. Same Extract, more Expands. Versioned via <code>gelo-rag.v2.…</code>; bumping the version yields entirely fresh keys across all primitives.</p>
+        <p class="one">Extends today's two-info-string derivation (<code>caprise_seed</code> · <code>aes_chunk_key</code>) to an eight-child set: + <code>oram_keys × 3</code> + <code>emm_keys × 2</code> + <code>search_pattern_key</code>. Same Extract, more Expands. Versioned via <code>gelo-rag.v2.…</code>; bumping the version yields entirely fresh keys across all primitives.</p>
         <dl>
-          <dt>method</dt><dd>one <code>Hkdf::&lt;Sha256&gt;::new(salt = tenant_id, ikm = user_x_sk ‖ tee_user_x_sk)</code> · seven <code>hk.expand("gelo-rag.v2.{role}", &amp;mut buf)</code> · each child <code>Zeroizing&lt;[u8; 32]&gt;</code></dd>
+          <dt>method</dt><dd>one <code>Hkdf::&lt;Sha256&gt;::new(salt = tenant_id, ikm = user_x_sk ‖ tee_user_x_sk)</code> · eight <code>hk.expand("gelo-rag.v2.{role}", &amp;mut buf)</code> · each child <code>Zeroizing&lt;[u8; 32]&gt;</code></dd>
           <dt>source</dt><dd>RustCrypto <code>hkdf 0.12</code> + <code>hmac</code> + <code>sha2</code> (already in workspace; no new crypto)</dd>
           <dt>secures</dt><dd>cross-primitive key separation · forward security identical to today's Option 3</dd>
           <dt>threat</dt><dd>downgrade to v1 — pinned in <code>scheme_identity</code> baked into <code>REPORT_DATA[32..64]</code></dd>
@@ -238,7 +318,7 @@
         <dl>
           <dt>method</dt><dd><code>kg_query_for(tenant, user_x_sk, query, mode, hl, ll, params) → QueryContextResult</code> · same loud-failure contract (<code>TwoPartyError::UnknownTenant</code> → HTTP 410) on CVM restart</dd>
           <dt>source</dt><dd>in-house · realises design-doc Variant A composed with two-party KDF Option 3</dd>
-          <dt>secures</dt><dd>forward security · cross-tenant isolation · all of §02's defences in a single request handler</dd>
+          <dt>secures</dt><dd>forward security · cross-tenant isolation · all of §03's defences in a single request handler</dd>
           <dt>threat</dt><dd>untrusted cloud operator · breaks only under simultaneous TEE + client compromise</dd>
           <dt>cost</dt><dd>HKDF + Compass + XorMM + AES per request · ≈ 3 s end-to-end at SIFT1M-scale (paper-projected)</dd>
         </dl>
@@ -260,10 +340,10 @@
     </div>
   </section>
 
-  <!-- ═════ § 4 COMPUTE FLOW ═════ -->
+  <!-- ═════ § 5 COMPUTE FLOW ═════ -->
   <section id="flow">
     <header class="section-head">
-      <div class="section-num">§04</div>
+      <div class="section-num">§05</div>
       <h2 class="section-title">Compute flow &amp; trust boundaries</h2>
       <div class="section-meta"><code>kg_query</code> · hybrid mode · ingest path mirrors with builds instead of reads</div>
     </header>
@@ -464,6 +544,127 @@
     <p class="lede" style="margin-top:12px;">
       <strong>Note: ingest path.</strong> Same trust geometry, opposite direction — client streams documents + extracted KG over RATLS; TEE embeds, builds a plain <code>hnsw_rs::Hnsw</code> in encrypted CVM RAM, runs <code>CompassIndex::from_plaintext_hnsw</code>, pushes the encrypted ORAM tree to storage, builds and pushes the XorMM EMMs, writes the AES-GCM chunk blobs, then zeroizes the plaintext working set. Heavier than query — expect minutes per 100K docs — but a batch operation, not on any user-perceived path.
     </p>
+
+    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:40px 0 8px;">Inset · Step ④ per-session search perturbation</h4>
+    <p class="lede" style="margin-top:0;">
+      Why this step exists: Compass + Ring-ORAM randomises the storage-side path IDs, but two sessions of the same tenant issuing the same query still produce identical <em>execution</em> fingerprints (timing · round count · batch sizes · SEV-SNP-leaky perf counters). The perturbation randomises the HNSW start vertex per session, breaking cross-session linkability.
+    </p>
+    <p class="lede" style="margin-top:12px;">
+      The Compass paper acknowledges a <strong>coarse version</strong> of this leak — <em>"different query types use different <code>ef</code>, so an adversary can still distinguish the operation type"</em> — and explicitly puts it out of scope. Concretely: Compass's batched ORAM rounds-per-query are <code>n = ⌈ef / ef_spec⌉</code>, so a search at <code>ef=64</code> takes 4 round-trips while an insert at <code>ef=200</code> takes 13. The <em>count</em> of round-trips is itself a fingerprint visible to any passive observer, with no decryption required. Compass openly does not try to hide it. Our HMAC perturbation closes the <strong>finer-grained content-level version</strong> of the same class of leak: same operation, same mode, but two sessions issuing the same query produce different content-adaptive execution patterns (directional-filter prune rate, speculative-prefetch hit rate, hops-to-convergence) — without the perturbation, those signatures are stable enough to link sessions to each other.
+    </p>
+
+    <div class="diagram-frame">
+      <div class="diagram-cap">
+        <span class="l">FIG. 05 — Per-session search perturbation · HMAC chain + optional DistanceDP composition</span>
+        <span>red = secret · blue = public per-session value · purple = perturbation operation</span>
+      </div>
+      <svg class="flow" viewBox="0 0 1320 400" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="ahsp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
+          </marker>
+        </defs>
+        <!-- ZONES -->
+        <rect x="0"    y="40"  width="220"  height="340" class="zone-band zone-band-client"/>
+        <rect x="220"  y="40"  width="1100" height="340" class="zone-band zone-band-tee"/>
+        <text x="20"  y="62"  class="zone-label">Client</text>
+        <text x="240" y="62"  class="zone-label">TEE (SEV-SNP CVM)</text>
+        <line x1="220" y1="40" x2="220" y2="380" class="boundary"/>
+        <text x="224" y="376" class="boundary-label">RATLS · session_nonce echoed on follow-up requests</text>
+
+        <!-- CLIENT -->
+        <rect x="20" y="180" width="180" height="60" class="box box-strong box-client"/>
+        <text x="34" y="200" class="box-label">request</text>
+        <text x="34" y="216" class="box-sub">tenant_id · user_x_sk</text>
+        <text x="34" y="232" class="box-mono">[session_nonce]</text>
+
+        <!-- KDF chain (top row) -->
+        <rect x="240" y="90" width="200" height="60" class="box box-tee box-strong"/>
+        <text x="254" y="110" class="box-label">HkdfPolicy v2</text>
+        <text x="254" y="126" class="box-sub">(user_x_sk · tee_user_x_sk · tenant_id)</text>
+        <text x="254" y="142" class="box-mono">→ 8 child keys</text>
+
+        <rect x="480" y="90" width="200" height="60" class="box box-tee box-strong"/>
+        <text x="494" y="110" class="box-label">s_search</text>
+        <text x="494" y="126" class="box-sub">child key · per-tenant</text>
+        <text x="494" y="142" class="box-mono">gelo-rag.v2.search-pattern</text>
+
+        <rect x="720" y="90" width="200" height="60" class="box box-tee" style="fill:#dbe2ef;"/>
+        <text x="734" y="110" class="box-label">session_nonce</text>
+        <text x="734" y="126" class="box-sub">runner-issued · 16 bytes</text>
+        <text x="734" y="142" class="box-mono">stable for session lifetime</text>
+
+        <rect x="960" y="90" width="200" height="60" class="box box-tee box-strong"/>
+        <text x="974" y="110" class="box-label">session_key</text>
+        <text x="974" y="126" class="box-sub">HMAC(s_search, session_nonce)</text>
+        <text x="974" y="142" class="box-mono">zeroized at session end</text>
+
+        <!-- Per-embedding inputs -->
+        <rect x="240" y="220" width="180" height="40" class="box box-tee" style="fill:#f0e2c4;"/>
+        <text x="254" y="244" class="box-label">q_emb · ll_emb · hl_emb</text>
+
+        <!-- HMAC step -->
+        <rect x="460" y="200" width="200" height="80" class="box box-tee" style="fill:#e8d8e8;"/>
+        <text x="474" y="220" class="box-label">HMAC(session_key,</text>
+        <text x="474" y="236" class="box-label">  kind ‖ quantize(e))</text>
+        <text x="474" y="256" class="box-sub">32B → direction ∈ S^(D-1)</text>
+        <text x="474" y="272" class="box-mono">kind = q | ll | hl</text>
+
+        <!-- Perturb step -->
+        <rect x="700" y="200" width="200" height="80" class="box box-tee" style="fill:#e8d8e8;"/>
+        <text x="714" y="220" class="box-label">e' = normalize</text>
+        <text x="714" y="236" class="box-label">  (e + ε · direction)</text>
+        <text x="714" y="256" class="box-sub">ε ≈ 1–5 % of ‖e‖</text>
+        <text x="714" y="272" class="box-mono">deterministic per session</text>
+
+        <!-- DistanceDP step -->
+        <rect x="940" y="200" width="200" height="80" class="box box-tee" style="fill:#d6c5dd;"/>
+        <text x="954" y="220" class="box-label">[opt] DistanceDP</text>
+        <text x="954" y="236" class="box-label">  e'' = e' + planar_lap</text>
+        <text x="954" y="256" class="box-sub">(ε, δ)-DP · per call</text>
+        <text x="954" y="272" class="box-mono">remote-rag::planar_laplace</text>
+
+        <!-- Output -->
+        <rect x="1180" y="200" width="120" height="80" class="box box-tee" style="fill:#f0e2c4;"/>
+        <text x="1194" y="226" class="box-label">→ Compass</text>
+        <text x="1194" y="244" class="box-sub">search input</text>
+        <text x="1194" y="262" class="box-mono">step ⑤</text>
+
+        <!-- Sub-caption block -->
+        <rect x="240" y="310" width="1080" height="60" class="box box-tee" style="fill:#f1e8d6;stroke-dasharray:2 3;"/>
+        <text x="254" y="330" class="box-label">Within session: e → e' is deterministic ⇒ repeat queries are cacheable + consistent.</text>
+        <text x="254" y="350" class="box-label">Across sessions: different session_nonce ⇒ different session_key ⇒ different direction ⇒ different HNSW traversal ⇒ uncorrelated execution fingerprints.</text>
+
+        <!-- ARROWS -->
+        <path d="M200 200 L240 120" class="arrow arrow-secret" marker-end="url(#ahsp)"/>
+        <text x="100" y="170" class="arrow-label secret">user_x_sk · tenant</text>
+        <path d="M200 220 L240 240" class="arrow arrow-secret" marker-end="url(#ahsp)"/>
+        <text x="100" y="266" class="arrow-label secret">embeddings (TEE-only)</text>
+
+        <path d="M440 120 L480 120" class="arrow arrow-secret" marker-end="url(#ahsp)"/>
+        <path d="M680 120 L720 120" class="arrow arrow-cipher" marker-end="url(#ahsp)"/>
+        <path d="M920 120 L960 120" class="arrow arrow-secret" marker-end="url(#ahsp)"/>
+
+        <path d="M1060 150 L770 200" class="arrow arrow-secret" marker-end="url(#ahsp)"/>
+        <text x="850" y="180" class="arrow-label secret">session_key</text>
+        <path d="M420 240 L460 240" class="arrow arrow-secret" marker-end="url(#ahsp)"/>
+        <path d="M660 240 L700 240" class="arrow arrow-secret" marker-end="url(#ahsp)"/>
+        <path d="M900 240 L940 240" class="arrow arrow-secret" marker-end="url(#ahsp)"/>
+        <path d="M1140 240 L1180 240" class="arrow arrow-secret" marker-end="url(#ahsp)"/>
+      </svg>
+    </div>
+
+    <table class="spec" style="margin-top:24px;">
+      <thead>
+        <tr><th style="width:34%">Layer</th><th style="width:33%">Without it</th><th>Adds</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Compass + Ring-ORAM only</td><td>identical queries across sessions ⇒ identical execution fingerprints (timing · perf counters · round count)</td><td>baseline AP-hiding · no search-pattern hiding</td></tr>
+        <tr><td>+ HMAC perturbation <span class="accent">(default on)</span></td><td>session-origin still linkable</td><td>cross-session unlinkability · ~µs cost · deterministic within a session (caching preserved)</td></tr>
+        <tr><td>+ DistanceDP <span class="accent">(opt-in per tenant)</span></td><td>no formal privacy bound</td><td>per-call <code>(ε, δ)</code>-DP via <code>remote-rag::planar_laplace</code> · stacks cleanly on top of HMAC · ~µs added</td></tr>
+        <tr><td>What it doesn't cover</td><td colspan="2">AGEA-class extraction (generation-side defence) · embedder side-channels on input length (closed by fixed-length token padding) · within-session repeat-query linkability (deliberate — caching) · SEV-SNP itself broken (TCB ceiling)</td></tr>
+      </tbody>
+    </table>
   </section>
 
 </div>

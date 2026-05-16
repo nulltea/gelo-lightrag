@@ -40,6 +40,15 @@
   layer has very few nodes (entry point), bottom layer holds all data.
   LightRAG defaults to HNSW under the hood via `nano-vectordb` (or any of the
   pluggable backends).
+- **`ef` / `ef_spec` / `ef_n` / `M`** — HNSW + Compass parameters. `ef` is
+  the dynamic candidate-list width (beam width during greedy search); `M`
+  is the degree bound; `ef_spec` is Compass's speculation-set size;
+  `ef_n` is the directional-filter size. **The number of batched ORAM
+  round-trips Compass issues per query is `n = ⌈ef / ef_spec⌉`** — so
+  `ef` is publicly observable via RPC count. The paper explicitly
+  declines to hide it.
+- **`Z`, `S`, `A`** — Ring-ORAM bucket parameters: real-block slots,
+  dummy slots, eviction rate. Tuned per Compass index.
 - **EMM** — Encrypted Multi-Map. Key→list-of-values. The natural substrate for
   an adjacency list / source_id list.
 - **XorMM** — Patel-Persiano-Yeo et al., CCS 2022. Non-lossy volume-hiding EMM
@@ -64,6 +73,30 @@
 - **RATLS** — Remote-Attested TLS. Client verifies the SEV-SNP report inside
   the TLS handshake before sending plaintext. Existing path in
   `gelo-rag::two_party_service` carries `user_x_sk` over this channel.
+- **HKDF** — HMAC-based Key Derivation Function (RFC 5869). Used for the
+  two-party `(user_x_sk, tee_user_x_sk) → per-tenant child key chain`.
+  Variant A bumps the chain from 2 children to 8.
+- **HMAC perturbation** — this plan's per-session deterministic
+  embedding perturbation that randomises the HNSW start vertex per
+  RATLS session. Breaks cross-session linkability of identical queries
+  at the execution-pattern level (timing, RPC count, perf-counter side
+  channels). Detailed in §8.6.
+- **DistanceDP** — RemoteRAG's `(n, ε)`-DP construction
+  (`remote-rag::planar_laplace`). Planar-Laplace noise on the embedding
+  such that any two queries within radius `r` are formally
+  indistinguishable. Composes on top of HMAC perturbation as an opt-in
+  formal layer.
+- **AP / QP / SP** — Access Pattern / Query Pattern / Search Pattern
+  leakage (SSE terminology). Compass hides AP; XorMM hides volume / a
+  slice of QP; HMAC perturbation hides SP across sessions.
+- **Opal** — Kaviani et al. 2026. Runs Compass inside a TEE; formally
+  imports Compass's batched-access lemma into a `G_att`-hybrid security
+  proof. Recognised precedent for putting Compass's client role inside
+  a CVM (see §2.0).
+- **AGEA** — Agentic Graph Extraction Attack (arXiv 2601.14662). 96 %
+  node-leak at T=1000 queries on LightRAG. Defended at the generation
+  layer (PrivGemo / DP-RAG), not by retrieval crypto — out of scope
+  here, called out where it bears on acceptance criteria.
 
 ---
 
@@ -87,6 +120,59 @@ generation layer is also TEE-hosted via the existing `gelo-rag` path).
 ---
 
 ## 2. Trust model recap and what changes vs. today
+
+### 2.0. Departure from Compass's paper: who plays the "client" role
+
+Compass's paper defines a protocol with a **client** holding the position
+map, stash, treetop, and ORAM key, and an untrusted **server** holding
+the encrypted ORAM tree. The paper's deployment puts the client on the
+**user's own device** — explicitly avoiding TEEs because hardware-enclave
+side channels weaken the security story. The headline numbers in Tab. 3
+(LAION 0.7s / SIFT1M 1.1s) are measured with the client running on a
+commodity laptop or web browser.
+
+This plan **deviates from the paper's deployment** in one specific way:
+we put Compass's client role *inside the SEV-SNP CVM*, with the user's
+device acting as a thin RATLS client to it. The Compass *protocol* is
+unchanged; the *trust anchor* shifts from "user owns the hardware" to
+"SEV-SNP attestation + AMD vendor."
+
+This is a recognised composition. **Opal** (cited in the design doc
+§3.5 and §C.3) already runs Compass inside a TEE and formally imports
+Compass's batched-access lemma (Lemma 4 of the Compass paper) into its
+`G_att`-hybrid security proof. The security property — "any two access
+traces of equal public structure are computationally indistinguishable
+to an adversary holding only the ORAM-tree storage" — is preserved
+because it is a property of the protocol, not of which silicon hosts
+the client.
+
+| Aspect | Paper-faithful Compass | Variant A (this plan) |
+|---|---|---|
+| Trust anchor | user owns the hardware | SEV-SNP attestation + AMD vendor |
+| Compass client state lives | device RAM | encrypted CVM RAM (hidden from host OS) |
+| Side-channel exposure | device-local | SEV-SNP side channels in-scope (CVE-2023-20593, Hertzbleed, PSP firmware) |
+| User-facing client | thick (5–500 MB ORAM state) | thin (RATLS only, plaintext requests) |
+| State portability | per-device, sync is user's problem | centralised; switch devices freely |
+| Multi-tenant | one user per device | many tenants per CVM, HKDF-isolated |
+| Forward security | OS-process isolation | two-party KDF Option 3 (TEE-seal break alone does not recover past sessions) |
+
+**Why this swap is acceptable in our deployment.** The system-design
+doc's Approach 4 targets thin clients (mobile, browser, multi-tenant
+SaaS). A thick Compass client with 5–500 MB of position-map state and
+the full ORAM protocol code in JavaScript is not a viable target there
+— *some* trust anchor other than device-ownership is required. SEV-SNP
++ attestation is the existing trust anchor in this codebase
+(`gelo-tee-sev-snp::SnpTrustedExecutor`) and the same one CAPRISE-at-rest
+already relies on; reusing it for Compass keeps the TCB unchanged.
+
+**When this swap is not acceptable.** Deployments where SEV-SNP trust
+is forbidden by policy (defence, regulated finance, supply-chain-paranoid
+shops) should use **Variant B** from the design doc instead — that is
+the paper-faithful Compass deployment. Variant A and Variant B are
+parallel deployments of the same protocol with different trust anchors,
+not primary-and-fallback.
+
+### 2.1. State and key boundaries
 
 Today (existing `GeloRagTwoPartyService`):
 
@@ -127,9 +213,11 @@ What stays the same (and must keep working):
   `model_identity` now also covers the LightRAG retrieval-protocol identity
   (a hash of the Compass + XorMM build manifest).
 - Per-tenant key derivation via `HkdfPolicy` from `caprise-two-party-kdf.md`.
-  We **extend** the derivation: from one `(caprise_seed, aes_chunk_key)` to
-  `(caprise_seed, aes_chunk_key, oram_keys × 3, emm_keys × 2)` — same
-  two-party root, more derived child keys.
+  We **extend** the derivation: from two children `(caprise_seed,
+  aes_chunk_key)` to eight `(caprise_seed, aes_chunk_key, oram_keys × 3,
+  emm_keys × 2, search_pattern_key)` — same two-party root, six more
+  derived child keys. The `search_pattern_key` powers the per-session
+  HMAC perturbation in §8.6.
 - Forward-security property of Variant A (Option 3 in `private-rag-system-
   design.md` §Approach 4 step 4): a TEE-only seal break must still not
   recover any plaintext. Each child key is HKDF-derived from
@@ -385,6 +473,7 @@ For each step, we list (a) the LightRAG source code line we're emulating,
 |---|---|---|---|
 | 1 | `kw_prompt → use_model_func` (3406) | out of scope; future `gelo-rag` LLM-in-TEE | n/a |
 | 2 | `actual_embedding_func(...)` (3637) | `self.embedder.embed(&[q, ll_kw, hl_kw])` | `gelo-embedder` (TEE) |
+| 2½ | *(no upstream equivalent — new step)* | `search_perturb(emb, kind, session_key)` for each of `q_emb`, `ll_emb`, `hl_emb` | `lightrag-private::search_perturb` — HMAC + optional DistanceDP (§8.6) |
 | 3a | `entities_vdb.query` (4370) | `store.entities_idx.search(ll_emb, top_k)` | `CompassIndex::search` |
 | 3b | `relationships_vdb.query` (4645) | `store.relations_idx.search(hl_emb, top_k)` | `CompassIndex::search` |
 | 3c | `chunks_vdb.query` (3542) | `store.chunks_idx.search(q_emb, top_k)` (mix only) | `CompassIndex::search` |
@@ -417,7 +506,7 @@ two-party-KDF and SnpTrustedExecutor scaffold, and porting LightRAG's
 | **C** | Three parallel Compass instances on one CVM may exceed TDX VM memory for large corpora (TripClick-scale). | Medium | High | (1) Start at SIFT1M-scale corpora (35 MB client state per index ⇒ 108 MB total — fine). (2) For larger, evict client-side caches per-index round-robin between queries. (3) Document hard ceiling at MS-MARCO-scale (~1.5 GB client) for v1. |
 | **D** | LightRAG's `node_degrees_batch` / `edge_degrees_batch` look like an obvious side channel if exposed as a separate keyed store. | Medium | Medium | Fold degree into the encrypted prop bag at indexing; never expose as a separate read primitive. Risk reduced to "prop-bag size leak", which is uniform per-bucket if we pad to `MAX_PROP_SIZE`. |
 | **E** | LightRAG `source_id` is stored *inline* in the prop bag in upstream; length leaks. | High | Medium | Lift `source_id` out of the prop bag entirely; store via the dedicated `src_chunks` XorMM. Verified by integration test: prop-bag byte length equal across all nodes after padding. |
-| **F** | Search-pattern leakage — same `(ll_keywords)` across two sessions yields the same `ll_emb`, hence the same Compass query trace, hence linkable. | Medium | High | Per-session HMAC layer on the *query* embedding before Compass: `e' = e + ε · session_perturbation(s_q, e)` where `s_q` is the per-session secret already established by RATLS. Combine with existing `RemoteRagService::PlanarLaplaceConfig` to add DistanceDP noise as defense in depth. |
+| **F** | Search-pattern leakage — Compass + Ring-ORAM randomises storage-side path IDs, but two sessions issuing the same query still produce identical *execution* fingerprints (timing · RPC count · batch sizes · SEV-SNP-leaky perf counters). Compass's paper concedes this at the operation-type level (`n = ⌈ef / ef_spec⌉` ⇒ search-vs-insert distinguishable by RPC count); we close the finer content-level version. | Medium | High | First-class component (§8.6, not an afterthought) — per-session HMAC perturbation on each of `q_emb` / `ll_emb` / `hl_emb` via the new `search_pattern_key` HKDF child. Optional DistanceDP composition for a formal `(ε, δ)`-bound. ε tuned at 1–5 % to stay within the 5 % recall-parity budget. |
 | **G** | SEV-SNP side-channels (CVE-2023-20593, Hertzbleed, SEV-ES PSP bugs). | Low | Critical | Inherits the existing `gelo-tee-sev-snp` risk register. Compass already proves AP-hiding *against* a malicious host OS (its Tab. 3 "Mal" column); the doubly-oblivious property survives a host-OS-level side channel on the ORAM access path. |
 | **H** | Compass's reference is C++; Rust port may diverge in subtle ORAM parameters and weaken the security argument. | High | High | Maintain a `compass-index/tests/parity/` directory that vendors small LAION/SIFT1M fixtures and asserts bit-for-bit identical ORAM access-path traces against a `Clive2312/compass` binary harness. Treat any divergence as a release blocker. |
 | **I** | The `compass_init` step requires a *plaintext* HNSW index as input. Building this inside the TEE means the embedder must be in the TEE too — consistent with Variant A but worth flagging. | Low | Low | Build path: client streams documents into the CVM over RATLS → embed inside CVM via `gelo-embedder` → build plain `hnsw_rs::Hnsw` in CVM memory → `CompassIndex::from_plaintext_hnsw` → push encrypted ORAM tree to storage. Plaintext HNSW exists only inside the TEE for the duration of the build. |
@@ -436,14 +525,16 @@ on the existing prototype.
 - Add `ring-oram`, `compass-index`, `xormm-emm`, `light-kg-store`,
   `lightrag-private` to the workspace as empty crates with `lib.rs` stubs
   and `Cargo.toml`s wired to the existing `[workspace.dependencies]`.
-- Extend `rag_core::HkdfPolicy` to derive five additional child keys per
-  tenant: `oram_keys × 3` and `emm_keys × 2`. Tests assert the derived
-  keys are stable under fixed inputs and zeroized on drop.
+- Extend `rag_core::HkdfPolicy` to derive **six additional child keys**
+  per tenant: `oram_keys × 3`, `emm_keys × 2`, and `search_pattern_key`.
+  Tests assert the derived keys are stable under fixed inputs and
+  zeroized on drop. Each child uses a distinct info string
+  (`"gelo-rag.v2.{role}"`).
 - Add `gelo-tee-sev-snp::scheme_identity` extension covering the new
   parameters (a SHA-256 of `LightRagParams + CompassParams + XorMmParams`).
   Confirms a stale CVM build cannot impersonate a current one.
 - **Done when:** `cargo build --workspace` is green; `cargo test
-  -p rag-core` asserts the five new derived keys.
+  -p rag-core` asserts the six new derived keys.
 
 ### M1 — `ring-oram` correctness + integrity (2-3 weeks)
 
@@ -533,9 +624,11 @@ on the existing prototype.
   one `EncryptedKv` (over Ring-ORAM) + one `AesChunkStore` into the
   `LightKgStore` struct.
 - HKDF derives one OramKey per index from `(user_x_sk, tee_user_x_sk,
-  "oram-entities" / -relations / -chunks)`; one EmmKey per EMM from
-  `(…, "emm-adjacency" / -src-chunks)`; one AES key from
-  `(…, "aes-chunks")` — same shape as current `aes_chunk_key`.
+  "gelo-rag.v2.oram-entities" / -relations / -chunks)`; one EmmKey per
+  EMM from `(…, "gelo-rag.v2.emm-adjacency" / -src-chunks)`; one AES
+  key from `(…, "gelo-rag.v2.aes-chunks")` — same shape as current
+  `aes_chunk_key`. The 8th child `(…, "gelo-rag.v2.search-pattern")`
+  is consumed by `lightrag-private::search_perturb` (see §8.6, M7).
 - Add a `LightKgStore::build_from_kg(plaintext_kg)` constructor that
   drives M3's `from_plaintext_hnsw` for each index and runs the
   initial XorMM builds — used by the ingest path.
@@ -549,6 +642,12 @@ on the existing prototype.
   `_merge_all_chunks`, `_build_context_str`. Each `vdb.query` / `kg.get_*`
   / `text_chunks_db.get_by_ids` site replaced with the appropriate
   `LightKgStore` call.
+- Implement `lightrag-private::search_perturb` (§8.6) and insert
+  between the embed call and the three Compass searches. Acceptance:
+  cross-session linkability test — same query under two distinct
+  `session_nonce`s produces statistically uncorrelated Compass
+  execution traces (round-count variance + perturbed-direction
+  divergence over 10² trials).
 - `extract_keywords_only` (LightRAG `operate.py:3406`) — for v1, accept
   pre-extracted `(hl_keywords, ll_keywords)` as input parameters; the
   in-TEE LLM call is plumbed in M9 (out of scope here).
@@ -664,6 +763,89 @@ The existing test discipline (memory'd in
 - `tests/lightrag_parity/`: assertions against a vendored small LightRAG
   fixture (so we can detect regressions in the port at M7).
 
+### 8.6 Per-session search-pattern perturbation
+
+**The gap.** Compass + Ring-ORAM make path IDs over the storage server
+indistinguishable, but the *execution* of the search is still
+content-deterministic: the same query embedding produces the same
+HNSW traversal, the same RPC count, the same batch sizes, the same
+timing. The Compass paper acknowledges a coarse version explicitly —
+`n = ⌈ef / ef_spec⌉`, so search-at-ef=64 takes 4 RPCs while
+insert-at-ef=200 takes 13, and "an adversary can still distinguish
+the operation type." The paper puts this out of scope. We close the
+finer content-level version: same operation, same mode, but two
+sessions issuing the same query produce different content-adaptive
+execution patterns (directional-filter prune rate, speculative
+prefetch hit rate, hops-to-convergence) — without perturbation,
+those fingerprints link sessions.
+
+**The construction.** Per-session deterministic, per-call cheap.
+
+```text
+s_search        = HKDF.Expand(prk, "gelo-rag.v2.search-pattern")  // 8th child key, per-tenant
+session_nonce   = runner.fresh_nonce_16()                          // per RATLS session
+session_key     = HMAC(s_search, session_nonce)                    // per session
+
+fn perturb(e: &[f32; D], kind: &str) -> [f32; D] {
+    // kind ∈ {"q", "ll", "hl"}
+    let h         = HMAC(session_key, kind.as_bytes() ⊕ quantize(e));
+    let direction = unit_vector_from_32_bytes(h, D);   // deterministic in session_key + e
+    normalize(e + ε * direction)                       // ε ≈ 1–5 % of ‖e‖
+}
+```
+
+- `kind` differentiates the three LightRAG embeddings so they don't
+  collide internally.
+- `quantize(e)` bins each f32 to ~16 bits so embeddings within the
+  same HNSW neighbourhood hash to the same `direction` — keeps recall
+  stable under tiny CAPRISE-DPE noise.
+- ε tuned at index-build time on the parity bench; default 2 %.
+
+**Session lifecycle.** First request: runner generates
+`session_nonce`, stores it indexed by RATLS session ID, returns it in
+the response. Follow-up requests: client echoes it. Session end:
+runner zeroizes `session_key`, drops the nonce.
+
+**Optional DistanceDP composition.** When formal `(ε, δ)`-DP is a
+tenant requirement, wrap `perturb` with the existing
+`remote-rag::planar_laplace` mechanism:
+
+```text
+e_final = distance_dp(perturb(e, kind), eps_dp, sensitivity)
+```
+
+| Mechanism | Per-session deterministic? | Cross-session distinguishable? | Formal bound? |
+|---|---|---|---|
+| Compass+ORAM only | yes | yes (linkable) | — |
+| + HMAC perturbation (default on) | yes | no | none |
+| + DistanceDP (opt-in) | no (random per call) | no | (ε, δ)-DP |
+
+**Cost.** One HMAC-SHA256 + one 32-byte-to-unit-vector projection per
+embedding. ~µs on AES-NI / SHA-NI. Invisible against the ~1 s Compass
+critical path. DistanceDP adds another ~µs when enabled.
+
+**What this does NOT defend against.**
+
+- **AGEA-class extraction.** Generation-layer concern; orthogonal.
+- **Embedder side-channels on input length.** Mitigated by fixed-length
+  token padding inside `gelo-embedder`.
+- **Within-session repeat-query linkability.** Deliberate — needed for
+  caching + result consistency. Tenants wanting hidden intra-session
+  repeats switch to DistanceDP-only at the cost of result stability.
+- **SEV-SNP itself broken.** TCB ceiling; same as everything else in
+  Variant A.
+
+**Where it lives.**
+
+- `rag_core::keying::HkdfPolicy::V2` — derive `search_pattern_key`
+  alongside the other seven children.
+- `lightrag-private::search_perturb` — the `perturb()` function.
+- `gelo-snp-runner` — generate / store / echo `session_nonce` per
+  RATLS session.
+- `lightrag-private::LightRagPrivateService::kg_query` — call
+  `perturb()` between the embed step and the three Compass searches.
+  Matches Step 2½ in §5.
+
 ---
 
 ## 9. Open questions to resolve before M1
@@ -732,6 +914,10 @@ A signed release of Private LightRAG that satisfies all of:
   Tracing on the storage side cannot reveal queried entity names, chunk
   text, or keyword strings, and an offline adversary holding the
   ciphertext cannot recover plaintext.
+- **Cross-session unlinkability:** the same query issued under two
+  distinct `session_nonce`s produces statistically uncorrelated
+  Compass execution traces (round-count variance + perturbed-direction
+  divergence over 10² trials, M7 acceptance gate).
 - Per-query perceived latency at 10⁴-10⁵-scale matches the paper's
   LAION/SIFT1M baseline within 1.5×: budget **3 s for 10⁵ entities,
   6 s for 10⁶**.

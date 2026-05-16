@@ -268,9 +268,28 @@ The set of IDs fetched still leaks under naïve KV access. Either:
 
 LightRAG-private fits inside two of the four trust models already enumerated in `private-rag-system-design.md`. We do not introduce a new top-level approach — graph search adds primitives *inside* the existing trust boundary.
 
-### 5.1. Variant A — Thin-client + Embedding+Retrieval TEE (extension of Approach 4)
+### 5.0. Who plays Compass's "client" role
 
-Recommended default. The Embedding TEE that already holds the embedding model also hosts the Compass ORAM controller and the XorMM EMM endpoints. Client only chunks; everything else runs in the TEE or the storage server.
+This is the design decision that distinguishes the two variants below. Compass's paper defines a protocol with a **client** that holds the position map, stash, treetop cache, and ORAM key, and an untrusted **server** that holds the encrypted ORAM tree. The paper's deployment puts the client on the **user's own device** (laptop / phone / browser) — explicitly avoiding TEEs because TEE side channels weaken the story.
+
+What Compass actually proves is a property of the *protocol*: an adversary holding only the ORAM-tree storage cannot distinguish two access traces of equal public structure. That property is independent of which silicon hosts the client role. The role can be played by any party that holds the ORAM client state confidentially, generates path IDs from a private PRP, and is reachable by the user over an authenticated channel.
+
+| Compass client lives on… | User's device (paper-faithful) | SEV-SNP CVM (this design) |
+|---|---|---|
+| Trust anchor | user owns the hardware | AMD SEV-SNP attestation + vendor |
+| ORAM state location | device RAM | encrypted CVM RAM (hidden from host OS) |
+| Side-channel exposure | device-local | SEV-SNP side channels in-scope |
+| State portability | device-local; per-device sync | centralised; users switch freely |
+| Multi-tenant | one user per device | many tenants per CVM, isolated by HKDF |
+| User-facing client | thick (5–500 MB ORAM state, full protocol code) | thin (RATLS + plaintext requests only) |
+
+Opal (cited in §3.5 and §C.3) already runs Compass inside a TEE and formally imports Compass's batched-access lemma into its `G_att`-hybrid security proof. The composition is recognised. We adopt it here for the same reason: the thin-client / multi-tenant SaaS shape of Approach 4 cannot put 5–500 MB of state and an ORAM controller on every user's browser.
+
+The two variants below are not "primary vs fallback" — they are **two equally valid Compass deployments with different trust anchors**, chosen by who can or cannot accept SEV-SNP trust.
+
+### 5.1. Variant A — Compass client inside a SEV-SNP CVM (extension of Approach 4)
+
+The SEV-SNP CVM plays Compass's "client" role. The Embedding TEE that already holds the embedding model also hosts the Compass ORAM controller and the XorMM EMM endpoints. User's device is a thin client connected over RATLS; everything Compass calls "client work" runs inside the CVM.
 
 ```
 [Client (thin)]──RATLS──▶[ TEE: Embed + Keyword-LLM + Compass ORAM + EMM endpoints ]
@@ -290,9 +309,9 @@ What the TEE learns:
 
 TCB: TEE hardware vendor + Compass+EMM+ORAM implementation + attestation correctness.
 
-### 5.2. Variant B — Crypto-only, client-rich (extension of Approach 1)
+### 5.2. Variant B — Paper-faithful Compass on the user's device (extension of Approach 1)
 
-Used when no hardware-trust assumption is acceptable.
+Compass's "client" role runs on the user's own device exactly as the paper describes; no TEE anywhere. The right choice when SEV-SNP trust is not acceptable (regulated finance, defence, supply-chain-paranoid deployments) or when the user already has a thick client (developer workstation, on-prem appliance).
 
 ```
 [Client: Embed + Keyword-LLM + Pacmann client + EMM client]
@@ -308,6 +327,8 @@ What the storage server learns:
 - PIR chunk fetches — single-DB-row access pattern hidden.
 
 Latency: dominated by PIR; estimated 5-15 s per query at 10⁵-10⁶ entities under SimplePIR-class schemes (consistent with Tiptoe at much larger scale).
+
+Client requirements: device must hold per-tenant ORAM state (5 MB for LAION-scale up to ~500 MB for MS-MARCO-scale, per Compass Tab. 4) plus run the embedder. Per-device state sync is the user's problem; switching devices requires re-attesting and re-downloading the ORAM client state.
 
 TCB: no hardware trust. Crypto assumptions only.
 
