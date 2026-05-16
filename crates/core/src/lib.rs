@@ -13,8 +13,8 @@ pub use content::AesChunkCipher;
 pub use distance::{cosine_similarity, top_k_by_similarity};
 pub use embed::FastEmbedEmbedder;
 pub use keying::{
-    CompassParams, DerivedKeysV2, HkdfPolicy, HkdfPolicyV2, LightRagParams, SchemeParams,
-    SchemeParamsV2, TenantId, XorMmParams,
+    CompassParams, DerivedKeysV2, HkdfPolicy, HkdfPolicyV2, HnswNeighbourHeuristic,
+    LightRagParams, SchemeParams, SchemeParamsV2, TenantId, XorMmParams,
 };
 pub use sap::{SapKey, SapScheme};
 pub use storage::{InMemoryEncryptedIndex, StoredChunk};

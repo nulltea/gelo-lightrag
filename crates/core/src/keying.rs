@@ -71,11 +71,35 @@ impl Default for SchemeParams {
     }
 }
 
+/// HNSW neighbour-selection heuristic. Per Malkov & Yashunin (TPAMI
+/// 2018), Algorithm 4 (the relative-distance heuristic) produces
+/// better-quality graphs than naive top-M; the Compass paper's
+/// `hnsw_rs`-built reference uses Algorithm 4. We pin Algorithm 4 as
+/// the default; the `Simple` variant exists only for ablation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HnswNeighbourHeuristic {
+    /// Malkov-Yashunin TPAMI 2018, Algorithm 4. Keeps a diverse
+    /// neighbour set: candidate `c` is included only if no
+    /// already-selected neighbour is closer to `c` than the new node.
+    Algorithm4,
+    /// Naive top-M by distance. ~5-10% lower recall at matched M;
+    /// retained for ablation tests only.
+    Simple,
+}
+
+impl Default for HnswNeighbourHeuristic {
+    fn default() -> Self {
+        Self::Algorithm4
+    }
+}
+
 /// Public Compass-index parameters. Not per-tenant secrets. Pinned in
 /// the V2 attestation `scheme_identity` so a CVM running a different
 /// ORAM / HNSW configuration can't impersonate this one.
 ///
 /// Spec: `docs/prototype/private-graph-rag-variant-a.md` §3 + §4.2.
+/// HNSW build defaults match Malkov & Yashunin (TPAMI 2018) for
+/// parity with the Compass paper's `hnsw_rs`-built reference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompassParams {
     /// Ring-ORAM bucket size — real slots.
@@ -86,7 +110,9 @@ pub struct CompassParams {
     pub ring_oram_a: u32,
     /// ORAM block payload size in bytes.
     pub block_bytes: u32,
-    /// HNSW degree bound.
+    /// HNSW degree bound — the canonical `M`. Used for layer
+    /// assignment (`hnsw_ml = 1/ln(M)`) and as the upper-layer
+    /// out-degree by default.
     pub hnsw_m: u32,
     /// HNSW dynamic candidate-list width at search time.
     pub hnsw_ef: u32,
@@ -98,23 +124,70 @@ pub struct CompassParams {
     pub treetop_levels: u32,
     /// Quantization bits per dimension for directional hints.
     pub directional_hint_bits: u8,
+
+    // ─── Malkov-Yashunin layered-HNSW build params (M4) ─────────────
+
+    /// Out-degree at layer 0 — the bottom layer wants a denser graph.
+    /// Paper default: `2 · hnsw_m`.
+    pub hnsw_m_l0: u32,
+    /// Out-degree at layers ≥ 1. Paper default: `hnsw_m`.
+    pub hnsw_m_upper: u32,
+    /// Beam width *during insert* at each layer. Separate from
+    /// `hnsw_ef` (the search-time width). Paper default: 200.
+    pub hnsw_ef_construction: u32,
+    /// Layer-assignment exponential-distribution scale, encoded as
+    /// IEEE-754 bits of an f32 so the struct stays `Eq`-derivable and
+    /// the canonical encoder is byte-stable across platforms. Paper
+    /// default: `(1.0 / ln(hnsw_m)).to_bits()`.
+    pub hnsw_ml_bits: u32,
+    /// Which neighbour-selection rule to apply when over-degree.
+    pub hnsw_neighbour_heuristic: HnswNeighbourHeuristic,
+    /// PRNG seed for layer assignment + neighbour-selection ties.
+    /// Same `(corpus, seed)` must produce byte-identical encrypted
+    /// trees for parity tests to work. Tenants override per-index;
+    /// the default is a domain-separated SHA-256 of a fixed string.
+    pub hnsw_build_seed: [u8; 32],
+}
+
+impl CompassParams {
+    /// Decode `hnsw_ml_bits` back to the f32 layer-assignment scale.
+    pub fn hnsw_ml(&self) -> f32 {
+        f32::from_bits(self.hnsw_ml_bits)
+    }
 }
 
 impl Default for CompassParams {
-    /// Paper-aligned starting point — see Compass paper §6.
+    /// Paper-aligned starting point — see Compass paper §6 and
+    /// Malkov-Yashunin TPAMI 2018 for the HNSW build defaults.
     /// Tunable per-tenant at index build time.
     fn default() -> Self {
+        let hnsw_m: u32 = 12;
+        let ml_default = 1.0_f32 / (hnsw_m as f32).ln();
+
+        // Domain-separated default seed. Tenants override at
+        // construction; this constant exists only so a fresh
+        // `CompassParams::default()` is deterministic across runs.
+        let mut hasher = Sha256::new();
+        hasher.update(b"gelo-rag.v2.hnsw-build-seed.default");
+        let default_seed: [u8; 32] = hasher.finalize().into();
+
         Self {
             ring_oram_z: 4,
             ring_oram_s: 5,
             ring_oram_a: 3,
             block_bytes: 2048,
-            hnsw_m: 12,
+            hnsw_m,
             hnsw_ef: 64,
             hnsw_ef_spec: 16,
             hnsw_ef_n: 4,
             treetop_levels: 4,
             directional_hint_bits: 4,
+            hnsw_m_l0: 2 * hnsw_m,
+            hnsw_m_upper: hnsw_m,
+            hnsw_ef_construction: 200,
+            hnsw_ml_bits: ml_default.to_bits(),
+            hnsw_neighbour_heuristic: HnswNeighbourHeuristic::Algorithm4,
+            hnsw_build_seed: default_seed,
         }
     }
 }
@@ -453,6 +526,26 @@ impl HkdfPolicyV2 {
         out.extend_from_slice(
             format!("compass-hint-bits={}\n", c.directional_hint_bits).as_bytes(),
         );
+        // Layered-HNSW build params (M4).
+        out.extend_from_slice(format!("compass-hnsw-m-l0={}\n", c.hnsw_m_l0).as_bytes());
+        out.extend_from_slice(format!("compass-hnsw-m-upper={}\n", c.hnsw_m_upper).as_bytes());
+        out.extend_from_slice(
+            format!("compass-hnsw-ef-construction={}\n", c.hnsw_ef_construction).as_bytes(),
+        );
+        out.extend_from_slice(
+            format!("compass-hnsw-ml-bits=0x{:08x}\n", c.hnsw_ml_bits).as_bytes(),
+        );
+        out.extend_from_slice(b"compass-hnsw-neighbour-heuristic=");
+        out.extend_from_slice(match c.hnsw_neighbour_heuristic {
+            HnswNeighbourHeuristic::Algorithm4 => b"algorithm4".as_slice(),
+            HnswNeighbourHeuristic::Simple => b"simple".as_slice(),
+        });
+        out.push(b'\n');
+        out.extend_from_slice(b"compass-hnsw-build-seed=");
+        for byte in c.hnsw_build_seed.iter() {
+            out.extend_from_slice(format!("{:02x}", byte).as_bytes());
+        }
+        out.push(b'\n');
 
         // XorMM params.
         let x = &params.xormm;
@@ -658,6 +751,26 @@ mod tests {
         p.compass.hnsw_ef = base.compass.hnsw_ef + 1;
         assert_ne!(d_base, HkdfPolicyV2::V2.scheme_identity_digest(p));
 
+        // Layered-HNSW build fields (M4 additions).
+        let mut p = base;
+        p.compass.hnsw_m_l0 = base.compass.hnsw_m_l0 + 1;
+        assert_ne!(d_base, HkdfPolicyV2::V2.scheme_identity_digest(p));
+        let mut p = base;
+        p.compass.hnsw_m_upper = base.compass.hnsw_m_upper + 1;
+        assert_ne!(d_base, HkdfPolicyV2::V2.scheme_identity_digest(p));
+        let mut p = base;
+        p.compass.hnsw_ef_construction = base.compass.hnsw_ef_construction + 1;
+        assert_ne!(d_base, HkdfPolicyV2::V2.scheme_identity_digest(p));
+        let mut p = base;
+        p.compass.hnsw_ml_bits = base.compass.hnsw_ml_bits ^ 0x1;
+        assert_ne!(d_base, HkdfPolicyV2::V2.scheme_identity_digest(p));
+        let mut p = base;
+        p.compass.hnsw_neighbour_heuristic = HnswNeighbourHeuristic::Simple;
+        assert_ne!(d_base, HkdfPolicyV2::V2.scheme_identity_digest(p));
+        let mut p = base;
+        p.compass.hnsw_build_seed[0] ^= 0xff;
+        assert_ne!(d_base, HkdfPolicyV2::V2.scheme_identity_digest(p));
+
         // XorMM
         let mut p = base;
         p.xormm.volume_bound = base.xormm.volume_bound + 1;
@@ -672,6 +785,26 @@ mod tests {
         let mut p = base;
         p.lightrag.search_perturb_epsilon = base.lightrag.search_perturb_epsilon + 0.01;
         assert_ne!(d_base, HkdfPolicyV2::V2.scheme_identity_digest(p));
+    }
+
+    #[test]
+    fn compass_params_default_pins_paper_defaults() {
+        // Lock the Malkov-Yashunin defaults so an accidental edit is
+        // caught at test time.
+        let c = CompassParams::default();
+        assert_eq!(c.hnsw_m, 12);
+        assert_eq!(c.hnsw_m_l0, 24);
+        assert_eq!(c.hnsw_m_upper, 12);
+        assert_eq!(c.hnsw_ef_construction, 200);
+        // 1.0 / ln(12) ≈ 0.4023
+        let ml = c.hnsw_ml();
+        assert!((ml - 1.0 / 12.0_f32.ln()).abs() < 1e-6, "ml = {ml}");
+        assert_eq!(c.hnsw_neighbour_heuristic, HnswNeighbourHeuristic::Algorithm4);
+        // Seed is deterministic across runs.
+        let d2 = CompassParams::default();
+        assert_eq!(c.hnsw_build_seed, d2.hnsw_build_seed);
+        // Seed is non-zero (defense against accidental zero-init).
+        assert!(c.hnsw_build_seed.iter().any(|&b| b != 0));
     }
 
     #[test]
