@@ -23,8 +23,9 @@ mod store;
 mod types;
 
 pub use aes_chunk_store::{AesChunkStore, ChunkStoreError};
-pub use compass_index::{CompassIndexParams, RingOramParams};
+pub use compass_index::{CompassIndexParams, PlainHnswParams, RingOramParams};
 pub use keys::{derive_logical_key, label};
+pub use ring_oram::{BlockBackend, InMemoryBlockBackend};
 pub use store::{KeyBundle, LightKgError, LightKgParams, LightKgStore};
 pub use types::{Chunk, Entity, ExtractedKg, Relation};
-pub use xormm_emm::XorMmParams;
+pub use xormm_emm::{ByteStoreBackend, InMemoryByteStore, XorMmParams};
