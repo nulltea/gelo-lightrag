@@ -1,4 +1,4 @@
-//! Layered Compass search (M4.6).
+//! Layered Compass search (M4.6, async since M5).
 //!
 //! 1. **Upper-layer descent (cleartext).** Start at the entry node
 //!    at `top_layer`. At each layer, ef=1 greedy descent over the
@@ -47,7 +47,7 @@ impl Ord for Candidate {
     }
 }
 
-pub(crate) fn layered_search<B: BlockBackend>(
+pub(crate) async fn layered_search<B: BlockBackend>(
     index: &mut CompassIndex<B>,
     query: &[f32],
     k: usize,
@@ -59,11 +59,23 @@ pub(crate) fn layered_search<B: BlockBackend>(
     );
 
     // Multi-hop lazy eviction (Compass §4.7): keep eviction writes
-    // off the user-perceived critical path. The RAII guard flushes
-    // pending evictions when search returns.
-    let _evict_guard = index.defer_evictions_for_search();
-    let index: &mut CompassIndex<B> = _evict_guard.index;
+    // off the user-perceived critical path. Explicit toggle pair —
+    // RAII drop doesn't compose with async. Flush + reset happen
+    // before every return path (`?` in this function would skip the
+    // flush; the helper closure below wraps the body so we always
+    // hit the flush, even on error).
+    index.oram_mut().set_defer_evictions(true);
+    let result = layered_search_inner(index, query, k).await;
+    index.oram_mut().set_defer_evictions(false);
+    index.oram_mut().flush_evictions().await;
+    result
+}
 
+async fn layered_search_inner<B: BlockBackend>(
+    index: &mut CompassIndex<B>,
+    query: &[f32],
+    k: usize,
+) -> Result<Vec<u32>, CompassIndexError> {
     // ─── 1. Upper-layer descent (cleartext) ────────────────────────
     let mut current = index.entry.0;
     let entry_emb = upper_layer_embedding(index, current, index.top_layer)
@@ -112,7 +124,7 @@ pub(crate) fn layered_search<B: BlockBackend>(
                 break;
             }
         }
-        let node = index.read_layer0_node(BlockId(c.id))?;
+        let node = index.read_layer0_node(BlockId(c.id)).await?;
 
         // Directional Neighbor Filtering (Compass §4.5). Pick top
         // `ef_n` neighbours by quantised-hint dot product with the
@@ -143,7 +155,7 @@ pub(crate) fn layered_search<B: BlockBackend>(
             if !visited.insert(nb_id) {
                 continue;
             }
-            let nb_node = index.read_layer0_node(BlockId(nb_id))?;
+            let nb_node = index.read_layer0_node(BlockId(nb_id)).await?;
             let nb_dist = cosine_distance(query, &nb_node.embedding);
             let cand = Candidate { dist: nb_dist, id: nb_id };
             if top_k.len() < ef {

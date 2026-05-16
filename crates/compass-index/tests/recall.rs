@@ -18,6 +18,10 @@
 //!  - end-to-end build + search through the encrypted ORAM works;
 //!  - ORAM access pattern doesn't corrupt the search result;
 //!  - the layout (D=64, M=16, block_bytes=512) is internally consistent.
+//!
+//! All tests are async since M5.0 (BlockBackend → async). Run with
+//! `cargo test --release -p compass-index --test recall` — debug
+//! builds OOM-kill under sandbox limits.
 
 use compass_index::{CompassIndex, CompassIndexParams, PlainHnswParams, RingOramParams};
 use rand::{Rng, SeedableRng};
@@ -52,14 +56,12 @@ fn brute_force_topk(query: &[f32], corpus: &[Vec<f32>], k: usize) -> Vec<u32> {
     scored.into_iter().take(k).map(|(_, i)| i).collect()
 }
 
-#[test]
-fn compass_search_recall_at_1k_vectors_is_at_least_90_percent() {
+#[tokio::test]
+async fn compass_search_recall_at_1k_vectors_is_at_least_90_percent() {
     let mut rng = ChaCha20Rng::from_seed([0x42; 32]);
     // Run with `cargo test --release -p compass-index --test recall`
     // — debug builds make HNSW build + ORAM beam ~30× slower than
     // release and have previously OOM-killed under sandbox limits.
-    // The plan's M3 target was 1K vectors / D=64; M4 hits it with
-    // release-mode + the cleartext upper-layer cache.
     let n = 1_000usize;
     let dim = 64;
     let k = 10;
@@ -83,7 +85,9 @@ fn compass_search_recall_at_1k_vectors_is_at_least_90_percent() {
         ef_n: 4,
     };
 
-    let mut index = CompassIndex::from_plaintext_corpus(corpus.clone(), params).expect("build ok");
+    let mut index = CompassIndex::from_plaintext_corpus(corpus.clone(), params)
+        .await
+        .expect("build ok");
 
     // Run q_count queries; for each, compute recall@k vs brute-force.
     let mut total_recall = 0.0f32;
@@ -91,7 +95,7 @@ fn compass_search_recall_at_1k_vectors_is_at_least_90_percent() {
         let query = random_unit_vec(&mut rng, dim);
         let oracle: std::collections::HashSet<u32> =
             brute_force_topk(&query, &corpus, k).into_iter().collect();
-        let got = index.search(&query, k).expect("search ok");
+        let got = index.search(&query, k).await.expect("search ok");
         let hits = got.iter().filter(|id| oracle.contains(id)).count();
         total_recall += hits as f32 / k as f32;
     }
@@ -103,8 +107,8 @@ fn compass_search_recall_at_1k_vectors_is_at_least_90_percent() {
     );
 }
 
-#[test]
-fn directional_filter_reduces_layer0_reads_without_breaking_recall() {
+#[tokio::test]
+async fn directional_filter_reduces_layer0_reads_without_breaking_recall() {
     // Two indices on identical corpora: one with ef_n = max_neighbors_l0
     // (filter effectively off), one with ef_n = 4 (paper default).
     // Filtered index must do *strictly fewer* layer-0 ORAM reads,
@@ -140,8 +144,10 @@ fn directional_filter_reduces_layer0_reads_without_breaking_recall() {
     };
 
     let mut idx_unfilt = CompassIndex::from_plaintext_corpus(corpus.clone(), unfiltered)
+        .await
         .expect("build ok");
     let mut idx_filt = CompassIndex::from_plaintext_corpus(corpus.clone(), filtered)
+        .await
         .expect("build ok");
 
     let mut reads_unfilt_total = 0u64;
@@ -155,13 +161,13 @@ fn directional_filter_reduces_layer0_reads_without_breaking_recall() {
             brute_force_topk(&query, &corpus, k).into_iter().collect();
 
         let before_unfilt = idx_unfilt.layer0_read_count();
-        let res_unfilt = idx_unfilt.search(&query, k).unwrap();
+        let res_unfilt = idx_unfilt.search(&query, k).await.unwrap();
         reads_unfilt_total += idx_unfilt.layer0_read_count() - before_unfilt;
         recall_unfilt += res_unfilt.iter().filter(|id| oracle.contains(id)).count() as f32
             / k as f32;
 
         let before_filt = idx_filt.layer0_read_count();
-        let res_filt = idx_filt.search(&query, k).unwrap();
+        let res_filt = idx_filt.search(&query, k).await.unwrap();
         reads_filt_total += idx_filt.layer0_read_count() - before_filt;
         recall_filt += res_filt.iter().filter(|id| oracle.contains(id)).count() as f32
             / k as f32;
@@ -187,8 +193,8 @@ fn directional_filter_reduces_layer0_reads_without_breaking_recall() {
     );
 }
 
-#[test]
-fn round_trip_single_query() {
+#[tokio::test]
+async fn round_trip_single_query() {
     // Smoke test: one query, k=1; the nearest must be returned.
     let corpus = vec![
         vec![1.0, 0.0, 0.0, 0.0],
@@ -210,7 +216,9 @@ fn round_trip_single_query() {
         ef_search: 4,
         ef_n: usize::MAX, // tiny corpus, disable filtering
     };
-    let mut index = CompassIndex::from_plaintext_corpus(corpus, params).expect("build ok");
-    let got = index.search(&[1.0, 0.0, 0.0, 0.0], 1).expect("search ok");
+    let mut index = CompassIndex::from_plaintext_corpus(corpus, params)
+        .await
+        .expect("build ok");
+    let got = index.search(&[1.0, 0.0, 0.0, 0.0], 1).await.expect("search ok");
     assert_eq!(got, vec![0]);
 }

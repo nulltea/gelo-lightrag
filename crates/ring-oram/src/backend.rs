@@ -1,10 +1,13 @@
 //! Storage-side trait: `BlockBackend` is what the (untrusted) storage
 //! server implements. The client only ever sees encrypted buckets.
 //!
-//! M1 ships `InMemoryBlockBackend` for tests; M5 swaps in a real
-//! networked implementation (REST or S3-shaped). The trait is
-//! intentionally small — three methods — so swapping is a one-file
-//! change.
+//! M5 promotes this trait to async (`#[async_trait]`) so a single
+//! `RingOramClient` can run against either the in-memory backend used
+//! by unit/integration tests or the REST-shaped `compass-rest-backend`
+//! that ships in M5.1. The trait surface is intentionally small —
+//! three methods — so swapping is a one-file change at the call site.
+
+use async_trait::async_trait;
 
 /// One encrypted bucket as the server sees it. The client AES-GCM-
 /// encrypts every bucket before write; the server stores opaque bytes.
@@ -24,32 +27,36 @@ pub struct EncryptedBucket {
     pub ciphertext: Vec<u8>,
 }
 
-/// What the server-side backend must implement. Methods are
-/// synchronous in M1 for simplicity; M5 promotes to async over a real
-/// transport.
-pub trait BlockBackend {
+/// What the server-side backend must implement. Async since M5 so the
+/// REST-backed implementation can stream over the network without
+/// blocking; the in-memory backend simply returns ready futures.
+#[async_trait]
+pub trait BlockBackend: Send + Sync {
     /// Fetch one path's worth of buckets, in root-first order. Caller
     /// passes the result of [`crate::path::path_buckets`].
-    fn read_path(&self, bucket_ids: &[u32]) -> Vec<EncryptedBucket>;
+    async fn read_path(&self, bucket_ids: &[u32]) -> Vec<EncryptedBucket>;
 
     /// Overwrite a contiguous batch of buckets. The implementation
     /// updates each bucket's `write_counter` atomically — the client
     /// passes the *new* counter values; server stores them.
-    fn write_buckets(&mut self, buckets: &[EncryptedBucket]);
+    async fn write_buckets(&mut self, buckets: &[EncryptedBucket]);
 
     /// Number of buckets in the tree. The client uses this only to
-    /// sanity-check the configured `n_leaves`.
+    /// sanity-check the configured `n_leaves`. Sync by design — a
+    /// single u32 the server holds in memory.
     fn num_buckets(&self) -> u32;
 }
 
 // ─── In-memory backend ────────────────────────────────────────────
 
 /// Trivial backend storing ciphertext in a `Vec` of `EncryptedBucket`.
-/// Used by every M1 test and by M3's `compass-index` integration tests.
+/// Used by every M1 test and by the M3/M4 `compass-index` integration
+/// tests. The async methods are effectively sync — they wrap the
+/// in-memory operations in a ready future.
 #[derive(Debug)]
 pub struct InMemoryBlockBackend {
     buckets: Vec<EncryptedBucket>,
-    read_count: std::cell::Cell<u64>,
+    read_count: std::sync::atomic::AtomicU64,
 }
 
 impl InMemoryBlockBackend {
@@ -67,7 +74,7 @@ impl InMemoryBlockBackend {
             .collect();
         Self {
             buckets,
-            read_count: std::cell::Cell::new(0),
+            read_count: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -82,21 +89,22 @@ impl InMemoryBlockBackend {
     /// the treetop-caching test to confirm cached reads bypass the
     /// backend.
     pub fn read_count(&self) -> u64 {
-        self.read_count.get()
+        self.read_count.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
+#[async_trait]
 impl BlockBackend for InMemoryBlockBackend {
-    fn read_path(&self, bucket_ids: &[u32]) -> Vec<EncryptedBucket> {
+    async fn read_path(&self, bucket_ids: &[u32]) -> Vec<EncryptedBucket> {
         self.read_count
-            .set(self.read_count.get() + bucket_ids.len() as u64);
+            .fetch_add(bucket_ids.len() as u64, std::sync::atomic::Ordering::Relaxed);
         bucket_ids
             .iter()
             .map(|&i| self.buckets[i as usize].clone())
             .collect()
     }
 
-    fn write_buckets(&mut self, buckets: &[EncryptedBucket]) {
+    async fn write_buckets(&mut self, buckets: &[EncryptedBucket]) {
         for b in buckets {
             self.buckets[b.bucket_id as usize] = b.clone();
         }
@@ -111,8 +119,8 @@ impl BlockBackend for InMemoryBlockBackend {
 mod tests {
     use super::*;
 
-    #[test]
-    fn in_memory_backend_round_trips_writes() {
+    #[tokio::test]
+    async fn in_memory_backend_round_trips_writes() {
         let mut be = InMemoryBlockBackend::new(4);
         assert_eq!(be.num_buckets(), 4);
         let bucket = EncryptedBucket {
@@ -120,8 +128,8 @@ mod tests {
             write_counter: 7,
             ciphertext: vec![0xde, 0xad, 0xbe, 0xef],
         };
-        be.write_buckets(&[bucket.clone()]);
-        let got = be.read_path(&[2]);
+        be.write_buckets(&[bucket.clone()]).await;
+        let got = be.read_path(&[2]).await;
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].bucket_id, 2);
         assert_eq!(got[0].write_counter, 7);

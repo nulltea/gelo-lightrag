@@ -11,6 +11,7 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 hnsw_rs.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
@@ -18,3 +19,6 @@ ring-oram = { path = "../ring-oram" }
 sha2.workspace = true
 thiserror.workspace = true
 zeroize.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -1,6 +1,11 @@
 //! `CompassIndex` — the encrypted graph-ANN index. Wraps a
 //! [`RingOramClient`] holding HNSW layer-0 node blocks; layers ≥ 1
 //! live cleartext inside the CVM.
+//!
+//! Async since M5 because the underlying `BlockBackend` is async — a
+//! real (REST-shaped) backend will block on network I/O. The in-memory
+//! backend used by tests stays effectively sync (its async methods
+//! return ready futures).
 
 use ring_oram::{
     BlockBackend, BlockId, InMemoryBlockBackend, OramError, RingOramClient, RingOramParams,
@@ -101,18 +106,30 @@ impl CompassIndex<InMemoryBlockBackend> {
     /// `compass_init` analog using the in-memory backend. Builds a
     /// layered HNSW from `embeddings`, caches upper layers cleartext,
     /// encodes layer-0 nodes as ORAM blocks, admits them.
-    pub fn from_plaintext_corpus(
+    pub async fn from_plaintext_corpus(
         embeddings: Vec<Vec<f32>>,
         params: CompassIndexParams,
     ) -> Result<Self, CompassIndexError> {
-        let hnsw = PlainHnsw::build(embeddings, params.hnsw);
         let backend = InMemoryBlockBackend::new(params.oram.num_buckets());
+        Self::from_plaintext_corpus_on(embeddings, params, backend).await
+    }
+}
+
+impl<B: BlockBackend> CompassIndex<B> {
+    /// Build an index over the supplied backend. Used by the in-memory
+    /// constructor above and (M5.2) by the REST-backed integration test.
+    pub async fn from_plaintext_corpus_on(
+        embeddings: Vec<Vec<f32>>,
+        params: CompassIndexParams,
+        backend: B,
+    ) -> Result<Self, CompassIndexError> {
+        let hnsw = PlainHnsw::build(embeddings, params.hnsw);
         // Use the HNSW build seed to derive the ORAM key + RNG seed
         // deterministically. Production tenants will swap these for
         // the V2 HKDF children (oram_entities_key etc.).
         let key = derive_test_key(&hnsw.params.build_seed, b"oram-key");
         let rng_seed = derive_test_key(&hnsw.params.build_seed, b"oram-rng");
-        let mut oram = RingOramClient::new(backend, params.oram, key, rng_seed);
+        let mut oram = RingOramClient::new(backend, params.oram, key, rng_seed).await;
 
         let entry = hnsw.entry;
         let top_layer = hnsw.top_layer;
@@ -134,7 +151,7 @@ impl CompassIndex<InMemoryBlockBackend> {
                 params.hnsw.max_neighbors_l0,
                 params.oram.block_bytes as usize,
             )?;
-            oram.admit(BlockId(id as u32), bytes)?;
+            oram.admit(BlockId(id as u32), bytes).await?;
         }
 
         Ok(Self {
@@ -183,18 +200,25 @@ fn derive_test_key(seed: &[u8; 32], label: &[u8]) -> [u8; 32] {
 impl<B: BlockBackend> CompassIndex<B> {
     /// Top-k search. Layered routing through cleartext upper layers,
     /// then ef-bounded beam search in the ORAM-resident layer 0.
-    pub fn search(&mut self, query: &[f32], k: usize) -> Result<Vec<u32>, CompassIndexError> {
-        crate::search::layered_search(self, query, k)
+    ///
+    /// Async because layer-0 traversal issues one ORAM round-trip per
+    /// visited node.
+    pub async fn search(
+        &mut self,
+        query: &[f32],
+        k: usize,
+    ) -> Result<Vec<u32>, CompassIndexError> {
+        crate::search::layered_search(self, query, k).await
     }
 
     /// Internal accessor: decode block `id` from the ORAM. Bumps the
     /// telemetry counter used by tests to measure the directional
     /// filter's effect.
-    pub(crate) fn read_layer0_node(
+    pub(crate) async fn read_layer0_node(
         &mut self,
         id: BlockId,
     ) -> Result<crate::codec::NodeBlock, CompassIndexError> {
-        let bytes = self.oram.read(id)?;
+        let bytes = self.oram.read(id).await?;
         let node = deserialise_node(
             &bytes,
             self.params.hnsw.dim,
@@ -216,24 +240,10 @@ impl<B: BlockBackend> CompassIndex<B> {
         &self.layer0_hints[id as usize]
     }
 
-    /// Multi-hop lazy-eviction guard (Compass §4.7). RAII: enables
-    /// defer on construction, flushes on drop. Use during a search
-    /// to keep eviction off the user-perceived critical path.
-    pub(crate) fn defer_evictions_for_search<'a>(&'a mut self) -> EvictionDeferGuard<'a, B> {
-        self.oram.set_defer_evictions(true);
-        EvictionDeferGuard { index: self }
-    }
-}
-
-/// RAII guard returned by `defer_evictions_for_search`. On drop,
-/// resumes inline eviction and flushes anything pending.
-pub(crate) struct EvictionDeferGuard<'a, B: BlockBackend> {
-    pub(crate) index: &'a mut CompassIndex<B>,
-}
-
-impl<'a, B: BlockBackend> Drop for EvictionDeferGuard<'a, B> {
-    fn drop(&mut self) {
-        // set_defer_evictions(false) also flushes any pending.
-        self.index.oram.set_defer_evictions(false);
+    /// Mutable handle on the underlying ORAM client. Used by
+    /// `search.rs` to drive the deferred-eviction toggle and flush
+    /// the queue at the end of a search.
+    pub(crate) fn oram_mut(&mut self) -> &mut RingOramClient<B> {
+        &mut self.oram
     }
 }
