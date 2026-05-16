@@ -506,13 +506,14 @@
       <a class="path-card" href="graphrag.html">
         <div class="num">§E</div>
         <h3>GraphRAG · Compass</h3>
-        <p class="tagline"><em>Planned · Variant A.</em> Private LightRAG retrieval inside the same SEV-SNP CVM. Three Compass-encrypted HNSW indexes (entities · relations · chunks) plus two XorMM volume-hiding multimaps (adjacency · source_id) plus the existing AES-GCM chunk store — every server-visible op reduces to a Ring-ORAM read, an EMM lookup, or a blob fetch.</p>
+        <p class="tagline"><em>Shipped · Variant A · M0–M8.1 · benched.</em> Private LightRAG retrieval inside the same SEV-SNP CVM. Three Compass-encrypted HNSW indexes (entities · relations · chunks) plus two XorMM volume-hiding multimaps (adjacency · src_chunks) plus an AES-GCM chunk store — every server-visible op reduces to a Ring-ORAM read, an EMM lookup, or a blob fetch. Local + Hybrid modes wired; 10–58 ms p50 in-memory at N=100–2000.</p>
         <ul>
-          <li><code>ring-oram</code> · Ring-ORAM client + Merkle integrity (port from <code>Clive2312/compass</code>)</li>
-          <li><code>compass-index</code> · HNSW-over-ORAM · Directional Filter + Speculative Prefetch + Tailored ORAM</li>
-          <li><code>xormm-emm</code> · volume-hiding adjacency &amp; source_id multi-maps</li>
-          <li><code>light-kg-store</code> + <code>lightrag-private</code> · faithful port of LightRAG <code>kg_query</code></li>
-          <li>Builds on HkdfPolicy + SnpTrustedExecutor + RATLS — no new trust assumptions</li>
+          <li><code>ring-oram</code> · semi-honest baseline + lazy eviction + treetop cache · async <code>BlockBackend</code></li>
+          <li><code>compass-index</code> · layered HNSW · Directional Filter (~50 % read reduction)</li>
+          <li><code>xormm-emm</code> · volume-hiding adjacency &amp; src_chunks · cuckoo placement</li>
+          <li><code>compass-rest-backend</code> · axum + sled storage server + reqwest client</li>
+          <li><code>light-kg-store</code> + <code>lightrag-private</code> · LightRAG <code>kg_query</code> orchestrator</li>
+          <li>Wired through HkdfPolicyV2 + SnpTrustedExecutor + RATLS — no new trust assumptions</li>
         </ul>
         <span class="arrow">read more</span>
       </a>
@@ -591,7 +592,7 @@
         <li><a href="embedding.html">Embedding · GELO</a> — TEE↔GPU split-inference protocol, mask + shield + U-Verify</li>
         <li><a href="storage.html">Storage · CAPRISE-at-rest</a> — production storage path · two-party HKDF</li>
         <li><a href="storage-remoterag.html">Storage · RemoteRAG</a> — alternative explored, not pursued</li>
-        <li><a href="graphrag.html">GraphRAG · Compass</a> — planned · Variant A · Ring-ORAM + XorMM under SEV-SNP</li>
+        <li><a href="graphrag.html">GraphRAG · Compass</a> — shipped · Variant A · Ring-ORAM + XorMM under SEV-SNP · M0–M8.1 · benched</li>
         <li><a href="caprise-two-party-kdf.md">CAPRISE two-party KDF spec</a> — Option 3 design + delivery</li>
       </ul>
     </div>
