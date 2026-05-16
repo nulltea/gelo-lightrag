@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>private-rag · GraphRAG · Compass</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,300..900,0..100,0..1&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+<div class="sheet">
+  <span class="crosshair tl"></span>
+  <span class="crosshair tr"></span>
+  <span class="crosshair bl"></span>
+  <span class="crosshair br"></span>
+
+  <!-- ─── TOP NAV ─── -->
+  <nav class="topnav">
+    <a class="brand" href="index.html">
+      private-rag<span class="dot">·</span><span class="rev">prototype</span>
+    </a>
+    <div class="links">
+      <a href="index.html">Overview</a>
+      <a href="embedding.html">Embedding · GELO</a>
+      <a href="storage.html">Storage · CAPRISE</a>
+      <a href="reranking.html">Reranking · GELO</a>
+      <a class="current" href="graphrag.html">GraphRAG · Compass</a>
+    </div>
+  </nav>
+
+  <!-- ─── MASTHEAD ─── -->
+  <header class="masthead">
+    <div>
+      <h1 class="title">graph<em>·</em>rag</h1>
+      <p class="subtitle">Private LightRAG retrieval — three Compass-encrypted HNSW indexes and two XorMM volume-hiding multimaps, all driven from inside an attested SEV-SNP CVM. Variant A of <span class="mono">docs/research/private-graph-rag-design.md</span>: the entire LightRAG <code>kg_query</code> surface runs as Ring-ORAM accesses over a fully untrusted blob store.</p>
+    </div>
+    <div class="colophon">
+      <div><b>status</b>&nbsp;&nbsp;planned · 15–21 eng-weeks</div>
+      <div><b>variant</b>&nbsp;&nbsp;A (TEE-anchored, see design doc §5.1)</div>
+      <div><b>builds on</b>&nbsp;&nbsp;CAPRISE + two-party HKDF + SnpTrustedExecutor</div>
+      <div><b>rev</b>&nbsp;&nbsp;2026·05·16</div>
+      <span class="rev">extends Approach 4</span>
+    </div>
+  </header>
+
+  <!-- ─── HEADLINE STATS ─── -->
+  <div class="stat-strip">
+    <div class="stat">
+      <div class="k">target query latency</div>
+      <div class="v"><em>≈ 3</em><span class="unit">s</span></div>
+      <div class="sub">3× parallel Compass at 10⁵-entity scale · paper SIFT1M baseline 1.1 s / VDB</div>
+    </div>
+    <div class="stat">
+      <div class="k">in-CVM client state</div>
+      <div class="v">≈ 110<span class="unit">MB</span></div>
+      <div class="sub">stash + position maps + treetop + quantized hints across 3 indexes · paper Tab. 4 SIFT1M ×3</div>
+    </div>
+    <div class="stat">
+      <div class="k">access-pattern leakage</div>
+      <div class="v">comp.<span class="unit">indist.</span></div>
+      <div class="sub">Ring-ORAM under malicious-server mode · Merkle integrity proven in §4.10 of paper</div>
+    </div>
+    <div class="stat">
+      <div class="k">new crates planned</div>
+      <div class="v">5</div>
+      <div class="sub">ring-oram · compass-index · xormm-emm · light-kg-store · lightrag-private</div>
+    </div>
+  </div>
+
+  <!-- ═════ § 1 ROLE IN THE PROJECT ═════ -->
+  <section id="role">
+    <header class="section-head">
+      <div class="section-num">§01</div>
+      <h2 class="section-title">Role in the project</h2>
+      <div class="section-meta">stub</div>
+    </header>
+    <p class="lede">
+      <em>To be written.</em>
+    </p>
+  </section>
+
+  <!-- ═════ § 2 THREAT MODEL ═════ -->
+  <section id="threat-model">
+    <header class="section-head">
+      <div class="section-num">§02</div>
+      <h2 class="section-title">Threat model</h2>
+      <div class="section-meta">extends storage-CAPRISE · adds graph-specific surfaces</div>
+    </header>
+    <p class="lede">
+      Same trust geometry as the CAPRISE path (<a href="storage.html">storage page</a>): the CVM is trusted, the storage server and network operator are not, the client endpoint is trusted for the duration of an RATLS session. GraphRAG introduces <em>structural</em> attack surfaces the flat vector path does not have — every entity, every relation, every per-node degree, every adjacency list is now a distinct side channel. Variant A neutralises those by routing every server-visible operation through one of three primitives: Ring-ORAM (over an encrypted HNSW or KV blob), XorMM volume-hiding multi-map (over adjacency &amp; source-id lists), AES-GCM blob fetch (over chunk bodies).
+    </p>
+
+    <table class="spec">
+      <thead>
+        <tr><th>Party</th><th>Trust</th><th>What it sees</th><th>What is hidden</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>User text + tenant secret</td><td>confidential</td><td>—</td><td>—</td></tr>
+        <tr><td>Client</td><td class="accent">trusted</td><td>plaintext query · <code>user_x_sk</code> · assembled context / top-k returned over RATLS</td><td>—</td></tr>
+        <tr><td>TEE (SEV-SNP CVM)</td><td class="accent">trusted</td><td>plaintext text · keyword strings · embeddings · entity / relation / chunk plaintext · ORAM position maps + stash · derived OramKey × 3 + EmmKey × 2 + CAPRISE seed + AES chunk key · <code>tee_user_x_sk</code></td><td>—</td></tr>
+        <tr><td>Storage server (operator)</td><td>untrusted</td><td>encrypted Ring-ORAM tree buckets · XorMM hash tables · AES-GCM chunk blobs · request rates &amp; timing</td><td>plaintext text · embeddings · entity / relation / chunk identifiers · access patterns over the tree · adjacency-list sizes · per-node degree</td></tr>
+        <tr><td>Network operator</td><td>untrusted</td><td>RATLS-wrapped traffic · attestation evidence · request rate (padded by runner)</td><td>RATLS contents</td></tr>
+      </tbody>
+    </table>
+
+    <table class="spec" style="margin-top:24px;">
+      <thead>
+        <tr><th>Attack surface (graph-specific)</th><th>What leaks today in plaintext LightRAG</th><th>Variant A defence</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Per-query embedding inversion (Vec2Text-class)</td><td><code>ll_emb</code>, <code>hl_emb</code>, <code>q_emb</code> → readable keyword text</td><td>embedding stays inside CVM · only reaches storage as a Compass ORAM access</td></tr>
+        <tr><td>Access pattern over the three HNSW indexes</td><td>which entity / relation IDs got looked up</td><td>Ring-ORAM under Compass — paths random by construction · paper §4.10 proof</td></tr>
+        <tr><td>Per-node degree fingerprint</td><td>variable-length <code>get_nodes_edges_batch</code> reply uniquely identifies the queried entity</td><td>XorMM-padded adjacency lists · degree absorbed into encrypted prop bag (Risk D in <a href="private-graph-rag-variant-a.md">plan</a>)</td></tr>
+        <tr><td><code>source_id</code> fan-out length</td><td>5-chunk entity vs 50-chunk entity distinguishable by reply size</td><td>lift <code>source_id</code> out of prop bag · serve via XorMM with bucket-padded volume (Risk E)</td></tr>
+        <tr><td>AGEA-class extraction over many queries</td><td>96 % node leak at T=1000 on LightRAG · KG reconstructable</td><td>orthogonal — defended at the generation layer (PrivGemo / DP-RAG); retrieval crypto is necessary, not sufficient</td></tr>
+        <tr><td>Cross-session linkability of identical queries</td><td>same <code>ll_keywords</code> ⇒ same Compass trace ⇒ linkable</td><td>per-session HMAC perturbation on the embedding (Risk F) · composes with RemoteRAG DistanceDP</td></tr>
+        <tr><td>Search-volume leakage (request count)</td><td>idle vs heavy sessions distinguishable</td><td>request-rate padding at the runner level</td></tr>
+        <tr><td>GRAGPOISON / LogicPoison corpus integrity</td><td>poisoned relations propagate to all queries</td><td>Compass malicious-server mode (Merkle over ORAM) detects mutation · ingest happens inside CVM</td></tr>
+      </tbody>
+    </table>
+
+    <table class="spec" style="margin-top:24px;">
+      <thead>
+        <tr><th>Compromise scenario</th><th>What the attacker recovers</th><th>What stays safe</th><th>Outcome</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Untrusted storage operator alone</td><td>ORAM ciphertext + XorMM buckets + AES chunks + access timing</td><td>any key material · plaintext entities / relations / chunks · plaintext access pattern</td><td class="accent">safe</td></tr>
+        <tr><td>Malicious storage server tampering with buckets</td><td>—</td><td>Compass Merkle integrity catches mutation with overwhelming probability</td><td class="accent">safe</td></tr>
+        <tr><td>TEE seal broken (memory dump, CVM rollback)</td><td><code>tee_user_x_sk</code></td><td><code>user_x_sk</code> (never persisted) · derived OramKeys / EmmKeys (re-derived per request, then zeroized)</td><td class="accent">past sessions safe</td></tr>
+        <tr><td>Client endpoint compromise</td><td><code>user_x_sk</code> · plaintext context returned over RATLS</td><td>everything earlier in the session’s ORAM history</td><td class="accent">safe — needs both halves</td></tr>
+        <tr><td>TEE + client compromised simultaneously</td><td>both halves · all derivable keys · all stored ciphertext</td><td>—</td><td>broken (accepted in design)</td></tr>
+        <tr><td>Attacker farming AGEA-style queries through the legitimate API</td><td>reconstructed KG over many sessions</td><td>retrieval crypto · raw stored data</td><td>broken at the API layer; mitigated by the generation-side defences (out of scope here)</td></tr>
+      </tbody>
+    </table>
+
+    <p class="lede" style="margin-top:24px;">
+      <strong>Inherited weakness.</strong> CAPRISE remains distance-preserving inside the Compass block payload — defence in depth, not a substitute. The ORAM hides which block is read; CAPRISE keeps the block contents useless if the AES-GCM key is later broken. A key-holder still recovers plaintext (Vec2Text). DP-Forward composition is the next layer if that residual matters.
+    </p>
+  </section>
+
+  <!-- ═════ § 3 COMPONENTS ═════ -->
+  <section id="components">
+    <header class="section-head">
+      <div class="section-num">§03</div>
+      <h2 class="section-title">Components</h2>
+      <div class="section-meta">Variant A · 5 new + 3 changed crates</div>
+    </header>
+    <p class="lede">
+      Each card pairs <span class="mono">[method ↦ source ↦ what it secures ↦ threat ↦ overhead]</span>. New crates marked with <span class="tag crypto" style="padding:1px 6px;font-size:10px;">PLAN</span>; changed crates with <span class="tag tee" style="padding:1px 6px;font-size:10px;">EXTEND</span>.
+    </p>
+
+    <div class="cgrid">
+
+      <article class="card">
+        <span class="tag crypto">PLAN · ORAM</span>
+        <h3>ring-oram<span class="alias">crates/ring-oram</span></h3>
+        <p class="one">Ring-ORAM client + server protocol. Each bucket holds <code>Z + S</code> blocks (Z real + S dummy). Constant <strong>online</strong> bandwidth via the XOR trick; bulk cost is in the lazy-evicted path. Semi-honest mode for the default deployment; Merkle-tree mode for malicious storage server.</p>
+        <dl>
+          <dt>method</dt><dd><code>read_path</code> + <code>read_batch</code> + <code>evict</code> (deferred) + <code>flush</code> · sorted-by-path-ID stash · client position map · AES-GCM bucket encryption keyed by HKDF child</dd>
+          <dt>source</dt><dd>Ren et al. <em>Ring ORAM</em> (USENIX Security 2015) — port from <a href="https://github.com/Clive2312/compass">Clive2312/compass</a> reference</dd>
+          <dt>secures</dt><dd>access pattern over the encrypted blob store · integrity (Merkle mode)</dd>
+          <dt>threat</dt><dd>semi-honest or malicious storage server · network observer</dd>
+          <dt>cost</dt><dd><span class="overhead good">O(log N) online</span> · localhost <code>ReadPath + EvictPath</code> &lt; 50 ms target at N = 10⁵</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag crypto">PLAN · ANN</span>
+        <h3>compass-index<span class="alias">crates/compass-index</span></h3>
+        <p class="one">HNSW-over-Ring-ORAM with the three Compass optimisations: <em>Directional Neighbor Filtering</em> (quantized hints prune neighbors before ORAM read), <em>Speculative Neighbor Prefetch</em> (batched <code>ef_spec</code> candidates per round), <em>Graph-Traversal-Tailored ORAM</em> (embedding + neighbor list co-located in one block · multi-hop lazy eviction · treetop caching).</p>
+        <dl>
+          <dt>method</dt><dd>per-block payload <code>(node_id, [f32; D], [u32; M], padding)</code> CAPRISE-wrapped before AES-GCM · upper HNSW layers cached cleartext in CVM · <code>compass_init</code>-equivalent ingest converts a plain <code>hnsw_rs::Hnsw</code> into the encrypted tree</dd>
+          <dt>source</dt><dd>Zhu, Patel, Zaharia, Popa — <em>Compass</em>, OSDI 2025 (artifact <a href="https://github.com/Clive2312/compass">Clive2312/compass</a>, USENIX AE: Available + Functional + Reproduced)</dd>
+          <dt>secures</dt><dd>query content · access pattern over the index · result correctness under malicious server (Merkle)</dd>
+          <dt>threat</dt><dd>storage operator with full DB access · network observer reading any RPC trace</dd>
+          <dt>cost</dt><dd><span class="overhead good">≈ 1 s LAN / query</span> at LAION 100K · 1.1 s SIFT1M · 6.0 s TripClick 1.5M · 8.9 s MS-MARCO 8.8M (paper Tab. 3)</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag crypto">PLAN · EMM</span>
+        <h3>xormm-emm<span class="alias">crates/xormm-emm</span></h3>
+        <p class="one">Non-lossy volume-hiding encrypted multi-map. Built statically from a full key→list map; <code>get_batch</code> returns each value list with response size independent of the queried key. Used for the LightRAG adjacency lists and per-entity / per-edge <code>source_id</code> lists.</p>
+        <dl>
+          <dt>method</dt><dd>cuckoo + XOR-filter hashing · per-key PRF-derived bucket location · bucket-padded volume · 1.5–2× storage over the raw multi-map · static build, fresh-tier buffer for incremental ingest</dd>
+          <dt>source</dt><dd>Patel, Persiano, Yeo — <em>XorMM: practical volume-hiding EMM</em>, CCS 2022</dd>
+          <dt>secures</dt><dd>(1) which key was queried, (2) the size of the returned value list — i.e., per-node degree</dd>
+          <dt>threat</dt><dd>storage operator inferring entity identity from adjacency-list length · per-session linkability via repeated lookups</dd>
+          <dt>cost</dt><dd><span class="overhead good">&lt; 1 ms per get</span> at 10⁴ keys (target) · rebuild on every ≥ 1024 inserts or 5 % growth</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag tee">PLAN · facade</span>
+        <h3>light-kg-store<span class="alias">crates/light-kg-store</span></h3>
+        <p class="one">LightRAG-shaped storage facade: 3× <code>CompassIndex</code> (entities · relations · chunks) + 2× <code>XorMmClient</code> (adjacency · source_id) + 2× <code>EncryptedKv</code> (node props · edge props, both backed by Ring-ORAM) + 1× <code>AesChunkStore</code>. The single dependency for everything above it.</p>
+        <dl>
+          <dt>method</dt><dd>per-tenant key set derived once via HKDF from <code>(user_x_sk, tee_user_x_sk, tenant_id)</code> · five info strings → five child keys (Oram × 3, Emm × 2, plus the existing CAPRISE / AES pair)</dd>
+          <dt>source</dt><dd>in-house</dd>
+          <dt>secures</dt><dd>composes the three primitives behind a single LightRAG-shaped API · keeps degree out of any separate keyed store</dd>
+          <dt>threat</dt><dd>operator stitching together independent leaks across primitives</dd>
+          <dt>cost</dt><dd>~110 MB CVM state at SIFT1M-scale (3× 35.8 MB Compass + EMM stash) · 250 MB / 1.5 GB at TripClick / MS-MARCO scale (Risk C ceiling)</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag tee">PLAN · protocol</span>
+        <h3>lightrag-private<span class="alias">crates/lightrag-private</span></h3>
+        <p class="one">Rust port of LightRAG's <code>kg_query</code> / <code>_perform_kg_search</code> / <code>_apply_token_truncation</code> / <code>_merge_all_chunks</code> / <code>_build_context_str</code>. Every <code>vdb.query</code>, <code>kg.get_*</code>, <code>text_chunks_db.get_by_ids</code> call site rewired to <code>LightKgStore</code>. Faithful to upstream except: (a) degree dropped from edge sort (Risk J) · (b) <code>source_id</code> lifted out of prop bag (Risk E) · (c) per-session HMAC perturbation on query embeddings (Risk F).</p>
+        <dl>
+          <dt>method</dt><dd>five query modes — <code>local</code> · <code>global</code> · <code>hybrid</code> · <code>mix</code> · <code>naive</code> · same shape as upstream · round-robin merge bit-for-bit identical for accuracy parity</dd>
+          <dt>source</dt><dd><a href="https://github.com/HKUDS/LightRAG">HKUDS/LightRAG</a> <code>lightrag/operate.py</code> (5197 LOC) · Guo et al. EMNLP 2025</dd>
+          <dt>secures</dt><dd>upstream retrieval semantics, transposed onto the private store</dd>
+          <dt>threat</dt><dd>regressions in the port silently degrade either accuracy (Risk H) or security (Risk D / E)</dd>
+          <dt>cost</dt><dd>parity-gated: F1 within 5 % of upstream plaintext baseline on the same KG + queries (M7 acceptance)</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag tee">EXTEND · KDF</span>
+        <h3>HkdfPolicy · v2<span class="alias">crates/core :: keying</span></h3>
+        <p class="one">Extends today's two-info-string derivation (<code>caprise_seed</code> · <code>aes_chunk_key</code>) to a seven-child set: + <code>oram_keys × 3</code> + <code>emm_keys × 2</code>. Same Extract, more Expands. Versioned via <code>gelo-rag.v2.…</code>; bumping the version yields entirely fresh keys across all primitives.</p>
+        <dl>
+          <dt>method</dt><dd>one <code>Hkdf::&lt;Sha256&gt;::new(salt = tenant_id, ikm = user_x_sk ‖ tee_user_x_sk)</code> · seven <code>hk.expand("gelo-rag.v2.{role}", &amp;mut buf)</code> · each child <code>Zeroizing&lt;[u8; 32]&gt;</code></dd>
+          <dt>source</dt><dd>RustCrypto <code>hkdf 0.12</code> + <code>hmac</code> + <code>sha2</code> (already in workspace; no new crypto)</dd>
+          <dt>secures</dt><dd>cross-primitive key separation · forward security identical to today's Option 3</dd>
+          <dt>threat</dt><dd>downgrade to v1 — pinned in <code>scheme_identity</code> baked into <code>REPORT_DATA[32..64]</code></dd>
+          <dt>cost</dt><dd><span class="overhead good">µs per call</span> · trivially in the request hot path</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag tee">EXTEND · service</span>
+        <h3>LightRagTwoPartyService<span class="alias">gelo_rag :: lightrag_two_party_service</span></h3>
+        <p class="one">Mirror of today's <code>GeloRagTwoPartyService</code>. <strong>Holds no per-tenant scheme at idle.</strong> Every <code>ingest_documents_for</code> / <code>kg_query_for</code> derives all seven child keys via HKDF v2, runs the request, zeroizes at return. Per-tenant <code>tee_user_x_sk</code> table identical to today.</p>
+        <dl>
+          <dt>method</dt><dd><code>kg_query_for(tenant, user_x_sk, query, mode, hl, ll, params) → QueryContextResult</code> · same loud-failure contract (<code>TwoPartyError::UnknownTenant</code> → HTTP 410) on CVM restart</dd>
+          <dt>source</dt><dd>in-house · realises design-doc Variant A composed with two-party KDF Option 3</dd>
+          <dt>secures</dt><dd>forward security · cross-tenant isolation · all of §02's defences in a single request handler</dd>
+          <dt>threat</dt><dd>untrusted cloud operator · breaks only under simultaneous TEE + client compromise</dd>
+          <dt>cost</dt><dd>HKDF + Compass + XorMM + AES per request · ≈ 3 s end-to-end at SIFT1M-scale (paper-projected)</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag tee">EXTEND · runner</span>
+        <h3>gelo-snp-runner · /lightrag<span class="alias">crates/gelo-snp-runner</span></h3>
+        <p class="one">New axum routes alongside the existing CAPRISE surface — <code>POST /lightrag/ingest</code>, <code>POST /lightrag/query</code>, <code>GET /lightrag/attest</code>, plus shared <code>/health</code>. <code>SNP_MODE</code> fail-closed unchanged; RATLS unchanged. Adds request-rate padding to close the search-volume side channel.</p>
+        <dl>
+          <dt>method</dt><dd>axum handlers binding into <code>LightRagTwoPartyService</code> · request body carries <code>(tenant_id, user_x_sk, query, mode, hl_keywords, ll_keywords, params)</code> over RATLS</dd>
+          <dt>source</dt><dd>extends today's <code>gelo-snp-runner</code> · same SEV-SNP attestation issuer in <code>gelo-tee-sev-snp</code></dd>
+          <dt>secures</dt><dd>operational seam · attestation pin covers new <code>scheme_identity</code> (LightRAG params + Compass params + XorMM params)</dd>
+          <dt>threat</dt><dd>operator MITM defeated by RATLS · stale-build impersonation defeated by attestation pin</dd>
+          <dt>cost</dt><dd>negligible — just HTTP plumbing</dd>
+        </dl>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ═════ § 4 COMPUTE FLOW ═════ -->
+  <section id="flow">
+    <header class="section-head">
+      <div class="section-num">§04</div>
+      <h2 class="section-title">Compute flow &amp; trust boundaries</h2>
+      <div class="section-meta"><code>kg_query</code> · hybrid mode · ingest path mirrors with builds instead of reads</div>
+    </header>
+
+    <div class="diagram-frame">
+      <div class="diagram-cap">
+        <span class="l">FIG. 04 — LightRAG-private <code>kg_query</code> path · 3× Compass + 2× XorMM + AES-GCM chunks</span>
+        <span>solid red = trusted secret · solid teal = encrypted RPC over wire · purple = ORAM/EMM access · dashed red = trust boundary</span>
+      </div>
+      <svg class="flow" viewBox="0 0 1320 620" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="ahgr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
+          </marker>
+        </defs>
+        <!-- ZONES -->
+        <rect x="0"    y="40"  width="220"  height="560" class="zone-band zone-band-client"/>
+        <rect x="220"  y="40"  width="640"  height="560" class="zone-band zone-band-tee"/>
+        <rect x="860"  y="40"  width="460"  height="560" class="zone-band zone-band-storage"/>
+        <text x="20"  y="62"  class="zone-label">Client (thin)</text>
+        <text x="240" y="62"  class="zone-label">TEE (SEV-SNP CVM)</text>
+        <text x="880" y="62"  class="zone-label">Storage server (untrusted blob store)</text>
+        <line x1="220" y1="40" x2="220" y2="600" class="boundary"/>
+        <line x1="860" y1="40" x2="860" y2="600" class="boundary"/>
+        <text x="224" y="596" class="boundary-label">RATLS · TLS 1.3 ECDHE · request-rate padded</text>
+        <text x="864" y="596" class="boundary-label">HTTP · Ring-ORAM RPC · XorMM lookups · AES-GCM blobs</text>
+
+        <!-- CLIENT -->
+        <rect x="20" y="160" width="180" height="70" class="box box-strong box-client"/>
+        <text x="34" y="180" class="box-label">① Request</text>
+        <text x="34" y="196" class="box-sub">tenant_id · user_x_sk</text>
+        <text x="34" y="212" class="box-mono">query · mode · top_k</text>
+        <text x="34" y="226" class="box-mono">hl_keywords · ll_keywords</text>
+
+        <rect x="20" y="430" width="180" height="60" class="box box-client"/>
+        <text x="34" y="450" class="box-label">⑨ Receive context</text>
+        <text x="34" y="466" class="box-sub">assembled prompt over RATLS</text>
+        <text x="34" y="482" class="box-mono">no client crypto</text>
+
+        <!-- TEE PIPELINE (left column) -->
+        <rect x="240" y="90" width="200" height="50" class="box box-tee box-strong"/>
+        <text x="254" y="110" class="box-label">② HKDF v2</text>
+        <text x="254" y="126" class="box-sub">→ 7 child keys · zeroized at return</text>
+
+        <rect x="240" y="160" width="200" height="50" class="box box-tee"/>
+        <text x="254" y="180" class="box-label">③ Embed (GELO)</text>
+        <text x="254" y="196" class="box-sub">q · ll · hl in one batch</text>
+
+        <rect x="240" y="240" width="200" height="50" class="box box-tee"/>
+        <text x="254" y="260" class="box-label">④ Per-session perturb</text>
+        <text x="254" y="276" class="box-sub">HMAC + optional DistanceDP</text>
+
+        <rect x="240" y="320" width="200" height="50" class="box box-tee"/>
+        <text x="254" y="340" class="box-label">⑦ Merge + truncate</text>
+        <text x="254" y="356" class="box-sub">round-robin · token budget</text>
+
+        <rect x="240" y="390" width="200" height="50" class="box box-tee"/>
+        <text x="254" y="410" class="box-label">⑧ Assemble context</text>
+        <text x="254" y="426" class="box-sub">entities + relations + chunks → prompt</text>
+
+        <!-- TEE PIPELINE (middle column - clients) -->
+        <rect x="495" y="90" width="170" height="40" class="box box-tee" style="fill:#f0e2c4;"/>
+        <text x="509" y="113" class="box-label">⑤a Compass · entities</text>
+
+        <rect x="495" y="140" width="170" height="40" class="box box-tee" style="fill:#f0e2c4;"/>
+        <text x="509" y="163" class="box-label">⑤b Compass · relations</text>
+
+        <rect x="495" y="190" width="170" height="40" class="box box-tee" style="fill:#f0e2c4;"/>
+        <text x="509" y="213" class="box-label">⑤c Compass · chunks (mix)</text>
+
+        <rect x="495" y="260" width="170" height="40" class="box box-tee" style="fill:#ede0d9;"/>
+        <text x="509" y="283" class="box-label">⑤d ORAM · node/edge KV</text>
+
+        <rect x="495" y="310" width="170" height="40" class="box box-tee" style="fill:#e8d8e8;"/>
+        <text x="509" y="333" class="box-label">⑥a XorMM · adjacency</text>
+
+        <rect x="495" y="360" width="170" height="40" class="box box-tee" style="fill:#e8d8e8;"/>
+        <text x="509" y="383" class="box-label">⑥b XorMM · source_id</text>
+
+        <rect x="495" y="420" width="170" height="40" class="box box-tee" style="fill:#ede0d9;"/>
+        <text x="509" y="443" class="box-label">⑥c AES-GCM · chunks</text>
+
+        <rect x="495" y="500" width="170" height="40" class="box box-tee" style="fill:#f8f1de;"/>
+        <text x="509" y="523" class="box-label">tee_user_x_sk table</text>
+
+        <!-- STORAGE -->
+        <rect x="880" y="90" width="200" height="60" class="box box-storage"/>
+        <text x="894" y="110" class="box-label">enc. HNSW · entities</text>
+        <text x="894" y="128" class="box-sub">Ring-ORAM tree</text>
+        <text x="894" y="144" class="box-mono">~2N buckets · Merkle</text>
+
+        <rect x="880" y="160" width="200" height="60" class="box box-storage"/>
+        <text x="894" y="180" class="box-label">enc. HNSW · relations</text>
+        <text x="894" y="198" class="box-sub">Ring-ORAM tree</text>
+        <text x="894" y="214" class="box-mono">~2N buckets · Merkle</text>
+
+        <rect x="880" y="230" width="200" height="60" class="box box-storage"/>
+        <text x="894" y="250" class="box-label">enc. HNSW · chunks</text>
+        <text x="894" y="268" class="box-sub">Ring-ORAM tree</text>
+        <text x="894" y="284" class="box-mono">~2N buckets · Merkle</text>
+
+        <rect x="880" y="300" width="200" height="50" class="box box-storage"/>
+        <text x="894" y="320" class="box-label">enc. KV · node / edge props</text>
+        <text x="894" y="336" class="box-sub">Ring-ORAM-backed</text>
+
+        <rect x="880" y="360" width="200" height="50" class="box box-storage"/>
+        <text x="894" y="380" class="box-label">XorMM · adjacency</text>
+        <text x="894" y="396" class="box-sub">volume-padded buckets</text>
+
+        <rect x="880" y="420" width="200" height="50" class="box box-storage"/>
+        <text x="894" y="440" class="box-label">XorMM · source_id</text>
+        <text x="894" y="456" class="box-sub">volume-padded buckets</text>
+
+        <rect x="880" y="480" width="200" height="50" class="box box-storage"/>
+        <text x="894" y="500" class="box-label">AES-GCM chunk blobs</text>
+        <text x="894" y="516" class="box-sub">(chunk_id, nonce, ct)</text>
+
+        <!-- ARROWS -->
+        <path d="M200 195 L240 110" class="arrow arrow-secret" marker-end="url(#ahgr)"/>
+        <text x="120" y="135" class="arrow-label secret">tenant + user_x_sk</text>
+
+        <!-- HKDF -> embed -> perturb -->
+        <path d="M340 140 L340 160" class="arrow arrow-secret" marker-end="url(#ahgr)"/>
+        <path d="M340 210 L340 240" class="arrow arrow-secret" marker-end="url(#ahgr)"/>
+
+        <!-- perturb -> compass clients -->
+        <path d="M440 250 L495 110" class="arrow arrow-secret" marker-end="url(#ahgr)"/>
+        <path d="M440 260 L495 160" class="arrow arrow-secret" marker-end="url(#ahgr)"/>
+        <path d="M440 270 L495 210" class="arrow arrow-secret" marker-end="url(#ahgr)"/>
+
+        <!-- compass clients to storage trees -->
+        <path d="M665 110 L880 120" class="arrow arrow-cipher" marker-end="url(#ahgr)"/>
+        <path d="M665 160 L880 190" class="arrow arrow-cipher" marker-end="url(#ahgr)"/>
+        <path d="M665 210 L880 260" class="arrow arrow-cipher" marker-end="url(#ahgr)"/>
+        <text x="700" y="100" class="arrow-label cipher">Ring-ORAM read</text>
+
+        <!-- compass results back -->
+        <path d="M880 130 L665 130" class="arrow arrow-cipher" marker-end="url(#ahgr)"/>
+        <path d="M880 200 L665 180" class="arrow arrow-cipher" marker-end="url(#ahgr)"/>
+        <path d="M880 270 L665 230" class="arrow arrow-cipher" marker-end="url(#ahgr)"/>
+
+        <!-- KV reads -->
+        <path d="M665 280 L880 320" class="arrow arrow-cipher" marker-end="url(#ahgr)"/>
+        <path d="M880 340 L665 290" class="arrow arrow-cipher" marker-end="url(#ahgr)"/>
+        <text x="700" y="266" class="arrow-label cipher">batched ORAM</text>
+
+        <!-- XorMM -->
+        <path d="M665 330 L880 380" class="arrow arrow-cipher" marker-end="url(#ahgr)"/>
+        <path d="M880 400 L665 340" class="arrow arrow-cipher" marker-end="url(#ahgr)"/>
+        <text x="700" y="316" class="arrow-label cipher">XorMM lookup</text>
+
+        <path d="M665 380 L880 440" class="arrow arrow-cipher" marker-end="url(#ahgr)"/>
+        <path d="M880 460 L665 390" class="arrow arrow-cipher" marker-end="url(#ahgr)"/>
+
+        <!-- AES chunks -->
+        <path d="M665 440 L880 500" class="arrow arrow-cipher" marker-end="url(#ahgr)"/>
+        <path d="M880 520 L665 450" class="arrow arrow-cipher" marker-end="url(#ahgr)"/>
+        <text x="700" y="490" class="arrow-label cipher">AES-GCM fetch</text>
+
+        <!-- merge + assemble -->
+        <path d="M495 130 L440 320" class="arrow arrow-secret" marker-end="url(#ahgr)"/>
+        <path d="M495 180 L440 330" class="arrow arrow-secret" marker-end="url(#ahgr)"/>
+        <path d="M495 290 L440 340" class="arrow arrow-secret" marker-end="url(#ahgr)"/>
+        <path d="M495 340 L440 350" class="arrow arrow-secret" marker-end="url(#ahgr)"/>
+        <path d="M495 440 L440 400" class="arrow arrow-secret" marker-end="url(#ahgr)"/>
+
+        <path d="M340 370 L340 390" class="arrow arrow-secret" marker-end="url(#ahgr)"/>
+        <path d="M240 415 L200 445" class="arrow arrow-secret" marker-end="url(#ahgr)"/>
+        <text x="50"  y="420" class="arrow-label secret">plain context over RATLS</text>
+
+        <!-- ATTEST -->
+        <path d="M240 70 L200 100" class="arrow arrow-attest" marker-end="url(#ahgr)"/>
+        <text x="80" y="92" class="arrow-label attest">SEV-SNP report · pinned scheme_identity</text>
+      </svg>
+    </div>
+
+    <table class="spec">
+      <thead>
+        <tr><th style="width:32px">#</th><th>Step</th><th>Who runs it</th><th>What crosses the boundary</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="num">①</td><td>Client opens RATLS, verifies SEV-SNP attestation against pinned <code>scheme_identity</code> (covers HkdfPolicy v2 + LightRAG params + CompassParams + XorMmParams), sends <code>{tenant_id, user_x_sk, query, mode, hl_keywords, ll_keywords, params}</code></td><td>Client → TEE</td><td>plaintext text + 32B secret over RATLS</td></tr>
+        <tr><td class="num">②</td><td>TEE looks up (or creates) <code>tee_user_x_sk[tenant]</code>; runs <code>HkdfPolicy::V2.derive(...) → (caprise_seed, aes_chunk_key, oram_keys × 3, emm_keys × 2)</code></td><td>TEE</td><td>—</td></tr>
+        <tr><td class="num">③</td><td>TEE embeds <code>(query, ll_keywords, hl_keywords)</code> in one GELO-masked batch (see <a href="embedding.html">embedding page</a>)</td><td>TEE (+ GPU under mask)</td><td>masked activations across PCIe</td></tr>
+        <tr><td class="num">④</td><td>TEE applies per-session HMAC perturbation (and optionally DistanceDP) to each embedding to break cross-session linkability</td><td>TEE</td><td>—</td></tr>
+        <tr><td class="num">⑤</td><td>Three Compass searches in parallel: <code>entities_idx.search(ll_emb)</code>, <code>relations_idx.search(hl_emb)</code>, <code>chunks_idx.search(q_emb)</code> (mix mode only). Each is a Ring-ORAM-mediated HNSW walk with Directional Neighbor Filtering + Speculative Prefetch — see paper §4 / our plan §3. KV reads on node / edge prop bags use the same ORAM controller (separate tree, same construction)</td><td>TEE ↔ storage</td><td>Ring-ORAM ReadPath RPCs · XOR-trick responses · per-bucket Merkle proofs</td></tr>
+        <tr><td class="num">⑥</td><td>Adjacency expansion (local-mode 1-hop): <code>adjacency.get_batch(entity_names)</code> over XorMM · then <code>source_id</code> fan-out via <code>src_chunks.get_batch(...)</code> over XorMM · then chunk bodies via <code>chunks.get_batch(chunk_ids)</code> AES-GCM blobs</td><td>TEE ↔ storage</td><td>XorMM lookups (constant-volume) · AES-GCM blob fetches</td></tr>
+        <tr><td class="num">⑦</td><td>Round-robin merge across vector_chunks / entity_chunks / relation_chunks · token-budget truncation per <code>QueryParam</code> (constant time over the candidate list)</td><td>TEE</td><td>—</td></tr>
+        <tr><td class="num">⑧</td><td>Assemble the LightRAG context string (entities + relations + chunks + reference list) and structured <code>QueryContextResult</code></td><td>TEE</td><td>—</td></tr>
+        <tr><td class="num">⑨</td><td>TEE deferred-flushes any pending Compass evictions (off the user's critical path); zeroizes the seven child keys and the incoming <code>user_x_sk</code>; returns the assembled context over the same RATLS session</td><td>TEE → Client / TEE ↔ storage</td><td>plain context over RATLS · eviction-path RPCs to storage in the background</td></tr>
+      </tbody>
+    </table>
+
+    <p class="lede" style="margin-top:24px;">
+      <strong>What the storage server sees, end-to-end.</strong> A stream of Ring-ORAM <code>read_path</code> + <code>write_path</code> RPCs against three trees plus two KV trees, plus XorMM bucket reads against two static EMMs, plus AES-GCM blob fetches. Path IDs are uniform-random by construction. Bucket sizes are uniform per-tree. XorMM response sizes are uniform per-EMM. Request rate is constant per RATLS session. Across two distinct queries by the same tenant, the server's view is computationally indistinguishable.
+    </p>
+
+    <p class="lede" style="margin-top:12px;">
+      <strong>Note: ingest path.</strong> Same trust geometry, opposite direction — client streams documents + extracted KG over RATLS; TEE embeds, builds a plain <code>hnsw_rs::Hnsw</code> in encrypted CVM RAM, runs <code>CompassIndex::from_plaintext_hnsw</code>, pushes the encrypted ORAM tree to storage, builds and pushes the XorMM EMMs, writes the AES-GCM chunk blobs, then zeroizes the plaintext working set. Heavier than query — expect minutes per 100K docs — but a batch operation, not on any user-perceived path.
+    </p>
+  </section>
+
+</div>
+</body>
+</html>
