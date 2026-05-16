@@ -850,17 +850,22 @@ critical path. DistanceDP adds another ~µs when enabled.
 
 ## 9. Open questions to resolve before M1
 
-1. **Ring-ORAM block size.** Compass uses 1 KB-4 KB blocks. Our HNSW
-   nodes at D=768, M=16 fit in ~3.2 KB raw + ~50 B metadata. Decide:
-   pad up to 4 KB blocks (fits MS-MARCO-class) or use 2 KB blocks with
-   larger M trimmed (cheaper for 10⁴-10⁵ corpora). Default proposal:
-   2 KB blocks, M=12, D=768; tune per tenant.
-2. **AES-GCM nonce reuse on bucket rewrites.** Ring-ORAM rewrites every
-   accessed bucket; we cannot have a deterministic nonce or it leaks
-   access pattern. The standard pattern is `nonce = bucket_id ‖
-   write_counter`; write_counter is on the server, but the client
-   verifies via Merkle. Confirm the Compass impl does exactly this;
-   port it.
+1. ~~**Ring-ORAM block size.**~~ **Decided (2026-05-16):** 2 KB blocks,
+   M=12, D=768 as the v1 default. Encoded in
+   `rag_core::keying::CompassParams::block_bytes` (2048) and
+   `hnsw_m` (12); pinned in the V2 `scheme_identity`. Fits LAION /
+   SIFT1M-scale corpora without padding waste; TripClick / MS-MARCO
+   scale will require a bump (~3.5 KB) and a re-attestation.
+2. ~~**AES-GCM nonce reuse on bucket rewrites.**~~ **Decided
+   (2026-05-16):** `nonce[0..8] = bucket_id u64-LE; nonce[8..12] =
+   write_counter u32-LE` for the 12-byte AES-GCM nonce. The
+   write-counter is server-side metadata bound into each bucket's
+   Merkle node so a malicious server cannot replay an old counter
+   without detection (caught at M4 when Merkle lands). Semi-honest
+   mode trusts the counter is monotone; malicious mode verifies it.
+   This is the canonical pattern in the Ring-ORAM literature; the
+   `Clive2312/compass` C++ reference uses an equivalent scheme (to
+   be confirmed bit-for-bit at the M4 parity gate).
 3. **Multi-tenant Compass-index sharing.** Today's `GeloRagTwoPartyService`
    shares one embedder across tenants and isolates only the
    CAPRISE/AES keys. Compass needs per-tenant position maps and stash
