@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use thiserror::Error;
 
 use crate::codec::{CodecError, deserialise_node, serialise_node};
+use crate::hints::NodeHints;
 use crate::hnsw_plain::{PlainHnsw, PlainHnswParams};
 
 #[derive(Debug, Error)]
@@ -32,6 +33,12 @@ pub struct CompassIndexParams {
     /// Greedy-search candidate-list width at layer 0. Affects recall
     /// and the number of ORAM reads per query.
     pub ef_search: usize,
+    /// Directional Neighbor Filtering budget (Compass §4.5). For each
+    /// visited layer-0 node with M neighbours, only fetch the top
+    /// `ef_n` neighbours' full blocks via ORAM. Set to `usize::MAX`
+    /// to disable filtering (M3 strawman behaviour). Paper default:
+    /// 4 — see `CompassParams::hnsw_ef_n`.
+    pub ef_n: usize,
 }
 
 impl Default for CompassIndexParams {
@@ -52,6 +59,7 @@ impl Default for CompassIndexParams {
                 treetop_levels: 4,
             },
             ef_search: 64,
+            ef_n: 4,
         }
     }
 }
@@ -78,6 +86,15 @@ pub struct CompassIndex<B: BlockBackend> {
     /// adjacency + embeddings at layer `l`. Bottom layer (0) is in
     /// ORAM and not present here.
     pub(crate) upper_layers: Vec<UpperLayer>,
+    /// Directional hints for layer-0 nodes (Compass §4.5).
+    /// `layer0_hints[node_id]` carries one packed direction per
+    /// neighbour, in the same order as the neighbour list. Cached
+    /// cleartext in CVM RAM.
+    pub(crate) layer0_hints: Vec<NodeHints>,
+    /// Telemetry: count of ORAM block reads served via
+    /// `read_layer0_node`. Used by tests and benches to measure the
+    /// effect of directional filtering. Wraps after `2^64` reads.
+    pub(crate) layer0_read_count: u64,
 }
 
 impl CompassIndex<InMemoryBlockBackend> {
@@ -100,8 +117,9 @@ impl CompassIndex<InMemoryBlockBackend> {
         let entry = hnsw.entry;
         let top_layer = hnsw.top_layer;
 
-        // Cache upper layers cleartext.
+        // Cache upper layers + directional hints cleartext.
         let upper_layers = build_upper_layer_cache(&hnsw);
+        let layer0_hints = hnsw.layer0_directional_hints();
 
         // Push every layer-0 node into ORAM as a fixed-size block.
         let blocks = hnsw.layer0_blocks();
@@ -125,6 +143,8 @@ impl CompassIndex<InMemoryBlockBackend> {
             entry: BlockId(entry),
             top_layer,
             upper_layers,
+            layer0_hints,
+            layer0_read_count: 0,
         })
     }
 }
@@ -167,7 +187,9 @@ impl<B: BlockBackend> CompassIndex<B> {
         crate::search::layered_search(self, query, k)
     }
 
-    /// Internal accessor: decode block `id` from the ORAM.
+    /// Internal accessor: decode block `id` from the ORAM. Bumps the
+    /// telemetry counter used by tests to measure the directional
+    /// filter's effect.
     pub(crate) fn read_layer0_node(
         &mut self,
         id: BlockId,
@@ -178,7 +200,20 @@ impl<B: BlockBackend> CompassIndex<B> {
             self.params.hnsw.dim,
             self.params.hnsw.max_neighbors_l0,
         )?;
+        self.layer0_read_count += 1;
         Ok(node)
+    }
+
+    /// Telemetry: total layer-0 ORAM block reads since construction.
+    /// Used by the directional-filter effectiveness test.
+    pub fn layer0_read_count(&self) -> u64 {
+        self.layer0_read_count
+    }
+
+    /// Internal accessor: hints for layer-0 node `id`. Read-only
+    /// view; the directional filter consumes this during beam search.
+    pub(crate) fn layer0_node_hints(&self, id: u32) -> &NodeHints {
+        &self.layer0_hints[id as usize]
     }
 
     /// Multi-hop lazy-eviction guard (Compass §4.7). RAII: enables

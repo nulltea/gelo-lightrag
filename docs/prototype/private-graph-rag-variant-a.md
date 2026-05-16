@@ -871,13 +871,17 @@ critical path. DistanceDP adds another ~µs when enabled.
    CAPRISE/AES keys. Compass needs per-tenant position maps and stash
    *inside* the TEE; that's 16-108 MB per tenant. Set a per-CVM tenant
    cap; allow horizontal scale by sharding tenants across CVMs.
-4. **What does the storage server actually look like?** Object store
-   (S3-compatible) is the simplest match for Ring-ORAM's
-   write-mostly-buckets pattern, but our `gelo-snp-runner` only
-   currently speaks HTTP. Decide: a thin REST server in the same VM
-   as `gelo-snp-runner`, or a real S3 client inside the CVM. Default
-   proposal: a thin REST server, same hosting machine, different
-   process boundary, so we keep the operational story simple.
+4. ~~**What does the storage server actually look like?**~~ **Parked
+   (2026-05-16):** `InMemoryBlockBackend` remains the only backend
+   through M4. Every M4 sub-milestone (M4.1 lazy eviction, M4.2
+   treetop, M4.4 directional filter, M4.5 speculative prefetch,
+   M4.6 layered HNSW) is testable end-to-end without leaving the
+   process. **M4.3 (batched ORAM reads) is therefore deferred to
+   M5** — batching only buys round-trips on a networked backend; on
+   the in-memory backend it's a refactor without measurable benefit.
+   The full backend-shape decision (S3 vs REST vs in-process,
+   async vs sync trait) lives at M5 when the deployment shape is
+   actually wired up.
 5. **Where does the plaintext KG come from?** For v1 we accept it as
    an input to `ingest_documents` (i.e., entity extraction is done
    *before* the CVM call). Long-term, we want the extraction LLM to

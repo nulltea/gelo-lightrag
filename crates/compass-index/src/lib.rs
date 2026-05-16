@@ -31,6 +31,7 @@
 //! re-attestation.
 
 mod codec;
+mod hints;
 mod hnsw_plain;
 mod index;
 mod search;

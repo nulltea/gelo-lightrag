@@ -17,6 +17,7 @@ use ring_oram::{BlockBackend, BlockId};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashSet};
 
+use crate::hints::score_packed;
 use crate::hnsw_plain::cosine_distance;
 use crate::index::{CompassIndex, CompassIndexError};
 
@@ -102,6 +103,8 @@ pub(crate) fn layered_search<B: BlockBackend>(
     let mut visited: HashSet<u32> = HashSet::new();
     visited.insert(current);
 
+    let ef_n = index.params.ef_n;
+
     while let Some(Reverse(c)) = candidates.pop() {
         if top_k.len() >= ef {
             let farthest = top_k.peek().expect("non-empty top_k").dist;
@@ -110,7 +113,33 @@ pub(crate) fn layered_search<B: BlockBackend>(
             }
         }
         let node = index.read_layer0_node(BlockId(c.id))?;
-        for &nb_id in &node.neighbors {
+
+        // Directional Neighbor Filtering (Compass §4.5). Pick top
+        // `ef_n` neighbours by quantised-hint dot product with the
+        // query direction from `c`. Only those get ORAM-fetched.
+        let candidates_for_fetch: Vec<u32> = if ef_n >= node.neighbors.len() {
+            node.neighbors.clone()
+        } else {
+            let q_dir: Vec<f32> = query
+                .iter()
+                .zip(node.embedding.iter())
+                .map(|(q, e)| q - e)
+                .collect();
+            let hints = index.layer0_node_hints(c.id);
+            let mut scored: Vec<(f32, u32)> = node
+                .neighbors
+                .iter()
+                .zip(hints.packed_hints.iter())
+                .map(|(&nb_id, packed)| (score_packed(packed, &q_dir), nb_id))
+                .collect();
+            // Higher score = better aligned with query direction.
+            scored.sort_by(|a, b| {
+                b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            scored.into_iter().take(ef_n).map(|(_, id)| id).collect()
+        };
+
+        for nb_id in candidates_for_fetch {
             if !visited.insert(nb_id) {
                 continue;
             }

@@ -26,6 +26,7 @@ use rand_chacha::ChaCha20Rng;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use crate::codec::NodeBlock;
+use crate::hints::{NodeHints, pack_direction};
 
 /// HNSW build configuration. Derived from
 /// `rag_core::keying::CompassParams` defaults at the
@@ -276,6 +277,33 @@ impl PlainHnsw {
             .map(|(emb, nb)| NodeBlock {
                 embedding: emb.clone(),
                 neighbors: nb.clone(),
+            })
+            .collect()
+    }
+
+    /// Compute the directional hints for every layer-0 node. The
+    /// hint for `(x, i)` is the quantised unit vector from `x` toward
+    /// its `i`-th neighbour. Called once at index build time;
+    /// `CompassIndex` then holds the result cleartext.
+    pub(crate) fn layer0_directional_hints(&self) -> Vec<NodeHints> {
+        self.embeddings
+            .iter()
+            .enumerate()
+            .map(|(x_id, x_emb)| {
+                let neighbours = &self.layer0[x_id];
+                let packed: Vec<Vec<u8>> = neighbours
+                    .iter()
+                    .map(|&n_id| {
+                        let n_emb = &self.embeddings[n_id as usize];
+                        let dir: Vec<f32> = n_emb
+                            .iter()
+                            .zip(x_emb.iter())
+                            .map(|(n, x)| n - x)
+                            .collect();
+                        pack_direction(&dir)
+                    })
+                    .collect();
+                NodeHints { packed_hints: packed }
             })
             .collect()
     }

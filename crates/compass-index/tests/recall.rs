@@ -80,6 +80,7 @@ fn compass_search_recall_at_1k_vectors_is_at_least_90_percent() {
             treetop_levels: 4,
         },
         ef_search: 64,
+        ef_n: 4,
     };
 
     let mut index = CompassIndex::from_plaintext_corpus(corpus.clone(), params).expect("build ok");
@@ -99,6 +100,90 @@ fn compass_search_recall_at_1k_vectors_is_at_least_90_percent() {
     assert!(
         mean_recall >= 0.90,
         "recall {mean_recall:.3} < 0.90 — M3 strawman regression"
+    );
+}
+
+#[test]
+fn directional_filter_reduces_layer0_reads_without_breaking_recall() {
+    // Two indices on identical corpora: one with ef_n = max_neighbors_l0
+    // (filter effectively off), one with ef_n = 4 (paper default).
+    // Filtered index must do *strictly fewer* layer-0 ORAM reads,
+    // while keeping recall close.
+    let mut rng = ChaCha20Rng::from_seed([0x99; 32]);
+    let n = 256usize;
+    let dim = 32;
+    let k = 5;
+    let q_count = 10;
+
+    let corpus: Vec<Vec<f32>> = (0..n).map(|_| random_unit_vec(&mut rng, dim)).collect();
+
+    let base_oram = RingOramParams {
+        z: 4,
+        s: 5,
+        a: 3,
+        block_bytes: 320,
+        n_leaves: 512,
+        treetop_levels: 2,
+    };
+
+    let unfiltered = CompassIndexParams {
+        hnsw: PlainHnswParams::paper_defaults(dim, 16),
+        oram: base_oram,
+        ef_search: 32,
+        ef_n: usize::MAX, // disable directional filter
+    };
+    let filtered = CompassIndexParams {
+        hnsw: PlainHnswParams::paper_defaults(dim, 16),
+        oram: base_oram,
+        ef_search: 32,
+        ef_n: 4,
+    };
+
+    let mut idx_unfilt = CompassIndex::from_plaintext_corpus(corpus.clone(), unfiltered)
+        .expect("build ok");
+    let mut idx_filt = CompassIndex::from_plaintext_corpus(corpus.clone(), filtered)
+        .expect("build ok");
+
+    let mut reads_unfilt_total = 0u64;
+    let mut reads_filt_total = 0u64;
+    let mut recall_filt = 0.0f32;
+    let mut recall_unfilt = 0.0f32;
+
+    for _ in 0..q_count {
+        let query = random_unit_vec(&mut rng, dim);
+        let oracle: std::collections::HashSet<u32> =
+            brute_force_topk(&query, &corpus, k).into_iter().collect();
+
+        let before_unfilt = idx_unfilt.layer0_read_count();
+        let res_unfilt = idx_unfilt.search(&query, k).unwrap();
+        reads_unfilt_total += idx_unfilt.layer0_read_count() - before_unfilt;
+        recall_unfilt += res_unfilt.iter().filter(|id| oracle.contains(id)).count() as f32
+            / k as f32;
+
+        let before_filt = idx_filt.layer0_read_count();
+        let res_filt = idx_filt.search(&query, k).unwrap();
+        reads_filt_total += idx_filt.layer0_read_count() - before_filt;
+        recall_filt += res_filt.iter().filter(|id| oracle.contains(id)).count() as f32
+            / k as f32;
+    }
+    let recall_filt = recall_filt / q_count as f32;
+    let recall_unfilt = recall_unfilt / q_count as f32;
+
+    println!(
+        "filter off: {reads_unfilt_total} reads, recall@{k}={recall_unfilt:.3}\n\
+         filter on:  {reads_filt_total} reads, recall@{k}={recall_filt:.3}"
+    );
+
+    assert!(
+        reads_filt_total < reads_unfilt_total,
+        "filter did not reduce reads: filt={reads_filt_total} unfilt={reads_unfilt_total}"
+    );
+    // Filtered recall should stay within 15% of unfiltered. The
+    // strawman 256-vector corpus is too small to expect tighter; the
+    // 1K-vector test below pins recall absolutely.
+    assert!(
+        recall_filt >= recall_unfilt - 0.15,
+        "filter degraded recall too far: filt={recall_filt:.3} unfilt={recall_unfilt:.3}"
     );
 }
 
@@ -123,6 +208,7 @@ fn round_trip_single_query() {
             treetop_levels: 2,
         },
         ef_search: 4,
+        ef_n: usize::MAX, // tiny corpus, disable filtering
     };
     let mut index = CompassIndex::from_plaintext_corpus(corpus, params).expect("build ok");
     let got = index.search(&[1.0, 0.0, 0.0, 0.0], 1).expect("search ok");
