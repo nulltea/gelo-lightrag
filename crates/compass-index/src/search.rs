@@ -85,9 +85,18 @@ async fn layered_search_inner<B: BlockBackend>(
 ) -> Result<Vec<u32>, CompassIndexError> {
     // ─── 1. Upper-layer descent (cleartext) ────────────────────────
     let mut current = index.entry.0;
-    let entry_emb = upper_layer_embedding(index, current, index.top_layer)
-        .expect("entry must exist at top_layer");
-    let mut cur_dist = cosine_distance(query, entry_emb);
+    // Small-corpus / lucky-level-distribution case: every node ends up
+    // at layer 0, no upper-layer cache to descend through. Fetch the
+    // entry's embedding via one ORAM read; the beam search below then
+    // does the work.
+    let mut cur_dist = if index.top_layer == 0 {
+        let entry_node = index.read_layer0_node(BlockId(current)).await?;
+        cosine_distance(query, &entry_node.embedding)
+    } else {
+        let entry_emb = upper_layer_embedding(index, current, index.top_layer)
+            .expect("entry must exist at top_layer when top_layer > 0");
+        cosine_distance(query, entry_emb)
+    };
 
     // Walk down through all upper layers (top_layer, top_layer-1, …, 1).
     for l in (1..=index.top_layer).rev() {

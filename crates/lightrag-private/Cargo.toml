@@ -14,10 +14,12 @@ async-trait.workspace = true
 rag_core = { path = "../core", package = "core" }
 hmac.workspace = true
 light-kg-store = { path = "../light-kg-store" }
+rand.workspace = true
 ring-oram = { path = "../ring-oram" }
 serde.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 xormm-emm = { path = "../xormm-emm" }
 zeroize.workspace = true
 

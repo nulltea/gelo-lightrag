@@ -29,6 +29,8 @@ all-issuers = ["snp", "mock"]
 anyhow.workspace = true
 gelo-rag = { path = "../gelo-rag", features = ["snp"] }
 gelo-reranker = { path = "../gelo-reranker" }
+lightrag-private = { path = "../lightrag-private" }
+light-kg-store = { path = "../light-kg-store" }
 axum.workspace = true
 base64.workspace = true
 gelo-embedder = { path = "../gelo-embedder" }

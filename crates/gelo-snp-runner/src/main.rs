@@ -54,9 +54,11 @@ mod compass;
 mod config;
 mod evidence;
 mod issuer;
+mod lightrag_routes;
 
 use config::RunnerConfig;
 use evidence::{IssuerHandle, build_evidence};
+use lightrag_routes::LightRagServiceHandle;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -103,6 +105,7 @@ async fn main() -> Result<()> {
         // surfaces 501 until R6/M8 wires a concrete model loader. The
         // route is registered so clients can probe for support.
         reranker: None,
+        lightrag: Arc::new(lightrag_private::LightRagTwoPartyService::new()),
     };
 
     let app = build_router(state);
@@ -178,12 +181,24 @@ struct AppState {
     model_identity: Vec<u8>,
     scheme_identity: Vec<u8>,
     reranker: RerankerHandle,
+    /// M8.0 — per-tenant LightRAG service. Held alongside the
+    /// existing CAPRISE service; the `/lightrag/*` routes consume it.
+    lightrag: LightRagServiceHandle,
 }
 
 /// Build the HTTP router for a given `AppState`. Lifted out of `main`
 /// so integration tests can construct a state with a real reranker
 /// without spawning a full process.
 fn build_router(state: AppState) -> Router {
+    // The lightrag routes consume a different state slice
+    // (`LightRagServiceHandle`) than the existing embedder routes.
+    // Build them as a sub-router with their own state, then merge.
+    let lightrag_sub = Router::new()
+        .route("/lightrag/ingest", post(lightrag_routes::ingest))
+        .route("/lightrag/query", post(lightrag_routes::query))
+        .route("/lightrag/attest", get(lightrag_routes::attest))
+        .with_state(state.lightrag.clone());
+
     Router::new()
         .route("/health", get(health))
         .route("/attest", get(attest))
@@ -192,6 +207,7 @@ fn build_router(state: AppState) -> Router {
         .route("/rotate", post(rotate))
         .route("/rerank", post(rerank))
         .with_state(state)
+        .merge(lightrag_sub)
 }
 
 async fn health() -> &'static str {
@@ -651,6 +667,8 @@ mod tests {
             max_seq_len: 32,
             skip_first_layers: 0,
             skip_last_layer: false,
+            use_out_attn_mult: false,
+            out_attn_mult_min_seq_len: None,
         }
     }
 
@@ -776,6 +794,7 @@ mod tests {
             model_identity: b"test-model-identity".to_vec(),
             scheme_identity: b"test-scheme-identity".to_vec(),
             reranker: Some(Arc::new(Mutex::new(reranker_box))),
+            lightrag: Arc::new(lightrag_private::LightRagTwoPartyService::new()),
         }
     }
 
@@ -869,5 +888,147 @@ mod tests {
         for it in &opened {
             assert!(known.contains(&it.chunk_id));
         }
+    }
+
+    /// M8.0 acceptance — POST /lightrag/ingest, then POST
+    /// /lightrag/query, end-to-end through the runner's HTTP surface.
+    /// Pins the wiring; the underlying retrieval behaviour is already
+    /// pinned by `lightrag-private/tests/local_kg_query.rs`.
+    #[tokio::test]
+    async fn lightrag_ingest_then_query_round_trips_via_http() {
+        let state = build_test_state();
+        let app = build_router(state);
+
+        // Build a small synthetic KG (4 entities, 2 relations, 4 chunks).
+        // Embeddings are 16-d deterministic basis vectors so a query
+        // for entity-0 reliably lands entity-0 in the top-k.
+        fn one_hot(i: usize, dim: usize) -> Vec<f32> {
+            let mut v = vec![0.0f32; dim];
+            v[i % dim] = 1.0;
+            v
+        }
+        let dim = 16usize;
+
+        let entity_payload = serde_json::json!({
+            "tenant_id": "m8-tenant",
+            "user_x_sk": B64.encode([0xAA_u8; 32]),
+            "dim": dim,
+            "extracted_kg": {
+                "chunks": (0..4).map(|i| serde_json::json!({
+                    "id": format!("chunk-{i}"),
+                    "text": format!("body of chunk {i}"),
+                    "embedding": one_hot(i, dim),
+                })).collect::<Vec<_>>(),
+                "entities": (0..4).map(|i| serde_json::json!({
+                    "name": format!("entity-{i}"),
+                    "description": format!("desc {i}"),
+                    "embedding": one_hot(i, dim),
+                    "source_chunks": [format!("chunk-{i}")],
+                })).collect::<Vec<_>>(),
+                "relations": [
+                    {
+                        "src": "entity-0",
+                        "tgt": "entity-1",
+                        "description": "e0—e1",
+                        "embedding": one_hot(0, dim),
+                        "source_chunks": ["chunk-0"]
+                    },
+                    {
+                        "src": "entity-2",
+                        "tgt": "entity-3",
+                        "description": "e2—e3",
+                        "embedding": one_hot(2, dim),
+                        "source_chunks": ["chunk-2"]
+                    }
+                ]
+            }
+        });
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/lightrag/ingest")
+                    .header("content-type", "application/json")
+                    .body(Body::from(entity_payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "ingest failed");
+        let body = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["ingested"]["entities"], 4);
+        assert_eq!(v["ingested"]["relations"], 2);
+        assert_eq!(v["ingested"]["chunks"], 4);
+
+        // Query for entity-0 by passing its own embedding.
+        let q_payload = serde_json::json!({
+            "tenant_id": "m8-tenant",
+            "ll_query_embedding": one_hot(0, dim),
+            "session_nonce_b64": B64.encode(b"nonce-001"),
+            "top_k_entities": 3,
+            "top_k_chunks_per_entity": 1,
+        });
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/lightrag/query")
+                    .header("content-type", "application/json")
+                    .body(Body::from(q_payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "query failed");
+        let body = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let entities = v["entities"].as_array().unwrap();
+        let entity_names: Vec<String> = entities
+            .iter()
+            .map(|e| e.as_str().unwrap().to_string())
+            .collect();
+        assert!(
+            entity_names.contains(&"entity-0".to_string()),
+            "entity-0 missing from query result: {entity_names:?}"
+        );
+        let chunks = v["chunks"].as_array().unwrap();
+        assert!(!chunks.is_empty(), "no chunks returned");
+        for c in chunks {
+            assert!(c["text"].as_str().unwrap().contains("body of chunk"));
+        }
+        let ctx_string = v["context_string"].as_str().unwrap();
+        assert!(ctx_string.contains("# Entities"));
+        assert!(ctx_string.contains("# Source chunks"));
+    }
+
+    #[tokio::test]
+    async fn lightrag_query_unknown_tenant_500s_for_now() {
+        // M8.x: rotate AppError → 410 Gone for unknown tenants in
+        // /lightrag/query, matching the /query route. For M8.0 the
+        // mapping goes through `anyhow::anyhow!("query_for: {e}")`
+        // which lands as 500.
+        let state = build_test_state();
+        let app = build_router(state);
+        let q_payload = serde_json::json!({
+            "tenant_id": "no-such-tenant",
+            "ll_query_embedding": vec![0.0f32; 16],
+            "session_nonce_b64": B64.encode(b"n"),
+            "top_k_entities": 1,
+            "top_k_chunks_per_entity": 1,
+        });
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/lightrag/query")
+                    .header("content-type", "application/json")
+                    .body(Body::from(q_payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 }
