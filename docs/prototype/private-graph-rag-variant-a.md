@@ -866,11 +866,18 @@ critical path. DistanceDP adds another ~µs when enabled.
    This is the canonical pattern in the Ring-ORAM literature; the
    `Clive2312/compass` C++ reference uses an equivalent scheme (to
    be confirmed bit-for-bit at the M4 parity gate).
-3. **Multi-tenant Compass-index sharing.** Today's `GeloRagTwoPartyService`
-   shares one embedder across tenants and isolates only the
-   CAPRISE/AES keys. Compass needs per-tenant position maps and stash
-   *inside* the TEE; that's 16-108 MB per tenant. Set a per-CVM tenant
-   cap; allow horizontal scale by sharding tenants across CVMs.
+3. ~~**Multi-tenant Compass-index sharing.**~~ **Decided
+   (2026-05-16):** **single-tenant per CVM through M0-M8.** Compass
+   client state (position maps + stash + treetop + hint cache) for
+   one paper-scale corpus is 16-108 MB per index × 3 indices ≈
+   50-325 MB per tenant. Sharing one CVM across N tenants
+   linearly multiplies that, complicates HKDF re-derivation per
+   request, and forces an extra eviction-fairness layer the plan
+   doesn't currently scope. Stay single-tenant; horizontal scale by
+   running one CVM per tenant (matches the
+   `GeloRagTwoPartyService::ingest_chunks_for(tenant_id, …)` shape
+   but with one tenant per process). Multi-tenant sharing becomes a
+   post-M8 milestone if customer scaling requires it.
 4. ~~**What does the storage server actually look like?**~~ **Decided
    (2026-05-16):** the storage server is a **thin async REST service**
    colocated with `gelo-snp-runner`. Concretely:
@@ -942,11 +949,44 @@ critical path. DistanceDP adds another ~µs when enabled.
    | M5.4 | (deferred) | `object_store` adapter (S3/GCS/R2 persistence behind a feature flag) |
 
    Total: ~1 week, matching the plan's existing M5 estimate.
-5. **Where does the plaintext KG come from?** For v1 we accept it as
-   an input to `ingest_documents` (i.e., entity extraction is done
-   *before* the CVM call). Long-term, we want the extraction LLM to
-   live in the CVM too — confirm this is the right phasing and
-   document the boundary explicitly.
+5. ~~**Where does the plaintext KG come from?**~~ **Decided
+   (2026-05-16):** **plaintext client-side extraction for v1.** The
+   client (workstation-class, *not* thin) runs an entity-extraction
+   LLM locally — Ollama with Qwen3-7B / Llama-3.2-3B or equivalent —
+   and ships the resulting `ExtractedKg { chunks, entities, relations }`
+   to the CVM over RATLS. The CVM embeds, indexes, and writes
+   encrypted; documents are in plaintext inside the CVM for the
+   duration of `ingest_documents` only, then zeroized.
+
+   **Deployment requirement, not a recommendation:** the extraction
+   LLM must run on compute the document owner trusts. A client that
+   ships documents to OpenAI/Anthropic for extraction re-introduces
+   the same plaintext leak the rest of the system is built to
+   prevent. Documented as a hard prerequisite in the
+   `gelo-snp-runner` operator guide.
+
+   **What v1 supports:**
+   - Workstation/server-class clients running their own extraction
+     LLM
+   - Thin-client *query* (RATLS in → context out)
+   - Batch ingest pattern matching upstream LightRAG
+
+   **What v1 does NOT support:**
+   - Thin-client *ingest* (mobile/browser as the document-uploading
+     side)
+   - Customer postures that disallow plaintext on *any* client
+     machine
+   - Cloud-LLM-based extraction without breaking the privacy story
+
+   **Trigger conditions for V2 (extraction LLM in CVM, ~3-4 week
+   parallel milestone, post-M8):**
+   - Customer requirement for thin-client ingest, or
+   - Customer policy disallowing plaintext on document-owner
+     machines for extraction.
+
+   Until either fires, v1's `ExtractedKg`-as-input boundary stays.
+   The `ExtractedKg` API doesn't change between v1 and v2; v2 just
+   produces it inside the CVM rather than receiving it over RATLS.
 
 ---
 
