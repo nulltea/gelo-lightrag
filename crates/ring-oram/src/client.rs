@@ -76,6 +76,10 @@ pub struct RingOramClient<B: BlockBackend> {
     /// at construction; deterministic given the seed so tests can
     /// reproduce traces.
     rng: ChaCha20Rng,
+    /// Treetop cache (Compass §4.7). Indexed by `bucket_id ∈
+    /// [0, treetop_bucket_count)`. Reads hit cache; writes mirror to
+    /// both cache and backend. Empty when `treetop_levels == 0`.
+    treetop_cache: Vec<EncryptedBucket>,
 }
 
 impl<B: BlockBackend> RingOramClient<B> {
@@ -91,6 +95,7 @@ impl<B: BlockBackend> RingOramClient<B> {
             params.num_buckets()
         );
         let counters = vec![0u32; params.num_buckets() as usize];
+        let treetop_cache = Vec::with_capacity(params.treetop_bucket_count() as usize);
         let mut client = Self {
             backend,
             params,
@@ -103,9 +108,61 @@ impl<B: BlockBackend> RingOramClient<B> {
             pending_evictions: 0,
             evict_cursor: 0,
             rng: ChaCha20Rng::from_seed(rng_seed),
+            treetop_cache,
         };
         client.initialize_tree();
         client
+    }
+
+    /// Internal: read a path. Treetop buckets come from the cache;
+    /// the rest from the backend. Result preserves the requested
+    /// order.
+    fn read_path_cached(&self, bucket_ids: &[u32]) -> Vec<EncryptedBucket> {
+        let mut out: Vec<Option<EncryptedBucket>> = vec![None; bucket_ids.len()];
+        let mut deep_ids: Vec<u32> = Vec::new();
+        let mut deep_positions: Vec<usize> = Vec::new();
+        for (i, &bid) in bucket_ids.iter().enumerate() {
+            if self.params.bucket_in_treetop(bid) {
+                out[i] = Some(self.treetop_cache[bid as usize].clone());
+            } else {
+                deep_positions.push(i);
+                deep_ids.push(bid);
+            }
+        }
+        if !deep_ids.is_empty() {
+            let deep = self.backend.read_path(&deep_ids);
+            for (pos, eb) in deep_positions.into_iter().zip(deep.into_iter()) {
+                out[pos] = Some(eb);
+            }
+        }
+        out.into_iter()
+            .map(|b| b.expect("every bucket either cached or backend-fetched"))
+            .collect()
+    }
+
+    /// Internal: write a path. Treetop buckets mirror into the cache;
+    /// every bucket (including treetop) still gets a backend write so
+    /// a crash-recovery flow can re-seed the cache.
+    fn write_buckets_cached(&mut self, buckets: &[EncryptedBucket]) {
+        for b in buckets {
+            if self.params.bucket_in_treetop(b.bucket_id) {
+                let idx = b.bucket_id as usize;
+                if idx >= self.treetop_cache.len() {
+                    // First write — grow the cache. initialize_tree
+                    // writes every bucket in id order so this is
+                    // monotonically extending.
+                    while self.treetop_cache.len() <= idx {
+                        self.treetop_cache.push(EncryptedBucket {
+                            bucket_id: self.treetop_cache.len() as u32,
+                            write_counter: 0,
+                            ciphertext: Vec::new(),
+                        });
+                    }
+                }
+                self.treetop_cache[idx] = b.clone();
+            }
+        }
+        self.backend.write_buckets(buckets);
     }
 
     /// Initial write pass: every bucket gets `(Z + S)` dummies under
@@ -127,7 +184,7 @@ impl<B: BlockBackend> RingOramClient<B> {
                 ciphertext: ct,
             });
         }
-        self.backend.write_buckets(&updates);
+        self.write_buckets_cached(&updates);
     }
 
     /// Admit a new block at a fresh random path. The block lands in
@@ -163,9 +220,10 @@ impl<B: BlockBackend> RingOramClient<B> {
             .get(id)
             .ok_or(OramError::UnknownBlock(id))?;
 
-        // 1. Pull the full path off the backend.
+        // 1. Pull the full path — treetop comes from the cache,
+        //    deeper buckets from the backend.
         let bucket_ids = path_buckets(path, self.params.n_leaves);
-        let encrypted = self.backend.read_path(&bucket_ids);
+        let encrypted = self.read_path_cached(&bucket_ids);
 
         // 2. Decrypt every bucket; non-dummy real blocks go to the stash.
         for (eb, &bid) in encrypted.iter().zip(bucket_ids.iter()) {
@@ -211,7 +269,7 @@ impl<B: BlockBackend> RingOramClient<B> {
                 ciphertext: ct,
             });
         }
-        self.backend.write_buckets(&updates);
+        self.write_buckets_cached(&updates);
 
         self.accesses_since_evict += 1;
         self.maybe_evict();
@@ -324,7 +382,7 @@ impl<B: BlockBackend> RingOramClient<B> {
         // 1. Read the path, drain real blocks into the stash. Mirrors
         //    the same step in `read()` — without this, we'd silently
         //    erase tree contents at shared ancestors.
-        let encrypted = self.backend.read_path(&bucket_ids);
+        let encrypted = self.read_path_cached(&bucket_ids);
         for (eb, &bid) in encrypted.iter().zip(bucket_ids.iter()) {
             debug_assert_eq!(eb.bucket_id, bid);
             let pt = aes_decrypt(&self.key, eb.bucket_id, eb.write_counter, &eb.ciphertext)
@@ -384,7 +442,13 @@ impl<B: BlockBackend> RingOramClient<B> {
                 ciphertext: ct,
             });
         }
-        self.backend.write_buckets(&updates);
+        self.write_buckets_cached(&updates);
+    }
+
+    /// Borrow the backend immutably — used by tests that need to
+    /// inspect backend telemetry (e.g. read_count).
+    pub fn backend(&self) -> &B {
+        &self.backend
     }
 }
 
@@ -400,6 +464,7 @@ mod tests {
             a: 3,
             block_bytes,
             n_leaves,
+            treetop_levels: 0,
         };
         let backend = InMemoryBlockBackend::new(params.num_buckets());
         RingOramClient::new(backend, params, [0x11; 32], [0x22; 32])
@@ -535,6 +600,95 @@ mod tests {
     }
 
     #[test]
+    fn treetop_cache_skips_backend_reads_for_top_buckets() {
+        // 32-leaf tree ⇒ 6 levels ⇒ 63 buckets. Treetop=3 ⇒ cache 7
+        // buckets (levels 0..2). Reads of those buckets must not hit
+        // the backend; reads of deeper buckets must.
+        let params = RingOramParams {
+            z: 4,
+            s: 5,
+            a: 3,
+            block_bytes: 8,
+            n_leaves: 32,
+            treetop_levels: 3,
+        };
+        let backend = InMemoryBlockBackend::new(params.num_buckets());
+        let mut c = RingOramClient::new(backend, params, [0x42; 32], [0x84; 32]);
+        // init writes everything; clear the read counter manually by
+        // taking the count after init.
+        let init_reads = c.backend().read_count();
+
+        // Admit 8 blocks, no reads expected (admit writes, evicts).
+        for i in 0..8u32 {
+            c.admit(BlockId(i), vec![i as u8; 8]).unwrap();
+        }
+        let pre_read = c.backend().read_count();
+
+        // One read pulls a path of 6 buckets. 3 of them (levels 0,1,2)
+        // are treetop-cached ⇒ should hit cache. 3 of them (levels
+        // 3,4,5) are not ⇒ backend reads.
+        let _ = c.read(BlockId(0)).unwrap();
+
+        let post_read = c.backend().read_count();
+        let delta = post_read - pre_read;
+        // After this read: the read protocol reads the path (3 deep
+        // buckets) AND eviction (if triggered) reads its own path
+        // (another 3 deep buckets, but the path could share). With
+        // a=3 and 8 admits + 1 read, accesses are 9, evictions =
+        // 9/3 = 3 from admits + maybe more from the read. The exact
+        // count varies; the invariant is "0 reads of the top 3
+        // levels per access".
+        //
+        // Stronger check: post_read - init_reads must be strictly
+        // less than what we'd see with treetop_levels=0 on the same
+        // sequence. Compute the no-cache baseline.
+        let _ = delta;
+
+        let baseline_params = RingOramParams {
+            treetop_levels: 0,
+            ..params
+        };
+        let baseline_backend = InMemoryBlockBackend::new(baseline_params.num_buckets());
+        let mut baseline = RingOramClient::new(baseline_backend, baseline_params, [0x42; 32], [0x84; 32]);
+        let base_init = baseline.backend().read_count();
+        for i in 0..8u32 {
+            baseline.admit(BlockId(i), vec![i as u8; 8]).unwrap();
+        }
+        let _ = baseline.read(BlockId(0)).unwrap();
+        let baseline_total = baseline.backend().read_count() - base_init;
+        let cached_total = post_read - init_reads;
+
+        assert!(
+            cached_total < baseline_total,
+            "treetop cache did not reduce backend reads: cached={cached_total} baseline={baseline_total}"
+        );
+    }
+
+    #[test]
+    fn treetop_cache_preserves_correctness_under_many_ops() {
+        // Same shape as `writes_are_durable_across_many_evictions`
+        // but with treetop_levels=3. Block content must round-trip.
+        let params = RingOramParams {
+            z: 4,
+            s: 5,
+            a: 3,
+            block_bytes: 8,
+            n_leaves: 32,
+            treetop_levels: 3,
+        };
+        let backend = InMemoryBlockBackend::new(params.num_buckets());
+        let mut c = RingOramClient::new(backend, params, [0x55; 32], [0xaa; 32]);
+        for i in 0..16u32 {
+            c.admit(BlockId(i), vec![i as u8; 8]).unwrap();
+        }
+        for _ in 0..3 {
+            for i in 0..16u32 {
+                assert_eq!(c.read(BlockId(i)).unwrap(), vec![i as u8; 8]);
+            }
+        }
+    }
+
+    #[test]
     fn aes_key_change_breaks_reads() {
         // Build a client, admit a block, then wrap a *different* key
         // around the same backend and verify the new client cannot
@@ -545,6 +699,7 @@ mod tests {
             a: 3,
             block_bytes: 8,
             n_leaves: 16,
+            treetop_levels: 0,
         };
         let backend = InMemoryBlockBackend::new(params.num_buckets());
         let mut c = RingOramClient::new(backend, params, [0xaa; 32], [0x01; 32]);

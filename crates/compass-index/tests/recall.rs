@@ -77,6 +77,7 @@ fn compass_search_recall_at_1k_vectors_is_at_least_90_percent() {
             a: 3,
             block_bytes: 448,
             n_leaves: 2048, // headroom over n=1000
+            treetop_levels: 4,
         },
         ef_search: 64,
     };
@@ -119,6 +120,7 @@ fn round_trip_single_query() {
             a: 3,
             block_bytes: 64,
             n_leaves: 32,
+            treetop_levels: 2,
         },
         ef_search: 4,
     };

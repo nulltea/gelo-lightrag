@@ -49,6 +49,7 @@ pub trait BlockBackend {
 #[derive(Debug)]
 pub struct InMemoryBlockBackend {
     buckets: Vec<EncryptedBucket>,
+    read_count: std::cell::Cell<u64>,
 }
 
 impl InMemoryBlockBackend {
@@ -64,7 +65,10 @@ impl InMemoryBlockBackend {
                 ciphertext: Vec::new(),
             })
             .collect();
-        Self { buckets }
+        Self {
+            buckets,
+            read_count: std::cell::Cell::new(0),
+        }
     }
 
     /// Borrow the raw vector for assertions in tests. Production code
@@ -73,10 +77,19 @@ impl InMemoryBlockBackend {
     pub fn raw(&self) -> &[EncryptedBucket] {
         &self.buckets
     }
+
+    /// Total individual-bucket reads served via `read_path`. Used by
+    /// the treetop-caching test to confirm cached reads bypass the
+    /// backend.
+    pub fn read_count(&self) -> u64 {
+        self.read_count.get()
+    }
 }
 
 impl BlockBackend for InMemoryBlockBackend {
     fn read_path(&self, bucket_ids: &[u32]) -> Vec<EncryptedBucket> {
+        self.read_count
+            .set(self.read_count.get() + bucket_ids.len() as u64);
         bucket_ids
             .iter()
             .map(|&i| self.buckets[i as usize].clone())

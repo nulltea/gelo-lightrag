@@ -22,6 +22,14 @@ pub struct RingOramParams {
     /// Tree leaf count = `2^(levels - 1)`. The number of distinct
     /// `path_id` values. `1` ⇒ degenerate single-bucket tree.
     pub n_leaves: u32,
+    /// Number of top levels of the ORAM tree cached client-side in
+    /// CVM RAM (Compass paper §4.7). Backend reads/writes for buckets
+    /// in the top `treetop_levels` are mirrored into the cache; reads
+    /// hit the cache; writes go to both cache and backend (for
+    /// recovery). `0` ⇒ no caching, equivalent to the M1 baseline.
+    /// Setting this large saves bandwidth on a networked backend at
+    /// the cost of CVM RAM (each cached bucket is one AES-GCM frame).
+    pub treetop_levels: u32,
 }
 
 impl Default for RingOramParams {
@@ -35,6 +43,7 @@ impl Default for RingOramParams {
             a: 3,
             block_bytes: 2048,
             n_leaves: 64,
+            treetop_levels: 0,
         }
     }
 }
@@ -53,6 +62,21 @@ impl RingOramParams {
     /// `2^L - 1` — total bucket count (root + every interior node + every leaf).
     pub fn num_buckets(&self) -> u32 {
         (1u32 << self.levels()) - 1
+    }
+
+    /// Number of buckets that live in the treetop cache. `2^t - 1`
+    /// for `t = treetop_levels`. `0` when `treetop_levels == 0`.
+    pub fn treetop_bucket_count(&self) -> u32 {
+        if self.treetop_levels == 0 {
+            0
+        } else {
+            (1u32 << self.treetop_levels) - 1
+        }
+    }
+
+    /// Predicate: does `bucket_id` fall inside the cached treetop?
+    pub fn bucket_in_treetop(&self, bucket_id: u32) -> bool {
+        bucket_id < self.treetop_bucket_count()
     }
 }
 

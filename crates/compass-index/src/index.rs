@@ -47,6 +47,9 @@ impl Default for CompassIndexParams {
                 // 128·4 + 4 + 32·4 = 644 — pad to 1024.
                 block_bytes: 1024,
                 n_leaves: 2048,
+                // Cache top 4 levels of the ORAM tree cleartext in
+                // CVM RAM (Compass §4.7). 2^4 - 1 = 15 buckets.
+                treetop_levels: 4,
             },
             ef_search: 64,
         }

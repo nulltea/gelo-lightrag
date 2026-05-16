@@ -132,6 +132,7 @@ mod tests {
             a: 3,
             block_bytes: 8,
             n_leaves: 4,
+            treetop_levels: 0,
         }
     }
 
