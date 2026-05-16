@@ -39,7 +39,7 @@ mod path;
 mod posmap;
 mod stash;
 
-pub use backend::{BlockBackend, EncryptedBucket, InMemoryBlockBackend};
+pub use backend::{BackendError, BlockBackend, EncryptedBucket, InMemoryBlockBackend};
 pub use block::{Block, BlockId, BlockPayload};
 pub use client::{OramError, RingOramClient};
 pub use params::RingOramParams;

@@ -129,7 +129,7 @@ impl<B: BlockBackend> CompassIndex<B> {
         // the V2 HKDF children (oram_entities_key etc.).
         let key = derive_test_key(&hnsw.params.build_seed, b"oram-key");
         let rng_seed = derive_test_key(&hnsw.params.build_seed, b"oram-rng");
-        let mut oram = RingOramClient::new(backend, params.oram, key, rng_seed).await;
+        let mut oram = RingOramClient::new(backend, params.oram, key, rng_seed).await?;
 
         let entry = hnsw.entry;
         let top_layer = hnsw.top_layer;

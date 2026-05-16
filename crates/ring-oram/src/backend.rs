@@ -27,6 +27,11 @@ pub struct EncryptedBucket {
     pub ciphertext: Vec<u8>,
 }
 
+/// Error type returned by backend operations. `anyhow::Error` so each
+/// implementation can wrap whatever transport-specific error type it
+/// uses (sled, reqwest, …) without needing a shared error enum.
+pub type BackendError = anyhow::Error;
+
 /// What the server-side backend must implement. Async since M5 so the
 /// REST-backed implementation can stream over the network without
 /// blocking; the in-memory backend simply returns ready futures.
@@ -34,12 +39,12 @@ pub struct EncryptedBucket {
 pub trait BlockBackend: Send + Sync {
     /// Fetch one path's worth of buckets, in root-first order. Caller
     /// passes the result of [`crate::path::path_buckets`].
-    async fn read_path(&self, bucket_ids: &[u32]) -> Vec<EncryptedBucket>;
+    async fn read_path(&self, bucket_ids: &[u32]) -> Result<Vec<EncryptedBucket>, BackendError>;
 
     /// Overwrite a contiguous batch of buckets. The implementation
     /// updates each bucket's `write_counter` atomically — the client
     /// passes the *new* counter values; server stores them.
-    async fn write_buckets(&mut self, buckets: &[EncryptedBucket]);
+    async fn write_buckets(&mut self, buckets: &[EncryptedBucket]) -> Result<(), BackendError>;
 
     /// Number of buckets in the tree. The client uses this only to
     /// sanity-check the configured `n_leaves`. Sync by design — a
@@ -95,19 +100,20 @@ impl InMemoryBlockBackend {
 
 #[async_trait]
 impl BlockBackend for InMemoryBlockBackend {
-    async fn read_path(&self, bucket_ids: &[u32]) -> Vec<EncryptedBucket> {
+    async fn read_path(&self, bucket_ids: &[u32]) -> Result<Vec<EncryptedBucket>, BackendError> {
         self.read_count
             .fetch_add(bucket_ids.len() as u64, std::sync::atomic::Ordering::Relaxed);
-        bucket_ids
+        Ok(bucket_ids
             .iter()
             .map(|&i| self.buckets[i as usize].clone())
-            .collect()
+            .collect())
     }
 
-    async fn write_buckets(&mut self, buckets: &[EncryptedBucket]) {
+    async fn write_buckets(&mut self, buckets: &[EncryptedBucket]) -> Result<(), BackendError> {
         for b in buckets {
             self.buckets[b.bucket_id as usize] = b.clone();
         }
+        Ok(())
     }
 
     fn num_buckets(&self) -> u32 {
@@ -128,8 +134,8 @@ mod tests {
             write_counter: 7,
             ciphertext: vec![0xde, 0xad, 0xbe, 0xef],
         };
-        be.write_buckets(&[bucket.clone()]).await;
-        let got = be.read_path(&[2]).await;
+        be.write_buckets(&[bucket.clone()]).await.unwrap();
+        let got = be.read_path(&[2]).await.unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].bucket_id, 2);
         assert_eq!(got[0].write_counter, 7);

@@ -1,0 +1,31 @@
+[package]
+name = "compass-rest-backend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Network-shaped BlockBackend for ring-oram: thin axum + sled server
+# colocated with `gelo-snp-runner`, plus a `RestBlockBackend` client
+# that implements the async `BlockBackend` trait over `reqwest`.
+# Plan §9 OQ#4 sub-plan (M5.1).
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+reqwest = { workspace = true, default-features = false, features = ["rustls-tls"] }
+ring-oram = { path = "../ring-oram" }
+rmp-serde.workspace = true
+serde.workspace = true
+serde_bytes.workspace = true
+sled.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+compass-index = { path = "../compass-index" }
+rand = { workspace = true }
+rand_chacha = { workspace = true }

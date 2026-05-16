@@ -67,8 +67,15 @@ pub(crate) async fn layered_search<B: BlockBackend>(
     index.oram_mut().set_defer_evictions(true);
     let result = layered_search_inner(index, query, k).await;
     index.oram_mut().set_defer_evictions(false);
-    index.oram_mut().flush_evictions().await;
-    result
+    // Always flush, even if the inner body returned Err — pending
+    // evictions must drain before the next search starts. The flush's
+    // own error supersedes a body error only if the body succeeded.
+    let flush = index.oram_mut().flush_evictions().await;
+    match (result, flush) {
+        (Ok(r), Ok(())) => Ok(r),
+        (Err(e), _) => Err(e),
+        (Ok(_), Err(e)) => Err(CompassIndexError::Oram(e)),
+    }
 }
 
 async fn layered_search_inner<B: BlockBackend>(

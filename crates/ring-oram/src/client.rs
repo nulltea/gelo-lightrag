@@ -28,7 +28,7 @@ use rand::Rng;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 
-use crate::backend::{BlockBackend, EncryptedBucket};
+use crate::backend::{BackendError, BlockBackend, EncryptedBucket};
 use crate::block::{Block, BlockId, BlockPayload};
 use crate::codec::{aes_decrypt, aes_encrypt, deserialise_bucket, serialise_bucket, AesError};
 use crate::params::RingOramParams;
@@ -46,6 +46,8 @@ pub enum OramError {
     PayloadSize { expected: usize, got: usize },
     #[error("stash overflow: {0} blocks unable to land back on tree")]
     StashOverflow(usize),
+    #[error("backend error: {0}")]
+    Backend(#[from] BackendError),
 }
 
 pub struct RingOramClient<B: BlockBackend> {
@@ -98,7 +100,7 @@ impl<B: BlockBackend> RingOramClient<B> {
         params: RingOramParams,
         key: [u8; 32],
         rng_seed: [u8; 32],
-    ) -> Self {
+    ) -> Result<Self, OramError> {
         assert_eq!(
             backend.num_buckets(),
             params.num_buckets(),
@@ -122,14 +124,17 @@ impl<B: BlockBackend> RingOramClient<B> {
             rng: ChaCha20Rng::from_seed(rng_seed),
             treetop_cache,
         };
-        client.initialize_tree().await;
-        client
+        client.initialize_tree().await?;
+        Ok(client)
     }
 
     /// Internal: read a path. Treetop buckets come from the cache;
     /// the rest from the backend. Result preserves the requested
     /// order.
-    async fn read_path_cached(&self, bucket_ids: &[u32]) -> Vec<EncryptedBucket> {
+    async fn read_path_cached(
+        &self,
+        bucket_ids: &[u32],
+    ) -> Result<Vec<EncryptedBucket>, OramError> {
         let mut out: Vec<Option<EncryptedBucket>> = vec![None; bucket_ids.len()];
         let mut deep_ids: Vec<u32> = Vec::new();
         let mut deep_positions: Vec<usize> = Vec::new();
@@ -142,20 +147,24 @@ impl<B: BlockBackend> RingOramClient<B> {
             }
         }
         if !deep_ids.is_empty() {
-            let deep = self.backend.read_path(&deep_ids).await;
+            let deep = self.backend.read_path(&deep_ids).await?;
             for (pos, eb) in deep_positions.into_iter().zip(deep.into_iter()) {
                 out[pos] = Some(eb);
             }
         }
-        out.into_iter()
+        Ok(out
+            .into_iter()
             .map(|b| b.expect("every bucket either cached or backend-fetched"))
-            .collect()
+            .collect())
     }
 
     /// Internal: write a path. Treetop buckets mirror into the cache;
     /// every bucket (including treetop) still gets a backend write so
     /// a crash-recovery flow can re-seed the cache.
-    async fn write_buckets_cached(&mut self, buckets: &[EncryptedBucket]) {
+    async fn write_buckets_cached(
+        &mut self,
+        buckets: &[EncryptedBucket],
+    ) -> Result<(), OramError> {
         for b in buckets {
             if self.params.bucket_in_treetop(b.bucket_id) {
                 let idx = b.bucket_id as usize;
@@ -174,13 +183,14 @@ impl<B: BlockBackend> RingOramClient<B> {
                 self.treetop_cache[idx] = b.clone();
             }
         }
-        self.backend.write_buckets(buckets).await;
+        self.backend.write_buckets(buckets).await?;
+        Ok(())
     }
 
     /// Initial write pass: every bucket gets `(Z + S)` dummies under
     /// `write_counter = 1`. After this, every read produces a valid
     /// AEAD frame.
-    async fn initialize_tree(&mut self) {
+    async fn initialize_tree(&mut self) -> Result<(), OramError> {
         let cap = self.params.bucket_capacity() as usize;
         let dummies: Vec<Block> = (0..cap)
             .map(|_| Block::dummy(self.params.block_bytes as usize))
@@ -196,7 +206,7 @@ impl<B: BlockBackend> RingOramClient<B> {
                 ciphertext: ct,
             });
         }
-        self.write_buckets_cached(&updates).await;
+        self.write_buckets_cached(&updates).await
     }
 
     /// Admit a new block at a fresh random path. The block lands in
@@ -218,7 +228,7 @@ impl<B: BlockBackend> RingOramClient<B> {
         };
         self.stash.insert(block);
         self.accesses_since_evict += 1;
-        self.maybe_evict().await;
+        self.maybe_evict().await?;
         Ok(())
     }
 
@@ -235,7 +245,7 @@ impl<B: BlockBackend> RingOramClient<B> {
         // 1. Pull the full path — treetop comes from the cache,
         //    deeper buckets from the backend.
         let bucket_ids = path_buckets(path, self.params.n_leaves);
-        let encrypted = self.read_path_cached(&bucket_ids).await;
+        let encrypted = self.read_path_cached(&bucket_ids).await?;
 
         // 2. Decrypt every bucket; non-dummy real blocks go to the stash.
         for (eb, &bid) in encrypted.iter().zip(bucket_ids.iter()) {
@@ -281,10 +291,10 @@ impl<B: BlockBackend> RingOramClient<B> {
                 ciphertext: ct,
             });
         }
-        self.write_buckets_cached(&updates).await;
+        self.write_buckets_cached(&updates).await?;
 
         self.accesses_since_evict += 1;
-        self.maybe_evict().await;
+        self.maybe_evict().await?;
         Ok(payload_out)
     }
 
@@ -327,15 +337,16 @@ impl<B: BlockBackend> RingOramClient<B> {
         PathId(self.rng.random_range(0..self.params.n_leaves))
     }
 
-    async fn maybe_evict(&mut self) {
+    async fn maybe_evict(&mut self) -> Result<(), OramError> {
         while self.accesses_since_evict >= self.params.a {
             self.accesses_since_evict -= self.params.a;
             if self.defer_evictions {
                 self.pending_evictions += 1;
             } else {
-                self.evict_path().await;
+                self.evict_path().await?;
             }
         }
+        Ok(())
     }
 
     /// Turn multi-hop lazy eviction on or off. Sync — only toggles the
@@ -359,11 +370,12 @@ impl<B: BlockBackend> RingOramClient<B> {
 
     /// Drain pending evictions. Safe to call regardless of
     /// `defer_evictions` state.
-    pub async fn flush_evictions(&mut self) {
+    pub async fn flush_evictions(&mut self) -> Result<(), OramError> {
         while self.pending_evictions > 0 {
-            self.evict_path().await;
+            self.evict_path().await?;
             self.pending_evictions -= 1;
         }
+        Ok(())
     }
 
     /// Telemetry: how many evictions are queued for the next flush.
@@ -391,7 +403,7 @@ impl<B: BlockBackend> RingOramClient<B> {
     ///      reshuffling).
     ///   3. Write the path back encrypted, bumping each bucket's
     ///      write_counter so AES-GCM nonces don't reuse.
-    async fn evict_path(&mut self) {
+    async fn evict_path(&mut self) -> Result<(), OramError> {
         let path = PathId(self.evict_cursor % self.params.n_leaves);
         self.evict_cursor = (self.evict_cursor + 1) % self.params.n_leaves;
         let bucket_ids = path_buckets(path, self.params.n_leaves);
@@ -399,7 +411,7 @@ impl<B: BlockBackend> RingOramClient<B> {
         // 1. Read the path, drain real blocks into the stash. Mirrors
         //    the same step in `read()` — without this, we'd silently
         //    erase tree contents at shared ancestors.
-        let encrypted = self.read_path_cached(&bucket_ids).await;
+        let encrypted = self.read_path_cached(&bucket_ids).await?;
         for (eb, &bid) in encrypted.iter().zip(bucket_ids.iter()) {
             debug_assert_eq!(eb.bucket_id, bid);
             let pt = aes_decrypt(&self.key, eb.bucket_id, eb.write_counter, &eb.ciphertext)
@@ -459,7 +471,7 @@ impl<B: BlockBackend> RingOramClient<B> {
                 ciphertext: ct,
             });
         }
-        self.write_buckets_cached(&updates).await;
+        self.write_buckets_cached(&updates).await
     }
 
     /// Borrow the backend immutably — used by tests that need to
@@ -484,7 +496,9 @@ mod tests {
             treetop_levels: 0,
         };
         let backend = InMemoryBlockBackend::new(params.num_buckets());
-        RingOramClient::new(backend, params, [0x11; 32], [0x22; 32]).await
+        RingOramClient::new(backend, params, [0x11; 32], [0x22; 32])
+            .await
+            .expect("in-memory backend new cannot fail")
     }
 
     #[tokio::test]
@@ -580,7 +594,7 @@ mod tests {
             }
         }
         assert!(c.pending_evictions() > 0);
-        c.flush_evictions().await;
+        c.flush_evictions().await.unwrap();
         assert_eq!(c.pending_evictions(), 0);
         for i in 0..8u32 {
             assert_eq!(c.read(BlockId(i)).await.unwrap(), vec![i as u8; 8]);
@@ -602,7 +616,7 @@ mod tests {
         assert!(c.pending_evictions() > 0);
         c.set_defer_evictions(false);
         // Toggle-off alone does NOT flush — caller must call flush.
-        c.flush_evictions().await;
+        c.flush_evictions().await.unwrap();
         assert_eq!(c.pending_evictions(), 0);
     }
 
@@ -617,7 +631,9 @@ mod tests {
             treetop_levels: 3,
         };
         let backend = InMemoryBlockBackend::new(params.num_buckets());
-        let mut c = RingOramClient::new(backend, params, [0x42; 32], [0x84; 32]).await;
+        let mut c = RingOramClient::new(backend, params, [0x42; 32], [0x84; 32])
+            .await
+            .unwrap();
         let init_reads = c.backend().read_count();
 
         for i in 0..8u32 {
@@ -632,7 +648,9 @@ mod tests {
         };
         let baseline_backend = InMemoryBlockBackend::new(baseline_params.num_buckets());
         let mut baseline =
-            RingOramClient::new(baseline_backend, baseline_params, [0x42; 32], [0x84; 32]).await;
+            RingOramClient::new(baseline_backend, baseline_params, [0x42; 32], [0x84; 32])
+                .await
+                .unwrap();
         let base_init = baseline.backend().read_count();
         for i in 0..8u32 {
             baseline.admit(BlockId(i), vec![i as u8; 8]).await.unwrap();
@@ -658,7 +676,9 @@ mod tests {
             treetop_levels: 3,
         };
         let backend = InMemoryBlockBackend::new(params.num_buckets());
-        let mut c = RingOramClient::new(backend, params, [0x55; 32], [0xaa; 32]).await;
+        let mut c = RingOramClient::new(backend, params, [0x55; 32], [0xaa; 32])
+            .await
+            .unwrap();
         for i in 0..16u32 {
             c.admit(BlockId(i), vec![i as u8; 8]).await.unwrap();
         }
@@ -680,12 +700,14 @@ mod tests {
             treetop_levels: 0,
         };
         let backend = InMemoryBlockBackend::new(params.num_buckets());
-        let mut c = RingOramClient::new(backend, params, [0xaa; 32], [0x01; 32]).await;
+        let mut c = RingOramClient::new(backend, params, [0xaa; 32], [0x01; 32])
+            .await
+            .unwrap();
         c.admit(BlockId(2), vec![0xff; 8]).await.unwrap();
 
         let bad_key = [0xbb; 32];
         let path = path_buckets(PathId(0), params.n_leaves);
-        let buckets = c.backend.read_path(&path).await;
+        let buckets = c.backend.read_path(&path).await.unwrap();
         let result = aes_decrypt(
             &bad_key,
             buckets[0].bucket_id,

@@ -14,6 +14,7 @@ members = [
     # the actual implementations). See docs/prototype/private-graph-rag-variant-a.md.
     "crates/ring-oram",
     "crates/compass-index",
+    "crates/compass-rest-backend",
     "crates/xormm-emm",
     "crates/light-kg-store",
     "crates/lightrag-private",
@@ -103,6 +104,13 @@ tower = "0.5"
 async-trait = "0.1"
 # msgpack codec for the `compass-rest-backend` wire format (M5.1).
 rmp-serde = "1.3"
+serde_bytes = "0.11"
+url = "2"
+# Embedded KV for the `compass-rest-backend` server side (M5.1).
+# Sled is the simplest pure-Rust choice with crash-safe writes and a
+# stable Tree::insert/get API. M5.4 swaps to `object_store` for cloud
+# durability behind a feature flag.
+sled = "0.34"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 toml = "0.8"
