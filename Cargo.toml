@@ -10,6 +10,13 @@ members = [
     "crates/gelo-tee-sev-snp",
     "crates/gelo-snp-runner",
     "crates/remote-rag",
+    # Variant A LightRAG/GraphRAG retrieval — M0 skeletons (M1–M8 land
+    # the actual implementations). See docs/prototype/private-graph-rag-variant-a.md.
+    "crates/ring-oram",
+    "crates/compass-index",
+    "crates/xormm-emm",
+    "crates/light-kg-store",
+    "crates/lightrag-private",
 ]
 resolver = "2"
 

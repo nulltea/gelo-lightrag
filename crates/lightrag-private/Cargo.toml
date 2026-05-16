@@ -1,0 +1,19 @@
+[package]
+name = "lightrag-private"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Rust port of LightRAG's retrieval pipeline over the encrypted store. See
+# `docs/prototype/private-graph-rag-variant-a.md` §4.5 (surface) and §7 M7
+# (retrieval port milestone). M0 ships a skeleton only.
+
+[dependencies]
+anyhow.workspace = true
+core = { path = "../core" }
+hmac.workspace = true
+light-kg-store = { path = "../light-kg-store" }
+serde.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true

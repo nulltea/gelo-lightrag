@@ -1,0 +1,20 @@
+[package]
+name = "light-kg-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# LightRAG-shaped storage facade: 3× compass-index + 2× xormm-emm +
+# encrypted KV + AES chunk store, behind a single trait the
+# `lightrag-private` retrieval service depends on. See
+# `docs/prototype/private-graph-rag-variant-a.md` §4.4 (surface) and
+# §7 M6 (integration milestone). M0 ships a skeleton only.
+
+[dependencies]
+aes-gcm.workspace = true
+anyhow.workspace = true
+compass-index = { path = "../compass-index" }
+core = { path = "../core" }
+thiserror.workspace = true
+xormm-emm = { path = "../xormm-emm" }
+zeroize.workspace = true

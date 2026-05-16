@@ -1,0 +1,18 @@
+[package]
+name = "ring-oram"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Ring-ORAM client + server protocol. See
+# `docs/prototype/private-graph-rag-variant-a.md` §4.1 (surface) and §7 M1
+# (correctness + integrity milestone). M0 ships a skeleton only.
+
+[dependencies]
+aes-gcm.workspace = true
+anyhow.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
