@@ -61,6 +61,14 @@ pub struct RingOramClient<B: BlockBackend> {
     /// because they both put a block into the stash that needs to
     /// drain back to the tree.
     accesses_since_evict: u32,
+    /// Multi-hop lazy eviction (Compass §4.7): when `true`,
+    /// `maybe_evict` accumulates a pending count instead of running
+    /// eviction inline. Caller invokes `flush_evictions()` after a
+    /// multi-step traversal to drain. Off by default — preserves the
+    /// M1 stash-bound behaviour for callers that don't opt in.
+    defer_evictions: bool,
+    /// Pending eviction count when `defer_evictions` is on.
+    pending_evictions: u32,
     /// Reverse-lexicographic eviction cursor. Increments after each
     /// eviction; wraps at `n_leaves`.
     evict_cursor: u32,
@@ -91,6 +99,8 @@ impl<B: BlockBackend> RingOramClient<B> {
             stash: Stash::new(),
             counters,
             accesses_since_evict: 0,
+            defer_evictions: false,
+            pending_evictions: 0,
             evict_cursor: 0,
             rng: ChaCha20Rng::from_seed(rng_seed),
         };
@@ -248,10 +258,43 @@ impl<B: BlockBackend> RingOramClient<B> {
     }
 
     fn maybe_evict(&mut self) {
-        if self.accesses_since_evict >= self.params.a {
-            self.evict_path();
-            self.accesses_since_evict = 0;
+        while self.accesses_since_evict >= self.params.a {
+            self.accesses_since_evict -= self.params.a;
+            if self.defer_evictions {
+                self.pending_evictions += 1;
+            } else {
+                self.evict_path();
+            }
         }
+    }
+
+    /// Turn multi-hop lazy eviction on or off. While on, `read`/
+    /// `admit`/`write` accumulate a pending eviction count instead of
+    /// running eviction inline — the caller calls `flush_evictions()`
+    /// at the end of a multi-step traversal to drain. The stash bound
+    /// (paper §4.7) still holds after the flush; transient stash
+    /// growth between toggle-on and flush is bounded by the number of
+    /// deferred operations.
+    pub fn set_defer_evictions(&mut self, defer: bool) {
+        self.defer_evictions = defer;
+        if !defer {
+            self.flush_evictions();
+        }
+    }
+
+    /// Drain pending evictions. Safe to call regardless of
+    /// `defer_evictions` state.
+    pub fn flush_evictions(&mut self) {
+        while self.pending_evictions > 0 {
+            self.evict_path();
+            self.pending_evictions -= 1;
+        }
+    }
+
+    /// Telemetry: how many evictions are queued for the next flush.
+    /// Always 0 when `defer_evictions` is off.
+    pub fn pending_evictions(&self) -> u32 {
+        self.pending_evictions
     }
 
     /// Reverse-lexicographic eviction. Pick the next leaf via the
@@ -442,6 +485,53 @@ mod tests {
                 assert_eq!(c.read(BlockId(i)).unwrap(), vec![i as u8; 8]);
             }
         }
+    }
+
+    #[test]
+    fn lazy_eviction_defers_then_flushes() {
+        // With defer_evictions on, repeated reads accumulate pending
+        // evictions but the client stays correct. After flush, the
+        // post-state must equal the inline-eviction baseline:
+        //   - read results identical
+        //   - pending_evictions returns to 0
+        //   - same blocks still readable
+        let mut c = mk_client(32, 8);
+        for i in 0..8u32 {
+            c.admit(BlockId(i), vec![i as u8; 8]).unwrap();
+        }
+        c.set_defer_evictions(true);
+        for _ in 0..3 {
+            for i in 0..8u32 {
+                let got = c.read(BlockId(i)).unwrap();
+                assert_eq!(got, vec![i as u8; 8]);
+            }
+        }
+        // We expect pending evictions > 0 because we did 24 reads at
+        // a=3, and admit accesses also accumulated.
+        assert!(c.pending_evictions() > 0);
+        c.flush_evictions();
+        assert_eq!(c.pending_evictions(), 0);
+        // Post-flush: blocks still correct.
+        for i in 0..8u32 {
+            assert_eq!(c.read(BlockId(i)).unwrap(), vec![i as u8; 8]);
+        }
+    }
+
+    #[test]
+    fn set_defer_off_flushes_pending() {
+        // Turning off defer while pending evictions are queued must
+        // drain them before returning.
+        let mut c = mk_client(32, 8);
+        for i in 0..8u32 {
+            c.admit(BlockId(i), vec![i as u8; 8]).unwrap();
+        }
+        c.set_defer_evictions(true);
+        for i in 0..8u32 {
+            let _ = c.read(BlockId(i)).unwrap();
+        }
+        assert!(c.pending_evictions() > 0);
+        c.set_defer_evictions(false);
+        assert_eq!(c.pending_evictions(), 0);
     }
 
     #[test]

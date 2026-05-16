@@ -57,6 +57,12 @@ pub(crate) fn layered_search<B: BlockBackend>(
         "query dim mismatch with CompassIndex"
     );
 
+    // Multi-hop lazy eviction (Compass §4.7): keep eviction writes
+    // off the user-perceived critical path. The RAII guard flushes
+    // pending evictions when search returns.
+    let _evict_guard = index.defer_evictions_for_search();
+    let index: &mut CompassIndex<B> = _evict_guard.index;
+
     // ─── 1. Upper-layer descent (cleartext) ────────────────────────
     let mut current = index.entry.0;
     let entry_emb = upper_layer_embedding(index, current, index.top_layer)

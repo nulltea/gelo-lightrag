@@ -53,35 +53,30 @@ fn brute_force_topk(query: &[f32], corpus: &[Vec<f32>], k: usize) -> Vec<u32> {
 }
 
 #[test]
-fn compass_search_recall_at_256_vectors_is_at_least_90_percent() {
+fn compass_search_recall_at_1k_vectors_is_at_least_90_percent() {
     let mut rng = ChaCha20Rng::from_seed([0x42; 32]);
-    // M4.6 layered HNSW build is O(N · ef_construction · M) — at
-    // N=1000, ef_construction=200, M=16 that's tens of millions of
-    // distance ops plus the ORAM admit pass (1000 admits, each
-    // touching one path). Empirically this finishes well within
-    // a few minutes; the previous OOM-kill at 600s under the M4
-    // build suggests the in-process backend's memory growth + the
-    // BinaryHeap allocations during beam search are noisy. Drop to
-    // 256 corpus / 10 queries for the regression test; the larger
-    // 1K-vector configuration moves to the (currently-deferred)
-    // bench harness M4.7.
-    let n = 256usize;
-    let dim = 32; // smaller than 64 to keep build fast
+    // Run with `cargo test --release -p compass-index --test recall`
+    // — debug builds make HNSW build + ORAM beam ~30× slower than
+    // release and have previously OOM-killed under sandbox limits.
+    // The plan's M3 target was 1K vectors / D=64; M4 hits it with
+    // release-mode + the cleartext upper-layer cache.
+    let n = 1_000usize;
+    let dim = 64;
     let k = 10;
-    let q_count = 10;
+    let q_count = 50;
 
     let corpus: Vec<Vec<f32>> = (0..n).map(|_| random_unit_vec(&mut rng, dim)).collect();
 
-    // Tight block_bytes: 32·4 (embedding) + 4 (count) + 32·4 (M_l0=32
-    // neighbours) = 260. Pad to 320.
+    // 64·4 (embedding) + 4 (count) + 32·4 (M_l0=32 neighbours) = 388.
+    // Pad to 448.
     let params = CompassIndexParams {
         hnsw: PlainHnswParams::paper_defaults(dim, 16),
         oram: RingOramParams {
             z: 4,
             s: 5,
             a: 3,
-            block_bytes: 320,
-            n_leaves: 512,
+            block_bytes: 448,
+            n_leaves: 2048, // headroom over n=1000
         },
         ef_search: 64,
     };

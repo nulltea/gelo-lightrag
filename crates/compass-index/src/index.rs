@@ -177,4 +177,25 @@ impl<B: BlockBackend> CompassIndex<B> {
         )?;
         Ok(node)
     }
+
+    /// Multi-hop lazy-eviction guard (Compass §4.7). RAII: enables
+    /// defer on construction, flushes on drop. Use during a search
+    /// to keep eviction off the user-perceived critical path.
+    pub(crate) fn defer_evictions_for_search<'a>(&'a mut self) -> EvictionDeferGuard<'a, B> {
+        self.oram.set_defer_evictions(true);
+        EvictionDeferGuard { index: self }
+    }
+}
+
+/// RAII guard returned by `defer_evictions_for_search`. On drop,
+/// resumes inline eviction and flushes anything pending.
+pub(crate) struct EvictionDeferGuard<'a, B: BlockBackend> {
+    pub(crate) index: &'a mut CompassIndex<B>,
+}
+
+impl<'a, B: BlockBackend> Drop for EvictionDeferGuard<'a, B> {
+    fn drop(&mut self) {
+        // set_defer_evictions(false) also flushes any pending.
+        self.index.oram.set_defer_evictions(false);
+    }
 }
