@@ -1,14 +1,17 @@
 use anyhow::Result;
-use ndarray::{Array2, ArrayView2};
+use ndarray::{Array1, Array2, ArrayView2};
 
 use gelo_protocol::profile;
 use gelo_protocol::{TrustedExecutor, WeightHandle, WeightKind};
 
 use super::attention::{
-    causal_gqa_attention, causal_gqa_attention_permuted, causal_gqa_attention_with_offload,
+    causal_gqa_attention, causal_gqa_attention_cached, causal_gqa_attention_permuted,
+    causal_gqa_attention_permuted_cached, causal_gqa_attention_swa_cached,
+    causal_gqa_attention_with_offload,
 };
-use super::config::DecoderConfig;
-use super::rms_norm::rms_norm;
+use super::config::{AttentionClass, DecoderConfig};
+use super::kv_cache::KvCache;
+use super::rms_norm::{apply_qk_norm, rms_norm};
 use super::rope::RopeTables;
 use super::swiglu::swiglu;
 use super::weights::{DecoderLayerWeights, DecoderWeights};
@@ -77,6 +80,360 @@ fn embedding_lookup(cfg: &DecoderConfig, w: &DecoderWeights, ids: &[u32]) -> Arr
     out
 }
 
+/// Prefill — run a full prompt forward and populate the KV cache.
+///
+/// Returns the per-token hidden state matrix `(n_prompt, hidden_size)`
+/// after the final RMSNorm. Caller takes the last row for next-token
+/// sampling and re-uses the populated `kv_cache` for subsequent
+/// [`run_decode_step`] calls.
+///
+/// Equivalent to [`run`] for one-shot embedding, except K and V are
+/// preserved in `kv_cache` for autoregressive continuation. The
+/// protocol-level forward-pass bracket (one fresh Haar `A`) covers the
+/// full prefill in a single call — same property as [`run`].
+pub fn run_prefill(
+    cfg: &DecoderConfig,
+    weights: &DecoderWeights,
+    rope: &RopeTables,
+    exec: &mut impl TrustedExecutor,
+    input_ids: &[u32],
+    kv_cache: &mut KvCache,
+) -> Result<Array2<f32>> {
+    assert_eq!(
+        kv_cache.num_layers(),
+        weights.layers.len(),
+        "kv_cache layer count must match model layer count",
+    );
+    assert_eq!(
+        kv_cache.kv_dim(),
+        cfg.kv_dim(),
+        "kv_cache kv_dim must match cfg.kv_dim()",
+    );
+    let n = input_ids.len();
+    let q_pos_offset = kv_cache.len();
+    assert!(
+        q_pos_offset + n <= kv_cache.capacity(),
+        "prefill would overflow kv_cache: {} + {} > {}",
+        q_pos_offset,
+        n,
+        kv_cache.capacity(),
+    );
+
+    let mut h = profile::time("tee:embed_lookup", || embedding_lookup(cfg, weights, input_ids));
+
+    exec.begin_forward_pass(n)?;
+    let result = (|| -> Result<Array2<f32>> {
+        for (li, layer) in weights.layers.iter().enumerate() {
+            h = decoder_block_cached(
+                cfg,
+                layer,
+                rope,
+                exec,
+                li as u16,
+                h.view(),
+                cfg.offload_layer(li),
+                kv_cache,
+                q_pos_offset,
+            )?;
+        }
+        Ok(profile::time("tee:rmsnorm", || {
+            rms_norm(h.view(), weights.final_norm.as_slice().unwrap(), cfg.rms_norm_eps)
+        }))
+    })();
+    exec.end_forward_pass()?;
+    result
+}
+
+/// Decode one token — append its K/V to the cache, return the
+/// resulting last-layer hidden state row `(hidden_size,)`.
+///
+/// `token_id` is the token whose embedding becomes the single-row input
+/// to this step. The caller is responsible for the prefill phase having
+/// populated `kv_cache` for positions `0..kv_cache.len()`; this
+/// function appends one position at `kv_cache.len()` to every layer's
+/// cache. The protocol-level forward-pass bracket fires once per
+/// decode step — one fresh Haar `A` per token, per the locked design
+/// decision.
+pub fn run_decode_step(
+    cfg: &DecoderConfig,
+    weights: &DecoderWeights,
+    rope: &RopeTables,
+    exec: &mut impl TrustedExecutor,
+    token_id: u32,
+    kv_cache: &mut KvCache,
+) -> Result<Array1<f32>> {
+    assert_eq!(
+        kv_cache.num_layers(),
+        weights.layers.len(),
+        "kv_cache layer count must match model layer count",
+    );
+    assert_eq!(
+        kv_cache.kv_dim(),
+        cfg.kv_dim(),
+        "kv_cache kv_dim must match cfg.kv_dim()",
+    );
+    let q_pos_offset = kv_cache.len();
+    assert!(
+        q_pos_offset + 1 <= kv_cache.capacity(),
+        "decode would overflow kv_cache: {} + 1 > {}",
+        q_pos_offset,
+        kv_cache.capacity(),
+    );
+
+    let mut h = profile::time("tee:embed_lookup", || {
+        embedding_lookup(cfg, weights, &[token_id])
+    });
+
+    exec.begin_forward_pass(1)?;
+    let result = (|| -> Result<Array1<f32>> {
+        for (li, layer) in weights.layers.iter().enumerate() {
+            h = decoder_block_cached(
+                cfg,
+                layer,
+                rope,
+                exec,
+                li as u16,
+                h.view(),
+                cfg.offload_layer(li),
+                kv_cache,
+                q_pos_offset,
+            )?;
+        }
+        let normed = profile::time("tee:rmsnorm", || {
+            rms_norm(h.view(), weights.final_norm.as_slice().unwrap(), cfg.rms_norm_eps)
+        });
+        Ok(normed.row(0).to_owned())
+    })();
+    exec.end_forward_pass()?;
+    result
+}
+
+/// Cache-aware decoder block. Same compute path as the legacy
+/// [`decoder_block`] but additionally appends the post-RoPE K, V to
+/// `kv_cache` for layer `layer_idx`, and routes attention through the
+/// asymmetric [`causal_gqa_attention_cached`] kernel so a single-row
+/// Q (decode) can attend to the full cached prefix.
+///
+/// At prefill shape (n_q = n_kv, q_pos_offset = 0) this matches the
+/// legacy block bit-for-bit (the asymmetric mask collapses to the
+/// lower-triangular causal mask). At decode shape it's the harness's
+/// single-token-per-step path.
+///
+/// OutAttnMult / permuted attention auto-switches are intentionally
+/// not wired through this path yet — those are square-only kernels and
+/// the fused permuted FlashAttention path lands in M1.10. Until then,
+/// the cached block uses the in-TEE attention computation. This
+/// matches the locked design decision: decode global attention stays
+/// in-TEE always; long-context prefill global attention will use the
+/// fused permuted kernel once M1.10 ships.
+#[allow(clippy::too_many_arguments)]
+fn decoder_block_cached(
+    cfg: &DecoderConfig,
+    layer: &DecoderLayerWeights,
+    rope: &RopeTables,
+    exec: &mut impl TrustedExecutor,
+    layer_idx: u16,
+    hidden: ArrayView2<'_, f32>,
+    offload: bool,
+    kv_cache: &mut KvCache,
+    q_pos_offset: usize,
+) -> Result<Array2<f32>> {
+    // Pre-attention RMSNorm.
+    let h_norm = profile::time("tee:rmsnorm", || {
+        rms_norm(hidden, layer.norm_attn.as_slice().unwrap(), cfg.rms_norm_eps)
+    });
+
+    // Q/K/V projections.
+    //
+    // For Gemma 4 global layers with `kv_shared_in_global` true, the
+    // trained model ties `W_k = W_v` ("K equals V" trick). Two
+    // mathematically-identical matmuls collapse to one — we compute K
+    // once and reuse the result as V. The KV cache for these layers
+    // is sized half as wide (one tensor instead of two) — see
+    // `KvCache::new_with_sharing`.
+    let layer_class = cfg.effective_attention_class(layer_idx as usize);
+    let kv_shared = cfg.kv_shared_in_global && matches!(layer_class, AttentionClass::Global);
+
+    let (mut q_new, mut k_new, v_new) = if offload {
+        if kv_shared {
+            // One masked matmul for Q, one for K=V. The K and V handles
+            // map to the same backing weight when the model is loaded
+            // with `wk` and `wv` Arc-shared; the executor doesn't need
+            // to know that. We just skip the V offload and use K.
+            let q = exec.offload_linear(WeightHandle::new(layer_idx, WeightKind::Q), h_norm.view())?;
+            let k = exec.offload_linear(WeightHandle::new(layer_idx, WeightKind::K), h_norm.view())?;
+            let v = k.clone();
+            (q, k, v)
+        } else {
+            exec.offload_qkv(layer_idx, h_norm.view())?
+        }
+    } else {
+        profile::time("tee:qkv_direct", || {
+            let q = h_norm.dot(&layer.wq);
+            let k = h_norm.dot(&layer.wk);
+            let v = if kv_shared { k.clone() } else { h_norm.dot(&layer.wv) };
+            (q, k, v)
+        })
+    };
+
+    // Qwen3 QK-norm — per-head RMSNorm on Q and K **before** RoPE.
+    // No-op for older models (norms = None). Applied per-head so each
+    // attention head normalises its own `head_dim` slice independently;
+    // gamma has length `head_dim`.
+    profile::time("tee:qk_norm", || {
+        if let Some(q_gamma) = layer.q_norm.as_ref() {
+            apply_qk_norm(
+                q_new.view_mut(),
+                cfg.num_attention_heads,
+                cfg.head_dim_value(),
+                q_gamma.as_slice().expect("q_norm Array1 is contiguous"),
+                cfg.rms_norm_eps,
+            );
+        }
+        if let Some(k_gamma) = layer.k_norm.as_ref() {
+            apply_qk_norm(
+                k_new.view_mut(),
+                cfg.num_key_value_heads,
+                cfg.head_dim_value(),
+                k_gamma.as_slice().expect("k_norm Array1 is contiguous"),
+                cfg.rms_norm_eps,
+            );
+        }
+    });
+
+    // RoPE — rotate Q and K at absolute positions
+    // `q_pos_offset..q_pos_offset + n_q`. Per the Gemma 4 p-RoPE
+    // recipe: global layers rotate only the first `rotated_dim` of
+    // each head; local layers rotate the full head_dim.
+    let rotated_dim = match (layer_class, cfg.partial_rope) {
+        (AttentionClass::Global, Some(_)) => cfg.rotated_dim(),
+        // Local layers always rotate the full head_dim (Gemma 4
+        // spec). Models with `partial_rope = None` likewise use
+        // full rotation everywhere.
+        _ => cfg.head_dim_value(),
+    };
+    profile::time("tee:rope", || {
+        rope.apply_partial_at(
+            q_new.view_mut(),
+            cfg.num_attention_heads,
+            q_pos_offset,
+            rotated_dim,
+        );
+        rope.apply_partial_at(
+            k_new.view_mut(),
+            cfg.num_key_value_heads,
+            q_pos_offset,
+            rotated_dim,
+        );
+    });
+    // For K=V shared global layers, the V tensor must stay identical
+    // to K after RoPE. The simplest correctness path: re-derive V
+    // from K post-RoPE. (Earlier we cloned K into V before RoPE, so
+    // the clone is now stale.) Cheap — one ndarray clone.
+    let v_new = if kv_shared { k_new.clone() } else { v_new };
+
+    // Append fresh K, V to the cache before attention so the kernel
+    // sees the full prefix including the current step's contribution.
+    kv_cache.append(layer_idx as usize, k_new.view(), v_new.view())?;
+    let (k_cached, v_cached) = kv_cache.view(layer_idx as usize)?;
+
+    // Per-layer hybrid attention dispatch. The class falls back to
+    // `Global` for `attention_classes = None`, preserving the
+    // Qwen3 / Llama behaviour byte-for-byte.
+    let ctx = match layer_class {
+        AttentionClass::Local { window } => profile::time("tee:attn_swa_cached", || {
+            causal_gqa_attention_swa_cached(
+                q_new.view(),
+                k_cached,
+                v_cached,
+                cfg.num_attention_heads,
+                cfg.num_key_value_heads,
+                cfg.head_dim_value(),
+                q_pos_offset,
+                window,
+            )
+        }),
+        AttentionClass::Global => {
+            // M1.10.1.2: route Global cached attention through the
+            // permutation-shielded path when the per-batch auto-switch
+            // engages. The threshold compares against `n_q` (number of
+            // NEW Q rows this forward) — at decode shape (n_q=1) the
+            // permuted overhead would dominate so we stay in-TEE; at
+            // prefill (n_q = n_prompt ≥ threshold) the permuted path
+            // engages. Falls back to in-TEE when offload=false or the
+            // master switch is off — the M1.3 default behaviour.
+            let n_q = q_new.shape()[0];
+            if offload && cfg.perm_attention_enabled_for(n_q) {
+                profile::time("tee:attn_permuted_cached", || {
+                    causal_gqa_attention_permuted_cached(
+                        exec,
+                        q_new.view(),
+                        k_cached,
+                        v_cached,
+                        cfg.num_attention_heads,
+                        cfg.num_key_value_heads,
+                        cfg.head_dim_value(),
+                        q_pos_offset,
+                    )
+                })?
+            } else {
+                profile::time("tee:attn_cached", || {
+                    causal_gqa_attention_cached(
+                        q_new.view(),
+                        k_cached,
+                        v_cached,
+                        cfg.num_attention_heads,
+                        cfg.num_key_value_heads,
+                        cfg.head_dim_value(),
+                        q_pos_offset,
+                    )
+                })
+            }
+        }
+    };
+
+    // Output projection — fresh mask per the per-offload protocol.
+    let attn_out = if offload {
+        exec.offload_linear(WeightHandle::new(layer_idx, WeightKind::O), ctx.view())?
+    } else {
+        profile::time("tee:o_direct", || ctx.dot(&layer.wo))
+    };
+    let h1 = profile::time("tee:residual", || &hidden + &attn_out);
+
+    // Pre-FFN RMSNorm.
+    let h1_norm = profile::time("tee:rmsnorm", || {
+        rms_norm(h1.view(), layer.norm_ffn.as_slice().unwrap(), cfg.rms_norm_eps)
+    });
+
+    // SwiGLU FFN — same shape, same offload group as the legacy block.
+    let (gate, up) = if offload {
+        let handles = [
+            WeightHandle::new(layer_idx, WeightKind::FfnGate),
+            WeightHandle::new(layer_idx, WeightKind::FfnUp),
+        ];
+        let mut out = exec.offload_linear_many(&handles, h1_norm.view())?;
+        let u = out.pop().expect("offload_linear_many returns 2 outputs");
+        let g = out.pop().expect("offload_linear_many returns 2 outputs");
+        (g, u)
+    } else {
+        profile::time("tee:swiglu_proj_direct", || {
+            (h1_norm.dot(&layer.w_gate), h1_norm.dot(&layer.w_up))
+        })
+    };
+
+    let activated = profile::time("tee:swiglu_activate", || swiglu(gate.view(), up.view()));
+
+    let ffn_out = if offload {
+        exec.offload_linear(
+            WeightHandle::new(layer_idx, WeightKind::FfnDown),
+            activated.view(),
+        )?
+    } else {
+        profile::time("tee:swiglu_down_direct", || activated.dot(&layer.w_down))
+    };
+    Ok(profile::time("tee:residual", || &h1 + &ffn_out))
+}
+
 fn decoder_block(
     cfg: &DecoderConfig,
     layer: &DecoderLayerWeights,
@@ -104,6 +461,30 @@ fn decoder_block(
             )
         })
     };
+
+    // Qwen3 QK-norm — per-head RMSNorm on Q and K **before** RoPE.
+    // No-op when the loaded checkpoint lacks `q_norm` / `k_norm`
+    // (Qwen2 / LLaMA / Mistral).
+    profile::time("tee:qk_norm", || {
+        if let Some(q_gamma) = layer.q_norm.as_ref() {
+            apply_qk_norm(
+                q.view_mut(),
+                cfg.num_attention_heads,
+                cfg.head_dim_value(),
+                q_gamma.as_slice().expect("q_norm Array1 is contiguous"),
+                cfg.rms_norm_eps,
+            );
+        }
+        if let Some(k_gamma) = layer.k_norm.as_ref() {
+            apply_qk_norm(
+                k.view_mut(),
+                cfg.num_key_value_heads,
+                cfg.head_dim_value(),
+                k_gamma.as_slice().expect("k_norm Array1 is contiguous"),
+                cfg.rms_norm_eps,
+            );
+        }
+    });
 
     // RoPE rotates Q and K only (V left alone) per-head.
     profile::time("tee:rope", || {

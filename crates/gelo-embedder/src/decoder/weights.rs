@@ -34,6 +34,17 @@ pub struct DecoderLayerWeights {
     pub w_gate: Array2<f32>,       // (hidden, intermediate)
     pub w_up: Array2<f32>,         // (hidden, intermediate)
     pub w_down: Array2<f32>,       // (intermediate, hidden)
+
+    /// Qwen3 added per-head RMSNorm on Q and K **before** RoPE
+    /// (`self_attn.q_norm.weight`, `self_attn.k_norm.weight`, each
+    /// shape `(head_dim,)`). When loaded from a Qwen3 checkpoint these
+    /// are `Some(_)` and the forward path applies a head-wise RMSNorm
+    /// to Q / K before the rotary step. Qwen2 / LLaMA / Mistral
+    /// checkpoints lack these tensors → `None`, and the forward path
+    /// skips the norm step, preserving byte-for-byte parity with the
+    /// pre-Qwen3 behaviour.
+    pub q_norm: Option<Array1<f32>>,
+    pub k_norm: Option<Array1<f32>>,
 }
 
 impl DecoderWeights {
@@ -90,6 +101,13 @@ impl DecoderWeights {
                     lookup_view(&full).with_context(|| format!("missing tensor {full}"))?,
                 )
             };
+            let read1_opt = |name: &str| -> Result<Option<Array1<f32>>> {
+                let full = format!("{base}{name}");
+                match lookup_view(&full) {
+                    Ok(view) => Ok(Some(tensor_to_1d(view)?)),
+                    Err(_) => Ok(None),
+                }
+            };
             let read2_t = |name: &str| -> Result<Array2<f32>> {
                 let full = format!("{base}{name}");
                 let view = lookup_view(&full)
@@ -108,6 +126,12 @@ impl DecoderWeights {
                 w_gate: read2_t("mlp.gate_proj.weight")?,
                 w_up: read2_t("mlp.up_proj.weight")?,
                 w_down: read2_t("mlp.down_proj.weight")?,
+                // Qwen3 QK-norm — present in Qwen3-* checkpoints,
+                // absent in Qwen2 / LLaMA / Mistral. Loader treats
+                // the tensors as optional so back-compat is byte-
+                // identical for older models.
+                q_norm: read1_opt("self_attn.q_norm.weight")?,
+                k_norm: read1_opt("self_attn.k_norm.weight")?,
             });
         }
 

@@ -49,6 +49,10 @@ fn tiny_decoder_config(
         out_attn_mult_min_seq_len: Some(0),
         use_perm_attention: false,
         perm_attention_min_seq_len: None,
+        attention_classes: None,
+        partial_rope: None,
+        kv_shared_in_global: false,
+        final_logit_softcapping: None,
     }
 }
 
@@ -75,6 +79,8 @@ fn synth_weights(cfg: &DecoderConfig, rng: &mut impl rand::RngCore) -> DecoderWe
             w_gate: rand2(d, f, rng, 0.05),
             w_up: rand2(d, f, rng, 0.05),
             w_down: rand2(f, d, rng, 0.05),
+            q_norm: None,
+            k_norm: None,
         })
         .collect();
     DecoderWeights {
