@@ -434,6 +434,14 @@ per-forward-vs-per-offload mask trade-off (`gelo.md` §3.2).
 
 ### M1.10 — Fused permuted attention for long-context prefill
 
+> **Detailed plan:** [`m1-10-fused-permuted-attention.md`](m1-10-fused-permuted-attention.md)
+> (2026-05-18). Surfaces a pre-implementation
+> security gap (causal-mask leak in the existing `permuted_attention`)
+> that adds Phase 0 (~1 week) before kernel work begins.
+> Refined effort: ~5 weeks (Option A); ~7 weeks (Option C forced).
+> Refined acceptance: gpu_gelo_fused TTFT ≤ 20 s at n=2048 on
+> Qwen3-1.7B / RADV iGPU; attention-only ≤ 1 s isolated.
+
 **Scope:** Close the upstream `burn-cubecl` gap (hardcoded
 `causal: true` in `burn_cubecl::kernel::attention::flash_attention`)
 and wire a fused FlashAttention-style permuted-attention kernel
@@ -444,7 +452,9 @@ is bandwidth-bound on the 3-dispatch path's materialised
 at n=16k), making the 3-dispatch fallback unusable for any
 non-trivial RAG context. Fused path drops per-layer traffic to
 `O(n·d_total)` (~130 MB/layer at n=4k) — lands long-context
-prefill within ~2× of unprotected baseline.
+prefill within ~2× of unprotected baseline **for the attention
+slice** (the GELO mask round-trip on linear projections is a
+separate cost — see plan §10).
 
 **Approach options** (decision deferred to time-of-implementation
 based on cubek/burn maturity at that moment):
