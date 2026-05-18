@@ -512,6 +512,122 @@ fn hybrid_with_tight_window_diverges_at_hidden_state() {
     );
 }
 
+/// Build a Gemma 4-shaped config + synthetic weights where wk == wv
+/// (Arc-shared), then verify `kv_shared_in_global = true` and
+/// `kv_shared_in_global = false` produce identical hidden states.
+/// This is the M1.4 correctness proof: the K=V optimisation only
+/// removes redundant compute, never changes math.
+#[test]
+fn kv_shared_matches_separate_when_wk_equals_wv() {
+    let mut cfg_shared = gemma4_shaped_config();
+    cfg_shared.kv_shared_in_global = true;
+
+    let mut cfg_separate = cfg_shared.clone();
+    cfg_separate.kv_shared_in_global = false;
+
+    let mut rng = ChaCha20Rng::from_seed([66u8; 32]);
+    let raw_weights = synth_weights(&cfg_shared, &mut rng);
+
+    // Force wk == wv on every layer by overwriting wv with wk.
+    let layers = raw_weights
+        .layers
+        .into_iter()
+        .map(|l| DecoderLayerWeights {
+            norm_attn: l.norm_attn,
+            wq: l.wq,
+            wk: l.wk.clone(),
+            wv: l.wk, // tie K = V at the weight level
+            wo: l.wo,
+            norm_ffn: l.norm_ffn,
+            w_gate: l.w_gate,
+            w_up: l.w_up,
+            w_down: l.w_down,
+        })
+        .collect();
+    let weights = Arc::new(DecoderWeights {
+        token_embedding: raw_weights.token_embedding,
+        final_norm: raw_weights.final_norm,
+        layers,
+        model_identity: raw_weights.model_identity,
+    });
+
+    let rope = RopeTables::new(
+        cfg_shared.head_dim_value(),
+        cfg_shared.max_position_embeddings,
+        cfg_shared.rope_theta,
+    );
+    let prompt = vec![1u32, 2, 3, 4];
+
+    let mut engine_a = RayonCpuEngine::new();
+    provision_decoder(&weights, &cfg_shared, &mut engine_a);
+    let mut exec_a = PlaintextExecutor::new(engine_a);
+    let out_shared = generate(
+        &cfg_shared,
+        &weights,
+        &rope,
+        &mut exec_a,
+        &prompt,
+        &GenerationConfig {
+            max_tokens: 3,
+            eos_token_ids: Vec::new(),
+            sampler: SamplerConfig::Greedy,
+        },
+    )
+    .unwrap();
+
+    let mut engine_b = RayonCpuEngine::new();
+    provision_decoder(&weights, &cfg_separate, &mut engine_b);
+    let mut exec_b = PlaintextExecutor::new(engine_b);
+    let out_separate = generate(
+        &cfg_separate,
+        &weights,
+        &rope,
+        &mut exec_b,
+        &prompt,
+        &GenerationConfig {
+            max_tokens: 3,
+            eos_token_ids: Vec::new(),
+            sampler: SamplerConfig::Greedy,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        out_shared.tokens, out_separate.tokens,
+        "K=V shared output diverged from separate path under wk == wv",
+    );
+}
+
+#[test]
+fn kv_shared_cache_layout_halves_global_layers() {
+    // Allocate the same generation-time cache as `generate()` would
+    // for the Gemma 4-shaped config (6 layers, 2:1 ratio = 4 local + 2
+    // global), with `kv_shared_in_global = true`. The shared global
+    // layers must be ~½ the size of separate ones.
+    let cfg = gemma4_shaped_config();
+    assert!(cfg.kv_shared_in_global);
+    let n_layers = cfg.num_hidden_layers;
+    let shared: Vec<bool> = (0..n_layers)
+        .map(|li| matches!(cfg.effective_attention_class(li), AttentionClass::Global))
+        .collect();
+    let max_cache_len = 32;
+    let cache = KvCache::new_with_sharing(n_layers, max_cache_len, cfg.kv_dim(), &shared);
+
+    let all_sep = KvCache::new(n_layers, max_cache_len, cfg.kv_dim());
+
+    // 2 of 6 layers are shared → 2 * half + 4 * full per the byte
+    // formula in kv_cache::tests::shared_layer_halves_memory_footprint.
+    // Concrete numbers: full = 32 * kv_dim * 8 (K + V * 4 bytes), half
+    // = 32 * kv_dim * 4.
+    let per_sep = max_cache_len * cfg.kv_dim() * 8;
+    let per_shared = max_cache_len * cfg.kv_dim() * 4;
+    assert_eq!(cache.bytes(), 4 * per_sep + 2 * per_shared);
+    assert_eq!(all_sep.bytes(), 6 * per_sep);
+    // Memory saved must be exactly the per-shared cost across the 2
+    // shared layers (each saves one half = per_shared bytes).
+    assert_eq!(all_sep.bytes() - cache.bytes(), 2 * per_shared);
+}
+
 #[test]
 fn partial_rope_diverges_from_full_rope() {
     // p-RoPE on global layers must produce a different hidden state

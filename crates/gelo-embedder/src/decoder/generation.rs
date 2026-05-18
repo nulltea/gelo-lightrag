@@ -22,7 +22,7 @@ use ndarray::ArrayView1;
 
 use gelo_protocol::TrustedExecutor;
 
-use super::config::DecoderConfig;
+use super::config::{AttentionClass, DecoderConfig};
 use super::forward;
 use super::kv_cache::KvCache;
 use super::rope::RopeTables;
@@ -143,7 +143,19 @@ pub fn generate(
         ));
     }
 
-    let mut kv_cache = KvCache::new(weights.layers.len(), max_cache_len, cfg.kv_dim());
+    // For Gemma 4 hybrid models with K=V tying on global layers,
+    // allocate the cache with per-layer sharing — halves global-layer
+    // KV memory. Other configs fall through to the all-separate path.
+    let mut kv_cache = if cfg.kv_shared_in_global
+        && cfg.attention_classes.is_some()
+    {
+        let shared: Vec<bool> = (0..weights.layers.len())
+            .map(|li| matches!(cfg.effective_attention_class(li), AttentionClass::Global))
+            .collect();
+        KvCache::new_with_sharing(weights.layers.len(), max_cache_len, cfg.kv_dim(), &shared)
+    } else {
+        KvCache::new(weights.layers.len(), max_cache_len, cfg.kv_dim())
+    };
 
     // Prefill — populate the cache, take the last position's hidden state.
     let hidden = forward::run_prefill(cfg, weights, rope, exec, prompt_ids, &mut kv_cache)?;

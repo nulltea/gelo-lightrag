@@ -242,33 +242,51 @@ fn decoder_block_cached(
         rms_norm(hidden, layer.norm_attn.as_slice().unwrap(), cfg.rms_norm_eps)
     });
 
-    // Q/K/V projections — same offload contract as the legacy block.
+    // Q/K/V projections.
+    //
+    // For Gemma 4 global layers with `kv_shared_in_global` true, the
+    // trained model ties `W_k = W_v` ("K equals V" trick). Two
+    // mathematically-identical matmuls collapse to one — we compute K
+    // once and reuse the result as V. The KV cache for these layers
+    // is sized half as wide (one tensor instead of two) — see
+    // `KvCache::new_with_sharing`.
+    let layer_class = cfg.effective_attention_class(layer_idx as usize);
+    let kv_shared = cfg.kv_shared_in_global && matches!(layer_class, AttentionClass::Global);
+
     let (mut q_new, mut k_new, v_new) = if offload {
-        exec.offload_qkv(layer_idx, h_norm.view())?
+        if kv_shared {
+            // One masked matmul for Q, one for K=V. The K and V handles
+            // map to the same backing weight when the model is loaded
+            // with `wk` and `wv` Arc-shared; the executor doesn't need
+            // to know that. We just skip the V offload and use K.
+            let q = exec.offload_linear(WeightHandle::new(layer_idx, WeightKind::Q), h_norm.view())?;
+            let k = exec.offload_linear(WeightHandle::new(layer_idx, WeightKind::K), h_norm.view())?;
+            let v = k.clone();
+            (q, k, v)
+        } else {
+            exec.offload_qkv(layer_idx, h_norm.view())?
+        }
     } else {
         profile::time("tee:qkv_direct", || {
-            (
-                h_norm.dot(&layer.wq),
-                h_norm.dot(&layer.wk),
-                h_norm.dot(&layer.wv),
-            )
+            let q = h_norm.dot(&layer.wq);
+            let k = h_norm.dot(&layer.wk);
+            let v = if kv_shared { k.clone() } else { h_norm.dot(&layer.wv) };
+            (q, k, v)
         })
     };
 
     // RoPE — rotate Q and K at absolute positions
     // `q_pos_offset..q_pos_offset + n_q`. Per the Gemma 4 p-RoPE
     // recipe: global layers rotate only the first `rotated_dim` of
-    // each head; local layers rotate the full head_dim. The dispatch
-    // mirrors the attention-class dispatch below.
+    // each head; local layers rotate the full head_dim.
+    let rotated_dim = match (layer_class, cfg.partial_rope) {
+        (AttentionClass::Global, Some(_)) => cfg.rotated_dim(),
+        // Local layers always rotate the full head_dim (Gemma 4
+        // spec). Models with `partial_rope = None` likewise use
+        // full rotation everywhere.
+        _ => cfg.head_dim_value(),
+    };
     profile::time("tee:rope", || {
-        let class = cfg.effective_attention_class(layer_idx as usize);
-        let rotated_dim = match (class, cfg.partial_rope) {
-            (AttentionClass::Global, Some(_)) => cfg.rotated_dim(),
-            // Local layers always rotate the full head_dim (Gemma 4
-            // spec). Models with `partial_rope = None` likewise use
-            // full rotation everywhere.
-            _ => cfg.head_dim_value(),
-        };
         rope.apply_partial_at(
             q_new.view_mut(),
             cfg.num_attention_heads,
@@ -282,6 +300,11 @@ fn decoder_block_cached(
             rotated_dim,
         );
     });
+    // For K=V shared global layers, the V tensor must stay identical
+    // to K after RoPE. The simplest correctness path: re-derive V
+    // from K post-RoPE. (Earlier we cloned K into V before RoPE, so
+    // the clone is now stale.) Cheap — one ndarray clone.
+    let v_new = if kv_shared { k_new.clone() } else { v_new };
 
     // Append fresh K, V to the cache before attention so the kernel
     // sees the full prefix including the current step's contribution.
@@ -291,7 +314,7 @@ fn decoder_block_cached(
     // Per-layer hybrid attention dispatch. The class falls back to
     // `Global` for `attention_classes = None`, preserving the
     // Qwen3 / Llama behaviour byte-for-byte.
-    let ctx = match cfg.effective_attention_class(layer_idx as usize) {
+    let ctx = match layer_class {
         AttentionClass::Local { window } => profile::time("tee:attn_swa_cached", || {
             causal_gqa_attention_swa_cached(
                 q_new.view(),

@@ -8,39 +8,74 @@
 //! Rust heap inside the trusted process; encryption is the SEV-SNP
 //! page-level RMP, not anything this struct manages.
 //!
-//! Layout: one `(max_cache_len, kv_dim)` block per layer, with a `len`
-//! counter tracking how many of those rows are populated. Decode appends
-//! one row per step; prefill writes `n_prompt` rows at once. Reading
-//! returns the valid prefix as an `ArrayView2`.
+//! Layout: one storage slot per layer, with a `len` counter tracking
+//! how many of its rows are populated. The slot is either:
+//!
+//! - [`LayerKvStore::Separate`] — distinct `K` and `V` arrays, the
+//!   default for Qwen3 / Llama and Gemma 4 local layers.
+//! - [`LayerKvStore::Shared`] — a single `KV` array used for both K
+//!   and V, the M1.4 optimisation for Gemma 4 global layers where
+//!   the trained model satisfies `W_k = W_v` (the "K equals V" trick).
+//!   Halves the per-layer cache footprint.
 //!
 //! Indexing is `(layer_idx, position)`. The `(layer_idx, head_idx)`
-//! grouping called out in `path-1-gelo-gemma.md` M1.0 is implicit —
-//! `kv_dim = num_kv_heads × head_dim` and per-head slicing happens at
-//! the attention call site, same as the existing prefill path.
+//! grouping is implicit — `kv_dim = num_kv_heads × head_dim` and
+//! per-head slicing happens at the attention call site.
 
 use anyhow::{Result, anyhow};
 use ndarray::{Array2, ArrayView2, s};
 
-/// One transformer layer's K and V cache. K and V are kept as separate
-/// tensors here even for Gemma 4 global layers (K=V tying); the
-/// `kv_shared` optimisation in M1.4 will collapse them into a single
-/// backing store at that point.
+/// Backing storage for one layer's K/V.
+enum LayerKvStore {
+    Separate {
+        k: Array2<f32>,
+        v: Array2<f32>,
+    },
+    Shared {
+        kv: Array2<f32>,
+    },
+}
+
+impl LayerKvStore {
+    fn separate(max_cache_len: usize, kv_dim: usize) -> Self {
+        Self::Separate {
+            k: Array2::<f32>::zeros((max_cache_len, kv_dim)),
+            v: Array2::<f32>::zeros((max_cache_len, kv_dim)),
+        }
+    }
+    fn shared(max_cache_len: usize, kv_dim: usize) -> Self {
+        Self::Shared {
+            kv: Array2::<f32>::zeros((max_cache_len, kv_dim)),
+        }
+    }
+}
+
+/// One transformer layer's K and V cache.
 pub struct LayerKvCache {
-    /// `(max_cache_len, kv_dim)`. Rows `0..len` are valid.
-    k: Array2<f32>,
-    /// `(max_cache_len, kv_dim)`. Rows `0..len` are valid.
-    v: Array2<f32>,
-    /// Number of currently-populated rows.
+    storage: LayerKvStore,
+    /// Number of currently-populated rows. Same value for K and V
+    /// regardless of storage layout.
     len: usize,
 }
 
 impl LayerKvCache {
-    fn new(max_cache_len: usize, kv_dim: usize) -> Self {
+    fn new_separate(max_cache_len: usize, kv_dim: usize) -> Self {
         Self {
-            k: Array2::<f32>::zeros((max_cache_len, kv_dim)),
-            v: Array2::<f32>::zeros((max_cache_len, kv_dim)),
+            storage: LayerKvStore::separate(max_cache_len, kv_dim),
             len: 0,
         }
+    }
+
+    fn new_shared(max_cache_len: usize, kv_dim: usize) -> Self {
+        Self {
+            storage: LayerKvStore::shared(max_cache_len, kv_dim),
+            len: 0,
+        }
+    }
+
+    /// True iff this layer uses the K=V shared-storage optimisation.
+    pub fn is_shared(&self) -> bool {
+        matches!(self.storage, LayerKvStore::Shared { .. })
     }
 
     /// Valid prefix length (number of cached positions).
@@ -52,20 +87,37 @@ impl LayerKvCache {
         self.len == 0
     }
 
-    /// Read the valid prefix of K and V as views into the backing store.
+    /// Read the valid prefix of K and V as views into the backing
+    /// store. For shared layers, both views alias the same buffer.
     pub fn view(&self) -> (ArrayView2<'_, f32>, ArrayView2<'_, f32>) {
-        (
-            self.k.slice(s![..self.len, ..]),
-            self.v.slice(s![..self.len, ..]),
-        )
+        match &self.storage {
+            LayerKvStore::Separate { k, v } => (
+                k.slice(s![..self.len, ..]),
+                v.slice(s![..self.len, ..]),
+            ),
+            LayerKvStore::Shared { kv } => (
+                kv.slice(s![..self.len, ..]),
+                kv.slice(s![..self.len, ..]),
+            ),
+        }
+    }
+
+    /// Byte footprint of this layer's backing tensor(s). Used by the
+    /// memory-savings tests to confirm shared layers are roughly half
+    /// the size of separate ones.
+    pub fn bytes(&self) -> usize {
+        match &self.storage {
+            LayerKvStore::Separate { k, v } => k.len() * 4 + v.len() * 4,
+            LayerKvStore::Shared { kv } => kv.len() * 4,
+        }
     }
 }
 
 /// KV cache for an entire decoder, one entry per layer.
 ///
-/// Construct with `KvCache::new(num_layers, max_cache_len, kv_dim)`.
-/// All layers share the same `(max_cache_len, kv_dim)` shape; the same
-/// number of positions is appended to every layer per forward.
+/// Construct with [`KvCache::new`] for an all-separate cache (the
+/// existing Qwen3 / Llama path) or [`KvCache::new_with_sharing`] for
+/// Gemma 4 hybrid models that tie K and V on global layers.
 pub struct KvCache {
     layers: Vec<LayerKvCache>,
     max_cache_len: usize,
@@ -73,11 +125,45 @@ pub struct KvCache {
 }
 
 impl KvCache {
-    /// Allocate `num_layers` empty caches, each pre-sized to
-    /// `max_cache_len` rows. `kv_dim = num_kv_heads * head_dim`.
+    /// Allocate `num_layers` empty caches with separate K and V
+    /// storage per layer (no K=V tying). Pre-sized to `max_cache_len`
+    /// rows. `kv_dim = num_kv_heads × head_dim`.
     pub fn new(num_layers: usize, max_cache_len: usize, kv_dim: usize) -> Self {
         let layers = (0..num_layers)
-            .map(|_| LayerKvCache::new(max_cache_len, kv_dim))
+            .map(|_| LayerKvCache::new_separate(max_cache_len, kv_dim))
+            .collect();
+        Self {
+            layers,
+            max_cache_len,
+            kv_dim,
+        }
+    }
+
+    /// Allocate `num_layers` caches, choosing per-layer storage from
+    /// the `shared` mask. `shared[li] = true` builds a K=V shared
+    /// store for layer `li` (Gemma 4 global layers); false builds a
+    /// Separate store. `shared.len()` must equal `num_layers`.
+    pub fn new_with_sharing(
+        num_layers: usize,
+        max_cache_len: usize,
+        kv_dim: usize,
+        shared: &[bool],
+    ) -> Self {
+        assert_eq!(
+            shared.len(),
+            num_layers,
+            "new_with_sharing: shared mask length {} != num_layers {}",
+            shared.len(),
+            num_layers,
+        );
+        let layers = (0..num_layers)
+            .map(|li| {
+                if shared[li] {
+                    LayerKvCache::new_shared(max_cache_len, kv_dim)
+                } else {
+                    LayerKvCache::new_separate(max_cache_len, kv_dim)
+                }
+            })
             .collect();
         Self {
             layers,
@@ -116,9 +202,24 @@ impl KvCache {
         self.len() == 0
     }
 
-    /// Append `new_k.nrows()` positions to layer `li`. The caller must
-    /// call this in layer order during a forward pass so layers stay
-    /// in sync.
+    pub fn is_layer_shared(&self, li: usize) -> bool {
+        self.layers
+            .get(li)
+            .map(LayerKvCache::is_shared)
+            .unwrap_or(false)
+    }
+
+    /// Total byte footprint across all layer caches.
+    pub fn bytes(&self) -> usize {
+        self.layers.iter().map(LayerKvCache::bytes).sum()
+    }
+
+    /// Append `new_k.nrows()` positions to layer `li`. For Separate
+    /// layers `new_k` and `new_v` may differ; for Shared layers they
+    /// must point to identical content (caller's responsibility — the
+    /// K=V branch in `decoder_block_cached` computes one tensor and
+    /// passes it for both arguments). When shared, only `new_k` is
+    /// actually written.
     pub fn append(
         &mut self,
         li: usize,
@@ -160,14 +261,21 @@ impl KvCache {
                 self.max_cache_len,
             ));
         }
-        layer
-            .k
-            .slice_mut(s![layer.len..new_len, ..])
-            .assign(&new_k);
-        layer
-            .v
-            .slice_mut(s![layer.len..new_len, ..])
-            .assign(&new_v);
+        match &mut layer.storage {
+            LayerKvStore::Separate { k, v } => {
+                k.slice_mut(s![layer.len..new_len, ..]).assign(&new_k);
+                v.slice_mut(s![layer.len..new_len, ..]).assign(&new_v);
+            }
+            LayerKvStore::Shared { kv } => {
+                // Caller must guarantee K == V at the call site.
+                // Debug asserts catch misuse.
+                debug_assert!(
+                    arrays_equal(&new_k, &new_v),
+                    "KvCache: layer {li} is K=V shared but append got K != V",
+                );
+                kv.slice_mut(s![layer.len..new_len, ..]).assign(&new_k);
+            }
+        }
         layer.len = new_len;
         Ok(())
     }
@@ -187,6 +295,19 @@ impl KvCache {
             layer.len = 0;
         }
     }
+}
+
+#[cfg(debug_assertions)]
+fn arrays_equal(a: &ArrayView2<'_, f32>, b: &ArrayView2<'_, f32>) -> bool {
+    if a.shape() != b.shape() {
+        return false;
+    }
+    a.iter().zip(b.iter()).all(|(x, y)| x == y)
+}
+
+#[cfg(not(debug_assertions))]
+fn arrays_equal(_a: &ArrayView2<'_, f32>, _b: &ArrayView2<'_, f32>) -> bool {
+    true
 }
 
 #[cfg(test)]
@@ -220,7 +341,6 @@ mod tests {
         assert_eq!(k_view, k0.view());
         assert_eq!(v_view, v0.view());
 
-        // Append one more position to both layers.
         let k1 = array![[7.0_f32, 8.0, 9.0]];
         let v1 = array![[70.0_f32, 80.0, 90.0]];
         cache.append(0, k1.view(), v1.view()).unwrap();
@@ -277,5 +397,41 @@ mod tests {
             .append(5, array![[1.0_f32]].view(), array![[2.0_f32]].view())
             .unwrap_err();
         assert!(err.to_string().contains("out of range"));
+    }
+
+    #[test]
+    fn shared_layer_halves_memory_footprint() {
+        // 4 layers, 2 shared. Each layer is max_cache_len × kv_dim × 4
+        // bytes; shared layers store one of those, separate store two.
+        let max_cache_len = 8;
+        let kv_dim = 16;
+        let cache = KvCache::new_with_sharing(
+            4,
+            max_cache_len,
+            kv_dim,
+            &[false, true, true, false],
+        );
+        let per_separate = max_cache_len * kv_dim * 4 * 2;
+        let per_shared = max_cache_len * kv_dim * 4;
+        let expected = 2 * per_separate + 2 * per_shared;
+        assert_eq!(cache.bytes(), expected);
+
+        let all_sep = KvCache::new(4, max_cache_len, kv_dim);
+        assert_eq!(all_sep.bytes(), 4 * per_separate);
+        // 75% of all-separate is the spec.
+        assert_eq!(cache.bytes() * 4, all_sep.bytes() * 3);
+    }
+
+    #[test]
+    fn shared_layer_round_trip_view_aliases() {
+        // Shared layer: appending K = V once must produce K view == V view.
+        let mut cache = KvCache::new_with_sharing(1, 4, 2, &[true]);
+        let kv = array![[1.0_f32, 2.0], [3.0_f32, 4.0]];
+        cache.append(0, kv.view(), kv.view()).unwrap();
+        assert!(cache.is_layer_shared(0));
+        let (k_view, v_view) = cache.view(0).unwrap();
+        assert_eq!(k_view, v_view);
+        assert_eq!(k_view.nrows(), 2);
+        assert_eq!(k_view[[1, 1]], 4.0);
     }
 }
