@@ -35,13 +35,13 @@
   <header class="masthead">
     <div>
       <h1 class="title">generation<br><em>· GELO LLM</em></h1>
-      <p class="subtitle">Autoregressive answer generation under the same GELO mask + TwinShield primitives the embedder and reranker already validated. Gemma E2B and E4B run inside an attested SEV-SNP CVM; every Q/K/V/O + MLP matmul rides through a per-batch Haar mask before crossing PCIe; the Per-Layer Embedding table lives in encrypted CVM DRAM so token-id gather addresses never reach the GPU. Tokens stream back to the client over RATLS.</p>
+      <p class="subtitle">Autoregressive answer generation under the same GELO mask + TwinShield primitives the embedder and reranker already validated. Qwen3-1.7B runs end-to-end today inside an attested SEV-SNP CVM; every Q/K/V/O + MLP matmul rides through a per-batch Haar mask before crossing PCIe; QK-norm + RoPE + GQA + SwiGLU happen entirely in-TEE on plaintext tensors. Tokens stream back to the client over RATLS. Gemma 4 E2B/E4B remain the architecture north star — scaffolded and parked behind a known set of Phase 1.5 extensions.</p>
     </div>
     <div class="colophon">
-      <div><b>protocol</b>&nbsp;&nbsp;GELO + TwinShield + hybrid attention</div>
+      <div><b>protocol</b>&nbsp;&nbsp;GELO + TwinShield + (optional) hybrid attention</div>
       <div><b>TEE</b>&nbsp;&nbsp;AMD SEV-SNP CVM</div>
       <div><b>GPU</b>&nbsp;&nbsp;commodity Vulkan via VFIO</div>
-      <div><b>models</b>&nbsp;&nbsp;Gemma 4 E2B · E4B</div>
+      <div><b>v1 model</b>&nbsp;&nbsp;Qwen3-1.7B · Qwen3-4B (same path)</div>
       <span class="rev">prompt → KV cache → token stream · everything sealed inside</span>
     </div>
   </header>
@@ -49,24 +49,24 @@
   <!-- ─── HEADLINE STATS ─── -->
   <div class="stat-strip">
     <div class="stat">
-      <div class="k">target overhead — prefill</div>
-      <div class="v"><em>~2×</em><span class="unit">plain</span></div>
-      <div class="sub">long-context RAG prefill under fused permuted attention (M1.10) · vs HF transformers reference</div>
+      <div class="k">GELO overhead — TPOT</div>
+      <div class="v"><em>+33</em><span class="unit">% vs plain</span></div>
+      <div class="sub">Qwen3-1.7B greedy · 199 ms / token median · RADV iGPU · per-forward Haar A + shield(8,4.0) · OutAttnMult forced on at every n</div>
     </div>
     <div class="stat">
-      <div class="k">target overhead — decode</div>
-      <div class="v">10–30<span class="unit">% TPOT</span></div>
-      <div class="sub">per-token cost over plain · KV-cache-encoded path · §07 projection</div>
+      <div class="k">TPOT median</div>
+      <div class="v">200<span class="unit">ms · iGPU</span></div>
+      <div class="sub">decode-step wall-clock on the RADV GFX1151 dev box · 8-token greedy run · σ = 12.8 ms across steps</div>
     </div>
     <div class="stat">
-      <div class="k">PLE in TEE DRAM</div>
-      <div class="v">1.3<span class="unit">GB · E4B</span></div>
-      <div class="sub">int8 gather inside CVM · no PCIe address leak</div>
+      <div class="k">U-Verify cost regime</div>
+      <div class="v">150<span class="unit">× slowdown</span></div>
+      <div class="sub">k = 2 Freivalds probes on 1.7B weights collapse decode to 0.04 tok/s · open protocol gap · §08</div>
     </div>
     <div class="stat">
-      <div class="k">attention split</div>
-      <div class="v">5:1<span class="unit"> local · global</span></div>
-      <div class="sub">Gemma 4 E4B · sliding W=512 in-TEE · global offloaded</div>
+      <div class="k">parity vs plaintext</div>
+      <div class="v">8 / 8<span class="unit"> tokens</span></div>
+      <div class="sub">argmax-stable: gpu_plain · gpu_gelo · gpu_full_stack emit byte-identical token sequences on Qwen3-1.7B</div>
     </div>
   </div>
 
@@ -75,10 +75,57 @@
     <header class="section-head">
       <div class="section-num">§01</div>
       <h2 class="section-title">Role in the project</h2>
-      <div class="section-meta">where this fits</div>
+      <div class="section-meta">where this fits · what it closes · what currently runs</div>
     </header>
     <p class="lede">
-      <em>TODO — stub.</em> Generation is the final stage that closes the private-RAG loop: <a href="embedding.html">embed</a> the query, <a href="storage.html">retrieve</a> ciphertext candidates, <a href="reranking.html">rerank</a> them inside the CVM, and now <strong>generate the answer in the same trust boundary</strong> rather than handing decrypted top-k chunks to a client-side LLM. The model weights are public; the protected asset is the user's prompt, the retrieved chunk text, and the generated tokens — all of which must stay confidential against a co-located untrusted GPU and an untrusted CVM operator. The same masking primitives the embedder validated carry over directly to autoregressive decoder forwards, with three new mechanisms: a Per-Layer Embedding table pinned to encrypted CVM DRAM, a hybrid attention router that keeps short-range sliding-window layers in-TEE while masking only the long-range global layers, and a KV-cache primitive that survives the per-batch mask rotation without re-permuting the cache every decode step.
+      Generation is the final stage that closes the private-RAG loop:
+      <a href="embedding.html">embed</a> the query,
+      <a href="storage.html">retrieve</a> ciphertext candidates,
+      <a href="reranking.html">rerank</a> them inside the CVM, and
+      <strong>generate the answer inside the same trust boundary</strong>
+      rather than handing decrypted top-k chunks to a client-side LLM.
+      Model weights are public; the protected asset is the user's prompt,
+      the retrieved chunk text, the per-token logits, and the sampled
+      tokens — all of which must stay confidential against a co-located
+      untrusted GPU and an untrusted CVM operator.
+    </p>
+    <p class="prose" style="margin-top:20px;">
+      <strong>What runs today (v1 demonstrator).</strong> Greedy decoding
+      on <code>Qwen/Qwen3-1.7B</code> runs end-to-end under the GELO protocol:
+      prefill + 8-token decode with bit-identical token-sequence output across
+      <code>PlaintextExecutor</code>, <code>InProcessTrustedExecutor</code>
+      (per-forward Haar mask + shield(8, 4.0)), and the full stack with
+      U-Verify k = 2 enabled. The GELO mask itself is a +33 % TPOT overhead
+      on the AMD RADV GFX1151 iGPU; argmax stability holds — the masked branch
+      emits the same tokens as the plain branch on real weights. The same
+      forward-pass code path that the embedder and reranker already use
+      services generation, with one Qwen3-specific addition (per-head QK-norm
+      pre-RoPE) optional on the loader.
+    </p>
+    <p class="prose" style="margin-top:16px;">
+      <strong>What is parked.</strong> Gemma 4 E2B / E4B remain the architecture
+      north star — they exercise PLE in encrypted CVM DRAM (an address-bus-leak
+      mitigation the GPU can't help with), hybrid local/global attention with
+      sliding-window in-TEE, p-RoPE, cross-layer KV sharing, GeGLU, AltUp,
+      and final-logit softcap. Every protocol primitive needed to run them is
+      already landed and tested on synthetic weights; what's missing is the
+      Gemma-specific decoder refactor (per-class head_dim, per-class rope_theta,
+      cross-layer KV sharing, GeGLU dispatch, AltUp). Tracked in
+      <a href="gemma4-architecture-roadmap.html"><code>gemma4-architecture-roadmap</code></a>;
+      summarised in §05.
+    </p>
+    <p class="prose" style="margin-top:16px;">
+      <strong>What's open.</strong> Two protocol gaps that the v1 measurement
+      surfaces: <em>(a)</em> U-Verify is unusable at 1.7B-parameter scale —
+      k = 2 Freivalds probes against ~13 GB of TEE-side weights collapse decode
+      to 0.04 tok/s. The protocol needs a sublinear-in-weight-size integrity
+      primitive (randomised-block Freivalds, batched verification, or
+      checkpoint-only attestation) before integrity rides production. <em>(b)</em>
+      Decode-phase KV-cache bandwidth grows with context length and dominates
+      past ~4k tokens — the SCX-style per-position encoding (Yuan et al.,
+      SIGCOMM 2025) is the candidate primitive; security analysis under the
+      openweight + per-batch-fresh-A assumption is the gating spike before
+      adoption. Both items are §09.
     </p>
   </section>
 
@@ -90,7 +137,12 @@
       <div class="section-meta">terminology introduced by this stage</div>
     </header>
     <p class="lede">
-      Only the terms specific to generation and to Gemma 4's architecture. Protocol terms (mask, shield, U-Verify, OutAttnMult, permuted attention) are defined in <a href="embedding.html">embedding</a> §05 and <code>gelo.md</code>.
+      Only the terms specific to generation and to the model families on
+      the v1 path (Qwen3) and Phase 1.5 path (Gemma 4). Protocol terms
+      (mask, shield, U-Verify, OutAttnMult, permuted attention) are
+      defined in <a href="embedding.html">embedding</a> §05 and
+      <code>gelo.md</code>. Rows tagged <em>(Gemma)</em> describe terms
+      that only apply to the Phase 1.5 architecture target.
     </p>
 
     <table class="spec">
@@ -125,42 +177,42 @@
         <tr>
           <td><b>KV cache</b></td>
           <td>—</td>
-          <td>The materialised <code>(K, V)</code> pair for every previously-seen position, per layer, per head. Lives in encrypted CVM DRAM; sized <code>2 · n_layers · n_kv_heads · n_cache · d_head</code>. ~440 MB for Qwen3-0.6B at <code>n_cache=4k</code>; ~2 GB-class for Gemma E4B at long context. The heavy state of the decode loop.</td>
+          <td>The materialised <code>(K, V)</code> pair for every previously-seen position, per layer, per head. Lives in encrypted CVM DRAM; sized <code>2 · n_layers · n_kv_heads · n_cache · d_head</code>. ~58 MB for Qwen3-1.7B at <code>n_cache=4k</code> (28 layers · 8 KV heads · 128 head_dim); ~2 GB-class for Gemma E4B at long context. The heavy state of the decode loop.</td>
         </tr>
         <tr>
-          <td><b>Per-Layer Embedding</b></td>
-          <td>PLE</td>
-          <td>An additional embedding table introduced by Gemma 3n / Gemma 4 E-variants, shape <code>[vocab × n_layers × d_ple]</code> (262 144 × 35 × 256 for E4B), indexed by <code>token_id</code> per layer rather than once at input. <strong>Address-bus-leaking under our threat model</strong> — token-id-keyed gathers on a GPU reveal the prompt in plaintext with no inversion needed. The fix is structural: the table lives in CVM DRAM; the TEE performs the gather; only the public projection matrix that lifts the gathered row to <code>d_hidden</code> ever sees GPU.</td>
-        </tr>
-        <tr>
-          <td><b>Hybrid attention</b></td>
+          <td><b>QK-norm</b></td>
           <td>—</td>
-          <td>The Gemma 3 / Gemma 4 design choice that interleaves cheap local layers (sliding-window causal attention, window W tokens) with full-context global layers. E2B uses 4:1 (four local : one global); E4B uses 5:1; the last layer is always global. Cuts per-token attention FLOPs ~3.86× at <code>n=8k</code> on E4B and shifts the bandwidth bottleneck onto the small minority of global layers — the only ones that need GPU offload at long context.</td>
-        </tr>
-        <tr>
-          <td><b>Sliding-window attention</b></td>
-          <td>SWA</td>
-          <td>Causal attention restricted to the last <code>W</code> tokens (W = 512 on small Gemma 4, W = 1024 on 31B). Reduces attention from <code>O(n²)</code> to <code>O(n·W)</code>. In-TEE-tractable at all our context lengths; <em>does not compose with permuted attention</em> because the band-diagonal mask is not permutation-invariant.</td>
-        </tr>
-        <tr>
-          <td><b>p-RoPE</b></td>
-          <td>—</td>
-          <td>Proportional RoPE. Rotation applied to the first <code>p · d_head</code> dimensions only; the remaining <code>(1−p) · d_head</code> dims pass through unrotated. Gemma 4 global layers use <code>p = 0.25</code>. One-line change to the existing RoPE kernel — defaults to full-rotation (<code>p = 1</code>) when not set.</td>
-        </tr>
-        <tr>
-          <td><b>K = V tying</b></td>
-          <td>—</td>
-          <td>Gemma 4 global layers materialise K and V as the same tensor (the "K equals V" trick). Halves global-layer KV-cache memory and lets the protocol sample one mask, one permutation, or one OutAttnMult partition for both — not two. Local layers keep separate K, V.</td>
+          <td>Per-head RMSNorm applied to <code>Q</code> and <code>K</code> <em>before</em> RoPE. Introduced by Qwen3 as the only Qwen3-vs-Qwen2 architectural delta: each Q-head's <code>(head_dim,)</code> slice is normalised against <code>self_attn.q_norm.weight</code>, ditto K against <code>k_norm.weight</code>. Stays entirely in-TEE on plaintext tensors — no protocol surface change vs the embedder's RMSNorm pattern. Loader detects the tensors when present; absent on Qwen2/LLaMA/Mistral, so the step is a no-op for those families.</td>
         </tr>
         <tr>
           <td><b>Grouped-query attention</b></td>
           <td>GQA</td>
-          <td>Q has more heads than K/V; multiple Q heads share one K/V head. Gemma 4 uses 8:1 (eight Q heads per KV head). Already handled unchanged by the Qwen3 attention path in the embedder/reranker; reused here.</td>
+          <td>Q has more heads than K/V; multiple Q heads share one K/V head. Qwen3-1.7B uses 2:1 (16 Q heads to 8 KV heads); Gemma 4 uses 8:1. Already handled unchanged by the existing decoder attention path; reused here.</td>
         </tr>
         <tr>
-          <td><b>MatFormer</b></td>
+          <td><b>Per-Layer Embedding</b> <em>(Gemma)</em></td>
+          <td>PLE</td>
+          <td>An additional embedding table introduced by Gemma 3n / Gemma 4 E-variants, shape <code>[vocab × n_layers × d_ple]</code> (262 144 × 35 × 256 for E4B), indexed by <code>token_id</code> per layer rather than once at input. <strong>Address-bus-leaking under our threat model</strong> — token-id-keyed gathers on a GPU reveal the prompt in plaintext with no inversion needed. The fix is structural: the table lives in CVM DRAM; the TEE performs the gather; only the public projection matrix that lifts the gathered row to <code>d_hidden</code> ever sees GPU. Qwen3 has no PLE — the box stays unused on the v1 path.</td>
+        </tr>
+        <tr>
+          <td><b>Hybrid attention</b> <em>(Gemma)</em></td>
           <td>—</td>
-          <td>Nested-architecture training that produces the E2B model as a structural subset of the E4B model. Nominally lets a single weight blob serve both sizes; in practice Gemma 4's E2B and E4B have <em>different</em> attention ratios (4:1 vs 5:1), so the prototype treats them as two artifacts with two loaders.</td>
+          <td>The Gemma 3 / Gemma 4 design choice that interleaves cheap local layers (sliding-window causal attention, window W tokens) with full-context global layers. E2B uses 4:1, E4B uses 5:1; the last layer is always global. Cuts per-token attention FLOPs ~3.86× at <code>n=8k</code> on E4B and shifts the bandwidth bottleneck onto the small minority of global layers. Qwen3 has no hybrid attention — every layer is full causal — so this dispatcher is a no-op on the v1 path.</td>
+        </tr>
+        <tr>
+          <td><b>Sliding-window attention</b> <em>(Gemma)</em></td>
+          <td>SWA</td>
+          <td>Causal attention restricted to the last <code>W</code> tokens (W = 512 on small Gemma 4). Reduces attention from <code>O(n²)</code> to <code>O(n·W)</code>. In-TEE-tractable at all our context lengths; <em>does not compose with permuted attention</em> because the band-diagonal mask is not permutation-invariant.</td>
+        </tr>
+        <tr>
+          <td><b>p-RoPE</b> <em>(Gemma)</em></td>
+          <td>—</td>
+          <td>Proportional RoPE. Rotation applied to the first <code>p · d_head</code> dimensions only; the remaining <code>(1−p) · d_head</code> dims pass through unrotated. Gemma 4 global layers use <code>p = 0.25</code>. One-line change to the existing RoPE kernel — defaults to full-rotation (<code>p = 1</code>) when not set, matching Qwen3.</td>
+        </tr>
+        <tr>
+          <td><b>K = V tying</b> <em>(Gemma)</em></td>
+          <td>—</td>
+          <td>Gemma 4 global layers materialise K and V as the same tensor (the "K equals V" trick). Halves global-layer KV-cache memory and lets the protocol sample one mask, one permutation, or one OutAttnMult partition for both — not two. Local layers keep separate K, V. Qwen3 has separate K and V everywhere.</td>
         </tr>
         <tr>
           <td><b>Address-bus leak</b></td>
@@ -189,7 +241,7 @@
       <div class="section-meta">what each component sees · what it cannot · what's new vs embedding/rerank</div>
     </header>
     <p class="lede">
-      Same trust posture as embedding and reranking: hardware-attested TEE on CPU, information-theoretically blind GPU, everything else hostile. The openweight assumption holds — Gemma 4 weights pin to a public HuggingFace revision; the SHA-256 of the loaded bytes rides as <code>model_identity</code> through the attestation report. Generation extends the model with three new exit channels (PLE gather, KV cache, per-token streaming); each is closed structurally rather than statistically.
+      Same trust posture as embedding and reranking: hardware-attested TEE on CPU, information-theoretically blind GPU, everything else hostile. The openweight assumption holds — model weights pin to a public HuggingFace revision (<code>Qwen/Qwen3-1.7B</code> on the v1 path, <code>google/gemma-4-*</code> when Phase 1.5 lands); the SHA-256 of the loaded bytes rides as <code>model_identity</code> through the attestation report. Generation extends the model with three new exit channels (KV cache, per-token streaming, plus the Gemma-only PLE gather); each is closed structurally rather than statistically.
     </p>
 
     <table class="spec">
@@ -222,12 +274,12 @@
       </thead>
       <tbody>
         <tr>
-          <td><b>PLE address-bus leak</b> (P0)</td>
-          <td>The full <code>[262 144 × n_layers × 256]</code> int8 PLE table is provisioned into the <code>InProcessTrustedExecutor</code>'s encrypted CVM DRAM at model load. Per-token row selection (<code>PLE[token_id, layer_idx]</code>) happens inside the TEE; only the resulting <code>(n, d_ple)</code> tensor — projected up to <code>d_hidden</code> via the public per-layer projection matrix — ever crosses PCIe, and it crosses under the same per-batch mask <code>A</code> as the rest of the activation stream. A PCIe observer sees no token-id-keyed gather pattern. Verified by <code>tests/ple_pcie_leak.rs</code>, an attacker-simulator that asserts zero PLE-side reads on the offload trace.</td>
+          <td><b>PLE address-bus leak</b> <em>(Gemma · P0)</em></td>
+          <td>The full <code>[262 144 × n_layers × 256]</code> int8 PLE table is provisioned into the <code>InProcessTrustedExecutor</code>'s encrypted CVM DRAM at model load. Per-token row selection (<code>PLE[token_id, layer_idx]</code>) happens inside the TEE; only the resulting <code>(n, d_ple)</code> tensor — projected up to <code>d_hidden</code> via the public per-layer projection matrix — ever crosses PCIe, and it crosses under the same per-batch mask <code>A</code> as the rest of the activation stream. A PCIe observer sees no token-id-keyed gather pattern. Verified by <code>tests/ple_pcie_leak.rs</code>, an attacker-simulator that asserts zero PLE-side reads on the offload trace. <strong>Qwen3 has no PLE</strong>, so this exit channel doesn't exist on the v1 path; the substrate piece is staged ahead of Phase 1.5.</td>
         </tr>
         <tr>
           <td><b>KV-cache content leak</b></td>
-          <td>The KV cache for both local and global layers lives entirely in encrypted CVM DRAM, indexed by <code>(layer_idx, head_idx, position)</code>. The GPU never touches KV bytes — attention's <code>Q · Kᵀ</code> and <code>P · V</code> for in-TEE local layers run on CPU under AOCL-BLIS; for global layers the per-step <code>Q</code> goes out under mask, but <code>K</code> and <code>V</code> are pulled from cache, masked freshly, and never persisted GPU-side. Decode-phase π handling — fresh π each step versus session-persistent π — is the decision point that gates SCX-style encoded-KV adoption; see §08.</td>
+          <td>The KV cache for both local and global layers lives entirely in encrypted CVM DRAM, indexed by <code>(layer_idx, head_idx, position)</code>. The GPU never touches KV bytes — attention's <code>Q · Kᵀ</code> and <code>P · V</code> for in-TEE local layers run on CPU under AOCL-BLIS; for global layers the per-step <code>Q</code> goes out under mask, but <code>K</code> and <code>V</code> are pulled from cache, masked freshly, and never persisted GPU-side. Decode-phase π handling — fresh π each step versus session-persistent π — is the decision point that gates SCX-style encoded-KV adoption; see §09.</td>
         </tr>
         <tr>
           <td><b>Per-token TLS timing</b></td>
@@ -253,7 +305,7 @@
     </p>
 
     <p class="lede" style="margin-top:24px;">
-      <em>Validating result.</em> The <a href="https://tee.fail">TEE.Fail</a> DDR5 bus-interposer attack (Oct 2025) defeats SGX, TDX, and SEV-SNP key sealing in the offline case and uses extracted CPU-TEE keys to compromise H100 confidential GPU. The architectural choice that survives it is the protocol's <strong>per-batch fresh Haar mask</strong>: mask material exists only for the duration of one forward pass; an offline TEE compromise reveals nothing about any past forward and nothing about any future one until a fresh mask is sampled. Generation inherits this property unchanged — every prefill is one forward pass, every decode step is one forward pass.
+      <em>Validating result.</em> The <a href="https://tee.fail">TEE.Fail</a> DDR5 bus-interposer attack (Oct 2025) defeats SGX, TDX, and SEV-SNP key sealing in the offline case and uses extracted CPU-TEE keys to compromise H100 confidential GPU. The architectural choice that survives it is the protocol's <strong>per-batch fresh Haar mask</strong>: mask material exists only for the duration of one forward pass; an offline TEE compromise reveals nothing about any past forward and nothing about any future one until a fresh mask is sampled. Generation inherits this property unchanged — every prefill is one forward pass, every decode step is one forward pass. The v1 Qwen3 measurement validates the property end-to-end: <code>InProcessTrustedExecutor::with_seed</code> samples a fresh Haar <code>A</code> at the start of each <code>generate()</code> step and discards it at <code>end_forward_pass</code>; the same code path runs unchanged on Gemma 4 once Phase 1.5 lands.
     </p>
   </section>
 
@@ -284,7 +336,7 @@
           <td><b>Prefill</b></td>
           <td><code>n_q = n_prompt</code> (full prompt)</td>
           <td>attention <code>O(n²)</code> at long context · linear projections at short context</td>
-          <td>in-TEE causal sliding-window (<code>W = 512</code>) · CPU under AOCL-BLIS</td>
+          <td>in-TEE causal SWA (<code>W=512</code>) under AOCL-BLIS · <em>Gemma local layers only — Qwen3 has no local class</em></td>
           <td>length-based auto-switch: in-TEE for short n · <strong>fused permuted attention</strong> (M1.10) on the GPU past threshold · OutAttnMult is the 3-dispatch fallback before M1.10 lands</td>
           <td>one Haar <code>A</code> for the whole prefill forward</td>
         </tr>
@@ -292,23 +344,23 @@
           <td><b>Decode</b></td>
           <td><code>n_q = 1</code>, <code>n_kv = n_cache</code> (growing)</td>
           <td>dispatch overhead · KV-cache bandwidth · linear projections</td>
-          <td>in-TEE causal sliding-window · trivially small</td>
-          <td><strong>in-TEE always.</strong> Per-step attention math is microseconds-scale at <code>n_q = 1</code>; the auto-switch threshold doesn't engage on decode. KV-cache <em>bandwidth</em> (orthogonal axis) is what SCX in §08 optimises.</td>
+          <td>in-TEE causal SWA · trivially small · <em>Gemma local layers only</em></td>
+          <td><strong>in-TEE always.</strong> Per-step attention math is microseconds-scale at <code>n_q = 1</code>; the auto-switch threshold doesn't engage on decode. KV-cache <em>bandwidth</em> (orthogonal axis) is what SCX in §09 optimises.</td>
           <td>one fresh Haar <code>A</code> per decode step (per-token)</td>
         </tr>
       </tbody>
     </table>
 
     <p class="prose" style="margin-top:24px;">
-      <strong>Why prefill and decode want different attention paths.</strong> Prefill at <code>n = 4k</code> materialises a <code>(heads, n, n)</code> score tensor of ~1 GB per layer that the 3-dispatch permuted-attention path forces through device memory three times — bandwidth-bound to ~3.2 GB/layer × 28 layers ≈ 90 GB on the integrated-GPU dev box (~1.8 s pure traffic per prefill). The FlashAttention-style fused permuted kernel (M1.10) drops that to ~130 MB/layer and lands the workload within ~2× of unprotected baseline. Decode at <code>n_q = 1</code> never materialises a square score tensor — per-step attention compute is microseconds and stays in-TEE; the bottleneck instead is the KV-cache bandwidth read at every decode step, addressed by the SCX-class encoded-KV primitive (§08) rather than by any attention-dispatch change.
+      <strong>Why prefill and decode want different attention paths.</strong> Prefill at <code>n = 4k</code> materialises a <code>(heads, n, n)</code> score tensor of ~1 GB per layer that the 3-dispatch permuted-attention path forces through device memory three times — bandwidth-bound to ~3.2 GB/layer × 28 layers ≈ 90 GB on the integrated-GPU dev box (~1.8 s pure traffic per prefill). The FlashAttention-style fused permuted kernel (M1.10) drops that to ~130 MB/layer and lands the workload within ~2× of unprotected baseline. Decode at <code>n_q = 1</code> never materialises a square score tensor — per-step attention compute is microseconds and stays in-TEE; the bottleneck instead is the KV-cache bandwidth read at every decode step, addressed by the SCX-class encoded-KV primitive (§09) rather than by any attention-dispatch change.
     </p>
 
     <p class="prose" style="margin-top:16px;">
-      <strong>Why hybrid attention matters so much here.</strong> Gemma 4 E4B's 5:1 ratio means 35 of 42 layers are local-sliding-window. At <code>n = 8k</code> with <code>W = 512</code> those 35 layers cost ~3.86× less attention compute than a dense 42-layer model, <em>and</em> they stay in-TEE comfortably because the per-layer attention is now <code>O(n · W)</code> rather than <code>O(n²)</code> — no offload, no mask round-trip, no PCIe bandwidth. Only the seven global layers need the permuted/OutAttnMult path. That ratio is what makes Gemma 4 a particularly good fit for this protocol: most of the attention work disappears into the TEE-cheap regime, and the protocol-expensive path engages on only the layers that actually need long-range context.
+      <strong>Hybrid attention is a Gemma-only optimisation.</strong> Gemma 4 E4B's 5:1 ratio means 35 of 42 layers are local-sliding-window: at <code>n = 8k</code> with <code>W = 512</code> those 35 layers cost ~3.86× less attention compute than dense, <em>and</em> they stay in-TEE comfortably because attention is <code>O(n · W)</code> rather than <code>O(n²)</code> — no offload, no mask round-trip. Only the seven global layers need the permuted/OutAttnMult path. <strong>Qwen3 is dense-causal — every layer offloads under mask and rides the same auto-switch threshold the embedder uses.</strong> The hybrid dispatcher exists in the codebase as scaffolding for Phase 1.5 but is a passthrough on the v1 path (every layer reports <code>AttentionClass::Global</code>).
     </p>
 
     <p class="prose" style="margin-top:16px;">
-      <strong>Sampling.</strong> Greedy and top-p / top-k / temperature sampling all run in-TEE on plaintext logits. The seed is derived from the per-session <code>SessionKey</code>; deterministic replay (same prompt, same session) is possible at <code>temperature = 0</code> for debugging and reproducibility benches without breaking confidentiality of the live request.
+      <strong>Sampling.</strong> Greedy and top-p / top-k / temperature sampling all run in-TEE on plaintext logits. The seed is derived from the per-session <code>SessionKey</code>; deterministic replay (same prompt, same session) is possible at <code>temperature = 0</code> for debugging and reproducibility benches without breaking confidentiality of the live request. v1 ships greedy only — top-p / top-k / temperature wire in alongside the production HTTP route.
     </p>
   </section>
 
@@ -317,24 +369,23 @@
     <header class="section-head">
       <div class="section-num">§05</div>
       <h2 class="section-title">Supported model architectures</h2>
-      <div class="section-meta">Qwen3 (v1 demonstrator) and Gemma 4 (Phase 1.5 architecture target)</div>
+      <div class="section-meta">Qwen3 family · v1 generation target · Gemma 4 status</div>
     </header>
     <p class="lede">
-      Two model families, two roles. <strong>Qwen3-1.7B</strong> is the current
-      <em>v1 demonstrator</em> — a vanilla GQA decoder that drops cleanly into the
-      existing protocol surface and runs real-weight greedy generation end-to-end
-      today. <strong>Gemma 4 E2B/E4B</strong> remain the <em>Phase 1.5 architecture
-      target</em> — they exercise every novel primitive in the spec (PLE in TEE DRAM,
-      hybrid local/global attention, K=V global layers, p-RoPE, GeGLU, AltUp,
-      cross-layer KV sharing), but require ~4-5 weeks of decoder refactor work
-      before the first real-weight forward pass — see
-      <a href="gemma4-architecture-roadmap.html"><code>gemma4-architecture-roadmap</code></a>.
-      The SHA-256 of backbone bytes + (optional) PLE table bytes + LM-head bytes
-      + per-layer attention-class vector + tokenizer rides as <code>model_identity</code>
-      through every attestation report — a tokenizer drift or a re-numbered <code>&lt;eos&gt;</code>
-      trips the attestation regardless of family.
+      The v1 surface is the <strong>Qwen3 family</strong> — vanilla
+      <code>Qwen3ForCausalLM</code> with GQA, full causal attention, SwiGLU FFN,
+      tied input/output embeddings, and one Qwen3-specific addition: per-head
+      QK-norm before RoPE. The same <code>DecoderWeights</code> loader and
+      forward path that services Qwen3-Embedding under the embedder/reranker
+      protocol handles generation. The SHA-256 of the loaded safetensors
+      bytes + tokenizer + the <code>(q_norm, k_norm)</code> presence flag
+      rides as <code>model_identity</code> in every attestation report — a
+      tokenizer drift or a re-numbered <code>&lt;eos&gt;</code> trips the
+      attestation. <strong>Gemma 4 E2B / E4B</strong> remain the architecture
+      target for the next phase — see the status block below.
     </p>
 
+    <h4 style="margin-top:24px;">Qwen3 family — v1 generation</h4>
     <table class="spec">
       <thead>
         <tr>
@@ -344,7 +395,7 @@
           <th>Q · KV heads</th>
           <th>Attention</th>
           <th>RoPE θ</th>
-          <th>PLE</th>
+          <th>QK-norm</th>
           <th>Status</th>
         </tr>
       </thead>
@@ -356,8 +407,8 @@
           <td class="num">16 · 8</td>
           <td>full causal</td>
           <td class="num">1 M</td>
-          <td>—</td>
-          <td>v1 demonstrator</td>
+          <td>yes</td>
+          <td>v1 demonstrator — running</td>
         </tr>
         <tr>
           <td><b>Qwen3-4B</b></td>
@@ -366,9 +417,56 @@
           <td class="num">32 · 8</td>
           <td>full causal</td>
           <td class="num">1 M</td>
-          <td>—</td>
-          <td>v1 stretch (same code path)</td>
+          <td>yes</td>
+          <td>v1 stretch — same code path</td>
         </tr>
+      </tbody>
+    </table>
+
+    <p class="prose" style="margin-top:16px;">
+      <strong>Per-head QK-norm before RoPE.</strong> Each layer's
+      <code>self_attn.q_norm.weight</code> and <code>k_norm.weight</code>
+      are <code>(head_dim,)</code> RMS-norm gammas applied to each
+      attention head's Q / K slice. The tensors are loaded
+      <code>Option&lt;Array1&lt;f32&gt;&gt;</code> on
+      <code>DecoderLayerWeights</code>; the forward path invokes
+      <code>rms_norm::apply_qk_norm</code> only when populated, so
+      Qwen2 / LLaMA / Mistral checkpoints continue loading byte-identically.
+      Stays entirely in-TEE — the QK-norm step is a no-op for the protocol.
+    </p>
+    <p class="prose" style="margin-top:12px;">
+      <strong>Qwen3.5 family is out of scope.</strong> The 2B / 4B / 9B / 35B-A3B
+      variants ship as <code>Qwen3_5ForConditionalGeneration</code> — multimodal
+      VLM with a 24-layer ViT, image / video tokens, and a text backbone using
+      GDN-style <code>linear_attention</code> (Mamba/SSM) layers in 3:1 hybrid
+      with <code>full_attention</code>, MRoPE (interleaved <code>mrope_section</code>),
+      <code>partial_rotary_factor: 0.25</code>, an MTP head, and
+      <code>attn_output_gate</code>. Strictly harder than Gemma 4, not easier.
+    </p>
+
+    <h4 style="margin-top:32px;">Gemma 4 — Phase 1.5 architecture target</h4>
+    <p class="lede" style="margin-top:8px;">
+      Gemma 4 is the architecture north star for the next phase.
+      <strong>Every protocol primitive needed to run it has shipped and is
+      tested on synthetic weights</strong> — what is missing is the
+      Gemma-specific decoder refactor (a closed list of items, none of which
+      affect the protocol surface). Full handoff in
+      <a href="gemma4-architecture-roadmap.html"><code>gemma4-architecture-roadmap</code></a>.
+    </p>
+    <table class="spec" style="margin-top:12px;">
+      <thead>
+        <tr>
+          <th>Variant</th>
+          <th>Layers</th>
+          <th>Hidden · Inter · d_head (local / global)</th>
+          <th>Q · KV heads</th>
+          <th>Attention</th>
+          <th>RoPE θ (local / global)</th>
+          <th>PLE</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
         <tr>
           <td><b>Gemma 4 E2B</b></td>
           <td class="num">35</td>
@@ -377,7 +475,7 @@
           <td>4:1 local/global · W=512</td>
           <td class="num">10 K / 1 M</td>
           <td>262 144 × 35 × 256 · int8</td>
-          <td>Phase 1.5 target</td>
+          <td>scaffolded · blocked on Phase 1.5</td>
         </tr>
         <tr>
           <td><b>Gemma 4 E4B</b></td>
@@ -387,56 +485,51 @@
           <td>5:1 local/global · W=512</td>
           <td class="num">10 K / 1 M</td>
           <td>262 144 × 42 × 256 · int8</td>
-          <td>Phase 1.5 scaling target</td>
+          <td>scaffolded · blocked on Phase 1.5</td>
         </tr>
       </tbody>
     </table>
 
-    <p class="lede" style="margin-top:24px;">
-      <strong>Qwen3-specific addition: QK-norm.</strong> Qwen3 introduces per-head
-      RMSNorm on <code>Q</code> and <code>K</code> <em>before</em> RoPE
-      (<code>self_attn.q_norm.weight</code> / <code>k_norm.weight</code>, each
-      <code>(head_dim,)</code>) — the only Qwen3-vs-Qwen2 architectural delta.
-      It fits as one optional step between the QKV projection and the rotary
-      embedding; no structural refactor was needed. The loader reads the
-      tensors when present (Qwen3 family) and skips the step when absent
-      (Qwen2 / LLaMA / Mistral / Qwen3-Embedding paths stay byte-identical to
-      their pre-Qwen3 behaviour).
-    </p>
-
-    <p class="lede" style="margin-top:24px;">
-      <strong>Qwen3.5 was investigated and is out of scope.</strong> The family
-      ships as <code>Qwen3_5ForConditionalGeneration</code> — a multimodal VLM
-      with a 24-layer ViT, image / video tokens, and a text backbone that
-      replaces transformer attention with GDN-style <code>linear_attention</code>
-      (Mamba/SSM) layers in a 3:1 hybrid with <code>full_attention</code>, MRoPE
-      (interleaved <code>mrope_section</code>), <code>partial_rotary_factor: 0.25</code>,
-      an MTP head, and <code>attn_output_gate</code>. Strictly harder than Gemma 4,
-      not easier. Plain Qwen3 is the only Qwen-family vanilla decoder option.
-    </p>
-
-    <p class="lede" style="margin-top:24px; font-size:14px;">
-      <strong>Gemma 4 31B dense</strong> is out of v1 scope (2026-05-18 decision). The architecture (5:1 hybrid, <code>W = 1024</code>, no PLE, ~5120 hidden) would fit the protocol primitives unchanged, but the ~31 GB weight footprint forces a 64 GB SEV-SNP SKU. Revisit when such a SKU becomes available; until then E2B and E4B are the v1 surface.
-    </p>
-
-    <div class="two-col">
+    <div class="two-col" style="margin-top:20px;">
       <div>
-        <h4>Why Qwen3-1.7B is the v1 demonstrator</h4>
-        <p>Vanilla <code>Qwen3ForCausalLM</code> — full causal attention, single RoPE table, SwiGLU, tied embeddings, no PLE, no hybrid attention, no p-RoPE, no softcap, no AltUp. The single Qwen3-specific addition (per-head QK-norm before RoPE) is an optional pre-rotary step that fits cleanly under the existing offload + RoPE plumbing. ~3.4 GB bf16 footprint downloads from <code>Qwen/Qwen3-1.7B</code> on first run. The same DecoderWeights pipeline that loads Qwen3-Embedding-0.6B services this model — exercises the full GELO protocol surface (mask · shield · OutAttnMult auto-switch · per-batch fresh A) on real-weight generation without blocking on Gemma-only architectural work.</p>
+        <h4 style="margin-top:0;">Developed (protocol surface, complete)</h4>
+        <ul style="padding-left:20px; line-height:1.55;">
+          <li><code>AttentionClass::{Local{window}, Global}</code> + per-layer attention-class vector on <code>DecoderConfig</code></li>
+          <li><code>causal_gqa_attention_swa_cached(window, q_pos_offset)</code> band-mask SWA kernel for local layers</li>
+          <li><code>HybridAttentionRouter</code> dispatcher selecting per-layer kernel based on class</li>
+          <li><code>RoPE::apply_partial_at(rotated_dim)</code> for p-RoPE; even-snap rotation on first <code>p · head_dim</code></li>
+          <li><code>KvCache::new_with_sharing</code> + <code>Separate/Shared</code> variant — halves K=V global-layer memory</li>
+          <li><code>final_logit_softcapping</code> on <code>DecoderConfig</code>; wired through <code>compute_logits</code></li>
+          <li><code>PleTable</code> (int8 storage, dequant on gather) + <code>TrustedExecutor::provision_ple_table</code> / <code>ple_gather</code></li>
+          <li><code>tests/ple_pcie_leak.rs</code> — SpyEngine attacker-simulator confirms zero PLE-keyed PCIe activity</li>
+          <li><code>Gemma4Variant::{E2B, E4B}</code> config builders pinned to real HF constants (audited 2026-05-18)</li>
+        </ul>
       </div>
       <div>
-        <h4>Why Gemma 4 is the Phase 1.5 architecture target</h4>
-        <p>Smallest family member (E2B) that exercises every novel protocol surface in the spec — PLE in TEE DRAM, hybrid local/global attention, K=V global layers, p-RoPE, GeGLU activation, AltUp, cross-layer KV sharing. ~4.5 GB total weight footprint fits a 32 GB CVM SKU. E2B → E4B is the natural scaling axis once the architecture work lands. The Gemma 4 forward path is ~4-5 weeks of decoder refactor (per-class head_dim 256/512, per-class rope_theta 10K/1M, GeGLU dispatch, cross-layer KV sharing, AltUp). Tracked in <a href="gemma4-architecture-roadmap.html"><code>gemma4-architecture-roadmap</code></a>.</p>
+        <h4 style="margin-top:0;">Blockers (Gemma-specific decoder refactor)</h4>
+        <ul style="padding-left:20px; line-height:1.55;">
+          <li><strong>Per-class head_dim</strong> — Q / K / V projection shapes diverge per attention class (local 256, global 512); requires per-layer-class projection plumbing</li>
+          <li><strong>Per-class rope_theta</strong> — two RoPE bases per model (local 10 K, global 1 M); needs class-aware <code>RopeTables</code></li>
+          <li><strong>Cross-layer KV sharing</strong> — <code>num_kv_shared_layers</code> reuses an earlier layer's KV instead of computing its own (distinct from M1.4 within-layer K=V tying)</li>
+          <li><strong>GeGLU dispatch</strong> — Gemma uses <code>gelu_pytorch_tanh</code> not <code>silu</code>; <code>decoder/swiglu.rs</code> needs an activation kind selector</li>
+          <li><strong><code>use_double_wide_mlp</code> semantics</strong> — exact FFN structure needs HF transformers source check</li>
+          <li><strong>AltUp residual stream</strong> — alternating-update variant inherited from Gemma 3n</li>
+          <li><strong>Gemma-aware safetensors loader</strong> — <code>model.embed_tokens_per_layer.weight</code>, per-layer PLE projection tensors, PLE int8 dequant scale layout</li>
+        </ul>
+        <p class="prose" style="margin-top:10px; font-size:13px;">
+          Estimate: ~4-5 weeks of decoder refactor (no protocol changes). All work
+          tracked in <a href="gemma4-architecture-roadmap.html"><code>gemma4-architecture-roadmap</code></a>
+          and <a href="../plans/path-1-gelo-gemma.md">plan §8</a>.
+        </p>
       </div>
     </div>
 
-    <p class="lede" style="margin-top:32px;">
-      <strong>MatFormer is intentionally not exploited.</strong> Gemma 4 nominally lets E2B share weights with E4B via nested training; in practice the attention ratios differ (4:1 vs 5:1), the layer counts differ (35 vs 42), and the hidden sizes differ. The prototype treats E2B and E4B as two separate artifacts with two loaders, sharing the same forward-pass code path. A shared weight blob would save disk but doesn't reduce runtime memory (only one variant is loaded per CVM) and complicates the attestation binding.
-    </p>
-
-    <p class="lede" style="margin-top:24px;">
-      <strong>Gemma 3n and Llama / MoE paths.</strong> Gemma 3n (an earlier PLE-using model) is supportable on this stack with the same PLE-in-TEE-DRAM mechanism but is not a v1 target — superseded by Gemma 4 E2B. Llama dense is already supported in the embedder/reranker code path and trivially extensible (no PLE, no hybrid attention, no p-RoPE, no QK-norm). MoE variants (Qwen3-MoE, DeepSeek-V2) are deferred — the routing histogram leak is a separate protocol surface (CryptoMoE balanced-dispatch primitive) and out of scope for this stage.
-    </p>
+    <h4 style="margin-top:32px;">Deferred</h4>
+    <ul style="padding-left:20px; line-height:1.55;">
+      <li><strong>Gemma 3n</strong> — same PLE-in-TEE-DRAM mechanism would apply; superseded by Gemma 4 E2B and not a target.</li>
+      <li><strong>LLaMA / Mistral dense</strong> — already loadable via the same <code>DecoderWeights</code> path used by Qwen3-Embedding; trivially extensible (no PLE, no hybrid attention, no p-RoPE, no QK-norm). Add a variant when needed.</li>
+      <li><strong>MoE generation</strong> — Qwen3-MoE, DeepSeek-V2, Gemma 4 MoE 26B-A4B: routing histogram is an orthogonal exit channel; needs CryptoMoE-style balanced dispatch as a separate ~3-6 month workstream.</li>
+    </ul>
   </section>
 
   <!-- ═════ § 6 COMPONENTS ═════ -->
@@ -444,113 +537,125 @@
     <header class="section-head">
       <div class="section-num">§06</div>
       <h2 class="section-title">Components</h2>
-      <div class="section-meta">crate-side · 9 implementation units</div>
+      <div class="section-meta">crate-side · what's in the codebase today</div>
     </header>
     <p class="lede">
-      Each card pairs <span class="mono">[component ↦ source ↦ what it secures ↦ threat]</span>. Ordered by request path: trait → model loader → PLE table → KV cache → attention router → generation loop → sampler → HTTP route → instrumentation.
+      Each card pairs <span class="mono">[component ↦ source ↦ what it does ↦ status]</span>.
+      Cards tagged <em>(scaffold)</em> are landed and synthetic-tested but engage only when
+      Gemma 4 weights load; on the Qwen3 v1 path they're passthrough no-ops or unused.
     </p>
 
     <div class="cgrid">
 
       <article class="card">
-        <span class="tag tee">trait</span>
-        <h3>GenerationService<span class="alias">gelo_embedder :: decoder :: generation</span></h3>
-        <p class="one">Common surface for autoregressive generation. Three methods: <code>model_identity()</code> (SHA-256 over backbone + PLE + LM-head + tokenizer + per-layer attention-class vector), <code>family()</code> (<code>gemma4-e2b</code> / <code>gemma4-e4b</code> / <code>gemma4-31b</code>), <code>generate()</code> (the only entry point that crosses the trust boundary).</p>
-        <dl>
-          <dt>impls</dt><dd><code>Gemma4GenerationService&lt;X&gt;</code></dd>
-          <dt>generic</dt><dd><code>X: TrustedExecutor</code> — typically <code>InProcessTrustedExecutor&lt;WgpuVulkanEngine&gt;</code></dd>
-          <dt>identity</dt><dd>folded into <code>REPORT_DATA[0..32]</code> — relying party pins backbone + PLE + head + tokenizer + attention-class vector together</dd>
-        </dl>
-      </article>
-
-      <article class="card">
         <span class="tag tee">model</span>
-        <h3>Gemma4Weights<span class="alias">gelo_embedder :: decoder :: gemma4</span></h3>
-        <p class="one">Gemma 4 safetensors loader. Reads layer count, per-layer <code>AttentionClass::{Local(W), Global}</code>, hidden size, GQA layout (8 Q heads to 1 KV head), tied <code>token_embedding</code> = LM head, and the PLE table. Variant-detected from the config; same forward-pass code services all three sizes.</p>
+        <h3>Qwen3Variant<span class="alias">gelo_embedder :: decoder :: qwen3</span></h3>
+        <p class="one">Variant config builder. <code>Q1_7B</code> and <code>Q4B</code> pin HF-verified constants (layer count, hidden / intermediate / head dims, GQA layout, RoPE θ, max_position, vocab) and emit a <code>DecoderConfig</code> with all Gemma-specific extensions explicitly off (no <code>attention_classes</code>, no <code>partial_rope</code>, no <code>kv_shared_in_global</code>, no <code>final_logit_softcapping</code>). The HF model ID is exposed via <code>hf_model_id()</code> so re-pinning is one line.</p>
         <dl>
-          <dt>files</dt><dd><code>decoder/gemma4.rs</code> · <code>decoder/config.rs</code> · <code>loader/safetensors.rs</code></dd>
-          <dt>config additions</dt><dd><code>AttentionClass</code> enum · per-layer vector · <code>partial_rope: Option&lt;f32&gt;</code> · <code>ple_dim: Option&lt;usize&gt;</code> · <code>kv_shared: bool</code></dd>
-          <dt>parity gate</dt><dd>forward pass under <code>PlaintextExecutor</code> matches HF <code>transformers</code> reference logits within <code>1e-4</code> on a fixed prompt — no GELO involvement at this stage, just model-loading correctness</dd>
+          <dt>file</dt><dd><code>decoder/qwen3.rs</code></dd>
+          <dt>tests</dt><dd><code>q1_7b_config_matches_real_hf_config</code> · <code>q4b_constants_pinned</code> · <code>hf_model_id_is_stable</code></dd>
+          <dt>used by</dt><dd><code>tests/qwen3_generation_e2e.rs</code> · <code>tests/qwen3_hf_parity.rs</code> · <code>tests/qwen3_generation_bench.rs</code></dd>
         </dl>
       </article>
 
       <article class="card">
-        <span class="tag tee">protocol</span>
-        <h3>PleTable<span class="alias">gelo_protocol :: ple</span></h3>
-        <p class="one">Per-Layer Embedding table pinned to encrypted CVM DRAM. Allocated inside the <code>InProcessTrustedExecutor</code>'s state at model load; never reaches the engine's GPU buffer. Per-step gather reads <code>n</code> rows (one per current token, one layer at a time) into an <code>(n, d_ple)</code> tensor.</p>
+        <span class="tag tee">loader</span>
+        <h3>DecoderWeights<span class="alias">gelo_embedder :: decoder :: weights</span></h3>
+        <p class="one">Safetensors loader for the Qwen3 / Qwen2 / LLaMA / Mistral family. Reads <code>token_embedding</code>, <code>final_norm</code>, and per-layer <code>{q,k,v,o}_proj</code>, <code>{input,post_attention}_layernorm</code>, <code>mlp.{gate,up,down}_proj</code>. Bf16 and f16 are dequantised to f32 on load. <code>q_norm</code> / <code>k_norm</code> read as <code>Option&lt;Array1&lt;f32&gt;&gt;</code> — populated for Qwen3, <code>None</code> elsewhere. SHA-256 of concatenated shard bytes folds into the attestation <code>model_identity</code>.</p>
         <dl>
-          <dt>shape</dt><dd><code>[vocab_size · n_layers · d_ple]</code> · int8 · ~700 MB for E2B, ~1.3 GB for E4B</dd>
-          <dt>trait extension</dt><dd><code>TrustedExecutor::{provision_ple_table, ple_gather}</code></dd>
-          <dt>verification</dt><dd><code>tests/ple_pcie_leak.rs</code> — attacker simulator records every GPU-side address; asserts no PLE-side reads on the offload trace</dd>
-          <dt>parity</dt><dd>end-to-end forward output matches plain HF Gemma 4 reference</dd>
+          <dt>file</dt><dd><code>decoder/weights.rs</code></dd>
+          <dt>tokenizer</dt><dd><code>common/tokenizer.rs</code> · <code>HfTokenizer::{encode, decode, token_id}</code></dd>
+          <dt>back-compat</dt><dd>byte-identical for Qwen2 / LLaMA / Mistral (QK-norm tensors absent → step skipped)</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag tee">attention</span>
+        <h3>apply_qk_norm<span class="alias">gelo_embedder :: decoder :: rms_norm</span></h3>
+        <p class="one">Per-head RMSNorm helper for the Qwen3 QK-norm step. Views a <code>(n_tokens, n_heads · head_dim)</code> projection as <code>n_tokens · n_heads</code> rows of length <code>head_dim</code> and normalises each row against the shared <code>(head_dim,)</code> gamma. Stays in-TEE — invoked between QKV projection and RoPE on both prefill and decode-cached paths.</p>
+        <dl>
+          <dt>file</dt><dd><code>decoder/rms_norm.rs</code></dd>
+          <dt>callers</dt><dd><code>decoder::forward::{decoder_block, decoder_block_cached}</code></dd>
+          <dt>tests</dt><dd><code>apply_qk_norm_normalises_each_head_independently</code> · <code>apply_qk_norm_applies_gamma_per_channel</code></dd>
         </dl>
       </article>
 
       <article class="card">
         <span class="tag tee">state</span>
         <h3>KvCache<span class="alias">gelo_embedder :: decoder :: kv_cache</span></h3>
-        <p class="one">In-CVM KV cache. One <code>(K, V)</code> pair per layer per head per position; indexed by <code>(layer_idx, head_idx)</code>. Grows by one position per decode step. Local layers keep separate K, V; global layers store K = V as a single tensor (Gemma 4 K=V trick — halves global-layer cache memory and lets the protocol sample one mask per global-layer K/V tensor instead of two).</p>
+        <p class="one">In-CVM KV cache. Per-layer <code>LayerKvCache::{Separate, Shared}</code> — separate K and V on the Qwen3 path (every layer); a <code>Shared</code> single tensor on Gemma 4 global layers when <code>kv_shared_in_global</code> is set. Grows by one position per decode step; reset / re-allocate per generate() invocation. Always RMP-protected CVM DRAM — never touched by GPU.</p>
         <dl>
-          <dt>local layers</dt><dd>ring-buffer truncated to last <code>W = 512</code> positions · ~few MB total across all local layers</dd>
-          <dt>global layers</dt><dd>full sequence retained · K=V single tensor · ~100s of MB at long context</dd>
-          <dt>encrypted memory</dt><dd>RMP-protected CVM DRAM · never touched by GPU</dd>
-          <dt>π handling</dt><dd>per-step decision (§08) — fresh π per step requires KV-cache-encoded primitive (SCX-class); session-persistent π trades one weaker decode-step argument for in-place cache reuse</dd>
+          <dt>file</dt><dd><code>decoder/kv_cache.rs</code></dd>
+          <dt>Qwen3 (v1)</dt><dd>all-Separate · 28 layers · 8 KV heads · 128 head_dim · ~58 MB at <code>n_cache=4k</code></dd>
+          <dt>Gemma 4 <em>(scaffold)</em></dt><dd><code>new_with_sharing</code> halves global-layer memory when K=V tying engages</dd>
+          <dt>π handling</dt><dd>per-step decision (§09) — fresh π per step requires KV-cache-encoded primitive (SCX-class); session-persistent π trades one weaker decode-step argument for in-place cache reuse</dd>
         </dl>
       </article>
 
       <article class="card">
         <span class="tag tee">attention</span>
-        <h3>HybridAttentionRouter<span class="alias">gelo_embedder :: decoder :: attention</span></h3>
-        <p class="one">Per-layer dispatch reading <code>AttentionClass</code> from config. <code>Local(W)</code> → in-TEE causal sliding-window attention, never offloads, never crosses PCIe. <code>Global</code> → length-based auto-switch from the embedder reused unchanged — in-TEE for short n, OutAttnMult or permuted attention past threshold.</p>
+        <h3>Cached attention kernels<span class="alias">gelo_embedder :: decoder :: attention</span></h3>
+        <p class="one">Asymmetric Q vs cached-KV attention. <code>causal_gqa_attention_cached(n_q, n_kv, q_pos_offset)</code> handles both prefill (n_q = n_prompt, n_kv = n_prompt) and decode (n_q = 1, n_kv = n_cache + 1) under one kernel. The <code>HybridAttentionRouter</code> in <code>decoder/forward.rs</code> consults <code>effective_attention_class(li)</code> per layer and dispatches global vs local; on Qwen3 every layer is Global so the router is a passthrough.</p>
         <dl>
-          <dt>new kernel</dt><dd><code>causal_gqa_attention_local_window(window=W)</code> — band-mask causal · CPU under AOCL-BLIS · ~zero protocol overhead</dd>
-          <dt>K=V branch</dt><dd>global layers pass <code>kv_shared = true</code> · halves OutAttnMult mask-sample count and permuted-attention permutation work</dd>
-          <dt>compatibility caveat</dt><dd>sliding-window is incompatible with permuted attention (the band mask is not permutation-invariant); local layers therefore stay in-TEE unconditionally</dd>
-          <dt>p-RoPE wiring</dt><dd><code>RoPE</code> takes optional <code>partial: f32</code>; Gemma 4 global layers pass <code>0.25</code>; existing Qwen3 / Llama paths pass <code>None</code> (full rotation)</dd>
+          <dt>kernels</dt><dd><code>causal_gqa_attention_cached</code> · <code>causal_gqa_attention_swa_cached</code> <em>(scaffold)</em></dd>
+          <dt>Qwen3 (v1)</dt><dd>all-Global path; OutAttnMult auto-switch at <code>n ≥ hidden_size = 2048</code> · in-TEE at decode shapes</dd>
+          <dt>Gemma 4 <em>(scaffold)</em></dt><dd>SWA band-mask in-TEE on local layers · OutAttnMult / fused permuted on global at long prefill</dd>
         </dl>
       </article>
 
       <article class="card">
         <span class="tag tee">loop</span>
-        <h3>GenerationLoop<span class="alias">gelo_embedder :: decoder :: generation</span></h3>
-        <p class="one">Orchestrates prefill + decode. Prefill: one forward pass over the full prompt, populate KV cache, sample first token. Decode: loop over <code>(n_q = 1, n_kv = n_cache)</code> forwards, append K/V, sample next token, until EOS or <code>max_tokens</code>. Each step takes one fresh Haar <code>A</code>; π handling decided at §08.</p>
+        <h3>generate / run_prefill / run_decode_step<span class="alias">gelo_embedder :: decoder :: generation</span></h3>
+        <p class="one">Orchestrates prefill + decode. <code>run_prefill</code> opens one <code>begin_forward_pass</code>, walks every layer with cache writes, returns the per-token hidden state. <code>run_decode_step</code> opens its own <code>begin_forward_pass(1)</code> per call, embeds the previous sampled token, walks layers (each appending one position to the cache), returns the last-layer hidden row. <code>generate</code> ties these together with a sampler. One fresh Haar <code>A</code> per forward pass — every decode step gets its own.</p>
         <dl>
-          <dt>refactor</dt><dd><code>decoder/forward.rs</code> splits to <code>forward_prefill</code> vs <code>forward_decode</code>; embedder pooling path stays unchanged</dd>
-          <dt>EOS</dt><dd>stop tokens from the tokenizer config · early-stop after <code>max_tokens</code></dd>
-          <dt>streaming</dt><dd>per-token write into the response channel, flushed by the runner over RATLS · disable for fixed-length-emission deployments</dd>
+          <dt>file</dt><dd><code>decoder/generation.rs</code> · <code>decoder/forward.rs</code></dd>
+          <dt>LM head</dt><dd>tied — <code>h_last · token_embedding.T</code> in-TEE; optional <code>final_logit_softcapping</code> (Gemma 4)</dd>
+          <dt>sampler</dt><dd><code>SamplerConfig::Greedy</code> on v1; top-p / top-k / temperature share the same call-site, in-TEE on plaintext logits</dd>
+          <dt>EOS</dt><dd><code>GenerationConfig::eos_token_ids</code> · short-circuit when sampled token matches</dd>
         </dl>
       </article>
 
       <article class="card">
-        <span class="tag tee">sampler</span>
-        <h3>Sampler<span class="alias">gelo_embedder :: decoder :: sampler</span></h3>
-        <p class="one">In-TEE sampling. Greedy, temperature, top-k, top-p. Operates on plaintext logits inside the CVM; output is one <code>token_id</code>. Logits are zeroized after sample; only the chosen token survives to the KV-cache append and the next decode step.</p>
+        <span class="tag tee">protocol</span>
+        <h3>InProcessTrustedExecutor<span class="alias">gelo_protocol :: sim</span></h3>
+        <p class="one">The masked executor — paper-parity defaults via <code>with_seed</code>: per-forward Haar <code>A</code> + shield(8, 4.0), no U-Verify. <code>with_verify_probes(k)</code> enables Freivalds-style integrity probes on top. Holds a <code>WeightStore</code> shared with the offload engine, a <code>ChaCha20Rng</code> session-seeded, and (optionally) a <code>PleTable</code> in encrypted CVM DRAM.</p>
         <dl>
-          <dt>RNG</dt><dd>ChaCha20 seeded from the per-session <code>SessionKey</code> via HKDF info <code>"gelo-llm.sampler.v1"</code> · deterministic replay at <code>temperature = 0</code></dd>
-          <dt>defaults</dt><dd>greedy on v1; top-p 0.95 / temperature 0.7 once the bench harness lands</dd>
+          <dt>file</dt><dd><code>crates/gelo-protocol/src/sim.rs</code></dd>
+          <dt>session bracket</dt><dd><code>begin_forward_pass(n)</code> samples the per-forward A · <code>end_forward_pass()</code> drops it</dd>
+          <dt>per-offload mode</dt><dd>opt-in <code>with_per_offload_mask()</code> for parity / BSS-recovery tests · not the production path</dd>
         </dl>
       </article>
 
       <article class="card">
-        <span class="tag http">http</span>
-        <h3>/generate<span class="alias">gelo-snp-runner :: main</span></h3>
-        <p class="one">Axum route alongside <code>/health · /attest · /ingest · /query · /rerank · /rotate</code>. Returns 501 when no generation model is loaded. Streaming variant emits <code>text/event-stream</code>; batched variant returns a single JSON body at EOS. Both dispatch via a <code>Box&lt;dyn GenerationService + Send&gt;</code> behind an <code>Arc&lt;Mutex&gt;</code>.</p>
+        <span class="tag tee">protocol scaffold</span>
+        <h3>PleTable <em>(Gemma scaffold)</em><span class="alias">gelo_protocol :: ple</span></h3>
+        <p class="one">Per-Layer Embedding table pinned to encrypted CVM DRAM. Allocated inside the <code>InProcessTrustedExecutor</code>'s state at model load; never reaches the engine's GPU buffer. Per-step gather reads <code>n</code> rows (one per current token, one layer at a time) into an <code>(n, d_ple)</code> tensor. Unused on the Qwen3 path; engaged only when a Gemma 4 loader provides a table.</p>
+        <dl>
+          <dt>shape</dt><dd><code>[vocab_size · n_layers · d_ple]</code> · int8 · ~700 MB for E2B, ~1.3 GB for E4B</dd>
+          <dt>trait extension</dt><dd><code>TrustedExecutor::{provision_ple_table, ple_gather}</code></dd>
+          <dt>PCIe-leak verification</dt><dd><code>tests/ple_pcie_leak.rs</code> — attacker simulator records every GPU-side address; asserts no PLE-side reads on the offload trace</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag tee">model scaffold</span>
+        <h3>Gemma4Variant <em>(scaffold)</em><span class="alias">gelo_embedder :: decoder :: gemma4</span></h3>
+        <p class="one">E2B / E4B config builders pinned to real HF constants (audited 2026-05-18 against <code>google/gemma-4-{E2B,E4B}/config.json</code>). Emits a <code>DecoderConfig</code> with the per-layer <code>AttentionClass</code> vector, <code>partial_rope = 0.25</code>, <code>final_logit_softcapping = 30.0</code>, and exposes Phase 1.5 metadata (<code>global_head_dim</code>, <code>rope_theta_global</code>, <code>num_kv_shared_layers</code>, <code>ple_dim</code>) ahead of the loader work.</p>
+        <dl>
+          <dt>file</dt><dd><code>decoder/gemma4.rs</code> + <code>decoder/config.rs</code></dd>
+          <dt>tests</dt><dd><code>e2b_config_matches_real_hf_config</code> · <code>e4b_config_matches_real_hf_config</code> · <code>variant_methods_report_phase_15_dimensions</code></dd>
+          <dt>integration tests</dt><dd><code>gemma4_e2e.rs</code> + <code>gemma4_hf_parity.rs</code> · <code>#[ignore]</code>-gated until Phase 1.5 lands</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag http">deploy</span>
+        <h3>/generate (planned)<span class="alias">gelo-snp-runner :: main</span></h3>
+        <p class="one">HTTP route to land alongside <code>/health · /attest · /ingest · /query · /rerank · /rotate</code>. Returns 501 when no generation model is loaded. Streaming variant emits <code>text/event-stream</code>; batched variant returns at EOS. Each token AES-GCM-sealed under <code>QueryKey = HKDF(SessionKey, "gelo-llm.token.v1", query_id)</code>. Not yet wired — current state is in-process <code>generate()</code> via the integration test; production HTTP plumbing is the next deployment-side step.</p>
         <dl>
           <dt>request</dt><dd><code>{ session_secret, query_id_b64, prompt, max_tokens, sampler: { temperature, top_p, top_k }, stream: bool }</code></dd>
-          <dt>response (streaming)</dt><dd>event-stream of <code>{ token_b64_ct, nonce_b64 }</code> · each token AES-GCM-sealed under <code>QueryKey = HKDF(SessionKey, "gelo-llm.token.v1", query_id)</code></dd>
-          <dt>response (batched)</dt><dd>single ciphertext bundle of the full continuation</dd>
-          <dt>tests</dt><dd>integration tests cover 501-unconfigured, streaming round-trip, batched round-trip, and wrong-session-key rejection</dd>
-        </dl>
-      </article>
-
-      <article class="card">
-        <span class="tag tee">obs</span>
-        <h3>Instrumentation<span class="alias">gelo_embedder :: instrumentation</span></h3>
-        <p class="one">Feature-flagged snapshot capture for the attack-resistance bench. Records pre-mask and post-mask activations at each PCIe boundary into a typed log; the bench harness consumes the log offline to run VMA / IA / ISA / IMA / NN / TFMA / SDA attacks against GELO-protected Gemma forwards. Off in release builds.</p>
-        <dl>
-          <dt>feature</dt><dd><code>instrumentation</code> · gated by <code>cfg(feature = "instrumentation")</code></dd>
-          <dt>output</dt><dd><code>results/path-1-attacks/*.bincode</code> · per-layer per-offload activation pairs</dd>
-          <dt>accept gate</dt><dd>top-1 token-recovery success rate &lt; 5% under each attack on E2B and E4B</dd>
+          <dt>response</dt><dd>SSE event-stream of <code>{ token_b64_ct, nonce_b64 }</code> · or single ciphertext bundle</dd>
+          <dt>status</dt><dd>planned · no blocker beyond the existing reranker route as a template</dd>
         </dl>
       </article>
 
@@ -565,8 +670,322 @@
       <div class="section-meta">prefill once · decode loop · per-layer block detail</div>
     </header>
     <p class="lede">
-      Two figures trace one Gemma 4 decoder block under each phase. <strong>FIG. 03a</strong> covers prefill (full prompt, attention <code>O(n²)</code> on global layers). <strong>FIG. 03b</strong> covers one decode step (<code>n_q = 1</code>, growing KV cache, attention <code>O(n_cache · d_head)</code>). Both use the same per-block topology — what differs is the attention input shape, the KV-cache access pattern, and the PLE gather length (full prompt for prefill, one token for decode).
+      Two figures trace one <strong>Qwen3-1.7B</strong> decoder block under each phase — the v1 generation path running today. <strong>FIG. 02a</strong> covers prefill (full prompt, full causal attention <code>O(n²)</code>). <strong>FIG. 02b</strong> covers one decode step (<code>n_q = 1</code>, growing KV cache, attention <code>O(n_cache · d_head)</code>). The Gemma 4 variants (PLE gather, hybrid local/global dispatch, p-RoPE) are scaffolded but unused on this path; they're in the collapsible block below for comparison.
     </p>
+
+    <!-- ══════════ FIG. 02a — Qwen3 Prefill ══════════ -->
+    <div class="diagram-frame">
+      <div class="diagram-cap">
+        <span class="l">FIG. 02a — Qwen3-1.7B prefill · one decoder block · pre-LN · SwiGLU · GQA(16:8) · full causal attention · QK-norm before RoPE   ·   <b style="color:#1e7050">v1 · 2026-05-18 · 4 GPU GEMMs per block · 28 blocks total</b></span>
+        <span>blue arc = residual · solid red = TEE flow · dashed amber = masked PCIe transit (mix → / unmix ←)</span>
+      </div>
+      <svg class="flow" viewBox="0 0 1320 820" xmlns="http://www.w3.org/2000/svg" role="img">
+        <defs>
+          <marker id="ahqwpf" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
+          </marker>
+        </defs>
+        <rect x="0"   y="40" width="940"  height="760" class="zone-band zone-band-tee"/>
+        <rect x="940" y="40" width="380"  height="760" class="zone-band zone-band-gpu"/>
+        <text x="20"  y="64" class="zone-label">Trusted side · in CVM</text>
+        <text x="20"  y="80" class="zone-sublabel">decoder + KV cache + protocol kernel · QK-norm, RoPE, attention all in-TEE</text>
+        <text x="960" y="64" class="zone-label">Untrusted GPU</text>
+        <text x="960" y="80" class="zone-sublabel">burn-cubecl · Vulkan · only the 4 linear GEMMs cross</text>
+        <line x1="940" y1="40" x2="940" y2="800" class="boundary"/>
+        <text x="944" y="796" class="boundary-label">PCIe · masked</text>
+
+        <!-- INPUT: full prompt -->
+        <rect x="220" y="100" width="460" height="46" class="box box-tee box-strong"/>
+        <text x="450" y="120" class="box-label" text-anchor="middle">H_in   (n_prompt, 2048)</text>
+        <text x="450" y="138" class="box-sub" text-anchor="middle">token_embedding[prompt_ids] · no PLE on Qwen3</text>
+
+        <!-- residual split (pre-LN) -->
+        <path d="M450 146 L450 160" class="arrow arrow-secret" marker-end="url(#ahqwpf)"/>
+        <circle cx="450" cy="162" r="4" fill="var(--ink)"/>
+
+        <!-- Attention residual arc -->
+        <path d="M450 162 C 250 162, 220 320, 444 388" class="arrow" stroke="var(--client)" stroke-dasharray="3 2" fill="none" marker-end="url(#ahqwpf)"/>
+        <text x="170" y="290" class="arrow-label attest" transform="rotate(-90 170 290)">residual (around Norm + sub-block)</text>
+
+        <!-- ① RMSNorm₁ (pre-LN) -->
+        <path d="M450 164 L450 176" class="arrow arrow-secret"/>
+        <rect x="340" y="176" width="220" height="34" class="box box-tee box-strong"/>
+        <text x="450" y="198" class="box-label" text-anchor="middle">① RMSNorm₁   (pre-LN)</text>
+
+        <!-- ② QKV (masked) -->
+        <path d="M450 210 L450 224" class="arrow arrow-secret" marker-end="url(#ahqwpf)"/>
+        <rect x="340" y="224" width="220" height="40" class="box box-tee"/>
+        <text x="356" y="242" class="box-label">② QKV  (masked offload)</text>
+        <text x="356" y="256" class="box-mono">mix → matmul → unmix · GQA 16:8</text>
+        <rect x="960" y="224" width="340" height="40" class="box box-gpu box-strong"/>
+        <text x="976" y="242" class="box-label"><tspan fill="#b73228" font-weight="700">[GEMM 1/4]</tspan> matmul_many [Q, K, V]</text>
+        <text x="976" y="256" class="box-mono">3 weights · separate K and V (no tying)</text>
+        <path d="M560 236 L960 236" class="arrow arrow-masked" marker-end="url(#ahqwpf)"/>
+        <text x="680" y="230" class="arrow-label masked">mix:  U = A·H</text>
+        <path d="M960 252 L560 252" class="arrow arrow-masked" marker-end="url(#ahqwpf)" stroke-dasharray="4 3"/>
+        <text x="680" y="266" class="arrow-label masked">unmix:  Aᵀ·(U·W)</text>
+
+        <!-- ③ QK-norm (Qwen3-specific) -->
+        <path d="M450 264 L450 278" class="arrow arrow-secret" marker-end="url(#ahqwpf)"/>
+        <rect x="320" y="278" width="260" height="34" class="box box-tee" style="stroke:#1e7050;"/>
+        <text x="450" y="295" class="box-label" text-anchor="middle" style="fill:#1e7050;">③ QK-norm   (Qwen3-specific)</text>
+        <text x="450" y="307" class="box-mono" text-anchor="middle">per-head RMSNorm · q_norm/k_norm · in-TEE only</text>
+
+        <!-- ④ RoPE -->
+        <path d="M450 312 L450 326" class="arrow arrow-secret" marker-end="url(#ahqwpf)"/>
+        <rect x="340" y="326" width="220" height="32" class="box box-tee"/>
+        <text x="450" y="346" class="box-label" text-anchor="middle">④ RoPE on Q, K   ·   full rotation, θ = 1 M</text>
+
+        <!-- ⑤ KV-cache write -->
+        <path d="M450 358 L450 370" class="arrow arrow-secret" marker-end="url(#ahqwpf)"/>
+        <rect x="340" y="370" width="220" height="34" class="box box-tee"/>
+        <text x="450" y="388" class="box-label" text-anchor="middle">⑤ KV-cache write   ·   positions 0..n_prompt</text>
+        <text x="450" y="400" class="box-sub" text-anchor="middle">all-Separate (no K=V tying) · CVM DRAM</text>
+
+        <!-- ⑥ Attention dispatch -->
+        <path d="M450 404 L450 416" class="arrow arrow-secret" marker-end="url(#ahqwpf)"/>
+        <rect x="280" y="416" width="340" height="50" class="box box-tee"/>
+        <text x="290" y="434" class="box-label">⑥ Causal GQA attention   (single class)</text>
+        <text x="290" y="450" class="box-sub">in-TEE for n &lt; 2048 (hidden_size threshold)</text>
+        <text x="290" y="464" class="box-sub">OutAttnMult / fused permuted past threshold · long prefill only</text>
+        <rect x="960" y="416" width="340" height="50" class="box box-gpu" style="stroke-dasharray:4 3; opacity:0.65;"/>
+        <text x="976" y="434" class="box-label" style="opacity:0.75;">global path · long prefill only</text>
+        <text x="976" y="450" class="box-mono" style="opacity:0.75;">Q · Kᵀ → masked scores</text>
+        <text x="976" y="464" class="box-mono" style="opacity:0.75;">fused permuted FlashAttention (M1.10)</text>
+
+        <!-- ⑦ O projection (masked) -->
+        <path d="M450 466 L450 480" class="arrow arrow-secret" marker-end="url(#ahqwpf)"/>
+        <rect x="340" y="480" width="220" height="40" class="box box-tee"/>
+        <text x="356" y="498" class="box-label">⑦ O proj  (masked offload)</text>
+        <text x="356" y="512" class="box-mono">mix → matmul → unmix</text>
+        <rect x="960" y="480" width="340" height="40" class="box box-gpu"/>
+        <text x="976" y="498" class="box-label"><tspan fill="#b73228" font-weight="700">[GEMM 2/4]</tspan> matmul O</text>
+        <text x="976" y="512" class="box-mono">single GEMM · 2048 × 2048</text>
+        <path d="M560 492 L960 492" class="arrow arrow-masked" marker-end="url(#ahqwpf)"/>
+        <path d="M960 508 L560 508" class="arrow arrow-masked" marker-end="url(#ahqwpf)" stroke-dasharray="4 3"/>
+
+        <!-- + merge 1 -->
+        <path d="M450 520 L450 534" class="arrow arrow-secret"/>
+        <circle cx="450" cy="536" r="8" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+        <text x="450" y="540" text-anchor="middle" font-size="12" font-weight="700">+</text>
+
+        <!-- FFN residual split -->
+        <path d="M450 544 L450 558" class="arrow arrow-secret" marker-end="url(#ahqwpf)"/>
+        <circle cx="450" cy="560" r="4" fill="var(--ink)"/>
+
+        <!-- FFN residual arc -->
+        <path d="M450 560 C 250 560, 220 690, 444 746" class="arrow" stroke="var(--client)" stroke-dasharray="3 2" fill="none" marker-end="url(#ahqwpf)"/>
+        <text x="170" y="650" class="arrow-label attest" transform="rotate(-90 170 650)">residual (around Norm + sub-block)</text>
+
+        <!-- ⑧ RMSNorm₂ -->
+        <path d="M450 562 L450 574" class="arrow arrow-secret"/>
+        <rect x="340" y="574" width="220" height="32" class="box box-tee box-strong"/>
+        <text x="450" y="594" class="box-label" text-anchor="middle">⑧ RMSNorm₂   (pre-LN)</text>
+
+        <!-- ⑨ Gate ∥ Up (masked) -->
+        <path d="M450 606 L450 620" class="arrow arrow-secret" marker-end="url(#ahqwpf)"/>
+        <rect x="340" y="620" width="220" height="40" class="box box-tee"/>
+        <text x="356" y="638" class="box-label">⑨ Gate ∥ Up  (masked)</text>
+        <text x="356" y="652" class="box-mono">mix → matmul_many → unmix</text>
+        <rect x="960" y="620" width="340" height="40" class="box box-gpu box-strong"/>
+        <text x="976" y="638" class="box-label"><tspan fill="#b73228" font-weight="700">[GEMM 3/4]</tspan> matmul_many [gate, up]</text>
+        <text x="976" y="652" class="box-mono">2 weights · 1 dispatch · 2048 → 6144</text>
+        <path d="M560 632 L960 632" class="arrow arrow-masked" marker-end="url(#ahqwpf)"/>
+        <path d="M960 648 L560 648" class="arrow arrow-masked" marker-end="url(#ahqwpf)" stroke-dasharray="4 3"/>
+
+        <!-- ⑩ SiLU(gate) ⊙ up -->
+        <path d="M450 660 L450 672" class="arrow arrow-secret" marker-end="url(#ahqwpf)"/>
+        <rect x="340" y="672" width="220" height="32" class="box box-tee"/>
+        <text x="450" y="692" class="box-label" text-anchor="middle">⑩ SiLU(gate) ⊙ up   ·   SwiGLU</text>
+
+        <!-- ⑪ FfnDown (masked) -->
+        <path d="M450 704 L450 718" class="arrow arrow-secret" marker-end="url(#ahqwpf)"/>
+        <rect x="340" y="718" width="220" height="40" class="box box-tee"/>
+        <text x="356" y="736" class="box-label">⑪ FfnDown  (masked offload)</text>
+        <text x="356" y="750" class="box-mono">mix → matmul → unmix · 6144 → 2048</text>
+        <rect x="960" y="718" width="340" height="40" class="box box-gpu"/>
+        <text x="976" y="736" class="box-label"><tspan fill="#b73228" font-weight="700">[GEMM 4/4]</tspan> matmul FfnDown</text>
+        <text x="976" y="750" class="box-mono">single GEMM</text>
+        <path d="M560 730 L960 730" class="arrow arrow-masked" marker-end="url(#ahqwpf)"/>
+        <path d="M960 746 L560 746" class="arrow arrow-masked" marker-end="url(#ahqwpf)" stroke-dasharray="4 3"/>
+
+        <!-- + merge 2 -->
+        <path d="M450 758 L450 770" class="arrow arrow-secret"/>
+        <circle cx="450" cy="772" r="8" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+        <text x="450" y="776" text-anchor="middle" font-size="12" font-weight="700">+</text>
+
+        <!-- → next block / LM head -->
+        <path d="M450 780 L450 792" class="arrow arrow-secret" marker-end="url(#ahqwpf)"/>
+        <text x="450" y="800" text-anchor="middle" font-size="11" fill="var(--ink-2)">→ next block (×27 more) → RMSNorm_final → tied LM head → sample → first output token</text>
+      </svg>
+    </div>
+
+    <!-- ══════════ FIG. 02b — Qwen3 Decode ══════════ -->
+    <div class="diagram-frame">
+      <div class="diagram-cap">
+        <span class="l">FIG. 02b — Qwen3-1.7B decode · one step · <code>n_q = 1</code> · <code>n_kv = n_cache</code> · same block topology · attention reads from CVM-resident KV cache   ·   <b style="color:#1e7050">v1 · 2026-05-18 · one fresh Haar A per decode step</b></span>
+        <span>same legend · decode step is shape-equivalent to a 1-token prefill against the cache</span>
+      </div>
+      <svg class="flow" viewBox="0 0 1320 820" xmlns="http://www.w3.org/2000/svg" role="img">
+        <defs>
+          <marker id="ahqwdc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
+          </marker>
+        </defs>
+        <rect x="0"   y="40" width="940"  height="760" class="zone-band zone-band-tee"/>
+        <rect x="940" y="40" width="380"  height="760" class="zone-band zone-band-gpu"/>
+        <text x="20"  y="64" class="zone-label">Trusted side · in CVM</text>
+        <text x="20"  y="80" class="zone-sublabel">decoder + KV cache (growing) + protocol kernel · fresh A every step</text>
+        <text x="960" y="64" class="zone-label">Untrusted GPU</text>
+        <text x="960" y="80" class="zone-sublabel">burn-cubecl · Vulkan · dispatch-bound at n_q=1</text>
+        <line x1="940" y1="40" x2="940" y2="800" class="boundary"/>
+        <text x="944" y="796" class="boundary-label">PCIe · masked</text>
+
+        <!-- INPUT: one token (sampled) -->
+        <rect x="260" y="100" width="380" height="46" class="box box-tee box-strong"/>
+        <text x="450" y="120" class="box-label" text-anchor="middle">H_in   (1, 2048)</text>
+        <text x="450" y="138" class="box-sub" text-anchor="middle">token_embedding[sampled_id]</text>
+
+        <!-- residual split -->
+        <path d="M450 146 L450 160" class="arrow arrow-secret" marker-end="url(#ahqwdc)"/>
+        <circle cx="450" cy="162" r="4" fill="var(--ink)"/>
+
+        <!-- Attention residual arc -->
+        <path d="M450 162 C 250 162, 220 320, 444 472" class="arrow" stroke="var(--client)" stroke-dasharray="3 2" fill="none" marker-end="url(#ahqwdc)"/>
+        <text x="170" y="320" class="arrow-label attest" transform="rotate(-90 170 320)">residual (around Norm + sub-block)</text>
+
+        <!-- ① RMSNorm₁ -->
+        <path d="M450 162 L450 176" class="arrow arrow-secret"/>
+        <rect x="340" y="176" width="220" height="32" class="box box-tee box-strong"/>
+        <text x="450" y="196" class="box-label" text-anchor="middle">① RMSNorm₁   (pre-LN)</text>
+
+        <!-- ② QKV (masked, one row) -->
+        <path d="M450 208 L450 222" class="arrow arrow-secret" marker-end="url(#ahqwdc)"/>
+        <rect x="340" y="222" width="220" height="40" class="box box-tee"/>
+        <text x="356" y="240" class="box-label">② QKV  (masked · one row)</text>
+        <text x="356" y="254" class="box-mono">U = A·H · (1, 2048)</text>
+        <rect x="960" y="222" width="340" height="40" class="box box-gpu box-strong"/>
+        <text x="976" y="240" class="box-label"><tspan fill="#b73228" font-weight="700">[GEMM 1/4]</tspan> matmul_many [Q, K, V]</text>
+        <text x="976" y="254" class="box-mono">tiny · dispatch-bound</text>
+        <path d="M560 234 L960 234" class="arrow arrow-masked" marker-end="url(#ahqwdc)"/>
+        <path d="M960 250 L560 250" class="arrow arrow-masked" marker-end="url(#ahqwdc)" stroke-dasharray="4 3"/>
+
+        <!-- ③ QK-norm (Qwen3-specific) -->
+        <path d="M450 262 L450 276" class="arrow arrow-secret" marker-end="url(#ahqwdc)"/>
+        <rect x="320" y="276" width="260" height="34" class="box box-tee" style="stroke:#1e7050;"/>
+        <text x="450" y="293" class="box-label" text-anchor="middle" style="fill:#1e7050;">③ QK-norm   (one row, per-head)</text>
+        <text x="450" y="305" class="box-mono" text-anchor="middle">in-TEE only · 16 heads × head_dim=128</text>
+
+        <!-- ④ RoPE (one position) -->
+        <path d="M450 310 L450 324" class="arrow arrow-secret" marker-end="url(#ahqwdc)"/>
+        <rect x="340" y="324" width="220" height="32" class="box box-tee"/>
+        <text x="450" y="344" class="box-label" text-anchor="middle">④ RoPE on Q, K   (one position)</text>
+
+        <!-- ⑤ KV-cache APPEND -->
+        <path d="M450 356 L450 370" class="arrow arrow-secret" marker-end="url(#ahqwdc)"/>
+        <rect x="340" y="370" width="220" height="40" class="box box-tee"/>
+        <text x="450" y="388" class="box-label" text-anchor="middle">⑤ KV-cache append (position n_cache)</text>
+        <text x="450" y="402" class="box-sub" text-anchor="middle">all layers Separate · K and V stored independently</text>
+
+        <!-- ⑥ Attention against growing cache (in-TEE) -->
+        <path d="M450 410 L450 422" class="arrow arrow-secret" marker-end="url(#ahqwdc)"/>
+        <rect x="280" y="422" width="340" height="50" class="box box-tee"/>
+        <text x="290" y="440" class="box-label">⑥ Causal GQA attention   (single class)</text>
+        <text x="290" y="456" class="box-sub">Q · Kᵀ_cache → softmax → ·V_cache · all in-TEE</text>
+        <text x="290" y="468" class="box-sub">µs-scale at n_q = 1 · no offload, no mask round-trip</text>
+
+        <rect x="960" y="422" width="340" height="50" class="box box-gpu" style="stroke-dasharray:4 3; opacity:0.55;"/>
+        <text x="976" y="440" class="box-label" style="opacity:0.75;">GPU idle for attention this step</text>
+        <text x="976" y="456" class="box-mono" style="opacity:0.75;">no offload — attention stays in-TEE</text>
+        <text x="976" y="468" class="box-mono" style="opacity:0.75;">SCX (§09) would amortise cache-read bandwidth</text>
+
+        <!-- ⑦ O proj (masked) -->
+        <path d="M450 472 L450 484" class="arrow arrow-secret" marker-end="url(#ahqwdc)"/>
+        <rect x="340" y="484" width="220" height="40" class="box box-tee"/>
+        <text x="356" y="502" class="box-label">⑦ O proj  (masked · one row)</text>
+        <text x="356" y="516" class="box-mono">tiny · dispatch overhead dominates</text>
+        <rect x="960" y="484" width="340" height="40" class="box box-gpu"/>
+        <text x="976" y="502" class="box-label"><tspan fill="#b73228" font-weight="700">[GEMM 2/4]</tspan> matmul O</text>
+        <text x="976" y="516" class="box-mono">single GEMM (1 × 2048 × 2048)</text>
+        <path d="M560 496 L960 496" class="arrow arrow-masked" marker-end="url(#ahqwdc)"/>
+        <path d="M960 512 L560 512" class="arrow arrow-masked" marker-end="url(#ahqwdc)" stroke-dasharray="4 3"/>
+
+        <!-- + merge 1 -->
+        <path d="M450 524 L450 536" class="arrow arrow-secret"/>
+        <circle cx="450" cy="538" r="8" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+        <text x="450" y="542" text-anchor="middle" font-size="12" font-weight="700">+</text>
+
+        <!-- FFN residual split -->
+        <path d="M450 546 L450 560" class="arrow arrow-secret" marker-end="url(#ahqwdc)"/>
+        <circle cx="450" cy="562" r="4" fill="var(--ink)"/>
+
+        <!-- FFN residual arc -->
+        <path d="M450 562 C 250 562, 220 690, 444 752" class="arrow" stroke="var(--client)" stroke-dasharray="3 2" fill="none" marker-end="url(#ahqwdc)"/>
+
+        <!-- ⑧ RMSNorm₂ -->
+        <path d="M450 564 L450 576" class="arrow arrow-secret"/>
+        <rect x="340" y="576" width="220" height="32" class="box box-tee box-strong"/>
+        <text x="450" y="596" class="box-label" text-anchor="middle">⑧ RMSNorm₂   (pre-LN)</text>
+
+        <!-- ⑨ Gate ∥ Up (masked, one row) -->
+        <path d="M450 608 L450 622" class="arrow arrow-secret" marker-end="url(#ahqwdc)"/>
+        <rect x="340" y="622" width="220" height="40" class="box box-tee"/>
+        <text x="356" y="640" class="box-label">⑨ Gate ∥ Up  (masked · one row)</text>
+        <text x="356" y="654" class="box-mono">mix → matmul_many → unmix · 1 × 6144</text>
+        <rect x="960" y="622" width="340" height="40" class="box box-gpu box-strong"/>
+        <text x="976" y="640" class="box-label"><tspan fill="#b73228" font-weight="700">[GEMM 3/4]</tspan> matmul_many [gate, up]</text>
+        <text x="976" y="654" class="box-mono">2 weights · 1 dispatch</text>
+        <path d="M560 634 L960 634" class="arrow arrow-masked" marker-end="url(#ahqwdc)"/>
+        <path d="M960 650 L560 650" class="arrow arrow-masked" marker-end="url(#ahqwdc)" stroke-dasharray="4 3"/>
+
+        <!-- ⑩ SiLU(gate) ⊙ up -->
+        <path d="M450 662 L450 674" class="arrow arrow-secret" marker-end="url(#ahqwdc)"/>
+        <rect x="340" y="674" width="220" height="32" class="box box-tee"/>
+        <text x="450" y="694" class="box-label" text-anchor="middle">⑩ SiLU(gate) ⊙ up</text>
+
+        <!-- ⑪ FfnDown (masked, one row) -->
+        <path d="M450 706 L450 718" class="arrow arrow-secret" marker-end="url(#ahqwdc)"/>
+        <rect x="340" y="718" width="220" height="40" class="box box-tee"/>
+        <text x="356" y="736" class="box-label">⑪ FfnDown  (masked · one row)</text>
+        <text x="356" y="750" class="box-mono">mix → matmul → unmix · 6144 → 2048</text>
+        <rect x="960" y="718" width="340" height="40" class="box box-gpu"/>
+        <text x="976" y="736" class="box-label"><tspan fill="#b73228" font-weight="700">[GEMM 4/4]</tspan> matmul FfnDown</text>
+        <text x="976" y="750" class="box-mono">single GEMM</text>
+        <path d="M560 730 L960 730" class="arrow arrow-masked" marker-end="url(#ahqwdc)"/>
+        <path d="M960 746 L560 746" class="arrow arrow-masked" marker-end="url(#ahqwdc)" stroke-dasharray="4 3"/>
+
+        <!-- + merge 2 -->
+        <path d="M450 758 L450 770" class="arrow arrow-secret"/>
+        <circle cx="450" cy="772" r="8" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+        <text x="450" y="776" text-anchor="middle" font-size="12" font-weight="700">+</text>
+
+        <!-- → next block / LM head -->
+        <path d="M450 780 L450 792" class="arrow arrow-secret" marker-end="url(#ahqwdc)"/>
+        <text x="450" y="800" text-anchor="middle" font-size="11" fill="var(--ink-2)">→ next block (×27 more) → RMSNorm_final → tied LM head → sample → next token → (stream over RATLS · planned route)</text>
+      </svg>
+    </div>
+
+    <p class="prose" style="margin-top:8px; font-size:14px;">
+      <strong>What to look for in the Qwen3 figures.</strong>
+      ① <em>Single attention class</em> — no hybrid router, every layer is dense causal; OutAttnMult auto-switch decides offload-vs-in-TEE on each forward based on <code>n</code> vs <code>hidden_size = 2048</code>. At decode (<code>n_q = 1</code>) attention always stays in-TEE.
+      ② <em>QK-norm step</em> (green) is the only Qwen3-specific addition vs Qwen2/LLaMA — per-head RMSNorm on Q and K, applied entirely in-TEE between the QKV projection and RoPE.
+      ③ <em>Per-block GEMM count</em> is 4 (QKV merged, O, gate∥up merged, FfnDown) × 28 blocks = 112 GPU dispatches per forward pass. Each rides a single per-forward Haar <code>A</code>.
+      ④ <em>Decode-step parity</em> — argmax-stable token agreement across <code>PlaintextExecutor</code> / <code>InProcessTrustedExecutor</code> / full-stack-with-U-Verify confirms the protocol surface is bit-stable at this scale.
+    </p>
+
+    <!-- ══════════ Gemma 4 reference diagrams (collapsed) ══════════ -->
+    <details style="margin-top:32px; padding:14px 20px; border:1px solid var(--rule); background:rgba(0,0,0,0.015);">
+      <summary style="cursor:pointer; font-family:'Fraunces',serif; font-variation-settings:'opsz' 26,'wght' 500; font-size:17px;">Gemma 4 reference diagrams (scaffold · click to expand) — PLE gather, hybrid attention router, p-RoPE, K = V tying</summary>
+      <p class="prose" style="margin-top:14px; font-size:14px;">
+        The original Gemma 4 prefill / decode figures are kept here for design reference.
+        They show the additional pieces the protocol substrate carries for the Phase 1.5
+        target: a TEE-only PLE gather (green), a hybrid attention router that branches
+        per-layer between sliding-window-in-TEE and global-offloaded, p-RoPE rotation on
+        global-layer Q/K, and the K = V tying that lets the GPU upload one tensor instead
+        of two on global layers. Until Gemma 4 weights load (see
+        <a href="gemma4-architecture-roadmap.html"><code>gemma4-architecture-roadmap</code></a>),
+        these paths are passthrough no-ops on the running Qwen3 v1 path above.
+      </p>
 
     <!-- ══════════ FIG. 03a — Prefill ══════════ -->
     <div class="diagram-frame">
@@ -728,7 +1147,7 @@
     <div class="diagram-frame">
       <div class="diagram-cap">
         <span class="l">FIG. 03b — Gemma 4 decode · one step · <code>n_q = 1</code> · <code>n_kv = n_cache</code> · same block topology · attention reads from CVM-resident KV cache   ·   <b style="color:#b73228">rev 2 · 2026-05-18 · 4 GPU GEMMs per block</b></span>
-        <span>same legend · one fresh Haar A per decode step · π handling decided at §08</span>
+        <span>same legend · one fresh Haar A per decode step · π handling decided at §09</span>
       </div>
       <svg class="flow" viewBox="0 0 1320 960" xmlns="http://www.w3.org/2000/svg" role="img">
         <defs>
@@ -801,7 +1220,7 @@
         <rect x="960" y="422" width="340" height="60" class="box box-gpu" style="stroke-dasharray:4 3; opacity:0.55;"/>
         <text x="976" y="440" class="box-label" style="opacity:0.75;">GPU idle for attention this step</text>
         <text x="976" y="456" class="box-mono" style="opacity:0.75;">no offload — attention stays in-TEE</text>
-        <text x="976" y="472" class="box-mono" style="opacity:0.75;">SCX (§08) is a cache-bandwidth lever, not an attn dispatch</text>
+        <text x="976" y="472" class="box-mono" style="opacity:0.75;">SCX (§09) is a cache-bandwidth lever, not an attn dispatch</text>
 
         <!-- ⑥ O proj (masked) -->
         <path d="M450 482 L450 496" class="arrow arrow-secret" marker-end="url(#ahllmd)"/>
@@ -883,13 +1302,14 @@
     </div>
 
     <p class="lede" style="margin-top:0; font-size:14px;">
-      <strong>What to look for between the two figures.</strong>
+      <strong>What to look for between the two Gemma figures.</strong>
       ① <em>Per-block topology is identical</em> — both phases dispatch 2 <code>matmul_many</code> + 2 <code>matmul</code> + 1 attention per block, repeated × 35 (E2B) or × 42 (E4B). What differs is the input shape of every GEMM: <code>(n_prompt, d_hidden)</code> in prefill, <code>(1, d_hidden)</code> in decode. The protocol does the same work; the wall-clock cost regime is what flips.
       ② <em>PLE gather</em> happens in both phases, on different shapes: <code>n_prompt</code> rows in prefill, one row per decode step. Both are TEE-only — green border on the box, never crosses PCIe.
       ③ <em>KV cache</em> is written by prefill (full prompt at once) and appended by decode (one position per step). Lives in encrypted CVM DRAM in both phases.
       ④ <em>Attention dispatch</em> diverges by layer class, not by phase. Local layers stay in-TEE in both phases (CPU under AOCL-BLIS); global layers cross PCIe under mask in both phases.
       ⑤ <em>Dispatch overhead</em> dominates decode (every block's four <code>(1 × d) · (d × d)</code> GEMMs and one <code>Q · Kᵀ_cache</code> cache-read sum to a tight per-token budget); attention compute dominates prefill at long context (a single global-layer <code>Q · Kᵀ</code> is the largest GEMM in the whole stack).
     </p>
+    </details>
 
     <table class="spec" style="margin-top:24px;">
       <thead>
@@ -934,45 +1354,190 @@
     </p>
     <ul>
       <li><strong>Prefill</strong> is one forward pass — one Haar QR, then the same <code>A</code> rides every masked offload in the block stack. Same cost amortisation as the embedder.</li>
-      <li><strong>Each decode step</strong> is one forward pass — one fresh Haar QR per token. At <code>d_hidden = 2560</code> (E4B), the QR is the dominant per-step protocol cost; HKDF-derived mask material (§08 lever) can amortise it across steps for free if the security analysis confirms equivalence.</li>
-      <li><strong>π in permuted attention</strong> is the open decode-phase decision: fresh π per step requires SCX-style encoded-KV (§08); session-persistent π enables in-place cache reuse but trades one weaker decode-step argument. Documented in §08, gated on the security spike when the bench harness lands.</li>
+      <li><strong>Each decode step</strong> is one forward pass — one fresh Haar QR per token. At <code>d_hidden = 2048</code> (Qwen3-1.7B), the per-step QR is small enough to not dominate; at <code>d_hidden = 2560</code> (Gemma 4 E4B once Phase 1.5 lands), HKDF-derived mask material (§09 lever) can amortise it across steps for free if the security analysis confirms equivalence.</li>
+      <li><strong>π in permuted attention</strong> is the open decode-phase decision: fresh π per step requires SCX-style encoded-KV (§09); session-persistent π enables in-place cache reuse but trades one weaker decode-step argument. Documented in §09, gated on the security spike when the bench harness lands.</li>
     </ul>
     <p class="prose"><strong>Why per-forward + shield remains the right default.</strong> Per-offload Haar sampling would cost ~96–140 QRs per forward at Gemma 4 shapes; at <code>d = 2560</code> each QR is ~20–30 ms, so per-offload mask sampling alone would dominate every other cost in the system. Per-forward + shield is the paper's §3.2 + §4.2 trade and what the executor ships by default — see <a href="reranking.html">reranking</a> §05 for the per-cadence breakdown that motivates it.</p>
   </section>
 
-  <!-- ═════ § 8 STATUS & GAPS ═════ -->
-  <section id="status">
+  <!-- ═════ § 8 PERFORMANCE & CORRECTNESS ═════ -->
+  <section id="perf">
     <header class="section-head">
       <div class="section-num">§08</div>
+      <h2 class="section-title">Performance &amp; correctness</h2>
+      <div class="section-meta">v1 measurement · Qwen3-1.7B greedy on the RADV iGPU · 2026-05-18</div>
+    </header>
+    <p class="lede">
+      First end-to-end measurement of the GELO protocol on real-weight generation.
+      The cells mirror the embedder/reranker overhead taxonomy:
+      <strong>gpu_plain</strong> (no privacy baseline) ·
+      <strong>gpu_gelo</strong> (paper-parity: per-forward Haar <code>A</code> + shield(8, 4.0)) ·
+      <strong>gpu_full_stack</strong> (gpu_gelo + Freivalds U-Verify <code>k = 2</code>).
+      OutAttnMult forced on at every <code>n</code> (<code>out_attn_mult_min_seq_len = Some(0)</code>) so the
+      4-partition path is exercised even at decode-shape <code>n_q = 1</code>; the production
+      auto-switch would otherwise keep every linear in-TEE at these short shapes.
+      Bench code: <code>crates/gelo-gpu-wgpu/tests/qwen3_generation_bench.rs</code>.
+    </p>
+
+    <table class="spec" style="margin-top:16px;">
+      <thead>
+        <tr>
+          <th>Cell</th>
+          <th>Total (s)</th>
+          <th>TTFT (ms)</th>
+          <th>TPOT mean (ms)</th>
+          <th>median (ms)</th>
+          <th>stddev (ms)</th>
+          <th>tokens / sec</th>
+          <th>vs gpu_plain</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>gpu_plain</b></td>
+          <td class="num">1.342</td>
+          <td class="num">155.4</td>
+          <td class="num">148.4</td>
+          <td class="num">149.0</td>
+          <td class="num">2.9</td>
+          <td class="num">6.74</td>
+          <td>(base)</td>
+        </tr>
+        <tr>
+          <td><b>gpu_gelo</b> · mask + shield</td>
+          <td class="num">1.791</td>
+          <td class="num">201.9</td>
+          <td class="num">198.6</td>
+          <td class="num">200.3</td>
+          <td class="num">12.8</td>
+          <td class="num">5.03</td>
+          <td><span class="accent">+33.4 %</span></td>
+        </tr>
+        <tr>
+          <td><b>gpu_full_stack</b> · + U-Verify k=2</td>
+          <td class="num">202.835</td>
+          <td class="num">22 553.2</td>
+          <td class="num">22 535.2</td>
+          <td class="num">22 528.5</td>
+          <td class="num">81.2</td>
+          <td class="num">0.04</td>
+          <td><span class="accent" style="color:#b73228;">+15 009 %</span></td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="prose" style="margin-top:8px; font-size:13px;">
+      <em>Adapter:</em> AMD Radeon Graphics (RADV GFX1151, iGPU), Mesa 25.2.8-0ubuntu0.24.04.1, Vulkan.
+      <em>Model:</em> <code>Qwen/Qwen3-1.7B</code> bf16 safetensors, dequantised to f32 on load (~13 GB working set; peak RSS 12.19 GiB across all three executors thanks to Arc-shared weights + <code>clone_shared</code> engine).
+      <em>Workload:</em> prompt <span class="mono">"The quick brown fox"</span>, greedy, <code>max_tokens = 8</code>, one warmup iteration per cell.
+    </p>
+
+    <h4 style="margin-top:24px;">Correctness — argmax-stable token parity</h4>
+    <p class="prose">
+      All three cells emitted the byte-identical token sequence
+      <span class="mono">" jumps over the lazy dog. 1"</span> — exactly what HF transformers
+      produces at <code>temperature = 0</code> on the same prompt and the same checkpoint.
+      Argmax robustness handles the float drift the Haar mask introduces;
+      U-Verify's Freivalds probes likewise stay below the discrimination threshold of
+      neighbouring vocab entries. The same property is asserted in
+      <code>tests/qwen3_generation_e2e.rs</code> on every test run.
+    </p>
+    <p class="prose" style="margin-top:12px;">
+      <strong>What the v1 measurement validates.</strong>
+      The GELO protocol is bit-stable for greedy sampling on a 1.7B-parameter decoder.
+      Every Q/K/V/O + gate/up/down matmul rode through a per-forward Haar <code>A</code> +
+      shield(8, 4.0); QK-norm + RoPE + attention compute stayed in-TEE; the LM-head
+      tied-embedding projection stayed in-TEE. Across 1 prefill (4-token prompt) + 8
+      decode steps × 28 layers × 7 GPU dispatches per layer = 1568 masked offloads,
+      no protocol-induced argmax flip on the chosen vocab.
+    </p>
+
+    <h4 style="margin-top:24px;">Open protocol gaps surfaced by the v1 measurement</h4>
+    <ul style="padding-left:20px; line-height:1.55;">
+      <li><strong>U-Verify cost regime above ~1 B parameters.</strong> <code>gpu_full_stack</code> is 150× slower than <code>gpu_gelo</code> because each offloaded matmul fires <em>k</em> Freivalds-style GEMVs against the full TEE-side weight bytes — and at Qwen3-1.7B (~13 GB f32 working copy), the per-probe TEE GEMM dominates everything. <em>k = 8</em> production probes would scale linearly worse. The protocol needs a sublinear-in-weight-size integrity primitive (randomised-block Freivalds, batched verification across decode steps, or checkpoint-only attestation). Not a v1 demonstrator blocker; not safe to ship integrity production at this scale until resolved.</li>
+      <li><strong>Decode KV-cache bandwidth at long context.</strong> The current bench is <code>n_cache = 12</code> (4 prompt + 8 decode), well within in-TEE bandwidth. The v2 measurement at <code>n_cache ≥ 4k</code> will surface whether KV-cache bandwidth dominates per-step decode — the gating signal for SCX-style encoded-KV adoption (§09).</li>
+      <li><strong>OutAttnMult at decode shapes (<code>n_q = 1</code>).</strong> Forcing OutAttnMult on at every <code>n</code> (as this bench does to exercise the path) is not the production setting — the auto-switch threshold <code>n ≥ hidden_size = 2048</code> would keep every decode-step linear in-TEE. Production decode TPOT would be lower than the +33 % measured here.</li>
+    </ul>
+
+    <h4 style="margin-top:24px;">Memory budget · shared engine pattern</h4>
+    <p class="prose">
+      The bench runs all three executor cells on a single shared <code>WgpuVulkanEngine</code>
+      via <code>clone_shared()</code>; weights upload once and the per-cell
+      <code>provision_weight</code> calls are no-ops on the GPU side. The CPU-side weight
+      bytes are <code>Arc&lt;DecoderWeights&gt;</code> across all three executors. U-Verify is the
+      only cell that allocates its own TEE-side weight cache (the <code>verify_probes &gt; 0</code>
+      branch in <code>InProcessTrustedExecutor::provision_weight</code>). Peak RSS 12.19 GiB
+      on a 62 GB box — well under the integrated-GPU's shared-RAM ceiling.
+    </p>
+  </section>
+
+  <!-- ═════ § 9 STATUS & GAPS ═════ -->
+  <section id="status">
+    <header class="section-head">
+      <div class="section-num">§09</div>
       <h2 class="section-title">Status &amp; gaps</h2>
       <div class="section-meta">what's landed · what's next · what's deferred</div>
     </header>
 
-    <h4>Current state</h4>
+    <h4>Current state · 2026-05-18</h4>
     <p class="prose">
       <strong>Qwen3-1.7B greedy generation runs end-to-end under GELO.</strong>
-      The LLM-serving harness (<code>generation::generate</code>, <code>KvCache</code>,
-      asymmetric cached attention kernels, <code>RopeTables::apply_at</code>,
-      decode-step session bracket), the Gemma 4 scaffolding (<code>Gemma4Variant</code>,
-      <code>AttentionClass</code>, hybrid attention dispatch, p-RoPE, K=V global handling,
-      final-logit softcap, PLE in TEE DRAM with PCIe-leak verification),
-      <code>Qwen3Variant::{Q1_7B, Q4B}</code>, and the Qwen3-specific QK-norm step are
-      all landed. A real-weight integration test (<code>qwen3_generation_e2e.rs</code>)
-      drives greedy generation on <code>Qwen/Qwen3-1.7B</code> and asserts
-      plaintext-vs-masked token-sequence parity.
-      <br><br>
-      Gemma 4 real-weight generation remains gated on <strong>Phase 1.5
-      architectural extensions</strong> — per-class head_dim, per-class rope_theta,
+      The LLM-serving harness (<code>generate</code>, <code>run_prefill</code>,
+      <code>run_decode_step</code>, <code>KvCache</code>, asymmetric cached attention
+      kernels, <code>RopeTables::apply_at</code>, decode-step session bracket)
+      and the Qwen3-specific QK-norm step are landed and validated against real
+      <code>Qwen/Qwen3-1.7B</code> bf16 weights. The Gemma 4 scaffolding
+      (<code>Gemma4Variant</code>, <code>AttentionClass</code> dispatch, p-RoPE,
+      K=V tying, final-logit softcap, PLE in TEE DRAM with PCIe-leak verification)
+      is landed and synthetic-tested; engages on Gemma 4 weights once Phase 1.5
+      lands. v1 measurement (§08) shows GELO at <strong>+33 % TPOT</strong> vs
+      unprotected GPU baseline with full bit-identical token output across cells.
+    </p>
+    <p class="prose" style="margin-top:14px;">
+      <strong>Two protocol gaps the v1 measurement surfaces</strong> (carried into the
+      gaps list below): U-Verify's Freivalds primitive is unworkable at ≥1 B-parameter
+      scale (k=2 already gives 150× slowdown), and decode-phase KV-cache bandwidth
+      at long context is unmeasured (current bench is <code>n_cache = 12</code>).
+    </p>
+    <p class="prose" style="margin-top:14px;">
+      <strong>Gemma 4 real-weight generation</strong> remains gated on Phase 1.5
+      architectural extensions — per-class head_dim, per-class rope_theta,
       cross-layer KV sharing, GeGLU dispatch, AltUp, <code>use_double_wide_mlp</code>
-      semantics, and the Gemma-aware safetensors loader. Estimate
-      <strong>~4-5 weeks</strong> from start of Phase 1.5 to first successful
-      <code>generate()</code> on <code>google/gemma-4-E2B</code>. The fused permuted
-      attention kernel (M1.10) and the bench / accuracy / attack-resistance
-      harness sit downstream of that. Tracked in
-      <a href="gemma4-architecture-roadmap.html"><code>gemma4-architecture-roadmap</code></a>.
+      semantics, the Gemma-aware safetensors loader. Estimate ~4-5 weeks. The
+      fused permuted attention kernel (M1.10) and the accuracy / attack-resistance
+      harness sit downstream. Tracked in
+      <a href="gemma4-architecture-roadmap.html"><code>gemma4-architecture-roadmap</code></a>
+      and <a href="../plans/path-1-gelo-gemma.md">plan §8</a>.
     </p>
 
-    <h4 style="margin-top:32px;">Build order</h4>
+    <h4 style="margin-top:32px;">Build status — Qwen3 v1 path</h4>
+    <table class="spec">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Workstream</th>
+          <th>Where</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>1</td><td>LLM-serving harness — prefill / decode split, KV cache, sampler, session bracket</td><td><code>decoder/{generation, forward, kv_cache}.rs</code></td><td>landed</td></tr>
+        <tr><td>2</td><td>Qwen3 variant + safetensors loader + tokenizer</td><td><code>decoder/qwen3.rs</code> · <code>decoder/weights.rs</code></td><td>landed</td></tr>
+        <tr><td>3</td><td>QK-norm — Qwen3-specific per-head RMSNorm before RoPE</td><td><code>decoder/rms_norm.rs::apply_qk_norm</code></td><td>landed</td></tr>
+        <tr><td>4</td><td>Real-weight integration test — plaintext vs masked token parity on <code>Qwen/Qwen3-1.7B</code></td><td><code>tests/qwen3_generation_e2e.rs</code></td><td>landed · passing</td></tr>
+        <tr><td>5</td><td>HF transformers parity fixture (M1.8 equivalent)</td><td><code>tests/qwen3_hf_parity.rs</code></td><td>scaffold landed · fixture JSON pending</td></tr>
+        <tr><td>6</td><td>GPU 3-cell overhead bench — gpu_plain · gpu_gelo · gpu_full_stack</td><td><code>crates/gelo-gpu-wgpu/tests/qwen3_generation_bench.rs</code></td><td>landed · §08 numbers</td></tr>
+        <tr><td>7</td><td>HTTP route — <code>/generate</code> SSE streaming + batched</td><td><code>gelo-snp-runner :: main</code></td><td>planned · reranker route as template</td></tr>
+        <tr><td>8</td><td>Sampler — top-p / top-k / temperature on top of existing greedy</td><td><code>decoder/generation.rs</code></td><td>open · greedy-only on v1</td></tr>
+      </tbody>
+    </table>
+
+    <h4 style="margin-top:32px;">Build status — Gemma 4 (Phase 1.5)</h4>
+    <p class="prose" style="margin-top:8px;">
+      Substrate landed; decoder-side architectural work pending. See §05 for the
+      Developed / Blockers split and
+      <a href="gemma4-architecture-roadmap.html"><code>gemma4-architecture-roadmap</code></a>
+      for the per-item handoff. Once Phase 1.5 lands:
+    </p>
     <table class="spec">
       <thead>
         <tr>
@@ -983,47 +1548,49 @@
         </tr>
       </thead>
       <tbody>
-        <tr><td>1</td><td>LLM-serving harness — <code>decoder/generation.rs</code> + <code>decoder/kv_cache.rs</code> + sampler; refactor <code>decoder/forward.rs</code> to split prefill / decode</td><td class="num">1.5 weeks</td><td>open</td></tr>
-        <tr><td>2</td><td>Gemma 4 model loader — <code>decoder/gemma4.rs</code> + <code>AttentionClass</code> enum + per-layer config vector; parity test against HF <code>transformers</code> reference under <code>PlaintextExecutor</code></td><td class="num">2 weeks</td><td>open</td></tr>
-        <tr><td>3</td><td>PLE table in TEE DRAM + gather kernel — <code>gelo-protocol::ple</code> + <code>TrustedExecutor</code> extension; <code>ple_pcie_leak.rs</code> verification test</td><td class="num">2 weeks</td><td>open · <span class="accent">P0</span></td></tr>
-        <tr><td>4</td><td>Hybrid attention placement — <code>causal_gqa_attention_local_window</code> kernel + per-layer dispatch; sliding-window mask in <code>gelo-protocol::attention</code>; auto-switch threshold tuned for LLM-shape n</td><td class="num">3 weeks</td><td>open</td></tr>
-        <tr><td>5</td><td>K = V global-layer handling — <code>kv_shared</code> flag in <code>out_attn_mult</code> + permuted attention; halve global-layer mask work</td><td class="num">1 week</td><td>open</td></tr>
-        <tr><td>6</td><td>p-RoPE — <code>partial: f32</code> parameter in <code>decoder/rope.rs</code>; <code>p = 0.25</code> on Gemma 4 global layers</td><td class="num">0.5 weeks</td><td>open</td></tr>
-        <tr><td>7</td><td><strong>Fused permuted attention for long-context prefill</strong> — close the <code>burn-cubecl::flash_attention</code> upstream gap (cubek-direct wrapper, upstream PR, or custom WGSL); engine trait extension + protocol dispatcher</td><td class="num">3 weeks</td><td>open · v1 scope</td></tr>
-        <tr><td>8</td><td>E2B end-to-end benchmark — TTFT @ 512 prompt, TPOT @ 256 continuation, peak CVM RAM; plain vs GELO-in-TEE vs GELO-with-offload variants</td><td class="num">1 week</td><td>open</td></tr>
-        <tr><td>9</td><td>E4B scaling benchmark — same shape on E4B; overhead delta tracking; flag HKDF-derived mask lever if scaling regresses</td><td class="num">0.5 weeks</td><td>open</td></tr>
-        <tr><td>10</td><td>Accuracy validation — MMLU 0-shot, IFEval, PIQA, HumanEval pass@1; top-1 token match ≥ 0.99 vs HF <code>transformers</code> at <code>temperature=0</code>; hidden-state cosine ≥ 0.999</td><td class="num">1 week</td><td>open</td></tr>
-        <tr><td>11</td><td>Attack-resistance integration — VMA / IA / ISA / IMA / NN / TFMA / SDA harness against GELO-protected E2B and E4B; TTRSR &lt; 5%</td><td class="num">2 weeks</td><td>open</td></tr>
+        <tr><td>P1</td><td>Gemma-aware safetensors loader — <code>model.embed_tokens_per_layer.weight</code>, per-layer PLE projection tensors, PLE int8 dequant scale layout</td><td class="num">~1 week</td><td>open</td></tr>
+        <tr><td>P2</td><td>Per-class head_dim refactor — Q / K / V projections shape-aware per <code>AttentionClass</code></td><td class="num">~2 weeks</td><td>open</td></tr>
+        <tr><td>P3</td><td>Per-class rope_theta — class-aware <code>RopeTables</code>; two bases per model</td><td class="num">~3 days</td><td>open</td></tr>
+        <tr><td>P4</td><td>Cross-layer KV sharing (<code>num_kv_shared_layers</code>) — distinct from M1.4 within-layer K=V tying</td><td class="num">~2 weeks</td><td>open</td></tr>
+        <tr><td>P5</td><td>GeGLU activation dispatch — <code>gelu_pytorch_tanh</code> in <code>decoder/swiglu.rs</code></td><td class="num">~2 days</td><td>open</td></tr>
+        <tr><td>P6</td><td><code>use_double_wide_mlp</code> semantics — HF transformers source check + impl</td><td class="num">~3 days</td><td>open</td></tr>
+        <tr><td>P7</td><td>AltUp (alternating-update) residual stream — Gemma 3n inheritance</td><td class="num">~1 week</td><td>open</td></tr>
+        <tr><td>P8</td><td>Fused permuted attention for long-context prefill — M1.10, <code>burn-cubecl::flash_attention</code> upstream gap; engine trait extension</td><td class="num">~3 weeks</td><td>open</td></tr>
+        <tr><td>P9</td><td>E2B / E4B accuracy validation — MMLU, IFEval, top-1 ≥ 0.99 vs HF transformers</td><td class="num">~1 week</td><td>open</td></tr>
+        <tr><td>P10</td><td>Attack-resistance integration — VMA / IA / ISA / IMA / NN / TFMA / SDA harness; TTRSR &lt; 5 %</td><td class="num">~2 weeks</td><td>open</td></tr>
       </tbody>
     </table>
 
-    <h4 style="margin-top:32px;">Deferred to follow-up rounds</h4>
+    <h4 style="margin-top:32px;">Open protocol gaps</h4>
     <ul>
-      <li><strong>SCX-style KV-cache encoding for decode.</strong> The decode-phase KV-cache bandwidth grows with context length and dominates per-token cost past ~4k tokens. SCX (Yuan et al., SIGCOMM 2025) derives the per-position encoding from <code>(session_id, layer_id, position)</code> at write time and reads encoded K, V back without per-step re-permutation — the candidate primitive for amortising the cache-bandwidth cost. Security analysis against Hidden-No-More / KV-Cloak adversaries is the gating spike before adoption. <em>This is the only decode-phase optimisation that addresses cache bandwidth at long context; attention compute at decode stays in-TEE always.</em></li>
-      <li><strong>HKDF-derived mask material for amortised decode-step QR.</strong> If decode-step Haar QR becomes the dominant per-token cost at E4B scale, deriving each step's mask deterministically from <code>HKDF(SessionKey, "gelo-llm.mask", step_idx)</code> amortises the QR across the session under a freshness argument tied to the session secret. Lever; not on critical path; landing condition is the E4B bench showing mask-sample &gt; ~10% of TPOT.</li>
+      <li><strong>U-Verify cost above ~1 B parameters.</strong> The current Freivalds primitive is linear in TEE-side weight bytes: each offloaded matmul × <em>k</em> probes × ~13 GB of f32 weights for Qwen3-1.7B yields a 150× decode slowdown at <em>k</em>=2. Production <em>k</em>=8 would scale linearly worse. Candidate fixes: randomised-block Freivalds (sublinear in weight size), batched verification across decode steps, or checkpoint-only attestation that verifies once per N forward passes under a freshness argument. Not a v1 demonstrator blocker; mandatory before integrity rides production.</li>
+      <li><strong>SCX-style KV-cache encoding for decode.</strong> Decode-phase KV-cache bandwidth grows with context length and is the unmeasured cost on v1. SCX (Yuan et al., SIGCOMM 2025) derives the per-position encoding from <code>(session_id, layer_id, position)</code> at write time and reads encoded K, V back without per-step re-permutation. Security analysis against Hidden-No-More / KV-Cloak adversaries is the gating spike before adoption.</li>
+      <li><strong>HKDF-derived mask material for amortised decode-step QR.</strong> At <code>d = 2560</code> (Gemma 4 E4B once Phase 1.5 lands), deriving each step's mask deterministically from <code>HKDF(SessionKey, "gelo-llm.mask", step_idx)</code> amortises the QR across the session under a freshness argument tied to the session secret. Lever; not on critical path; landing condition is the E4B bench showing mask-sample &gt; ~10 % of TPOT.</li>
+    </ul>
+
+    <h4 style="margin-top:32px;">Deferred</h4>
+    <ul>
       <li><strong>Speculative decoding.</strong> Many production LLM stacks use draft-model + verify-step patterns for throughput. The protocol implications under per-batch fresh <code>A</code> are completely unexplored.</li>
-      <li><strong>MoE generation.</strong> Qwen3-MoE / DeepSeek-V2 / Gemma 4 MoE 26B-A4B add a router-histogram leak that's orthogonal to everything in this stage; the right protocol surface is CryptoMoE-style balanced dispatch, which is a separate ~3–6 month workstream. Out of scope here.</li>
+      <li><strong>MoE generation.</strong> Qwen3-MoE / DeepSeek-V2 / Gemma 4 MoE 26B-A4B add a router-histogram leak that's orthogonal to everything in this stage; the right protocol surface is CryptoMoE-style balanced dispatch, a separate ~3-6 month workstream.</li>
       <li><strong>Score-DP / token-DP accountant.</strong> Formal <code>(ε, δ)</code> budget over emitted tokens. Same trigger as the reranker's score-DP item: only relevant if a deployment needs to export per-token probabilities for downstream calibration.</li>
-      <li><strong>ECDH-bound session-key handshake.</strong> Currently <code>session_secret</code> is supplied per request. The reranker's M5.9 swap-in (attestation-bound ECDH KEX with the <code>SessionKey::derive</code> API unchanged) applies here verbatim.</li>
-      <li><strong>Gemma 4 31B dense.</strong> Dropped from v1 scope (2026-05-18). 5:1 hybrid, <code>W = 1024</code>, no PLE, ~5120 hidden — same protocol primitives apply, but the ~31 GB weight footprint forces a 64 GB SEV-SNP SKU. Revisit when such a SKU is available.</li>
+      <li><strong>ECDH-bound session-key handshake.</strong> Currently <code>session_secret</code> is supplied per request. The reranker's swap-in (attestation-bound ECDH KEX with the <code>SessionKey::derive</code> API unchanged) applies verbatim.</li>
+      <li><strong>Gemma 4 31B dense.</strong> 5:1 hybrid, <code>W = 1024</code>, no PLE, ~5120 hidden — same protocol primitives apply, but the ~31 GB weight footprint forces a 64 GB SEV-SNP SKU. Revisit when such a SKU is available.</li>
     </ul>
 
     <h4 style="margin-top:32px;">Open decisions</h4>
     <ul>
-      <li><strong>Decode-phase π</strong> (gates SCX adoption, not v1): persistent across a generation session, or per-step refresh? Per-step requires SCX-class encoded-KV; persistent requires a fresh security argument against ARROWMATCH / Hidden-No-More extensions to autoregressive settings. v1 doesn't use permuted attention at decode (auto-switch keeps it in-TEE), so this is purely a §7.1 follow-up question.</li>
-      <li><strong>PLE table dtype:</strong> int8 vs fp16. int8 saves ~700 MB at small quality loss; fp16 is bit-exact. Default int8 unless M1.8 accuracy validation flags a benchmark moving by &gt; 0.5pp.</li>
-      <li><strong>Streaming vs batched emission:</strong> deployment-level choice. Streaming exposes per-token timing; batched hides timing but loses TPOT to the user. Both wired; default streaming.</li>
-      <li><strong>Fused permuted attention option (Option A vs B vs C in M1.10):</strong> decided at start of M1.10 based on cubek-attention API stability and burn-cubecl upstream state at that moment.</li>
+      <li><strong>Decode-phase π</strong> (gates SCX adoption, not v1): persistent across a generation session, or per-step refresh? Per-step requires SCX-class encoded-KV; persistent requires a fresh security argument against ARROWMATCH / Hidden-No-More extensions to autoregressive settings. v1 doesn't use permuted attention at decode (auto-switch keeps it in-TEE), so this is purely a §09 follow-up.</li>
+      <li><strong>Streaming vs batched emission:</strong> deployment-level choice. Streaming exposes per-token timing; batched hides timing but loses TPOT to the user. Both will be wired; default streaming.</li>
+      <li><strong>PLE table dtype</strong> (Phase 1.5 only): int8 vs fp16. int8 saves ~700 MB at small quality loss; fp16 is bit-exact. Default int8 unless accuracy validation flags a benchmark moving by &gt; 0.5 pp.</li>
     </ul>
 
     <h4 style="margin-top:32px;">Decisions locked (2026-05-18)</h4>
     <ul>
-      <li><strong>Reference baseline for accuracy validation</strong> — HuggingFace <code>transformers.AutoModelForCausalLM</code> at <code>temperature=0</code> (greedy). Pin the package version SHA-256 in <code>results/path-1-accuracy.json</code>; llama.cpp and vLLM may appear as informational rows but the accept gate is HF-transformers parity only.</li>
-      <li><strong>Decode global-layer attention dispatch</strong> — length-based auto-switch from <code>gelo.md</code> §3.5 applies per-phase. Decode stays in-TEE for global attention at realistic <code>n_cache</code> because per-step attention math is microseconds-scale at <code>n_q = 1</code>. KV-cache bandwidth (the orthogonal axis) is the SCX problem in §7.1, not an attention-dispatch question.</li>
-      <li><strong>Fused permuted attention is in v1 scope</strong> — promoted from the previously-deferred §7.2 into the build order as the new M1.10. Required for credible long-context prefill numbers; OutAttnMult 3-dispatch is the production fallback if M1.10 hits an unworkable upstream gap.</li>
-      <li><strong>MatFormer slice handling</strong> — two separate loaders (E2B and E4B) rather than one shared blob, because the attention ratios differ (4:1 vs 5:1).</li>
-      <li><strong>Gemma 4 31B</strong> — dropped from v1 scope; revisit when a 64 GB SEV-SNP SKU is available.</li>
-      <li><strong>Sampler for v1 acceptance gates</strong> — greedy only (needed for deterministic HF-transformers parity). Top-p / top-k / temperature support lands alongside M1.6 once the harness exists.</li>
+      <li><strong>v1 demonstrator target</strong> — Qwen3-1.7B, with Qwen3-4B as a same-code-path stretch. Qwen3.5 family rejected (multimodal VLM + GDN-hybrid linear attention; strictly harder than Gemma 4).</li>
+      <li><strong>Gemma 4 is the Phase 1.5 architecture target</strong>, not the v1 target. The protocol substrate (PLE, hybrid dispatch, p-RoPE, K=V) is landed and synthetic-tested ahead of the decoder refactor work.</li>
+      <li><strong>Reference baseline for accuracy validation</strong> — HuggingFace <code>transformers.AutoModelForCausalLM</code> at <code>temperature = 0</code> (greedy). llama.cpp and vLLM may appear as informational rows but the accept gate is HF-transformers parity only.</li>
+      <li><strong>Decode global-layer attention dispatch</strong> — length-based auto-switch from <code>gelo.md</code> §3.5 applies per-phase. Decode stays in-TEE because per-step attention math is microseconds-scale at <code>n_q = 1</code>.</li>
+      <li><strong>Sampler for v1 acceptance gates</strong> — greedy only (needed for deterministic HF-transformers parity). Top-p / top-k / temperature support lands alongside the production HTTP route.</li>
     </ul>
   </section>
 
