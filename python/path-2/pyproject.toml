@@ -1,0 +1,24 @@
+[project]
+name = "aloepri-path-2"
+version = "0.0.1"
+description = "AloePri offline weight rewriter + client wrapper for private LLM inference on llama.cpp"
+requires-python = ">=3.11"
+dependencies = [
+    "gguf>=0.10",
+    "safetensors>=0.4",
+    "numpy>=1.26",
+    "torch>=2.4",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
