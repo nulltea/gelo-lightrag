@@ -26,6 +26,7 @@ pub mod profile;
 pub mod rng;
 pub mod shield;
 pub mod sim;
+pub mod snapshot;
 pub mod substrate;
 
 pub use attention::PermAttnConfig;
@@ -33,4 +34,5 @@ pub use mask::{GeloMask, MaskSeed, ensure_blis_single_thread, set_blis_num_threa
 pub use ple::PleTable;
 pub use shield::ShieldConfig;
 pub use sim::{InProcessTrustedExecutor, PlaintextExecutor, RayonCpuEngine};
+pub use snapshot::{PcieSnapshot, SnapshotCapture, SnapshotConfig};
 pub use substrate::{GpuOffloadEngine, TrustedExecutor, WeightHandle, WeightKind};

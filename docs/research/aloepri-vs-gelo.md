@@ -370,6 +370,25 @@ per-forward-pass activations *immediately after GELO mask-apply*
 to a `Vec<Array2<f32>>` keyed by `(layer_idx, op_kind)`. This is
 what the attacker would observe on PCIe.
 
+**Status:** ✅ **Done 2026-05-18** (commit `<TBD>`).
+- `gelo_protocol::snapshot` module: `PcieSnapshot { seq_idx,
+  layer, kind, masked_operand, masked_output }`, `SnapshotCapture`
+  aggregator with configurable cap and outputs-capture toggle.
+- `InProcessTrustedExecutor::{with_snapshot_capture, enable_snapshot_capture,
+  disable_snapshot_capture, pcie_snapshots, pcie_snapshot_capture,
+  drain_pcie_snapshots}` builder/accessor surface; capture is `None`
+  by default so the production embedder / reranker path has zero
+  overhead and zero allocations.
+- Hook sites: `offload_linear`, `offload_qkv` (records 3 snapshots
+  sharing one operand), `offload_linear_many` (records N
+  snapshots).
+- 11 tests landed (5 unit + 6 integration in
+  `crates/gelo-protocol/tests/snapshot_capture.rs`).
+- Threat-model alignment: snapshots are taken **between mask-apply
+  and engine-matmul**, exactly what a PCIe-side adversary sees.
+  Unmasked outputs never leave the executor — that's the
+  TEE-breach scenario, not the attacker's actual capability.
+
 **Phase 2 (1 week): Attack harness.** Wire the snapshots into a
 new Python eval harness at `evals/aloepri-attacks/` that imports
 `src/security_qwen/{vma,ima,isa,ia,tfma,sda}.py` from a pinned
@@ -378,10 +397,18 @@ AloePri commit. Run each attack against snapshots from:
 - Qwen3 + GELO mask, no shield rows (control: should recover ~most)
 - Qwen3 + GELO mask + shield rows (default: should recover <5%)
 
+**Status:** ⏳ pending — see
+[`docs/prototype/aloepri-attack-harness.md`](../prototype/aloepri-attack-harness.md)
+for the handoff doc with the safetensors serialisation contract,
+the AloePri commit pin, the three-condition control matrix, and
+the Python-side attack-driver skeleton.
+
 **Phase 3 (1 week): Integration into bench-gate.** Add the attack
 suite to the release-gate CI (alongside `BEIR_DOCS=500` per
 [[feedback-bench-doc-cap]]). Threshold: TTRSR < 10% for ISA/IMA at
 the default mask config.
+
+**Status:** ⏳ pending Phase 2.
 
 ### 4.2 What this empirically validates
 

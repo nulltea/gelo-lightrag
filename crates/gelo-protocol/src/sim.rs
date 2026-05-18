@@ -13,6 +13,7 @@ use crate::out_attn_mult;
 use crate::profile;
 use crate::rng::MaskSeed;
 use crate::shield::{ShieldConfig, stack_shield};
+use crate::snapshot::{SnapshotCapture, SnapshotConfig};
 use crate::substrate::{GpuOffloadEngine, TrustedExecutor, WeightHandle, WeightKind};
 
 /// Reference [`GpuOffloadEngine`] that performs the offloaded GEMM on the CPU.
@@ -122,6 +123,13 @@ pub struct InProcessTrustedExecutor<E: GpuOffloadEngine> {
     /// σ-noise mitigation. Phase 2 keeps the inner ops TEE-side; Phase 3
     /// will swap softmax + matmuls onto the GPU.
     perm_attn: PermAttnConfig,
+    /// Optional PCIe-side snapshot capture for AloePri attack-resistance
+    /// evaluation. `None` by default — zero overhead, no allocations on
+    /// the hot path. `Some(_)` after `with_snapshot_capture()` /
+    /// `enable_snapshot_capture()`; every `offload_*` call clones its
+    /// post-mask operand (and engine output, configurable) into the
+    /// buffer for later drain by the test harness.
+    snapshot_capture: Option<SnapshotCapture>,
 }
 
 /// Clone the executor sharing the underlying engine (engines that opt
@@ -145,6 +153,14 @@ impl<E: GpuOffloadEngine + Clone> Clone for InProcessTrustedExecutor<E> {
             perm_attn: self.perm_attn,
             // Arc-share the PLE table across clones — no buffer copy.
             ple_table: self.ple_table.clone(),
+            // Don't clone the snapshot buffer — captures are per-test
+            // artifacts, not shared state. The clone's config is
+            // re-derived from the source's config (capture stays on
+            // for parallel rayon workers if the parent had it on).
+            snapshot_capture: self
+                .snapshot_capture
+                .as_ref()
+                .map(|c| SnapshotCapture::new(c.config())),
         }
     }
 }
@@ -193,6 +209,7 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             stacked_scratch: HashMap::new(),
             perm_attn: PermAttnConfig::default(),
             ple_table: None,
+            snapshot_capture: None,
         }
     }
 
@@ -216,6 +233,7 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             stacked_scratch: HashMap::new(),
             perm_attn: PermAttnConfig::default(),
             ple_table: None,
+            snapshot_capture: None,
         }
     }
 
@@ -312,6 +330,75 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
     /// Read the current perm-attention config.
     pub fn perm_attention(&self) -> PermAttnConfig {
         self.perm_attn
+    }
+
+    /// Opt into PCIe-side snapshot capture for the AloePri attack-harness
+    /// pipeline. When enabled, every `offload_linear` / `offload_qkv` /
+    /// `offload_linear_many` call records the post-mask operand (and
+    /// engine output, configurable via `SnapshotConfig::capture_outputs`)
+    /// into an internal buffer. Drain with [`Self::drain_pcie_snapshots`]
+    /// or inspect with [`Self::pcie_snapshots`] / [`Self::pcie_snapshot_capture`].
+    ///
+    /// Cost: one `clone()` of the masked operand (shape
+    /// `(n + shield.k, d)`) and optionally the masked output per offload.
+    /// At Qwen3-1.7B prefill shape (n ≈ 16, d = 2048, k = 8, 28 layers ×
+    /// 7 op_kinds) that's ~196 clones × ~24 × 8192 bytes ≈ 38 MB per
+    /// forward — fine for tests and the attack harness, not free.
+    ///
+    /// Off by default; never engaged in the production embedder / reranker
+    /// paths.
+    pub fn with_snapshot_capture(mut self, cfg: SnapshotConfig) -> Self {
+        self.snapshot_capture = Some(SnapshotCapture::new(cfg));
+        self
+    }
+
+    /// In-place form of [`Self::with_snapshot_capture`] for tests that
+    /// flip the flag after construction.
+    pub fn enable_snapshot_capture(&mut self, cfg: SnapshotConfig) {
+        self.snapshot_capture = Some(SnapshotCapture::new(cfg));
+    }
+
+    /// Disable snapshot capture and drop the buffer. The buffer's contents
+    /// are dropped — call `drain_pcie_snapshots()` first to retain them.
+    pub fn disable_snapshot_capture(&mut self) {
+        self.snapshot_capture = None;
+    }
+
+    /// Borrow the captured snapshots (read-only) — `None` when capture is
+    /// disabled, `Some(&[])` when enabled but no offload has fired yet.
+    pub fn pcie_snapshots(&self) -> Option<&[crate::snapshot::PcieSnapshot]> {
+        self.snapshot_capture.as_ref().map(|c| c.snapshots())
+    }
+
+    /// Borrow the full capture aggregator (read-only) — useful for tests
+    /// that need access to the dropped-count or current config.
+    pub fn pcie_snapshot_capture(&self) -> Option<&SnapshotCapture> {
+        self.snapshot_capture.as_ref()
+    }
+
+    /// Drain captured snapshots and return ownership. The internal buffer
+    /// is cleared; the seq-idx counter continues monotonically (see
+    /// [`SnapshotCapture::drain`]).
+    pub fn drain_pcie_snapshots(&mut self) -> Vec<crate::snapshot::PcieSnapshot> {
+        self.snapshot_capture
+            .as_mut()
+            .map(|c| c.drain())
+            .unwrap_or_default()
+    }
+
+    /// Internal helper: record one snapshot iff capture is enabled.
+    /// Cloning `operand` and `output` is acceptable because capture is
+    /// off in the production path; the cost is paid only in attack-
+    /// resistance benchmark runs.
+    fn record_snapshot(
+        &mut self,
+        handle: WeightHandle,
+        operand: &Array2<f32>,
+        output: Option<&Array2<f32>>,
+    ) {
+        if let Some(cap) = self.snapshot_capture.as_mut() {
+            cap.record(handle, operand, output);
+        }
     }
 
     /// Stack shield rows (if enabled), then apply the per-batch mask `A`
@@ -505,6 +592,9 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         let (mask, masked, n_data) = self.build_shielded_and_apply(hidden);
         let masked_out =
             profile::time("engine:matmul", || self.engine.matmul(handle, masked.view()))?;
+        // PCIe-side snapshot: record the masked operand and engine output.
+        // No-op when snapshot capture is disabled (the default).
+        self.record_snapshot(handle, &masked, Some(&masked_out));
         if self.verify_probes > 0 {
             let weight = self.weights.get(&handle).ok_or_else(|| {
                 anyhow!("verify_probes>0 but weight {handle:?} not cached in TEE")
@@ -554,6 +644,12 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         let mq = it.next().expect("len checked above");
         let mk = it.next().expect("len checked above");
         let mv = it.next().expect("len checked above");
+
+        // PCIe-side snapshot: same masked operand drives Q, K, V; record
+        // one entry per kind so the harness can partition by op_kind.
+        self.record_snapshot(WeightHandle::new(layer, WeightKind::Q), &masked, Some(&mq));
+        self.record_snapshot(WeightHandle::new(layer, WeightKind::K), &masked, Some(&mk));
+        self.record_snapshot(WeightHandle::new(layer, WeightKind::V), &masked, Some(&mv));
 
         if self.verify_probes > 0 {
             for (kind, observed) in
@@ -615,6 +711,13 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
             masked_outs.len(),
             handles.len(),
         );
+
+        // PCIe-side snapshot: one entry per (handle, output) pair so the
+        // attack harness can partition by op_kind across a SwiGLU
+        // gate+up batch (or any other multi-output offload).
+        for (h, out) in handles.iter().zip(masked_outs.iter()) {
+            self.record_snapshot(*h, &masked, Some(out));
+        }
 
         if self.verify_probes > 0 {
             for (h, observed) in handles.iter().zip(masked_outs.iter()) {

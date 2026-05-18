@@ -378,29 +378,57 @@ tested config (`gelo.md` Appendix).
 
 ### M1.9 — Attack-resistance integration (M0.3 wiring)
 
-**Scope:** Wire the M0.3 attack harness to capture activations
-from `InProcessTrustedExecutor` at the PCIe boundary and run
-VMA / IA / ISA / IMA / NN / TFMA / SDA against GELO-protected
-Gemma E2B and E4B.
+**Scope:** Capture PCIe-side activations from
+`InProcessTrustedExecutor` and run the AloePri attack suite
+(VMA / IA / ISA / IMA / TFMA / SDA) against GELO-protected
+Qwen3-1.7B (v1 demonstrator) and, once Phase 1.5 lands, Gemma E2B/E4B.
 
-**Files to add:**
-- `crates/gelo-embedder/src/instrumentation.rs` — feature-flagged
-  snapshot capture
-- `evals/attack-harness/run-against-gelo.py` — calls the harness
-  with GELO snapshots
+**Phase 1 — Rust-side snapshot capture (✅ done 2026-05-18).** Landed
+the entire `gelo_protocol::snapshot` module:
+- `PcieSnapshot { seq_idx, layer, kind, masked_operand,
+  masked_output }` records every PCIe-crossing matmul.
+- `SnapshotCapture` aggregator + `InProcessTrustedExecutor`
+  builder/accessor surface (`with_snapshot_capture`,
+  `enable/disable_snapshot_capture`, `pcie_snapshots`,
+  `drain_pcie_snapshots`); capture is `None` by default so the
+  production embedder / reranker path pays zero overhead.
+- Hook sites: `offload_linear`, `offload_qkv`, `offload_linear_many`.
+- 11 tests (5 unit + 6 integration in
+  `crates/gelo-protocol/tests/snapshot_capture.rs`).
 
-**Acceptance:**
-- TTRSR < 5% under each of VMA, IA, ISA, IMA, NN, TFMA, SDA on
-  E2B and E4B.
-- Documented in `results/path-1-attacks.json`.
+**Phase 2 — Python attack harness (⏳ pending).** Handoff in
+[`../prototype/aloepri-attack-harness.md`](../prototype/aloepri-attack-harness.md):
+safetensors serialisation contract, AloePri commit pin, three-condition
+control matrix (plain / mask-only / mask+shield), per-attack drivers
+at `evals/aloepri-attacks/run_{vma,ima,isa,tfma,sda,ia}.py`.
 
-**Effort:** 2 weeks (after M0.3 lands).
+**Phase 3 — CI release-gate (⏳ pending Phase 2).** Fast-variant
+runner under 5 minutes; threshold: fail if IMA or ISA TTRSR ≥ 10%.
 
-**Dependencies:** M0.3, M1.6, M1.7.
+**Files to add (Phases 2-3):**
+- `crates/gelo-embedder/src/attack_export.rs` — safetensors
+  serialiser for captured snapshots (kept in embedder, not protocol)
+- `evals/aloepri-attacks/{conftest.py, snapshots_loader.py, run_*.py}`
+- `.github/workflows/aloepri-gate.yml` — release-gate CI
 
-**Risk:** Moderate. If any attack exceeds 5% TTRSR, that's
-unexpected and warrants investigation against shield-row config
-(`gelo.md` §3.3).
+**Acceptance (Phase 2):**
+- C2 (default GELO config) reports IMA + ISA TTRSR < 10% on Qwen3-1.7B.
+- C0 (plain) reports IMA + ISA + VMA TTRSR ≥ 95% (sanity: attacks
+  themselves work).
+- Gap between C1 (mask only) and C2 (mask + shield) is measurable
+  (shield rows demonstrably add defence).
+- Results JSON committed to `results/path-1-attacks.json`.
+
+**Effort:** Phase 1 done (~6 hours actual vs ~1 week estimated).
+Phase 2 estimated 1 week, Phase 3 estimated 0.5 week (was 2 weeks
+combined in the original plan).
+
+**Dependencies:** M1.6 (Qwen3-1.7B real-weight smoke test ✅).
+Gemma E2B/E4B coverage gated on Phase 1.5 + M1.6 Gemma re-pin.
+
+**Risk:** Moderate on Phase 2 — if C2 IMA/ISA TTRSR exceeds 10%,
+investigate against shield-row config (`gelo.md` §3.3) and the
+per-forward-vs-per-offload mask trade-off (`gelo.md` §3.2).
 
 ---
 
