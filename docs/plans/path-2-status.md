@@ -5,96 +5,85 @@ a plan assumption. Most recent entry on top.
 
 ---
 
-## 2026-05-18 · M2.3 verdict update: outcome (1) → outcome (2)
+## 2026-05-18 · M2.3 verdict re-confirmed at outcome (1) after §5.2.5 reread
 
-**Blocker raised during M2.2 step 2.** Reading the reference's
-`vendor/aloepri-py/src/keymat_norm.py::KeyMatRMSNormBridge` shows
-the runtime covariant-RMSNorm construction:
+The earlier "verdict downgrade" entry in this log was wrong. I had
+not noticed the paper's §5.2.5 *Layer Normalization Transformation*
+construction, which provides a fully-offline weight rewrite for
+RMSNorm. Reverting to **outcome (1) — just runs on stock
+llama.cpp** without a patch. The runtime `KeyMatRMSNormBridge` in
+the reference codebase is a research-time convenience and **not the
+construction the paper claims** for production.
 
-```python
-def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-    base_hidden = apply_inverse_keymat_transform(hidden_states, self.keymat_transform)
-    normalized = self.norm_layer(base_hidden)
-    return apply_keymat_transform(normalized, self.keymat_transform)
+### What §5.2.5 says
+
+For an RMSNorm with per-dim γ vector `w_norm` and a following linear
+of weights `W`:
+
+1. Replace `RMSNorm(x; w_norm) → Linear(W)` with three ops:
+   `RMSNorm(x; κ·1) → Linear(Diag(w_norm)) → Linear(W)`. The new
+   RMSNorm has γ = a single scalar κ (constant across all dims).
+2. Fuse `Diag(w_norm) · W` together into a single linear, applied
+   *before* AloePri obfuscation: `W' = Diag(w_norm) · W`.
+3. Apply Algorithm 1 obfuscation to the fused `W'` as normal.
+4. κ is a scalar correction `κ = E[‖xP̂‖/‖x‖]` over the assumed-
+   Gaussian input distribution; for orthonormal-row P̂ it's ≈ 1.
+
+Why this works offline: a *scalar* γ at the RMSNorm site **does**
+commute with rotation (it's just an isotropic rescaling), while
+a per-dim γ does not. The per-dim part has been baked into the
+adjacent linear weight before obfuscation — no extra ops at
+runtime.
+
+For post-norms (sitting between a sub-block's output and the
+residual add), the fusion goes *backward* into the previous linear:
+`W'_prev = W_prev · Diag(w_norm)` (column scaling).
+
+### Updated implementation plan for M2.2 step 2
+
+The offline rewriter (`obfuscate_gemma4_gguf.py`) gets a `--mode keymat`
+flag that, for each tensor:
+
+1. Maps every residual-stream RMSNorm `w_norm` (γ vector) to its
+   adjacent linear weight(s). Direction (pre or post) depends on the
+   norm's role in the gemma4 forward graph.
+2. Pre-multiplies (or post-multiplies, depending) the adjacent weight
+   by `Diag(w_norm)`.
+3. Replaces the γ tensor with a constant vector `(κ, κ, …, κ)` of
+   length `d + 2h`.
+4. Applies Algorithm 1 obfuscation (`Q̂_R @ W'` for input weights,
+   `W' @ P̂_R` for output weights) to the fused weights.
+
+Stock llama.cpp runs the resulting artifact unchanged.
+
+### Live security risk: Gemma 4's higher norm count
+
+Gemma 4 has ~5 residual-stream RMSNorm sites per block (attn_norm,
+post_attention_norm, ffn_norm, post_ffw_norm, post_norm — plus the
+per_layer_post_norm after PLE addition) vs. Llama/Qwen's 2. Across
+E2B (35 blocks): ~175 norm sites vs. Llama 3 8B's 64.
+
+Each §5.2.5 fusion introduces a bounded approximation error
+`e_C^norm` (since κ is an expectation, not exact for individual
+inputs). The paper's total error bound
+
+```
+e_C^AloePri ≤ M_0 · e_C^embed + Σ_i M_i · e_C_i^decoder + e_C^head
 ```
 
-RMSNorm is non-linear (division by `RMS(x)`). For arbitrary
-non-permutation `P̂_R`, elementwise multiplication of `x_obf` by
-some γ_obf cannot be made equal to `plain_norm(x_plain) @ P̂_R`
-because elementwise product does not commute with matrix
-multiplication. The reference resolves this at *runtime* by
-de-obfuscating before each norm and re-obfuscating after — three
-extra matmuls per RMSNorm site, none of which can be baked into the
-elementwise γ tensor.
+accumulates `e_C^norm` at every site, multiplied by per-layer
+Lipschitz factors. Paper-measured accuracy loss (0–3.5 %) is on
+2-norm-per-block architectures. Gemma 4's ~2.7× higher norm count
+could plausibly compound to 7–12 % loss, possibly more.
 
-### Consequence
+**This is treated as an M2.6 question, not a blocker.** Implementation
+proceeds with paper-default hyperparameters; if M2.6 shows
+unacceptable loss, the remediation knobs are:
 
-- **Identity-padding obfuscation** (already implemented and shipped
-  on `:11438`): mathematically a no-op. Validates the dim plumbing
-  but offers no real security. Useful as a regression baseline.
-- **Real Algorithm 1 obfuscation** (needed for actual privacy):
-  requires wrapping every RMSNorm site in the gemma4 forward graph
-  with `apply_inv_keymat → norm → apply_keymat`. **Stock llama.cpp
-  has no hook for this.** A patch to `src/models/gemma4.cpp` is
-  unavoidable.
-
-### Updated M2.3 verdict
-
-Was: **outcome (1) — just runs.** Identity padding does just run, so
-the dim-plumbing assertion of "n_embd is read freely from metadata"
-still holds, but the headline framing was wrong.
-
-Now: **outcome (2) — minimal patch required.** Scope of the patch:
-
-1. Pre-load two additional tensors per layer (or one global pair) —
-   the AloePri P̂_R and Q̂_R key matrices — alongside the existing
-   weights. Format: F32 or F16, dimensions `(d, d+2h)` and `(d+2h, d)`
-   respectively. Stored in the obfuscated GGUF under bespoke keys
-   like `aloepri.layers.<ℓ>.keymat.p` / `aloepri.layers.<ℓ>.keymat.q`.
-2. Modify `llama_model_gemma4::graph::graph` so each `build_norm`
-   call site is wrapped:
-   ```cpp
-   cur = ggml_mul_mat(ctx0, Q_R, cur);        // de-obfuscate
-   cur = build_norm(cur, ...);                // plain RMSNorm
-   cur = ggml_mul_mat(ctx0, P_R, cur);        // re-obfuscate
-   ```
-   This is ~6 lines per norm × 5 norms per block × 35 blocks, plus
-   one global output_norm. Mechanical.
-3. Detect via GGUF metadata: only apply the wrapping if a flag like
-   `gemma4.aloepri.enabled = true` is present. Plaintext models
-   continue to load unmodified.
-
-Effort: **2–3 weeks**, including the offline rewriter changes to
-emit the keymat tensors + the llama.cpp patch + sanity tests.
-
-### Three forward-path options
-
-Awaiting decision on which to pursue:
-
-| Option | Effort | Pros | Cons |
-|---|---:|---|---|
-| **A. Fork llama.cpp** with the gemma4 RMSNorm wrap + emit P̂_R / Q̂_R tensors in the obfuscated GGUF | 2–3 weeks | Cleanest. Stays close to paper construction. Patch is small and localised. | Maintenance: track llama.cpp upstream changes to gemma4.cpp. |
-| **B. Permutation-only residual obfuscation** — restrict P̂_R to be a permutation matrix on the (d+2h) basis. Elementwise RMSNorm γ becomes a permuted γ_plain. No llama.cpp patch needed. | 1 week | Stock llama.cpp works. | Weaker security than full Algorithm 1 — permutation is a much smaller obfuscation group than the orthogonal one. May fall short of TTRSR bounds. |
-| **C. Skip residual obfuscation, only obfuscate token-level via Π** — keep `hidden_size = d` (no expansion). Apply Π to embedding + head only. Algorithm 2 attention transforms still apply. Skip the key-matrix machinery entirely. | 1 week | Simplest. Pure stock llama.cpp. | Loses the key-matrix protection on internal states — ISA / IMA attacks become much stronger (paper §7 shows these are the gnarliest). Probably below acceptable TTRSR. |
-
-Recommendation: **A**. The patch is local, the math is correct, and
-the AloePri paper's strong attack-resistance numbers (TTRSR < 15%)
-depend on the full construction — degrading to B or C likely fails
-the M2.9 attack benchmark.
-
-### What still landed cleanly
-
-- M2.0 baseline (`:11437`) and the Vulkan server pattern: unchanged.
-- M2.1 — vendored reference + Algorithm 1 keymat math verified for
-  E2B and E4B dims.
-- M2.2 step 1 — identity-padding offline rewriter: produces a GGUF
-  that stock llama.cpp loads and serves correctly at `:11438`.
-- M2.3 dim-plumbing assertion — confirmed. The `hidden_size = d+2h`
-  metadata propagates correctly through the gemma4 forward.
-
-What this commit *does not* yet block: choosing option A means the
-M2.4 client wrapper, M2.6 BF16 baseline, and M2.7 Q8 gate can all
-proceed in parallel with the llama.cpp patch — they're separable.
+- Smaller λ (B = U + λV; smaller λ → P̂_R closer to orthonormal → κ closer to 1 → smaller per-site error).
+- Per-norm-site κ tuning instead of one global κ (measure per-site activation statistics).
+- Restrict P̂_R to orthonormal (project via QR onto the orthogonal manifold) — eliminates dim-correction bias at the cost of a smaller obfuscation group.
+- Last resort: drop down to Gemma 3 4B (2 norms per block, in paper-tested regime).
 
 ---
 
