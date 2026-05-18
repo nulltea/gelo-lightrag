@@ -317,10 +317,22 @@
     <header class="section-head">
       <div class="section-num">§05</div>
       <h2 class="section-title">Supported model architectures</h2>
-      <div class="section-meta">Gemma 4 family · loaded as <code>Arc&lt;Gemma4Weights&gt;</code> from safetensors</div>
+      <div class="section-meta">Qwen3 (v1 demonstrator) and Gemma 4 (Phase 1.5 architecture target)</div>
     </header>
     <p class="lede">
-      One architecture family, two sizes. The SHA-256 of backbone bytes + PLE table bytes + LM-head bytes + per-layer attention-class vector + tokenizer rides as <code>model_identity</code> through every attestation report — a tokenizer drift or a re-numbered <code>&lt;eos&gt;</code> trips the attestation. Hybrid-attention ratios and head layouts are the load-bearing per-size differences; the inner block topology is identical between E2B and E4B.
+      Two model families, two roles. <strong>Qwen3-1.7B</strong> is the current
+      <em>v1 demonstrator</em> — a vanilla GQA decoder that drops cleanly into the
+      existing protocol surface and runs real-weight greedy generation end-to-end
+      today. <strong>Gemma 4 E2B/E4B</strong> remain the <em>Phase 1.5 architecture
+      target</em> — they exercise every novel primitive in the spec (PLE in TEE DRAM,
+      hybrid local/global attention, K=V global layers, p-RoPE, GeGLU, AltUp,
+      cross-layer KV sharing), but require ~4-5 weeks of decoder refactor work
+      before the first real-weight forward pass — see
+      <a href="gemma4-architecture-roadmap.html"><code>gemma4-architecture-roadmap</code></a>.
+      The SHA-256 of backbone bytes + (optional) PLE table bytes + LM-head bytes
+      + per-layer attention-class vector + tokenizer rides as <code>model_identity</code>
+      through every attestation report — a tokenizer drift or a re-numbered <code>&lt;eos&gt;</code>
+      trips the attestation regardless of family.
     </p>
 
     <table class="spec">
@@ -330,35 +342,78 @@
           <th>Layers</th>
           <th>Hidden · Inter · d_head</th>
           <th>Q · KV heads</th>
-          <th>Attention ratio (local : global)</th>
-          <th>SWA window <code>W</code></th>
+          <th>Attention</th>
+          <th>RoPE θ</th>
           <th>PLE</th>
           <th>Status</th>
         </tr>
       </thead>
       <tbody>
         <tr>
+          <td><b>Qwen3-1.7B</b></td>
+          <td class="num">28</td>
+          <td class="num">2048 · 6144 · 128</td>
+          <td class="num">16 · 8</td>
+          <td>full causal</td>
+          <td class="num">1 M</td>
+          <td>—</td>
+          <td>v1 demonstrator</td>
+        </tr>
+        <tr>
+          <td><b>Qwen3-4B</b></td>
+          <td class="num">36</td>
+          <td class="num">2560 · 9728 · 128</td>
+          <td class="num">32 · 8</td>
+          <td>full causal</td>
+          <td class="num">1 M</td>
+          <td>—</td>
+          <td>v1 stretch (same code path)</td>
+        </tr>
+        <tr>
           <td><b>Gemma 4 E2B</b></td>
           <td class="num">35</td>
-          <td class="num">1536 · 8192 · 256</td>
+          <td class="num">1536 · 6144 · 256 / 512</td>
           <td class="num">8 · 1</td>
-          <td class="num">4 : 1</td>
-          <td class="num">512</td>
+          <td>4:1 local/global · W=512</td>
+          <td class="num">10 K / 1 M</td>
           <td>262 144 × 35 × 256 · int8</td>
-          <td>primary v1 target</td>
+          <td>Phase 1.5 target</td>
         </tr>
         <tr>
           <td><b>Gemma 4 E4B</b></td>
           <td class="num">42</td>
-          <td class="num">2560 · 16 384 · 256</td>
-          <td class="num">8 · 1</td>
-          <td class="num">5 : 1</td>
-          <td class="num">512</td>
+          <td class="num">2560 · 10 240 · 256 / 512</td>
+          <td class="num">8 · 2</td>
+          <td>5:1 local/global · W=512</td>
+          <td class="num">10 K / 1 M</td>
           <td>262 144 × 42 × 256 · int8</td>
-          <td>scaling target</td>
+          <td>Phase 1.5 scaling target</td>
         </tr>
       </tbody>
     </table>
+
+    <p class="lede" style="margin-top:24px;">
+      <strong>Qwen3-specific addition: QK-norm.</strong> Qwen3 introduces per-head
+      RMSNorm on <code>Q</code> and <code>K</code> <em>before</em> RoPE
+      (<code>self_attn.q_norm.weight</code> / <code>k_norm.weight</code>, each
+      <code>(head_dim,)</code>) — the only Qwen3-vs-Qwen2 architectural delta.
+      It fits as one optional step between the QKV projection and the rotary
+      embedding; no structural refactor was needed. The loader reads the
+      tensors when present (Qwen3 family) and skips the step when absent
+      (Qwen2 / LLaMA / Mistral / Qwen3-Embedding paths stay byte-identical to
+      their pre-Qwen3 behaviour).
+    </p>
+
+    <p class="lede" style="margin-top:24px;">
+      <strong>Qwen3.5 was investigated and is out of scope.</strong> The family
+      ships as <code>Qwen3_5ForConditionalGeneration</code> — a multimodal VLM
+      with a 24-layer ViT, image / video tokens, and a text backbone that
+      replaces transformer attention with GDN-style <code>linear_attention</code>
+      (Mamba/SSM) layers in a 3:1 hybrid with <code>full_attention</code>, MRoPE
+      (interleaved <code>mrope_section</code>), <code>partial_rotary_factor: 0.25</code>,
+      an MTP head, and <code>attn_output_gate</code>. Strictly harder than Gemma 4,
+      not easier. Plain Qwen3 is the only Qwen-family vanilla decoder option.
+    </p>
 
     <p class="lede" style="margin-top:24px; font-size:14px;">
       <strong>Gemma 4 31B dense</strong> is out of v1 scope (2026-05-18 decision). The architecture (5:1 hybrid, <code>W = 1024</code>, no PLE, ~5120 hidden) would fit the protocol primitives unchanged, but the ~31 GB weight footprint forces a 64 GB SEV-SNP SKU. Revisit when such a SKU becomes available; until then E2B and E4B are the v1 surface.
@@ -366,12 +421,12 @@
 
     <div class="two-col">
       <div>
-        <h4>Why E2B is the primary target</h4>
-        <p>Smallest of the family that exercises every protocol surface — PLE in TEE DRAM, hybrid attention placement, K=V global layers, p-RoPE. ~4.5 GB total weight footprint (incl. PLE) fits comfortably in the dev box and in a 32 GB CVM SKU. The 4:1 ratio puts ~28 local layers and ~7 global layers in the per-forward critical path — the same shape as the E4B target at smaller scale, so wins on E2B carry to E4B without re-tuning.</p>
+        <h4>Why Qwen3-1.7B is the v1 demonstrator</h4>
+        <p>Vanilla <code>Qwen3ForCausalLM</code> — full causal attention, single RoPE table, SwiGLU, tied embeddings, no PLE, no hybrid attention, no p-RoPE, no softcap, no AltUp. The single Qwen3-specific addition (per-head QK-norm before RoPE) is an optional pre-rotary step that fits cleanly under the existing offload + RoPE plumbing. ~3.4 GB bf16 footprint downloads from <code>Qwen/Qwen3-1.7B</code> on first run. The same DecoderWeights pipeline that loads Qwen3-Embedding-0.6B services this model — exercises the full GELO protocol surface (mask · shield · OutAttnMult auto-switch · per-batch fresh A) on real-weight generation without blocking on Gemma-only architectural work.</p>
       </div>
       <div>
-        <h4>Why E4B is the scaling target</h4>
-        <p>The 2× weight delta (E2B → E4B) is where overhead behaviour gets interesting. Mask sampling cost is <code>O(d²)</code> in hidden size — d goes 1536 → 2560, so the per-forward Haar QR cost roughly doubles. Per-layer GEMM cost doubles for the same reason. If the overhead delta stays within ~1.5× of the E2B overhead, the protocol scales cleanly; if it blows up, the §08 "HKDF-derived mask" lever lands.</p>
+        <h4>Why Gemma 4 is the Phase 1.5 architecture target</h4>
+        <p>Smallest family member (E2B) that exercises every novel protocol surface in the spec — PLE in TEE DRAM, hybrid local/global attention, K=V global layers, p-RoPE, GeGLU activation, AltUp, cross-layer KV sharing. ~4.5 GB total weight footprint fits a 32 GB CVM SKU. E2B → E4B is the natural scaling axis once the architecture work lands. The Gemma 4 forward path is ~4-5 weeks of decoder refactor (per-class head_dim 256/512, per-class rope_theta 10K/1M, GeGLU dispatch, cross-layer KV sharing, AltUp). Tracked in <a href="gemma4-architecture-roadmap.html"><code>gemma4-architecture-roadmap</code></a>.</p>
       </div>
     </div>
 
@@ -380,7 +435,7 @@
     </p>
 
     <p class="lede" style="margin-top:24px;">
-      <strong>Gemma 3n and the Qwen3 / Llama paths.</strong> Gemma 3n (an earlier PLE-using model) is supportable on this stack with the same PLE-in-TEE-DRAM mechanism but is not a v1 target — the architecture is superseded by Gemma 4 E2B. Qwen3 dense and Llama dense are already supported in the embedder/reranker code path and can be wired to the generation loop trivially (no PLE, no hybrid attention, no p-RoPE) as parity comparisons against an unprotected baseline. MoE variants (Qwen3-MoE, DeepSeek-V2) are deferred — the routing histogram leak is a separate protocol surface (CryptoMoE balanced-dispatch primitive) and out of scope for this stage.
+      <strong>Gemma 3n and Llama / MoE paths.</strong> Gemma 3n (an earlier PLE-using model) is supportable on this stack with the same PLE-in-TEE-DRAM mechanism but is not a v1 target — superseded by Gemma 4 E2B. Llama dense is already supported in the embedder/reranker code path and trivially extensible (no PLE, no hybrid attention, no p-RoPE, no QK-norm). MoE variants (Qwen3-MoE, DeepSeek-V2) are deferred — the routing histogram leak is a separate protocol surface (CryptoMoE balanced-dispatch primitive) and out of scope for this stage.
     </p>
   </section>
 
@@ -895,7 +950,26 @@
 
     <h4>Current state</h4>
     <p class="prose">
-      Generation is at design-and-plan stage. The protocol substrate (mask, shield, U-Verify, OutAttnMult, permuted attention, in-TEE attention with auto-switch) is landed and validated by the embedder and reranker. The forward-pass code path is reusable as-is for Gemma 4 decoder blocks; what's missing is (a) the generation loop, (b) the Gemma 4 loader, (c) the PLE-in-TEE-DRAM mechanism, (d) the sliding-window kernel, (e) the fused permuted attention kernel for long-context prefill, and (f) the bench + accuracy + attack-resistance harness. Effort estimate: <strong>~15.5 weeks to v1</strong> (E2B + E4B + fused permuted prefill), ~17.5 weeks including the attack-resistance integration.
+      <strong>Qwen3-1.7B greedy generation runs end-to-end under GELO.</strong>
+      The LLM-serving harness (<code>generation::generate</code>, <code>KvCache</code>,
+      asymmetric cached attention kernels, <code>RopeTables::apply_at</code>,
+      decode-step session bracket), the Gemma 4 scaffolding (<code>Gemma4Variant</code>,
+      <code>AttentionClass</code>, hybrid attention dispatch, p-RoPE, K=V global handling,
+      final-logit softcap, PLE in TEE DRAM with PCIe-leak verification),
+      <code>Qwen3Variant::{Q1_7B, Q4B}</code>, and the Qwen3-specific QK-norm step are
+      all landed. A real-weight integration test (<code>qwen3_generation_e2e.rs</code>)
+      drives greedy generation on <code>Qwen/Qwen3-1.7B</code> and asserts
+      plaintext-vs-masked token-sequence parity.
+      <br><br>
+      Gemma 4 real-weight generation remains gated on <strong>Phase 1.5
+      architectural extensions</strong> — per-class head_dim, per-class rope_theta,
+      cross-layer KV sharing, GeGLU dispatch, AltUp, <code>use_double_wide_mlp</code>
+      semantics, and the Gemma-aware safetensors loader. Estimate
+      <strong>~4-5 weeks</strong> from start of Phase 1.5 to first successful
+      <code>generate()</code> on <code>google/gemma-4-E2B</code>. The fused permuted
+      attention kernel (M1.10) and the bench / accuracy / attack-resistance
+      harness sit downstream of that. Tracked in
+      <a href="gemma4-architecture-roadmap.html"><code>gemma4-architecture-roadmap</code></a>.
     </p>
 
     <h4 style="margin-top:32px;">Build order</h4>

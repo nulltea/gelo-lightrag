@@ -30,6 +30,7 @@
 | 2026-05-18 | M1.4 K=V tying landed (commit `66bba90`): `LayerKvCache` becomes a Separate/Shared enum; `KvCache::new_with_sharing(shared: &[bool])` halves global-layer cache memory; `decoder_block_cached` skips the V matmul when `kv_shared_in_global` + layer is Global. Parity (wk==wv → identical output) + memory (75% of all-separate at 4-layer 2:1) tests green. |
 | 2026-05-18 | M1.10a + M1.6 + M1.8 scaffolding landed (commit `dc9074d`): `GpuOffloadEngine::fused_attention_batched` default-impl composition (no kernel yet); `gemma4_e2e.rs` + `gemma4_hf_parity.rs` `#[ignore]`-gated integration tests with documented un-ignore prerequisites. |
 | 2026-05-18 | **Gemma 4 weight source + architecture audit.** Fetched real `google/gemma-4-E2B` and `-E4B` config.json from HuggingFace (public/non-gated; safetensors bf16 at ~4 GB / ~8 GB). Confirmed `google/gemma-4-*` is the canonical v1 source — GGUF detour dropped per user decision. The audit revealed several architectural inaccuracies in M1.0–M1.5: E2B intermediate_size was 8192 (real: 6144); E4B was 16384 (real: 10240); E4B num_key_value_heads was 1 (real: 2); max_position was 32768 (real: 131072); hidden_activation was `silu` (real: `gelu_pytorch_tanh`, i.e. GeGLU); M1.4 implemented within-layer K=V tying but real Gemma 4 has `attention_k_eq_v: false` and uses cross-layer KV sharing via `num_kv_shared_layers: 20` (E2B) / 18 (E4B); per-class head_dim differs (local 256 / global 512); per-class rope_theta differs (10_000 local / 1_000_000 global); final_logit_softcapping = 30.0 was missing. **Phase 1 fixes landed** (commit `<TBD>`): all numeric constants corrected, `DecoderConfig::final_logit_softcapping` added + wired through `compute_logits`, `Gemma4Variant` now exposes the Phase 1.5 metadata (global_head_dim, rope_theta_global, num_kv_shared_layers, ple_dim) for the follow-up workstream. **Real-weight inference still blocked on Phase 1.5** (~3-4 weeks): per-class head_dim refactor, per-class RoPE, cross-layer KV sharing, GeGLU dispatch, AltUp. See plan §8 (new) for Phase 1.5 milestone list. |
+| 2026-05-18 | **v1 demonstrator pivot to Qwen3-1.7B.** All Phase 1.5 items are Gemma-only architecture work; pivoting v1 to a vanilla GQA decoder unblocks real-weight end-to-end generation today while Gemma support continues as a separate workstream (see [`../prototype/gemma4-architecture-roadmap.md`](../prototype/gemma4-architecture-roadmap.md)). **Investigated and rejected: Qwen3.5** (2B/4B/9B/35B-A3B) — `Qwen3_5ForConditionalGeneration` is a multimodal VLM with GDN-style `linear_attention` (Mamba/SSM) layers in 3:1 hybrid with `full_attention`, MRoPE, `partial_rotary_factor: 0.25`, MTP head, `attn_output_gate`. Strictly harder than Gemma 4, not easier. **Qwen3-1.7B** confirmed vanilla `Qwen3ForCausalLM` (28 layers, 16/8 GQA, head_dim 128, full RoPE θ=1M, SwiGLU, tied embeddings, no sliding window, no softcap) with one Qwen3-vs-Qwen2 addition: per-head RMSNorm on Q and K **before** RoPE (`self_attn.{q,k}_norm.weight`). Landed (commit `<TBD>`): `Qwen3Variant::{Q1_7B, Q4B}` config builder, `DecoderLayerWeights.{q_norm, k_norm}: Option<Array1<f32>>` (back-compat — `None` for Qwen2/LLaMA/Mistral), `rms_norm::apply_qk_norm` helper, both `decoder_block` and `decoder_block_cached` apply QK-norm when populated. Latent bug fixed: Qwen3-Embedding-0.6B (existing parity-test target) was silently dropping the same QK-norm step → embedder numbers will shift; parity property preserved (both branches change identically). New `tests/qwen3_generation_e2e.rs` runs greedy `generate()` against `Qwen/Qwen3-1.7B` bf16 safetensors under both `PlaintextExecutor` and `InProcessTrustedExecutor` and asserts identical token sequences. **PASS 2026-05-18** — emitted `" jumps over the lazy dog. 1"` (8 tokens, bit-identical on both branches; 377 s wall-clock on CPU). See plan §10. |
 
 (Update this table at every weekly sync.)
 
@@ -809,6 +810,89 @@ before estimate is firm.
 **Realistic total: 4-5 weeks** from the start of Phase 1.5 to the
 moment a successful greedy `generate()` runs against
 `google/gemma-4-E2B` real weights.
+
+---
+
+## 10. v1 demonstrator — Qwen3-1.7B (current target)
+
+Status: in progress 2026-05-18.
+
+### 10.1 Why Qwen3-1.7B replaces Gemma 4 as the v1 target
+
+Phase 1.5 ([§8](#8-phase-15--real-gemma-4-architecture-extensions))
+estimates 4-5 weeks of Gemma-only architecture work before any real
+Gemma 4 weights can run forward (per-class head_dim, per-class
+rope_theta, cross-layer KV sharing, GeGLU dispatch, AltUp,
+`use_double_wide_mlp`). None of that work is reusable on a different
+model family — it's a giant up-front bet on Gemma specifically.
+
+**Qwen3-1.7B** is a vanilla `Qwen3ForCausalLM`: 28 layers, 16/8 GQA,
+head_dim 128, full RoPE θ=1M, SwiGLU, tied embeddings, no sliding
+window, no softcap, no PLE, no AltUp. The single Qwen3-vs-Qwen2
+addition is per-head RMSNorm on Q and K **before** RoPE
+(`self_attn.{q,k}_norm.weight`, shape `(head_dim,)`). That fits under
+our existing `decoder_block` / RoPE plumbing as one new optional step
+between QKV projection and RoPE — no structural refactor.
+
+**Qwen3.5 was investigated and rejected** in the same session. The
+family ships as `Qwen3_5ForConditionalGeneration` — a multimodal VLM
+with a 24-layer ViT vision encoder, image / video tokens, and a text
+backbone using GDN-style `linear_attention` (Mamba/SSM) layers in a
+3:1 hybrid with `full_attention`, MRoPE (`mrope_section` interleaved),
+`partial_rotary_factor: 0.25`, MTP head, and `attn_output_gate`.
+Strictly harder than Gemma 4, not easier — the "Qwen3.5 is simpler"
+premise we briefly explored is empirically false.
+
+### 10.2 Scope landed for v1 demonstrator
+
+| Item | Where |
+|---|---|
+| `Qwen3Variant::{Q1_7B, Q4B}` config builder | `crates/gelo-embedder/src/decoder/qwen3.rs` |
+| `DecoderLayerWeights.q_norm/k_norm: Option<Array1<f32>>` | `crates/gelo-embedder/src/decoder/weights.rs` |
+| `DecoderWeights::from_safetensors` reads `q_norm` / `k_norm` when present | `weights.rs` |
+| Per-head `apply_qk_norm` helper | `crates/gelo-embedder/src/decoder/rms_norm.rs` |
+| QK-norm wired into both `decoder_block` and `decoder_block_cached` | `crates/gelo-embedder/src/decoder/forward.rs` |
+| `HfTokenizer::decode` | `crates/gelo-embedder/src/common/tokenizer.rs` |
+| `tests/qwen3_generation_e2e.rs` — greedy `generate()` on `Qwen/Qwen3-1.7B`, asserts plaintext-vs-masked token-sequence parity | `crates/gelo-embedder/tests/` |
+| 5 sibling tests adjusted for new `DecoderLayerWeights` fields | `tests/{generation_harness,decoder_parity,bundle_round_trip,comparative_bench,causal_discriminator_parity}.rs` |
+
+### 10.3 Latent bug fixed by the QK-norm wiring
+
+`Qwen/Qwen3-Embedding-0.6B` (the existing `tests/qwen3_e2e.rs`
+target) has 56 `q_norm` + `k_norm` tensors that our loader was
+silently dropping. Pre-fix: both `PlaintextExecutor` and
+`InProcessTrustedExecutor` produced **wrong but identical**
+embeddings — the parity test compared two equally-buggy values.
+Post-fix: both branches now compute correctly. **Absolute embedding
+values will shift**; the parity property (both executors agree
+within 1e-2) holds because the fix is symmetric on both branches.
+Any downstream comparison against a fixed baseline (FastEmbed,
+BEIR scores) needs re-baselining.
+
+### 10.4 Acceptance gate for v1 demonstrator
+
+`tests/qwen3_generation_e2e.rs::qwen3_1_7b_greedy_generates_under_both_executors`
+gates the v1 cut:
+
+1. Greedy `generate(max_tokens = 8)` produces 8 tokens on prompt
+   "The quick brown fox" under both executors.
+2. The two token sequences are **bit-identical** — argmax-stable
+   under the float drift the Haar mask introduces.
+
+HF-transformers parity (the M1.8-equivalent fixture comparison) is
+the next step after this lands.
+
+### 10.5 Path back to Gemma 4
+
+This v1 demonstrator is **additive** — it adds a new vanilla-GQA
+target without touching `Gemma4Variant`, the hybrid attention
+dispatch in `decoder_block_cached`, PLE infrastructure, p-RoPE
+support, or the cross-layer KV sharing scaffolding. All Phase 1.5
+items in §8 stay valid; the
+[`gemma4-architecture-roadmap.md`](../prototype/gemma4-architecture-roadmap.md)
+handoff doc remains the entry point for that workstream. Once
+Phase 1.5 lands, `Gemma4Variant::E2B` becomes a drop-in next-target
+in this same plan structure.
 
 ---
 

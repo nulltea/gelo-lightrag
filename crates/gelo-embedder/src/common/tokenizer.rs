@@ -57,6 +57,15 @@ impl HfTokenizer {
         self.inner.token_to_id(token)
     }
 
+    /// Decode a sequence of token ids back to a string. `skip_special_tokens`
+    /// follows the HF convention — when `true`, special tokens (BOS / EOS /
+    /// `<|im_start|>` / etc.) are omitted from the output.
+    pub fn decode(&self, ids: &[u32], skip_special_tokens: bool) -> Result<String> {
+        self.inner
+            .decode(ids, skip_special_tokens)
+            .map_err(|e| anyhow!("tokenizer decode failure: {e}"))
+    }
+
     /// Encode a `(query, document)` pair with the tokenizer's
     /// post-processor inserting the appropriate `[CLS]/<s>` /
     /// `[SEP]/</s>` markers between the two segments. Used by the

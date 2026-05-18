@@ -10,7 +10,7 @@ use super::attention::{
 };
 use super::config::{AttentionClass, DecoderConfig};
 use super::kv_cache::KvCache;
-use super::rms_norm::rms_norm;
+use super::rms_norm::{apply_qk_norm, rms_norm};
 use super::rope::RopeTables;
 use super::swiglu::swiglu;
 use super::weights::{DecoderLayerWeights, DecoderWeights};
@@ -275,6 +275,31 @@ fn decoder_block_cached(
         })
     };
 
+    // Qwen3 QK-norm — per-head RMSNorm on Q and K **before** RoPE.
+    // No-op for older models (norms = None). Applied per-head so each
+    // attention head normalises its own `head_dim` slice independently;
+    // gamma has length `head_dim`.
+    profile::time("tee:qk_norm", || {
+        if let Some(q_gamma) = layer.q_norm.as_ref() {
+            apply_qk_norm(
+                q_new.view_mut(),
+                cfg.num_attention_heads,
+                cfg.head_dim_value(),
+                q_gamma.as_slice().expect("q_norm Array1 is contiguous"),
+                cfg.rms_norm_eps,
+            );
+        }
+        if let Some(k_gamma) = layer.k_norm.as_ref() {
+            apply_qk_norm(
+                k_new.view_mut(),
+                cfg.num_key_value_heads,
+                cfg.head_dim_value(),
+                k_gamma.as_slice().expect("k_norm Array1 is contiguous"),
+                cfg.rms_norm_eps,
+            );
+        }
+    });
+
     // RoPE — rotate Q and K at absolute positions
     // `q_pos_offset..q_pos_offset + n_q`. Per the Gemma 4 p-RoPE
     // recipe: global layers rotate only the first `rotated_dim` of
@@ -414,6 +439,30 @@ fn decoder_block(
             )
         })
     };
+
+    // Qwen3 QK-norm — per-head RMSNorm on Q and K **before** RoPE.
+    // No-op when the loaded checkpoint lacks `q_norm` / `k_norm`
+    // (Qwen2 / LLaMA / Mistral).
+    profile::time("tee:qk_norm", || {
+        if let Some(q_gamma) = layer.q_norm.as_ref() {
+            apply_qk_norm(
+                q.view_mut(),
+                cfg.num_attention_heads,
+                cfg.head_dim_value(),
+                q_gamma.as_slice().expect("q_norm Array1 is contiguous"),
+                cfg.rms_norm_eps,
+            );
+        }
+        if let Some(k_gamma) = layer.k_norm.as_ref() {
+            apply_qk_norm(
+                k.view_mut(),
+                cfg.num_key_value_heads,
+                cfg.head_dim_value(),
+                k_gamma.as_slice().expect("k_norm Array1 is contiguous"),
+                cfg.rms_norm_eps,
+            );
+        }
+    });
 
     // RoPE rotates Q and K only (V left alone) per-head.
     profile::time("tee:rope", || {

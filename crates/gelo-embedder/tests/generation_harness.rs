@@ -86,6 +86,8 @@ fn synth_weights(cfg: &DecoderConfig, rng: &mut impl rand::RngCore) -> DecoderWe
             w_gate: rand2(d, f, rng, 0.05),
             w_up: rand2(d, f, rng, 0.05),
             w_down: rand2(f, d, rng, 0.05),
+            q_norm: None,
+            k_norm: None,
         })
         .collect();
     DecoderWeights {
@@ -543,6 +545,8 @@ fn kv_shared_matches_separate_when_wk_equals_wv() {
             w_gate: l.w_gate,
             w_up: l.w_up,
             w_down: l.w_down,
+            q_norm: l.q_norm,
+            k_norm: l.k_norm,
         })
         .collect();
     let weights = Arc::new(DecoderWeights {

@@ -79,6 +79,8 @@ fn synth_weights(cfg: &DecoderConfig, rng: &mut impl rand::RngCore) -> DecoderWe
             w_gate: rand2(d, f, rng, 0.05),
             w_up: rand2(d, f, rng, 0.05),
             w_down: rand2(f, d, rng, 0.05),
+            q_norm: None,
+            k_norm: None,
         })
         .collect();
     DecoderWeights {
