@@ -219,6 +219,101 @@ pub fn causal_gqa_attention_permuted(
     Ok(output)
 }
 
+/// Asymmetric causal GQA attention. Same semantics as
+/// [`causal_gqa_attention`] but supports `n_q ≤ n_kv` — the shape that
+/// arises during autoregressive decode where one new query token attends
+/// to a growing KV cache.
+///
+/// Shapes:
+///   q: (n_q,  num_q_heads  × head_dim)
+///   k: (n_kv, num_kv_heads × head_dim)
+///   v: (n_kv, num_kv_heads × head_dim)
+///   → (n_q, num_q_heads × head_dim)
+///
+/// `q_pos_offset` is the absolute position of Q row 0 in the full
+/// sequence. Q row `i` then sits at absolute position
+/// `q_pos_offset + i` and may attend to K rows `0..=(q_pos_offset + i)`.
+/// For decode (`n_q = 1`, `q_pos_offset = n_kv - 1`) every Q row sees
+/// every K row, so the mask is a no-op. For prefill (`n_q = n_kv`,
+/// `q_pos_offset = 0`) the result matches [`causal_gqa_attention`].
+pub fn causal_gqa_attention_cached(
+    q: ArrayView2<'_, f32>,
+    k: ArrayView2<'_, f32>,
+    v: ArrayView2<'_, f32>,
+    num_q_heads: usize,
+    num_kv_heads: usize,
+    head_dim: usize,
+    q_pos_offset: usize,
+) -> Array2<f32> {
+    assert!(num_q_heads >= num_kv_heads);
+    assert_eq!(num_q_heads % num_kv_heads, 0);
+    let group = num_q_heads / num_kv_heads;
+    let n_q = q.nrows();
+    let n_kv = k.nrows();
+    assert_eq!(v.nrows(), n_kv, "K and V must agree on n_kv");
+    assert!(
+        n_q + q_pos_offset <= n_kv,
+        "asymmetric attention: q_pos_offset {q_pos_offset} + n_q {n_q} > n_kv {n_kv}",
+    );
+    assert_eq!(q.ncols(), num_q_heads * head_dim);
+    assert_eq!(k.ncols(), num_kv_heads * head_dim);
+    assert_eq!(v.ncols(), num_kv_heads * head_dim);
+    let scale = 1.0_f32 / (head_dim as f32).sqrt();
+
+    let mut output = Array2::<f32>::zeros((n_q, num_q_heads * head_dim));
+
+    let per_head = |qh: usize, mut dst: ndarray::ArrayViewMut2<f32>| {
+        let kvh = qh / group;
+        let q_off = qh * head_dim;
+        let kv_off = kvh * head_dim;
+
+        let qh_view = q.slice(ndarray::s![.., q_off..q_off + head_dim]);
+        let kh_view = k.slice(ndarray::s![.., kv_off..kv_off + head_dim]);
+        let vh_view = v.slice(ndarray::s![.., kv_off..kv_off + head_dim]);
+
+        let mut scores = qh_view.dot(&kh_view.t()); // (n_q, n_kv)
+        scores *= scale;
+        apply_asymmetric_causal_mask(&mut scores, q_pos_offset);
+        softmax_inplace(&mut scores);
+        let ctx = scores.dot(&vh_view);
+        dst.assign(&ctx);
+    };
+
+    // Parallelisation threshold: per-head work is `n_q · n_kv · head_dim`.
+    // At decode shape (n_q=1) this is tiny — sequential wins; at prefill
+    // shape (n_q=n_kv) we reuse the same 64-row threshold as the
+    // symmetric path.
+    if n_q >= 64 {
+        use ndarray::parallel::prelude::*;
+        output
+            .axis_chunks_iter_mut(Axis(1), head_dim)
+            .into_par_iter()
+            .enumerate()
+            .for_each(|(qh, dst)| per_head(qh, dst));
+    } else {
+        for qh in 0..num_q_heads {
+            let q_off = qh * head_dim;
+            let dst = output.slice_mut(ndarray::s![.., q_off..q_off + head_dim]);
+            per_head(qh, dst);
+        }
+    }
+    output
+}
+
+fn apply_asymmetric_causal_mask(scores: &mut Array2<f32>, q_pos_offset: usize) {
+    // Score row `i` corresponds to Q absolute position `q_pos_offset + i`.
+    // Mask out K columns strictly greater than that absolute position.
+    for (i, mut row) in scores.axis_iter_mut(Axis(0)).enumerate() {
+        let abs_q = q_pos_offset + i;
+        let row_slice = row
+            .as_slice_mut()
+            .expect("Array2 rows are contiguous in row-major");
+        for v in row_slice.iter_mut().skip(abs_q + 1) {
+            *v = f32::NEG_INFINITY;
+        }
+    }
+}
+
 fn apply_causal_mask(scores: &mut Array2<f32>) {
     // Mask the strictly upper triangle. Writing through contiguous row
     // slices lets LLVM emit a tight memset-style store (avoiding the
@@ -265,6 +360,174 @@ fn softmax_inplace(scores: &mut Array2<f32>) {
             for v in row_slice.iter_mut() {
                 *v *= inv_sum;
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndarray::Array2;
+
+    fn rand_matrix(rows: usize, cols: usize, seed: u64) -> Array2<f32> {
+        // Deterministic LCG so the test is reproducible without pulling
+        // in a full RNG crate dep. The values are not statistically
+        // meaningful, only stable.
+        let mut state = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut m = Array2::<f32>::zeros((rows, cols));
+        for v in m.iter_mut() {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            *v = ((state >> 33) as f32 / u32::MAX as f32) - 0.5;
+        }
+        m
+    }
+
+    #[test]
+    fn cached_attention_matches_square_for_prefill_shape() {
+        // n_q = n_kv, q_pos_offset = 0 → must equal the existing causal
+        // attention output bit-for-bit (same code path inside the per-head
+        // closure, just with the parameterised mask).
+        let n = 8;
+        let n_q_heads = 4;
+        let n_kv_heads = 2;
+        let head_dim = 4;
+        let q_dim = n_q_heads * head_dim;
+        let kv_dim = n_kv_heads * head_dim;
+        let q = rand_matrix(n, q_dim, 1);
+        let k = rand_matrix(n, kv_dim, 2);
+        let v = rand_matrix(n, kv_dim, 3);
+
+        let sym =
+            causal_gqa_attention(q.view(), k.view(), v.view(), n_q_heads, n_kv_heads, head_dim);
+        let cached = causal_gqa_attention_cached(
+            q.view(),
+            k.view(),
+            v.view(),
+            n_q_heads,
+            n_kv_heads,
+            head_dim,
+            0,
+        );
+        for (a, b) in sym.iter().zip(cached.iter()) {
+            assert!((a - b).abs() < 1e-6, "sym {a} vs cached {b}");
+        }
+    }
+
+    #[test]
+    fn decode_step_matches_corresponding_prefill_row() {
+        // Equivalent to the decode-replay property: running prefill on
+        // [t_0..t_p] and taking row p must equal running prefill on
+        // [t_0..t_{p-1}] then decoding one step at position p with t_p.
+        //
+        // Here we simulate this at the attention level only — no
+        // projections, no RoPE: build (n_kv+1, kv_dim) of K, V; the full
+        // prefill output's last row must equal the cached-attention
+        // output for n_q=1 with q_pos_offset = n_kv.
+        let total = 7;
+        let n_q_heads = 4;
+        let n_kv_heads = 2;
+        let head_dim = 4;
+        let q_dim = n_q_heads * head_dim;
+        let kv_dim = n_kv_heads * head_dim;
+
+        let q_full = rand_matrix(total, q_dim, 11);
+        let k_full = rand_matrix(total, kv_dim, 12);
+        let v_full = rand_matrix(total, kv_dim, 13);
+
+        let full = causal_gqa_attention(
+            q_full.view(),
+            k_full.view(),
+            v_full.view(),
+            n_q_heads,
+            n_kv_heads,
+            head_dim,
+        );
+        let last_pos = total - 1;
+        let last_row_from_full = full.row(last_pos).to_owned();
+
+        // Decode replay: K, V cover everything 0..=last_pos; Q is just
+        // the last row; q_pos_offset = last_pos so the mask is wide open.
+        let q_decode = q_full
+            .slice(ndarray::s![last_pos..last_pos + 1, ..])
+            .to_owned();
+        let decode = causal_gqa_attention_cached(
+            q_decode.view(),
+            k_full.view(),
+            v_full.view(),
+            n_q_heads,
+            n_kv_heads,
+            head_dim,
+            last_pos,
+        );
+        let decode_row = decode.row(0).to_owned();
+
+        for (a, b) in last_row_from_full.iter().zip(decode_row.iter()) {
+            assert!(
+                (a - b).abs() < 1e-5,
+                "decode replay mismatch: full={a} decode={b}",
+            );
+        }
+    }
+
+    #[test]
+    fn asymmetric_mask_blocks_future_positions() {
+        // Build scores where the un-masked attention would produce
+        // identifiable contributions from later K rows. After masking,
+        // the asymmetric path must agree with what the square causal
+        // path produces over the same K, V prefix.
+        let n_kv = 6;
+        let n_q = 3; // covers Q positions q_pos_offset..q_pos_offset+n_q-1
+        let n_q_heads = 2;
+        let n_kv_heads = 1;
+        let head_dim = 4;
+        let q_dim = n_q_heads * head_dim;
+        let kv_dim = n_kv_heads * head_dim;
+        let q_pos_offset = 2; // Q rows 0,1,2 → abs positions 2,3,4
+
+        let q_band = rand_matrix(n_q, q_dim, 21);
+        let k_full = rand_matrix(n_kv, kv_dim, 22);
+        let v_full = rand_matrix(n_kv, kv_dim, 23);
+
+        // Reference: build the equivalent square problem of size
+        // (q_pos_offset + n_q, …), put `q_band` at rows
+        // q_pos_offset..q_pos_offset+n_q, run the symmetric kernel, take
+        // the corresponding rows.
+        let total = q_pos_offset + n_q;
+        let mut q_full = Array2::<f32>::zeros((total, q_dim));
+        q_full
+            .slice_mut(ndarray::s![q_pos_offset..total, ..])
+            .assign(&q_band);
+        let k_pref = k_full.slice(ndarray::s![..total, ..]).to_owned();
+        let v_pref = v_full.slice(ndarray::s![..total, ..]).to_owned();
+        let ref_full = causal_gqa_attention(
+            q_full.view(),
+            k_pref.view(),
+            v_pref.view(),
+            n_q_heads,
+            n_kv_heads,
+            head_dim,
+        );
+        let ref_band = ref_full
+            .slice(ndarray::s![q_pos_offset..total, ..])
+            .to_owned();
+
+        // Asymmetric kernel over the full K, V (n_kv = 6 includes future
+        // positions that the causal mask must zero out).
+        let cached = causal_gqa_attention_cached(
+            q_band.view(),
+            k_full.view(),
+            v_full.view(),
+            n_q_heads,
+            n_kv_heads,
+            head_dim,
+            q_pos_offset,
+        );
+
+        for (a, b) in ref_band.iter().zip(cached.iter()) {
+            assert!(
+                (a - b).abs() < 1e-5,
+                "asymmetric mask broke causal: ref={a} cached={b}",
+            );
         }
     }
 }
