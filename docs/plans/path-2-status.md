@@ -5,6 +5,99 @@ a plan assumption. Most recent entry on top.
 
 ---
 
+## 2026-05-18 · M2.3 verdict update: outcome (1) → outcome (2)
+
+**Blocker raised during M2.2 step 2.** Reading the reference's
+`vendor/aloepri-py/src/keymat_norm.py::KeyMatRMSNormBridge` shows
+the runtime covariant-RMSNorm construction:
+
+```python
+def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    base_hidden = apply_inverse_keymat_transform(hidden_states, self.keymat_transform)
+    normalized = self.norm_layer(base_hidden)
+    return apply_keymat_transform(normalized, self.keymat_transform)
+```
+
+RMSNorm is non-linear (division by `RMS(x)`). For arbitrary
+non-permutation `P̂_R`, elementwise multiplication of `x_obf` by
+some γ_obf cannot be made equal to `plain_norm(x_plain) @ P̂_R`
+because elementwise product does not commute with matrix
+multiplication. The reference resolves this at *runtime* by
+de-obfuscating before each norm and re-obfuscating after — three
+extra matmuls per RMSNorm site, none of which can be baked into the
+elementwise γ tensor.
+
+### Consequence
+
+- **Identity-padding obfuscation** (already implemented and shipped
+  on `:11438`): mathematically a no-op. Validates the dim plumbing
+  but offers no real security. Useful as a regression baseline.
+- **Real Algorithm 1 obfuscation** (needed for actual privacy):
+  requires wrapping every RMSNorm site in the gemma4 forward graph
+  with `apply_inv_keymat → norm → apply_keymat`. **Stock llama.cpp
+  has no hook for this.** A patch to `src/models/gemma4.cpp` is
+  unavoidable.
+
+### Updated M2.3 verdict
+
+Was: **outcome (1) — just runs.** Identity padding does just run, so
+the dim-plumbing assertion of "n_embd is read freely from metadata"
+still holds, but the headline framing was wrong.
+
+Now: **outcome (2) — minimal patch required.** Scope of the patch:
+
+1. Pre-load two additional tensors per layer (or one global pair) —
+   the AloePri P̂_R and Q̂_R key matrices — alongside the existing
+   weights. Format: F32 or F16, dimensions `(d, d+2h)` and `(d+2h, d)`
+   respectively. Stored in the obfuscated GGUF under bespoke keys
+   like `aloepri.layers.<ℓ>.keymat.p` / `aloepri.layers.<ℓ>.keymat.q`.
+2. Modify `llama_model_gemma4::graph::graph` so each `build_norm`
+   call site is wrapped:
+   ```cpp
+   cur = ggml_mul_mat(ctx0, Q_R, cur);        // de-obfuscate
+   cur = build_norm(cur, ...);                // plain RMSNorm
+   cur = ggml_mul_mat(ctx0, P_R, cur);        // re-obfuscate
+   ```
+   This is ~6 lines per norm × 5 norms per block × 35 blocks, plus
+   one global output_norm. Mechanical.
+3. Detect via GGUF metadata: only apply the wrapping if a flag like
+   `gemma4.aloepri.enabled = true` is present. Plaintext models
+   continue to load unmodified.
+
+Effort: **2–3 weeks**, including the offline rewriter changes to
+emit the keymat tensors + the llama.cpp patch + sanity tests.
+
+### Three forward-path options
+
+Awaiting decision on which to pursue:
+
+| Option | Effort | Pros | Cons |
+|---|---:|---|---|
+| **A. Fork llama.cpp** with the gemma4 RMSNorm wrap + emit P̂_R / Q̂_R tensors in the obfuscated GGUF | 2–3 weeks | Cleanest. Stays close to paper construction. Patch is small and localised. | Maintenance: track llama.cpp upstream changes to gemma4.cpp. |
+| **B. Permutation-only residual obfuscation** — restrict P̂_R to be a permutation matrix on the (d+2h) basis. Elementwise RMSNorm γ becomes a permuted γ_plain. No llama.cpp patch needed. | 1 week | Stock llama.cpp works. | Weaker security than full Algorithm 1 — permutation is a much smaller obfuscation group than the orthogonal one. May fall short of TTRSR bounds. |
+| **C. Skip residual obfuscation, only obfuscate token-level via Π** — keep `hidden_size = d` (no expansion). Apply Π to embedding + head only. Algorithm 2 attention transforms still apply. Skip the key-matrix machinery entirely. | 1 week | Simplest. Pure stock llama.cpp. | Loses the key-matrix protection on internal states — ISA / IMA attacks become much stronger (paper §7 shows these are the gnarliest). Probably below acceptable TTRSR. |
+
+Recommendation: **A**. The patch is local, the math is correct, and
+the AloePri paper's strong attack-resistance numbers (TTRSR < 15%)
+depend on the full construction — degrading to B or C likely fails
+the M2.9 attack benchmark.
+
+### What still landed cleanly
+
+- M2.0 baseline (`:11437`) and the Vulkan server pattern: unchanged.
+- M2.1 — vendored reference + Algorithm 1 keymat math verified for
+  E2B and E4B dims.
+- M2.2 step 1 — identity-padding offline rewriter: produces a GGUF
+  that stock llama.cpp loads and serves correctly at `:11438`.
+- M2.3 dim-plumbing assertion — confirmed. The `hidden_size = d+2h`
+  metadata propagates correctly through the gemma4 forward.
+
+What this commit *does not* yet block: choosing option A means the
+M2.4 client wrapper, M2.6 BF16 baseline, and M2.7 Q8 gate can all
+proceed in parallel with the llama.cpp patch — they're separable.
+
+---
+
 ## 2026-05-18 · M2.0 complete
 
 **Headline:** Gemma 4 architecture (`gemma4`) is already in llama.cpp
