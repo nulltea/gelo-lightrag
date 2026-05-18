@@ -88,6 +88,12 @@ pub struct InProcessTrustedExecutor<E: GpuOffloadEngine> {
     /// 2.4 GB copy on Qwen3-class models. The `provision_weight` path still
     /// clones via `weight.to_owned()` for callers that don't have an Arc.
     weights: HashMap<WeightHandle, Arc<Array2<f32>>>,
+    /// Per-Layer Embedding table for Gemma 3n / Gemma 4 models. None
+    /// for non-hybrid models; `Some(Arc<_>)` after
+    /// `provision_ple_table` has been called. Clones (rayon workers)
+    /// share the underlying storage — the table is hundreds of MB to
+    /// >1 GB and must not be copied per worker.
+    ple_table: Option<Arc<crate::ple::PleTable>>,
     /// Whether to use the GELO paper's per-forward-pass mask (one A
     /// sampled at `begin_forward_pass`, reused across every offload
     /// until `end_forward_pass`) vs. the per-offload mode (fresh A
@@ -137,6 +143,8 @@ impl<E: GpuOffloadEngine + Clone> Clone for InProcessTrustedExecutor<E> {
             session: None,
             stacked_scratch: HashMap::new(),
             perm_attn: self.perm_attn,
+            // Arc-share the PLE table across clones — no buffer copy.
+            ple_table: self.ple_table.clone(),
         }
     }
 }
@@ -184,6 +192,7 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             session: None,
             stacked_scratch: HashMap::new(),
             perm_attn: PermAttnConfig::default(),
+            ple_table: None,
         }
     }
 
@@ -206,6 +215,7 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             session: None,
             stacked_scratch: HashMap::new(),
             perm_attn: PermAttnConfig::default(),
+            ple_table: None,
         }
     }
 
@@ -689,6 +699,27 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
             )
         })
     }
+
+    fn provision_ple_table(&mut self, table: crate::ple::PleTable) -> Result<()> {
+        // The table is shared by `Arc` across rayon worker clones; we
+        // store it inside the trusted executor's owned state and never
+        // hand it to the offload engine — this is what closes the P0
+        // round-2 PLE address-bus leak.
+        self.ple_table = Some(Arc::new(table));
+        Ok(())
+    }
+
+    fn ple_gather(
+        &self,
+        token_ids: &[u32],
+        layer_idx: usize,
+    ) -> Result<Array2<f32>> {
+        let table = self
+            .ple_table
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("ple_gather: no PLE table provisioned"))?;
+        table.gather(token_ids, layer_idx)
+    }
 }
 
 /// Trusted executor that skips the mask entirely. Used as the parity baseline
@@ -697,19 +728,27 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
 /// what the offload engine sees.
 pub struct PlaintextExecutor<E: GpuOffloadEngine> {
     engine: E,
+    /// Same TEE-resident PLE table as `InProcessTrustedExecutor`. Held
+    /// here too so parity tests (PlaintextExecutor vs masked executor)
+    /// can both run Gemma 4 / Gemma 3n hybrid models.
+    ple_table: Option<Arc<crate::ple::PleTable>>,
 }
 
 impl<E: GpuOffloadEngine + Clone> Clone for PlaintextExecutor<E> {
     fn clone(&self) -> Self {
         Self {
             engine: self.engine.clone(),
+            ple_table: self.ple_table.clone(),
         }
     }
 }
 
 impl<E: GpuOffloadEngine> PlaintextExecutor<E> {
     pub fn new(engine: E) -> Self {
-        Self { engine }
+        Self {
+            engine,
+            ple_table: None,
+        }
     }
 
     pub fn engine(&self) -> &E {
@@ -748,6 +787,25 @@ impl<E: GpuOffloadEngine> TrustedExecutor for PlaintextExecutor<E> {
         profile::time("engine:matmul_dynamic_batched", || {
             self.engine.matmul_dynamic_batched(q, kt)
         })
+    }
+
+    fn provision_ple_table(&mut self, table: crate::ple::PleTable) -> Result<()> {
+        // Same TEE-resident contract as InProcessTrustedExecutor —
+        // never leaves the trusted side, never reaches the engine.
+        self.ple_table = Some(Arc::new(table));
+        Ok(())
+    }
+
+    fn ple_gather(
+        &self,
+        token_ids: &[u32],
+        layer_idx: usize,
+    ) -> Result<Array2<f32>> {
+        let table = self
+            .ple_table
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("ple_gather: no PLE table provisioned"))?;
+        table.gather(token_ids, layer_idx)
     }
 }
 

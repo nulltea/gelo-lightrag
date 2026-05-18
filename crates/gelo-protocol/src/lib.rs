@@ -21,6 +21,7 @@ pub mod attention;
 pub mod integrity;
 pub mod mask;
 pub mod out_attn_mult;
+pub mod ple;
 pub mod profile;
 pub mod rng;
 pub mod shield;
@@ -29,6 +30,7 @@ pub mod substrate;
 
 pub use attention::PermAttnConfig;
 pub use mask::{GeloMask, MaskSeed, ensure_blis_single_thread, set_blis_num_threads};
+pub use ple::PleTable;
 pub use shield::ShieldConfig;
 pub use sim::{InProcessTrustedExecutor, PlaintextExecutor, RayonCpuEngine};
 pub use substrate::{GpuOffloadEngine, TrustedExecutor, WeightHandle, WeightKind};

@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use ndarray::{Array2, Array3, ArrayView2, ArrayView3, Axis};
+
+use crate::ple::PleTable;
 
 /// Identifies a specific projection weight inside a transformer encoder.
 /// The trusted side uses this both to address weights on the GPU and to
@@ -222,6 +224,42 @@ pub trait TrustedExecutor {
         weight: Arc<Array2<f32>>,
     ) -> Result<()> {
         self.provision_weight(handle, weight.view())
+    }
+
+    /// Provision a Per-Layer Embedding (PLE) table into the trusted
+    /// side's encrypted memory. The table is owned by the executor
+    /// (and shared via `Arc` across clones); it is **never** handed to
+    /// the offload engine — that would defeat the round-2 P0 leak
+    /// fix described in `docs/prototype/gelo-llm.html` §03. Gemma 3n /
+    /// Gemma 4 callers invoke this once at model load alongside
+    /// `provision_weight` for the standard offload weights.
+    ///
+    /// Default impl rejects the call — executors that don't support
+    /// PLE either have no need for it (Qwen3 embed/rerank paths) or
+    /// would be loading the table into the wrong memory region.
+    /// Hybrid models should fail loud rather than silently fall back
+    /// to a leaky path, hence the error rather than a no-op.
+    fn provision_ple_table(&mut self, _table: PleTable) -> Result<()> {
+        Err(anyhow!(
+            "TrustedExecutor: provision_ple_table not implemented for this executor",
+        ))
+    }
+
+    /// Gather `(n, d_ple)` f32 rows from the provisioned PLE table at
+    /// layer `layer_idx`, one row per `token_id`. Errors when no PLE
+    /// table is provisioned, when the layer index is out of range, or
+    /// when any token_id exceeds the table's vocab.
+    ///
+    /// The gather happens entirely inside the trusted executor — no
+    /// engine round-trip, no PCIe traffic. A spy engine observing the
+    /// offload path sees zero PLE-keyed activity.
+    ///
+    /// Default impl rejects the call for the same reason as
+    /// `provision_ple_table`: silent fallback would mask a leak.
+    fn ple_gather(&self, _token_ids: &[u32], _layer_idx: usize) -> Result<Array2<f32>> {
+        Err(anyhow!(
+            "TrustedExecutor: ple_gather called without a provisioned PLE table",
+        ))
     }
 
     /// Run a single offloaded linear: mask `hidden` on the token axis, ship
