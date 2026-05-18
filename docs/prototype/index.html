@@ -26,6 +26,7 @@
       <a href="embedding.html">Embedding · GELO</a>
       <a href="storage.html">Storage · CAPRISE</a>
       <a href="reranking.html">Reranking · GELO</a>
+      <a href="gelo-llm.html">Generation · GELO</a>
       <a href="graphrag.html">GraphRAG · Compass</a>
     </div>
   </nav>
@@ -489,9 +490,21 @@
         </ul>
         <span class="arrow">read more</span>
       </a>
+      <a class="path-card" href="gelo-llm.html">
+        <div class="num">§D</div>
+        <h3>Generation · GELO LLM</h3>
+        <p class="tagline">Autoregressive answer generation inside the same SEV-SNP CVM. Gemma 4 E2B and E4B run under the embedder's GELO mask + TwinShield primitives, with hybrid attention keeping cheap sliding-window layers fully in-TEE and only the long-range global layers crossing PCIe under mask. The Per-Layer Embedding table lives in encrypted CVM DRAM so token-id gather addresses never reach the GPU; the KV cache stays in-TEE and tokens stream back to the client under per-query AES-GCM.</p>
+        <ul>
+          <li><code>gelo-embedder::decoder</code> · gemma4 · generation · kv_cache · sampler</li>
+          <li><code>gelo-protocol::ple</code> · PLE table + gather inside the trusted executor</li>
+          <li>hybrid attention router · local SWA(W=512) in-TEE · global via OutAttnMult / fused permuted (deferred)</li>
+          <li>Gemma 4 E2B primary · E4B scaling · 31B stretch · MoE deferred</li>
+        </ul>
+        <span class="arrow">read more</span>
+      </a>
       <a class="path-card muted" href="storage-remoterag.html">
         <span class="alt-badge">✕ alternative · not pursued</span>
-        <div class="num">§D</div>
+        <div class="num">§E</div>
         <h3>Storage · RemoteRAG</h3>
         <p class="tagline">A second storage strategy prototyped during the work and parked. Keeps the index plaintext on the server; the query gets formal <code>(n, ε)</code>-DistanceDP via planar-Laplace noise, with a Paillier homomorphic dot-product reranking against the clean query. <strong>Mutually exclusive with CAPRISE — the project chose CAPRISE.</strong></p>
         <ul>
@@ -504,7 +517,7 @@
         <span class="arrow">read why not chosen</span>
       </a>
       <a class="path-card" href="graphrag.html">
-        <div class="num">§E</div>
+        <div class="num">§F</div>
         <h3>GraphRAG · Compass</h3>
         <p class="tagline"><em>Shipped · Variant A · M0–M8.1 · benched.</em> Private LightRAG retrieval inside the same SEV-SNP CVM. Three Compass-encrypted HNSW indexes (entities · relations · chunks) plus two XorMM volume-hiding multimaps (adjacency · src_chunks) plus an AES-GCM chunk store — every server-visible op reduces to a Ring-ORAM read, an EMM lookup, or a blob fetch. Local + Hybrid modes wired; 10–58 ms p50 in-memory at N=100–2000.</p>
         <ul>
@@ -518,7 +531,7 @@
         <span class="arrow">read more</span>
       </a>
       <a class="path-card" href="#hardware">
-        <div class="num">§F</div>
+        <div class="num">§G</div>
         <h3>Hardware</h3>
         <p class="tagline">AMD EPYC SEV-SNP for the TEE, commodity Vulkan GPU via VFIO passthrough for offload. No confidential-compute GPU needed — GELO masks make the GPU information-theoretically blind regardless.</p>
         <ul>

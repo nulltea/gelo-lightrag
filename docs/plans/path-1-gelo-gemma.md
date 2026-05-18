@@ -21,6 +21,7 @@
 | Date | Note |
 |---|---|
 | 2026-05-18 | Plan written. Pending kickoff. |
+| 2026-05-18 | Design choices locked: HF `transformers` is the M1.8 accuracy baseline; decode global attention uses the embedding-stack length-based auto-switch; fused permuted attention promoted from §7.2 deferred into v1 scope as M1.10; Gemma 4 31B stretch dropped from scope (revisit if a 64 GB SEV-SNP SKU becomes available). |
 
 (Update this table at every weekly sync.)
 
@@ -182,8 +183,14 @@ on small CVM SKUs.
 - Local: in-TEE causal sliding-window attention with W=512.
   Cheap; round 2 §D.2 shows 4.57× speedup vs dense at n=8K.
 - Global: same dispatch as current Qwen3 path — in-TEE for short,
-  OutAttnMult or permuted for long. Length-based auto-switch
-  (`gelo.md` §3.5) applies per-layer-class.
+  OutAttnMult or fused permuted (M1.10) for long. Length-based
+  auto-switch (`gelo.md` §3.5) applies per-layer-class **and per-phase**:
+  decode steps stay in-TEE for global attention at any
+  realistic n_cache because the per-step attention math is
+  microsecond-scale; the auto-switch threshold engages on
+  prefill at long context, not on decode. Decode KV-cache
+  *bandwidth* is the orthogonal axis — addressed by the
+  SCX-class primitive in §7.1, not by attention dispatch.
 
 **Files to add/modify:**
 - `crates/gelo-embedder/src/decoder/attention.rs` —
@@ -330,8 +337,21 @@ scales worse than linear (Householder sample at d²).
 - IFEval pass-rate (500 prompts)
 - PIQA accuracy (200 prompts)
 - HumanEval pass@1 (200 prompts)
-- Top-1 token match vs plain reference
-- Final hidden-state cosine similarity vs plain
+- Top-1 token match vs HuggingFace
+  `transformers.AutoModelForCausalLM` reference at
+  `temperature=0` (greedy)
+- Final hidden-state cosine similarity vs HF reference
+
+**Reference baseline.** HuggingFace `transformers` is the
+canonical Gemma 4 implementation — what the model cards target
+and what the open-source community treats as ground truth. Pin
+the reference build by `transformers` package version SHA-256
+and record both versions in `results/path-1-accuracy.json` so
+re-runs are reproducible. llama.cpp and vLLM are explicitly
+*not* the baseline (they're production runtimes with their own
+quantisation and sampler quirks); their numbers could be added
+to the report as informational rows but the accept gate is
+HF-transformers parity only.
 
 **Acceptance:**
 - Top-1 token match ≥ 0.99 (GELO should be ~bit-exact in fp32).
@@ -375,26 +395,72 @@ unexpected and warrants investigation against shield-row config
 
 ---
 
-### M1.10 — (Stretch) Gemma 4 31B dense
+### M1.10 — Fused permuted attention for long-context prefill
 
-**Scope:** Run M1.6–M1.9 on Gemma 4 31B (5:1 hybrid, W=1024, no
-PLE, dense, ~5120 hidden).
+**Scope:** Close the upstream `burn-cubecl` gap (hardcoded
+`causal: true` in `burn_cubecl::kernel::attention::flash_attention`)
+and wire a fused FlashAttention-style permuted-attention kernel
+into the engine. Promotes the §7.2 deferred item into v1 scope
+because long-context (n ≥ 1024) prefill global-layer attention
+is bandwidth-bound on the 3-dispatch path's materialised
+`(heads, n, n)` score tensor (~3.2 GB/layer at n=4k; ~51 GB/layer
+at n=16k), making the 3-dispatch fallback unusable for any
+non-trivial RAG context. Fused path drops per-layer traffic to
+`O(n·d_total)` (~130 MB/layer at n=4k) — lands long-context
+prefill within ~2× of unprotected baseline.
+
+**Approach options** (decision deferred to time-of-implementation
+based on cubek/burn maturity at that moment):
+
+- **Option A** — Fork the burn-cubecl wrapper into
+  `gelo-gpu-wgpu` and call `cubek::attention::launch::launch_ref`
+  directly with `causal: false` plus our permuted causal mask
+  as the sole mask in the `Materialized` slot. ~150 LOC. Gated
+  on `cubek-attention` v0.1.1 API stability (currently young,
+  likely API-unstable).
+- **Option B** — Upstream PR to parameterize
+  `burn_cubecl::flash_attention(causal: bool)`. Lowest
+  maintenance long-term; blocks on tracel-ai merge cycle.
+- **Option C** — Custom WGSL fused-attention kernel
+  (~500 LOC, FlashAttention-style with FLASH-D online softmax).
+  Highest implementation risk; lowest dependency surface; only
+  pursued if A and B are both unworkable at start of M1.10.
+
+**Files to add/modify:**
+- `crates/gelo-gpu-wgpu/src/lib.rs` — `fused_attention_batched`
+  engine method (override of the default 3-dispatch composition)
+- `crates/gelo-protocol/src/attention.rs` —
+  `permuted_attention` checks for engine capability via the
+  `TrustedEngine` trait, prefers fused when available, falls
+  back to composed 3-dispatch otherwise
+- `crates/gelo-protocol/src/substrate.rs` — engine trait
+  extension if needed
+- (Option A) `Cargo.toml` adds `cubek` + `cubek-attention`
+  direct deps
+- (Option C) `crates/gelo-gpu-wgpu/src/kernels/flash.wgsl`
 
 **Acceptance:**
-- 31B fits in CVM RAM with current Arc-share refactor
-  (`gelo.md` §5.2). Budget: ~31 GB weights + ~5 GB working set,
-  fits in 64 GB SKU.
-- Per-batch mask sample cost remains <50 ms (at d=5120, the
-  Householder QR is ~30 ms on Genoa per round-2 estimates).
-- Output coherent; accuracy delta within ±1pp.
+- Long-context prefill global-layer wall-clock drops from
+  ~500 ms (3-dispatch at n=4k) to ~150-200 ms (fused), per
+  `gelo-llm.md` §3.7 projection. Within ~2× of unprotected
+  baseline.
+- Parity test vs 3-dispatch path on permuted causal mask at
+  n ∈ {256, 1024, 4096}: outputs agree within 1e-4.
+- Autoswitch in `decoder::forward` engages fused path on
+  global layers past the auto-switch threshold; falls back to
+  3-dispatch when engine reports no fused capability.
 
-**Effort:** 1 week.
+**Effort:** 3 weeks (Option A baseline) · +2 weeks if Option C
+needed.
 
-**Dependencies:** M1.8.
+**Dependencies:** M1.3 (hybrid attention placement defines
+where global-layer attention happens; fused kernel slots into
+the global-attention dispatch).
 
-**Risk:** Memory budget; mask sample cost; CPU bottleneck on
-in-TEE attention for the global layers (1/6 × 42 layers at
-n=128k context = 7 layers × 128k² attention compute is a lot).
+**Risk:** Moderate. `cubek-attention` v0.1.1 API may not be
+stable enough for Option A — fallback chain documented above.
+Option B is unbounded on upstream merge cycle and cannot be
+relied on for v1.
 
 ---
 
@@ -408,13 +474,18 @@ n=128k context = 7 layers × 128k² attention compute is a lot).
 | M1.5 (interleaved) | 0.5 | 6.0 |
 | M1.3 | 3.0 | 9.0 |
 | M1.4 | 1.0 | 10.0 |
-| M1.6 | 1.0 | 11.0 |
-| M1.7 | 0.5 | 11.5 |
-| M1.8 | 1.0 | 12.5 |
-| M1.9 | 2.0 (after M0.3) | 14.5 |
-| M1.10 stretch | +1.0 | 15.5 |
+| M1.10 (fused permuted) | 3.0 | 13.0 |
+| M1.6 | 1.0 | 14.0 |
+| M1.7 | 0.5 | 14.5 |
+| M1.8 | 1.0 | 15.5 |
+| M1.9 | 2.0 (after M0.3) | 17.5 |
 
-**Total: ~12.5 weeks v1 (E2B + E4B), ~15.5 weeks with 31B stretch.**
+**Total: ~15.5 weeks v1 (E2B + E4B + fused permuted prefill).
+~17.5 weeks including the attack-resistance integration.**
+
+The 31B stretch (previously M1.10) is dropped from v1 scope per
+2026-05-18 design decision — revisit only if a 64 GB SEV-SNP
+SKU becomes available.
 
 Plus shared work:
 - M0.1 + M0.2 inline with M1.0–M1.2 (~1.5 weeks of dual effort)
@@ -426,14 +497,19 @@ Plus shared work:
 ## 4. Critical path
 
 ```
-M1.0 → M1.1 → M1.2 → M1.3 → M1.4 ┐
-                ↓                  ├→ M1.6 → M1.7 → M1.8 → M0.4
-              M1.5 ──────────────┘
+M1.0 → M1.1 → M1.2 → M1.3 → M1.10 → M1.6 → M1.7 → M1.8 → M0.4
+                       ↓ ↘
+                     M1.4  M1.5      (off critical path)
               M0.3 ───────────────→ M1.9 ─────────────────→ M0.4
 ```
 
-Longest chain: M1.0 + M1.1 + M1.2 + M1.3 + M1.4 + M1.6 + M1.7 +
-M1.8 + M0.4 = 12.5 weeks.
+Longest chain: M1.0 + M1.1 + M1.2 + M1.3 + M1.10 + M1.6 + M1.7 +
+M1.8 + M0.4 = 15.5 weeks.
+
+M1.4 (K=V handling) and M1.5 (p-RoPE) are small enough
+(1 week / 0.5 weeks) to slot in parallel with M1.10's fused
+permuted attention work — same author or split if a worker
+joins.
 
 ---
 
@@ -465,21 +541,115 @@ AloePri snapshots for attack harness), file a PR back to master.
 
 ## 6. Open questions / decisions deferred
 
-- **MatFormer slice handling**: should we load E4B weights once
-  and use the E2B slice when needed, or maintain two separate
-  loaders? Likely the latter due to the 4:1 vs 5:1 attention
-  pattern difference.
-- **Sampler choice**: greedy only for v1; top-p / top-k as
-  M1.10 prerequisite.
-- **Stretch 31B in 32 GB CVM**: only attempt if we have a 64 GB
-  CVM available. Don't fight the memory budget on the small SKU.
+- **Sampler choice**: greedy for v1 acceptance gates (necessary
+  for deterministic HF-transformers parity at temperature=0).
+  Top-p / top-k / temperature support lands alongside M1.6 once
+  the harness exists; not on the M1.8 accept gate.
 - **PLE table fp16 vs int8**: fp16 is 2× memory but bit-exact;
-  int8 saves ~700 MB at small quality loss. Default to fp16 unless
-  memory budget forces int8.
+  int8 saves ~700 MB at small quality loss. Default to int8;
+  M1.8 accuracy validation flips the default to fp16 if the
+  int8 quantisation moves any benchmark by more than 0.5pp.
+- **Fused permuted attention option choice (M1.10)**: A vs B vs
+  C decided at start of M1.10 based on cubek-attention API
+  stability and burn-cubecl upstream state at that moment.
+
+**Resolved 2026-05-18:**
+
+- ~~MatFormer slice handling~~ — two separate loaders. The 4:1
+  vs 5:1 attention ratio difference between E2B and E4B makes
+  a shared blob more painful than it's worth.
+- ~~Stretch 31B in 32 GB CVM~~ — dropped from scope.
+- ~~Reference baseline for accuracy~~ — HF `transformers` at
+  `temperature=0` (greedy). See M1.8.
+- ~~Decode global attention dispatch~~ — length-based
+  auto-switch from `gelo.md` §3.5 applies per-phase; decode
+  stays in-TEE for global attention at realistic n_cache. KV-cache
+  bandwidth (the orthogonal axis) addressed by §7.1 SCX.
 
 ---
 
-## 7. References
+## 7. Post-v1 future work
+
+Items intentionally out of scope for v1 (M1.0–M1.10) but
+expected to land as follow-ups once the bench harness exists
+and the decode-phase cost breakdown is measured.
+
+### 7.1 SCX-style KV-cache encoding for decode
+
+**Reference:** Yuan et al., "SCX: Stateless KV-Cache Encoding
+for Cloud-Scale Confidential Transformer Serving," SIGCOMM
+2025. Code: `yuanmu97/scx`. Discussed in
+[`../prototype/gelo-llm.md`](../prototype/gelo-llm.md) §4.3.
+
+**Problem it solves.** Decode-phase π under our protocol is
+structurally awkward: fresh π per step is incompatible with KV
+cache written under previous steps' π. Naive fixes (carry π
+forward across the whole generation session, or re-permute the
+cache every step) trade either security (one π reused across
+N decode steps for one session) or wall-clock (~12 GB cache
+rewrite per token on Qwen3-class, multi-GB on Gemma E4B).
+
+**SCX's approach.** Stateless per-position encoding: at write
+time, K and V are encoded with a key derived from
+`(session_id, layer_id, position)` — not from a per-step mask.
+Each cache entry stays in its own frame forever. Decode-step
+attention reads encoded K, V directly without per-step
+re-permutation; per-token overhead is one fresh per-position
+encoding-key derivation. Claimed ~36 ms LLaMA-7B decode
+latency in their threat model.
+
+**Gating items before adoption.**
+
+1. **Threat-model alignment.** SCX's setting is generic
+   "confidential transformer serving"; ours is SEV-SNP CVM +
+   commodity GPU under the openweight assumption. Need to
+   verify the position-key derivation survives a TEE-co-located
+   GPU adversary, not just a curious cloud operator.
+2. **Composition with KV-Cloak / Shadow-in-the-Cache.** Wu et
+   al., arXiv 2508.09442 (Aug 2025) — KV-cache inversion
+   attacks + per-block-permutation defense. Need a security
+   analysis showing SCX either survives the Shadow-in-the-Cache
+   adversary directly, or composes cleanly with KV-Cloak.
+3. **Empirical port.** SCX reference code is Python; our stack
+   is Rust + wgpu. Estimate ~2 weeks port + ~1-2 weeks security
+   review.
+
+**Landing condition.** M1.6 / M1.7 benches confirm decode-step
+mask-sample or cache-handling cost is the dominant per-token
+overhead at E2B / E4B. If decode-step cost is dominated by
+linear projections instead, SCX is a nice-to-have rather than
+on the critical path.
+
+**Effort estimate (post-v1).** ~4 weeks: 2 weeks port +
+1-2 weeks security analysis + accuracy + bench validation.
+
+### 7.2 Other deferred items
+
+Briefly, for completeness — full discussion in
+[`../prototype/gelo-llm.md`](../prototype/gelo-llm.md) §08:
+
+- **HKDF-derived mask material for amortised decode-step QR.**
+  Lever; lands if M1.7 shows mask-sample > ~10% of TPOT on E4B.
+- **Speculative decoding under the protocol.** Completely
+  unexplored security-wise.
+- **MoE generation.** Routing-histogram leak is a separate
+  protocol surface (CryptoMoE balanced dispatch). Out of scope
+  for the dense+hybrid Gemma 4 family.
+- **Token-DP / score-DP accountant.** Only relevant if a
+  deployment needs to export per-token probabilities for
+  downstream calibration.
+- **ECDH-bound session-key handshake.** Drop-in replacement for
+  the current per-request `session_secret`; API surface
+  unchanged.
+- **Gemma 4 31B dense.** Dropped from v1 scope; revisit only if
+  a 64 GB SEV-SNP SKU becomes available. Architecture is
+  5:1 hybrid, W=1024, no PLE, ~5120 hidden — same protocol
+  primitives apply but the memory budget rules it out on
+  32 GB CVMs.
+
+---
+
+## 8. References
 
 - [`private-inference-comparison-framework.md`](private-inference-comparison-framework.md)
   (shared)
