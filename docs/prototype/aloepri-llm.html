@@ -1,0 +1,779 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>private-rag · generation (AloePri)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,300..900,0..100,0..1&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+<div class="sheet">
+  <span class="crosshair tl"></span>
+  <span class="crosshair tr"></span>
+  <span class="crosshair bl"></span>
+  <span class="crosshair br"></span>
+
+  <!-- ─── TOP NAV ─── -->
+  <nav class="topnav">
+    <a class="brand" href="index.html">
+      private-rag<span class="dot">·</span><span class="rev">prototype</span>
+    </a>
+    <div class="links">
+      <a href="index.html">Overview</a>
+      <a href="embedding.html">Embedding · GELO</a>
+      <a href="storage.html">Storage · CAPRISE</a>
+      <a href="reranking.html">Reranking · GELO</a>
+      <a href="graphrag.html">GraphRAG · Compass</a>
+      <a class="current" href="aloepri-llm.html">Generation · AloePri</a>
+    </div>
+  </nav>
+
+  <!-- ─── MASTHEAD ─── -->
+  <header class="masthead">
+    <div>
+      <h1 class="title">generation<br><em>· AloePri</em></h1>
+      <p class="subtitle">Generative inference without a TEE in the loop. The model is rewritten once, offline, into an obfuscated artifact that any unmodified vLLM / SGLang server can host. The trusted endpoint holds only a secret token-level permutation and the tokenizer — every prompt becomes a string of gibberish on the wire, and the server never learns it isn't English.</p>
+    </div>
+    <div class="colophon">
+      <div><b>protocol</b>&nbsp;&nbsp;AloePri covariant obfuscation (arXiv 2603.01499)</div>
+      <div><b>trust anchor</b>&nbsp;&nbsp;client process (no TEE required)</div>
+      <div><b>serving stack</b>&nbsp;&nbsp;vLLM / SGLang — unmodified API</div>
+      <div><b>target models</b>&nbsp;&nbsp;Gemma 4 E2B · E4B · (stretch) 31B dense</div>
+      <span class="rev">paper-claimed ≤ 3.5% accuracy loss · ≤ 15% TTRSR</span>
+    </div>
+  </header>
+
+  <!-- ─── HEADLINE STATS ─── -->
+  <div class="stat-strip">
+    <div class="stat">
+      <div class="k">paper TTRSR ceiling</div>
+      <div class="v"><em>&lt;15</em><span class="unit">%</span></div>
+      <div class="sub">VMA · IA · IMA · ISA on Qwen2.5-14B at α<sub>e</sub>=1.0, α<sub>h</sub>=0.2 (paper Table 2)</div>
+    </div>
+    <div class="stat">
+      <div class="k">paper accuracy loss</div>
+      <div class="v"><em>0 – 3.5</em><span class="unit">%</span></div>
+      <div class="sub">MMLU · IFEval · PIQA · HumanEval across Qwen / Llama / DeepSeek-V3.1-Terminus</div>
+    </div>
+    <div class="stat">
+      <div class="k">internal-dim expansion</div>
+      <div class="v"><em>d</em><span class="unit">→ d+2h</span></div>
+      <div class="sub">h=128 default · +10% on E4B · vLLM model class accepts shape-shifted weights</div>
+    </div>
+    <div class="stat">
+      <div class="k">online overhead</div>
+      <div class="v">≤10<span class="unit">% TPOT</span></div>
+      <div class="sub">paper claim · per-request work is one O(seq_len) token-ID permutation</div>
+    </div>
+  </div>
+
+  <!-- ═════ § 1 ROLE ═════ -->
+  <section id="role">
+    <header class="section-head">
+      <div class="section-num">§01</div>
+      <h2 class="section-title">Role in the project</h2>
+      <div class="section-meta">where this fits — TODO stub</div>
+    </header>
+    <p class="lede">
+      Generation is the post-retrieval LLM step in private RAG. After the reranker emits its <code>k_max</code>-item AES-GCM bundle, the client decrypts the top-<code>k_final</code> chunks and assembles a prompt for an LLM. AloePri is the route that lets that LLM live on commodity cloud GPUs without a TEE.
+    </p>
+    <div class="prose">
+      <p><strong>What this complements.</strong> Embedding, storage, and reranking all run inside a SEV-SNP CVM with a GELO-masked GPU offload (<a href="embedding.html">embedding</a>, <a href="storage.html">storage</a>, <a href="reranking.html">reranking</a>). Generation has a different cost shape: the model is 5–50× larger than the embedder, and decode is autoregressive, so per-token mask resampling and per-offload PCIe round-trips dominate wall-clock. AloePri sidesteps the cost curve by moving the entire forward pass to an untrusted server and shipping a one-time obfuscated artifact instead.</p>
+      <p><strong>What's traded.</strong> AloePri does not give the per-batch information-theoretic argument GELO provides. Its security is empirical: a static obfuscation, sized so published attacks (VMA, IA, ISA, IMA, NN, TFMA, SDA) recover under 15% of tokens at recommended hyperparameters. The deliberate trade is: accept a weaker but still-meaningful guarantee in exchange for compatibility with unmodified vLLM / SGLang and for scaling validated through 671B (DeepSeek-V3.1-Terminus, per paper).</p>
+      <p><strong>What's TODO.</strong> The downstream integration story — which retrieval shape, which prompt template, which token budget, which deployment topology the generation step sits in — is left as a stub. The protocol surface this page documents is the same regardless of how the surrounding RAG pipeline calls into it.</p>
+    </div>
+  </section>
+
+  <!-- ═════ § 2 DEFINITIONS ═════ -->
+  <section id="definitions">
+    <header class="section-head">
+      <div class="section-num">§02</div>
+      <h2 class="section-title">Definitions &amp; glossary</h2>
+      <div class="section-meta">terms specific to this page</div>
+    </header>
+
+    <table class="spec">
+      <thead>
+        <tr><th>Term</th><th>Meaning</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>AloePri</b></td>
+          <td>Lin et al., <em>Towards Privacy-Preserving LLM Inference via Covariant Obfuscation</em>, arXiv 2603.01499 (ByteDance / Nanjing University). The protocol this page implements.</td>
+        </tr>
+        <tr>
+          <td><b>Covariant obfuscation</b></td>
+          <td>Joint transform on input data and model weights such that the obfuscated model on obfuscated input produces obfuscated output equivalent to the plaintext pipeline. The "covariant" property is what makes the rewrite lossless: model accuracy is preserved exactly (up to noise terms <code>α<sub>e</sub>·ε</code>, <code>α<sub>h</sub>·ε</code> added for VMA defense).</td>
+        </tr>
+        <tr>
+          <td><b>τ (tau)</b></td>
+          <td>Secret token-level permutation sampled from <code>S<sub>n</sub></code>, where <code>n</code> is vocabulary size (262 144 for Gemma 4). Drawn once per deployment; held by the client; never leaves the trusted zone.</td>
+        </tr>
+        <tr>
+          <td><b>Π (Pi)</b></td>
+          <td>Permutation matrix corresponding to τ. Applied to the embedding (<code>Π·W<sub>embed</sub>*</code>) and model head (<code>W<sub>head</sub>*·Π<sup>T</sup></code>) during offline rewrite.</td>
+        </tr>
+        <tr>
+          <td><b>Z</b></td>
+          <td>Vocabulary mapping <code>Z = { V[i] ↦ V[τ(i)] }</code>. Used online to obfuscate input token IDs and de-obfuscate response token IDs.</td>
+        </tr>
+        <tr>
+          <td><b>P̂, Q̂ (key matrices)</b></td>
+          <td>Generated by paper Algorithm 1 from secret base matrices <code>(B, B<sup>-1</sup>, E, F, Z)</code>. Satisfy <code>P̂ · Q̂ = I<sub>d</sub></code>. <code>P̂</code> shape is <code>d × (d+2h)</code>; <code>Q̂</code> is <code>(d+2h) × d</code>. Adjacent layers' weights get right-multiplied by some <code>P̂</code> and left-multiplied by the matching <code>Q̂</code> so the cancellation runs through every forward pass.</td>
+        </tr>
+        <tr>
+          <td><b>Expansion size <code>h</code></b></td>
+          <td>Algorithm 1 hyperparameter. Internal hidden dim grows from <code>d</code> to <code>d+2h</code> inside each transformer block; residual-stream dim stays at <code>d</code>. Default <code>h=128</code>. Paper Figure 5 shows TPOT impact &lt;10% out to <code>h=512</code> on R1-Distill-14B.</td>
+        </tr>
+        <tr>
+          <td><b>R̂<sub>qk</sub>, Ĥ<sub>qk</sub>, Ẑ<sub>block</sub></b></td>
+          <td>Paper Algorithm 2 intra-head transforms applied to Q/K weights: 2D rotary obfuscation, 2-block scaling, and RoPE-block-wise permutation respectively. <code>Ẑ<sub>block</sub></code> is sampled by BlockPerm under a softmax decay tied to the RoPE base. Restricted to RoPE-rotated dims under p-RoPE.</td>
+        </tr>
+        <tr>
+          <td><b>Û<sub>vo</sub></b></td>
+          <td>Random invertible matrix applied to V (left of <code>W<sub>v</sub></code>) and inverted on O (right of <code>W<sub>o</sub></code>). Stops V activations from being a clean intermediate the server can attack.</td>
+        </tr>
+        <tr>
+          <td><b>τ<sub>kv</sub>, τ<sub>group</sub></b></td>
+          <td>Inter-head permutations from Algorithm 2 §5.2.3. <code>τ<sub>kv</sub></code> shuffles K/V heads; <code>τ<sub>group</sub></code> shuffles Q/O heads within each GQA group. Both are part of the same offline rewrite, with no per-request cost.</td>
+        </tr>
+        <tr>
+          <td><b>α<sub>e</sub>, α<sub>h</sub></b></td>
+          <td>Gaussian noise coefficients applied to embedding and head weights: <code>W̃<sub>embed</sub> = Π·(W<sub>e</sub> + α<sub>e</sub>·ε)·P̂<sub>embed</sub></code>. Default <code>α<sub>e</sub>=1.0, α<sub>h</sub>=0.2</code>. Paper §7.3: at <code>α<sub>e</sub>=0.5</code>, VMA jumps to &gt;30% recovery — these knobs matter.</td>
+        </tr>
+        <tr>
+          <td><b>PLE (Per-Layer Embeddings)</b></td>
+          <td>Gemma 3n / Gemma 4 E-series feature. Table of shape <code>[vocab × 256 × N<sub>layers</sub>]</code> indexed by <code>token_id</code>. The retrieved per-(layer, token) vector is projected to <code>d<sub>hidden</sub></code> and added into the residual at each block. Under AloePri the table itself is permuted along the vocabulary axis by τ.</td>
+        </tr>
+        <tr>
+          <td><b>p-RoPE</b></td>
+          <td>Proportional RoPE. Rotation applied to only the first <code>p · d<sub>head</sub></code> dims (Gemma 4 global layers use <code>p=0.25</code>). Forces R̂<sub>qk</sub> / Ĥ<sub>qk</sub> / Ẑ<sub>block</sub> to be identity on the non-rotated subset.</td>
+        </tr>
+        <tr>
+          <td><b>Hybrid attention</b></td>
+          <td>Gemma 4's interleaved local-sliding-window (W=512 on E2B/E4B) and global attention. Ratio 4:1 (E2B) or 5:1 (E4B). Both layer classes get the same AloePri attention obfuscation, but with separate RoPE-base config (10K local, 1M global).</td>
+        </tr>
+        <tr>
+          <td><b>K=V tying</b></td>
+          <td>Memory optimisation in Gemma 4 global layers where K and V share a single tensor. AloePri applies different transforms to K (rotary) vs V (Û<sub>vo</sub>), so K and V must be stored separately after offline rewrite. τ<sub>kv</sub> still permutes the two in lockstep.</td>
+        </tr>
+        <tr>
+          <td><b>Offline rewrite</b></td>
+          <td>One-shot client-side transform of plaintext weights into the obfuscated artifact. Reads <code>safetensors</code>, samples τ + all key matrices from a seed, writes <code>safetensors</code> + a <code>.key</code> file holding τ and Z. Per-model, not per-request.</td>
+        </tr>
+        <tr>
+          <td><b>TTRSR</b></td>
+          <td>Text Token Recovery Success Ratio. Fraction of original tokens an attacker recovers under a given attack. Lower = better privacy. Paper headline: TTRSR &lt;15% on the broadest attack suite at recommended hyperparameters.</td>
+        </tr>
+        <tr>
+          <td><b>VMA / IA / ISA / IMA / NN / TFMA / SDA</b></td>
+          <td>The seven attacks evaluated against AloePri. VMA / IA exploit plaintext-vs-obfuscated weight relationships; ISA / IMA / NN train inverters from observed internal states; TFMA / SDA exploit token-frequency patterns. The reference codebase ships them at <code>src/security_qwen/</code>.</td>
+        </tr>
+        <tr>
+          <td><b>RmDP</b></td>
+          <td>Rényi-metric Differential Privacy. Paper §6 definition: combines α-Rényi divergence with a metric on the token-sequence space. The framework used to prove AloePri's noise budget is strictly smaller than a data-only mechanism's at equal accuracy.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ═════ § 3 THREAT MODEL ═════ -->
+  <section id="threats">
+    <header class="section-head">
+      <div class="section-num">§03</div>
+      <h2 class="section-title">Threat model</h2>
+      <div class="section-meta">what each component sees · what it cannot</div>
+    </header>
+    <p class="lede">
+      The trust split here is fundamentally different from the GELO embedder / reranker. There is <em>no hardware-rooted trust anchor</em> in the loop: protection is structural (obfuscation hides the prompt) plus empirical (noise + key matrices defeat published recovery attacks). The trusted endpoint is just the client process that holds τ.
+    </p>
+
+    <table class="spec">
+      <thead>
+        <tr>
+          <th>Component</th>
+          <th>Trust</th>
+          <th>What it sees</th>
+          <th>What it does NOT see</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>User-side text</td><td>confidential</td><td>—</td><td>—</td></tr>
+        <tr>
+          <td>Client wrapper<br>(trusted zone)</td>
+          <td class="accent">trusted</td>
+          <td>plaintext prompt · plaintext response · τ · Z · tokenizer · seed used at offline rewrite</td>
+          <td>—</td>
+        </tr>
+        <tr>
+          <td>Network (TLS)</td>
+          <td>untrusted</td>
+          <td>obfuscated request string · obfuscated response string · request timing · request count</td>
+          <td>τ · Z · plaintext prompt or response</td>
+        </tr>
+        <tr>
+          <td>vLLM / SGLang server</td>
+          <td>untrusted</td>
+          <td>obfuscated weights θ̃ · obfuscated input token IDs (re-tokenised from the obfuscated string) · all internal activations · KV cache · obfuscated logits · sampled obfuscated output IDs</td>
+          <td>τ · Z · plaintext prompt or response · plaintext weights · the noise matrices ε used at offline rewrite</td>
+        </tr>
+        <tr>
+          <td>GPU / host operator</td>
+          <td>untrusted</td>
+          <td>same as the vLLM server (no further visibility differential — there is no TEE separating them)</td>
+          <td>same as the vLLM server</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p class="lede" style="margin-top:32px;">
+      Five empirical leaks the protocol forces a published attack to overcome, ranked by paper-reported attack strength.
+    </p>
+    <table class="spec">
+      <thead>
+        <tr><th>Leak channel</th><th>Attack class</th><th>Mitigation</th><th>Paper TTRSR ceiling</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>Plaintext-vs-obfuscated weight pair</b></td>
+          <td>VMA · IA</td>
+          <td>Embedding / head noise <code>α<sub>e</sub>·ε</code>, <code>α<sub>h</sub>·ε</code>; row+column permutation no longer recoverable via sort-then-match</td>
+          <td>&lt; 15% (α<sub>e</sub>=1.0); leaks &gt; 30% at α<sub>e</sub>=0.5</td>
+        </tr>
+        <tr>
+          <td><b>Internal-state inversion</b></td>
+          <td>ISA · IMA · NN</td>
+          <td>Two-side key matrices <code>Q̂ · W · P̂</code> on every weight; intra-head <code>R̂<sub>qk</sub></code>, <code>Ĥ<sub>qk</sub></code>, <code>Ẑ<sub>block</sub></code>, <code>Û<sub>vo</sub></code>; inter-head <code>τ<sub>kv</sub></code>, <code>τ<sub>group</sub></code></td>
+          <td>&lt; 15% on hidden states; attention scores get the inter-head permutation on top</td>
+        </tr>
+        <tr>
+          <td><b>Token-frequency statistics</b></td>
+          <td>TFMA · SDA</td>
+          <td>τ obfuscates token identity at the index level; cross-corpus frequency matching is the residual attack</td>
+          <td>Top-100 ≤ 20% even under distribution-aware adversary; BLEU-4 ≈ 2 on SDA</td>
+        </tr>
+        <tr>
+          <td><b>PLE gather addresses (Gemma 4 only)</b></td>
+          <td>TFMA variant (novel surface)</td>
+          <td>PLE table permuted along vocab axis by τ; per-(layer, position) gather observes <code>τ(token_id)</code>, not the plaintext token ID. Server sees a distribution over obfuscated indices — same TFMA argument, but with <code>N<sub>layers</sub></code>× the observation volume.</td>
+          <td>Not in paper; measured here. Open risk: TFMA may be more effective on PLE-equipped models than on Qwen-class baselines.</td>
+        </tr>
+        <tr>
+          <td><b>Per-request entropy</b></td>
+          <td>any future attack exploiting key reuse</td>
+          <td>None at the protocol level — τ, key matrices, and noise <code>ε</code> are sampled once at offline rewrite and reused across every request. The mitigation is the noise + key-matrix construction itself, not freshness.</td>
+          <td>This is the structural difference from GELO's per-batch fresh Haar mask. Accepted trade.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p class="lede" style="margin-top:24px;">
+      <em>Not covered.</em> Model architecture (the server can fingerprint Gemma 4 from layer count and tensor shapes — only the weights and token identities are obscured). Query rate and timing. Tokenizer roundtrip identity — if a custom tokenizer fails the lossless detok→retok property, the math breaks before security matters. Model-weight privacy — the client needs plaintext weights to perform the offline rewrite; AloePri does not protect the weights themselves from the client.
+    </p>
+  </section>
+
+  <!-- ═════ § 4 MODELS ═════ -->
+  <section id="models">
+    <header class="section-head">
+      <div class="section-num">§04</div>
+      <h2 class="section-title">Supported model architectures</h2>
+      <div class="section-meta">Gemma 4 family — text-generation only at v1</div>
+    </header>
+    <p class="lede">
+      The covariant-obfuscation construction is architecture-generic per paper §8, but every new architectural feature needs its own composition-theorem application. The list below is what's actually validated end-to-end, what's deferred, and what's structurally out of scope.
+    </p>
+
+    <table class="spec">
+      <thead>
+        <tr>
+          <th>Model</th>
+          <th>Effective · Raw</th>
+          <th>Layers · Hidden · Head</th>
+          <th>Attention</th>
+          <th>PLE</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>Gemma 4 E2B</b></td>
+          <td class="num">2.3B · 5.1B</td>
+          <td class="num">35 · 1536 · 256</td>
+          <td>hybrid 4:1, W=512, RoPE base 10K (local) / 1M (global)</td>
+          <td>262 144 × 256 × 35 ≈ 1.1 GB int8</td>
+          <td>Smallest scale; primary validation target.</td>
+        </tr>
+        <tr>
+          <td><b>Gemma 4 E4B</b> <span class="accent">(primary)</span></td>
+          <td class="num">4.5B · 8B</td>
+          <td class="num">42 · 2560 · 256</td>
+          <td>hybrid 5:1, W=512, K=V tied in global layers, p-RoPE p=0.25 in global</td>
+          <td>262 144 × 256 × 42 ≈ 1.3 GB int8</td>
+          <td>Headline scale. Exercises every Gemma-4-specific obfuscation deviation (K=V untie, p-RoPE-aware R̂<sub>qk</sub>, PLE permute).</td>
+        </tr>
+        <tr>
+          <td>Gemma 4 31B dense <span class="rev">stretch</span></td>
+          <td class="num">31B</td>
+          <td class="num">— · — · 256</td>
+          <td>hybrid 5:1, W=1024</td>
+          <td>none</td>
+          <td>Tests scaling. Memory ≈ 31 GB int8 fits comfortably in 64 GB host RAM. No PLE.</td>
+        </tr>
+        <tr>
+          <td>Gemma 4 26B A4B <span class="rev">deferred</span></td>
+          <td class="num">26B · 4B active</td>
+          <td class="num">— · — · 256</td>
+          <td>hybrid 5:1 + MoE 128-of-8, 3× shared expert</td>
+          <td>none</td>
+          <td>Requires CryptoMoE balanced-dispatch defense composed on top of AloePri. Separate research stream.</td>
+        </tr>
+        <tr>
+          <td>Multimodal (audio / vision encoders)</td>
+          <td>—</td>
+          <td>—</td>
+          <td>—</td>
+          <td>—</td>
+          <td>Out of scope at v1. Open question on per-modality attack classes (see <a href="../research/private-llm-inference-round-2.md">round-2 §D.9</a>).</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p class="lede" style="margin-top:32px;">
+      <strong>Why Gemma 4 specifically.</strong> Edge-class deployment target aligns with the project's hardware envelope (commodity Hetzner EPYC + consumer GPU pass-through; no H100-CC dependency). E2B → E4B is a clean 2× scaling axis on a single architecture family. PLE is the most interesting new surface in the post-Qwen LLM landscape — getting it right under AloePri is novel work.
+    </p>
+
+    <p class="lede" style="margin-top:16px;">
+      <strong>Architectural deviations from the AloePri paper.</strong> The paper evaluates Qwen2.5 / Qwen3 / Llama3 / DeepSeek — none of which has PLE, K=V tying, p-RoPE, or hybrid attention. Three Gemma-4-specific extensions to the construction:
+    </p>
+
+    <table class="spec" style="margin-top:8px;">
+      <thead>
+        <tr><th>Gemma 4 feature</th><th>AloePri impact</th><th>Resolution</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>K=V tying</b> in global layers</td>
+          <td>Algorithm 2 applies <code>R̂<sub>qk</sub>·Ĥ<sub>qk</sub><sup>-1</sup>·Ẑ<sub>block</sub><sup>η</sup></code> to K and <code>Û<sub>vo</sub></code> to V — different transforms, same tensor can't satisfy both</td>
+          <td>Untie K and V into separate tensors during offline rewrite. <code>τ<sub>kv</sub></code> still permutes them in lockstep. ~16% extra KV-cache memory on global layers (≈ 3% of total).</td>
+        </tr>
+        <tr>
+          <td><b>PLE table</b> on E-series</td>
+          <td>Token-ID-indexed gather per layer creates a per-(layer, position) access-pattern observable; not addressed by the paper</td>
+          <td>Permute the table along the vocab axis: <code>W̃<sub>PLE</sub>[i, :, ℓ] = W<sub>PLE</sub>[τ(i), :, ℓ]</code>. Per-layer projection matrix gets right-multiplied by the same <code>P̂<sub>ℓ</sub></code> used by the layer-ℓ attention block so the PLE contribution lands in the same obfuscated residual space.</td>
+        </tr>
+        <tr>
+          <td><b>p-RoPE</b> (p=0.25) in global layers</td>
+          <td>R̂<sub>qk</sub> = block-diag of 2D rotations across all <code>d<sub>head</sub>/2</code> RoPE blocks; only the first 25% of dims are actually rotated</td>
+          <td>R̂<sub>qk</sub> restricted to the rotated subset; Ĥ<sub>qk</sub> and Ẑ<sub>block</sub> likewise. Non-rotated subset gets the standard Q̂<sub>q</sub> / Q̂<sub>k</sub> left-multiplication only. BlockPerm's <code>rope_base</code>-dependent decay configured separately per local (10K) vs global (1M) layer.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ═════ § 5 COMPONENTS ═════ -->
+  <section id="components">
+    <header class="section-head">
+      <div class="section-num">§05</div>
+      <h2 class="section-title">Components</h2>
+      <div class="section-meta">six implementation units · two-sided</div>
+    </header>
+    <p class="lede">
+      Each card pairs <span class="mono">[component ↦ source ↦ what it secures ↦ trust side]</span>. Ordered by the lifecycle of a deployment: rewrite the model once → run the server → serve every request through the client wrapper.
+    </p>
+
+    <div class="cgrid">
+
+      <article class="card">
+        <span class="tag client">offline</span>
+        <h3>obfuscate_gemma4<span class="alias">python/aloepri :: rewriter</span></h3>
+        <p class="one">One-shot CLI that consumes plaintext Gemma 4 safetensors and emits the obfuscated artifact plus a <code>.key</code> file. Samples τ, generates every Algorithm-1 key matrix from a single seed, applies Algorithm 2 per attention layer, applies FFN / RMSNorm / embed / head obfuscation, writes the result. Runs once per (model, seed).</p>
+        <dl>
+          <dt>inputs</dt><dd>plaintext <code>config.json</code> + safetensors shards · seed · hyperparameters (λ, h, α<sub>e</sub>, α<sub>h</sub>, β, γ)</dd>
+          <dt>outputs</dt><dd>obfuscated safetensors with <code>hidden_size = d + 2h</code> · obfuscated <code>config.json</code> · <code>aloepri.key</code> (τ, Z, version tag)</dd>
+          <dt>key file</dt><dd>POSIX 0600, never logged, never transmitted. Loss = inability to use any prompt with this artifact.</dd>
+          <dt>parity test</dt><dd>For a fixed prompt, <code>logits(plaintext_model, x) ≈ logits(obfuscated_model, Z(x)) · P̂<sub>head</sub><sup>-1</sup></code> within <code>e<sub>C</sub><sup>AloePri</sup></code>; top-1 token agreement ≥ 0.97 on a held-out set.</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag gpu">server</span>
+        <h3>AloePriGemma4ForCausalLM<span class="alias">vllm-aloepri :: model</span></h3>
+        <p class="one">vLLM model class for the obfuscated Gemma 4. Inherits the stock <code>Gemma4ForCausalLM</code> forward graph; differs only in (a) accepting <code>hidden_size = d + 2h</code> from the obfuscated config, (b) routing K and V through separate buffers in global layers, (c) PLE gather + <code>P̂<sub>ℓ</sub></code>-aligned projection, (d) p-RoPE-aware attention kernel. Sampling, KV cache, paged attention, P/D split — all unmodified.</p>
+        <dl>
+          <dt>registration</dt><dd><code>ModelRegistry.register("aloepri-gemma4", AloePriGemma4ForCausalLM)</code> at import. <code>config.json</code>'s <code>model_type</code> drives selection.</dd>
+          <dt>delta-LoC vs stock</dt><dd>~600–900 lines: most of the rewrite is the attention forward and the PLE module. RMSNorm, residual, sampler, scheduler unchanged.</dd>
+          <dt>integration risk</dt><dd>vLLM mainline Gemma 4 support is the gating dependency. Fallback path is Gemma 3 (no PLE, no K=V — strictly easier).</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag client">client</span>
+        <h3>AloePriClient<span class="alias">python/aloepri :: client</span></h3>
+        <p class="one">The trusted-side wrapper. Holds τ, Z, and the tokenizer. Every <code>generate(prompt, …)</code> call: tokenize → map IDs through Z → <em>detokenize back to a string</em> → POST that string to vLLM as a normal prompt → tokenize the response string → map through Z<sup>-1</sup> → return plaintext.</p>
+        <dl>
+          <dt>endpoint</dt><dd><code>POST {VLLM_URL}/v1/completions</code> with <code>{"prompt": &lt;obfuscated text&gt;, ...}</code> — unmodified vLLM API.</dd>
+          <dt>roundtrip property</dt><dd>Asserts <code>tokenizer.encode(tokenizer.decode(ids)) == ids</code> per request as a sanity check; a failure indicates a tokenizer config drift and aborts the call rather than silently corrupting the prompt.</dd>
+          <dt>also Rust</dt><dd>Optional thin Rust crate <code>aloepri-client</code> for the existing <code>gelo-rag</code> ingestion path, so the trusted side stays in one language stack.</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag client">crypto</span>
+        <h3>KeyMaterial<span class="alias">python/aloepri :: key_material</span></h3>
+        <p class="one">The full set of secrets generated at offline rewrite. τ is the load-bearing element; the rest derive from a single seed and can be re-generated from it. Persisted as <code>aloepri.key</code> alongside the obfuscated model.</p>
+        <dl>
+          <dt>contents</dt><dd>seed (32 B) · τ (S<sub>262144</sub>, ≈ 1 MB) · Z (precomputed mapping table) · per-layer <code>(B, B<sup>-1</sup>, E, F, Z<sub>orth</sub>)</code> bases · ε noise matrices (optional — regenerable from seed)</dd>
+          <dt>scope</dt><dd>Lives in the client wrapper's process memory; backed to disk in 0600 mode; never crosses the trust boundary.</dd>
+          <dt>rotation</dt><dd>Compromise of the key file = compromise of every past and future prompt under this artifact. Rotation requires re-running the offline rewrite end-to-end and re-uploading the obfuscated model.</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag tee">eval</span>
+        <h3>attack-harness<span class="alias">evals/aloepri-attacks</span></h3>
+        <p class="one">The seven-attack benchmark from the AloePri reference codebase, lifted into a standalone harness and wired to consume snapshots from the trusted side of a running deployment. Re-runs published attacks (VMA, IA, ISA, IMA, NN, TFMA, SDA) against Gemma 4 obfuscated artifacts and reports per-attack TTRSR.</p>
+        <dl>
+          <dt>shared with</dt><dd>The GELO embedder + reranker use the same harness for their own attack-resistance benches — one corpus, one metric, one CI gate.</dd>
+          <dt>release-gate threshold</dt><dd>TTRSR ≤ 15% on each attack at the recommended hyperparameter set; regression vs the previous artifact triggers an alert.</dd>
+          <dt>open work</dt><dd>The PLE-aware TFMA variant (see §03) is novel to this deployment and needs new attack code, not just a port.</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag http">http</span>
+        <h3>/generate<span class="alias">aloepri-client :: api</span></h3>
+        <p class="one">Optional HTTP front of the client wrapper, for callers that prefer talking to a sidecar over linking a library. Same trust property as the in-process form — the sidecar holds τ, the rest of the application doesn't need to.</p>
+        <dl>
+          <dt>request</dt><dd><code>{ prompt, max_tokens, temperature, top_p, stop, ... }</code> — pass-through to vLLM's sampling params, with the <code>prompt</code> obfuscated en route.</dd>
+          <dt>response</dt><dd><code>{ text, finish_reason, usage }</code> — plaintext, decoded on the trusted side before return.</dd>
+          <dt>deployment</dt><dd>Localhost daemon, or an internal-VM sidecar in deployments where τ-holder isolation from the application is a useful operational property.</dd>
+        </dl>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ═════ § 6 COMPUTE FLOW ═════ -->
+  <section id="flow">
+    <header class="section-head">
+      <div class="section-num">§06</div>
+      <h2 class="section-title">Compute flow &amp; trust boundaries</h2>
+      <div class="section-meta">per-request — what crosses the wire · per-block — what the server actually computes</div>
+    </header>
+    <p class="lede">
+      Two figures. <strong>FIG. 03a</strong> traces one full request end-to-end, showing what is plaintext, what is obfuscated, and where the trust boundary sits. <strong>FIG. 03b</strong> traces one Gemma 4 transformer block on the server side — the entire block is in the untrusted zone, but the model is rewritten such that the server cannot interpret what it is processing.
+    </p>
+
+    <!-- ══════════ FIG. 03a — End-to-end request flow ══════════ -->
+    <div class="diagram-frame">
+      <div class="diagram-cap">
+        <span class="l">FIG. 03a — One request through AloePri · plaintext stays inside the trusted zone · only obfuscated text crosses the wire</span>
+        <span>navy = client (trusted) · gpu-tone = vLLM server (untrusted) · dashed amber = obfuscated wire payload</span>
+      </div>
+      <svg class="flow" viewBox="0 0 1320 720" xmlns="http://www.w3.org/2000/svg" role="img">
+        <defs>
+          <marker id="ahxflow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
+          </marker>
+        </defs>
+        <rect x="0"   y="40" width="700"  height="660" class="zone-band zone-band-client"/>
+        <rect x="700" y="40" width="620"  height="660" class="zone-band zone-band-gpu"/>
+        <text x="20"  y="64" class="zone-label">Trusted zone · client wrapper</text>
+        <text x="20"  y="80" class="zone-sublabel">holds τ · Z · tokenizer · no GPU · no TEE</text>
+        <text x="720" y="64" class="zone-label">Untrusted zone · vLLM server</text>
+        <text x="720" y="80" class="zone-sublabel">obfuscated weights θ̃ · unmodified API</text>
+        <line x1="700" y1="40" x2="700" y2="700" class="boundary"/>
+        <text x="704" y="696" class="boundary-label">HTTPS · obfuscated text only</text>
+
+        <!-- Step 1: plaintext prompt -->
+        <rect x="60" y="100" width="580" height="46" class="box box-client box-strong"/>
+        <text x="350" y="120" class="box-label" text-anchor="middle">① plaintext prompt</text>
+        <text x="350" y="138" class="box-mono" text-anchor="middle">"What is the capital of France?"</text>
+
+        <!-- Step 2: tokenize -->
+        <path d="M350 146 L350 162" class="arrow arrow-secret" marker-end="url(#ahxflow)"/>
+        <rect x="60" y="162" width="580" height="46" class="box box-client"/>
+        <text x="350" y="182" class="box-label" text-anchor="middle">② tokenize (local tokenizer)</text>
+        <text x="350" y="200" class="box-mono" text-anchor="middle">[3923, 374, 279, 6864, 315, 9822, 30]</text>
+
+        <!-- Step 3: Z-map -->
+        <path d="M350 208 L350 224" class="arrow arrow-secret" marker-end="url(#ahxflow)"/>
+        <rect x="60" y="224" width="580" height="46" class="box box-client"/>
+        <text x="350" y="244" class="box-label" text-anchor="middle">③ map each token ID through Z (τ permutation)</text>
+        <text x="350" y="262" class="box-mono" text-anchor="middle">[127483, 92, 18374, 5512, 99821, 274, 51827]</text>
+
+        <!-- Step 4: detokenize -->
+        <path d="M350 270 L350 286" class="arrow arrow-secret" marker-end="url(#ahxflow)"/>
+        <rect x="60" y="286" width="580" height="46" class="box box-client box-strong"/>
+        <text x="350" y="306" class="box-label" text-anchor="middle">④ detokenize obfuscated IDs back to a string</text>
+        <text x="350" y="324" class="box-mono" text-anchor="middle">" catalog]\n monstrous,| diplom ohne thread"</text>
+
+        <!-- ⑤ wire: POST to vLLM -->
+        <path d="M640 308 L1000 308" class="arrow arrow-masked" marker-end="url(#ahxflow)"/>
+        <text x="820" y="302" class="arrow-label masked">POST /v1/completions {"prompt": "…"}</text>
+
+        <!-- vLLM box -->
+        <rect x="780" y="340" width="460" height="160" class="box box-gpu box-strong"/>
+        <text x="1010" y="362" class="box-label" text-anchor="middle">⑤ vLLM server-side processing</text>
+        <text x="1010" y="382" class="box-mono" text-anchor="middle">tokenize obfuscated string</text>
+        <text x="1010" y="398" class="box-mono" text-anchor="middle">→ [127483, 92, 18374, …]</text>
+        <text x="1010" y="418" class="box-mono" text-anchor="middle">run obfuscated model θ̃</text>
+        <text x="1010" y="434" class="box-mono" text-anchor="middle">(see FIG. 03b for per-block detail)</text>
+        <text x="1010" y="454" class="box-mono" text-anchor="middle">sample obfuscated next tokens</text>
+        <text x="1010" y="470" class="box-mono" text-anchor="middle">detokenize → obfuscated response string</text>
+        <text x="1010" y="490" class="box-sub" text-anchor="middle" fill="#666">server never learns this isn't English</text>
+
+        <!-- ⑥ wire back -->
+        <path d="M1000 510 L640 510" class="arrow arrow-masked" marker-end="url(#ahxflow)"/>
+        <text x="820" y="504" class="arrow-label masked">HTTP 200 {"text": "…"}</text>
+
+        <!-- ⑦ response string -->
+        <rect x="60" y="490" width="580" height="46" class="box box-client box-strong"/>
+        <text x="350" y="510" class="box-label" text-anchor="middle">⑥ obfuscated response string</text>
+        <text x="350" y="528" class="box-mono" text-anchor="middle">" ferment quibble paris &lt;unk&gt; …"</text>
+
+        <!-- ⑧ tokenize + Z⁻¹ -->
+        <path d="M350 536 L350 552" class="arrow arrow-secret" marker-end="url(#ahxflow)"/>
+        <rect x="60" y="552" width="580" height="46" class="box box-client"/>
+        <text x="350" y="572" class="box-label" text-anchor="middle">⑦ tokenize · map through Z⁻¹ · detokenize</text>
+        <text x="350" y="590" class="box-mono" text-anchor="middle">obfuscated IDs → τ⁻¹ → plaintext IDs → text</text>
+
+        <!-- ⑨ plaintext response -->
+        <path d="M350 598 L350 614" class="arrow arrow-secret" marker-end="url(#ahxflow)"/>
+        <rect x="60" y="614" width="580" height="46" class="box box-client box-strong"/>
+        <text x="350" y="634" class="box-label" text-anchor="middle">⑧ plaintext response</text>
+        <text x="350" y="652" class="box-mono" text-anchor="middle">"Paris."</text>
+      </svg>
+    </div>
+
+    <p class="lede" style="margin-top:0; font-size:14px;">
+      <strong>Why the round-trip works.</strong> Steps ②③④ on the client and the server-side re-tokenisation in ⑤ are inverses if and only if the tokenizer is <em>round-trip-lossless</em>: <code>tokenizer.encode(tokenizer.decode(ids)) == ids</code> for every ID list the protocol produces. Gemma's SentencePiece is well-behaved on standard text, but byte-fallback tokens and special tokens (<code>&lt;bos&gt;</code>, <code>&lt;eos&gt;</code>, image / audio placeholders) need explicit fuzz coverage — the client wrapper asserts the property per request as a guard against silent corruption from a tokenizer-config drift.
+    </p>
+
+    <table class="spec" style="margin-top:32px;">
+      <thead>
+        <tr><th>Boundary</th><th>What crosses</th><th>What does not</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Trusted zone ↔ network</td>
+          <td>obfuscated prompt string · obfuscated response string · HTTPS metadata · request count · request timing</td>
+          <td>τ · Z · plaintext prompt · plaintext response · tokenizer config</td>
+        </tr>
+        <tr>
+          <td>Network ↔ vLLM server</td>
+          <td>same as above; vLLM sees its standard <code>prompt: str</code> input</td>
+          <td>same as above</td>
+        </tr>
+        <tr>
+          <td>vLLM server ↔ host / GPU</td>
+          <td>obfuscated weights θ̃ · all internal activations · KV cache · sampler state</td>
+          <td>nothing else — there is no further trust split inside the untrusted zone</td>
+        </tr>
+        <tr>
+          <td>Client wrapper ↔ rest of the trusted app</td>
+          <td>plaintext prompt in · plaintext response out · usage / finish-reason metadata</td>
+          <td>τ · Z · key material — the wrapper is the τ-holding boundary even on the trusted side</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <!-- ══════════ FIG. 03b — One Gemma 4 obfuscated block ══════════ -->
+    <div class="diagram-frame" style="margin-top:32px;">
+      <div class="diagram-cap">
+        <span class="l">FIG. 03b — One Gemma 4 transformer block on the server · same shape as plaintext Gemma 4 · every weight already absorbed an Algorithm-1 / Algorithm-2 transform</span>
+        <span>orange band = untrusted zone (entire block) · the block runs on commodity GPU with no protocol awareness</span>
+      </div>
+      <svg class="flow" viewBox="0 0 1320 940" xmlns="http://www.w3.org/2000/svg" role="img">
+        <defs>
+          <marker id="ahxblk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
+          </marker>
+        </defs>
+        <rect x="0" y="40" width="1320" height="900" class="zone-band zone-band-gpu"/>
+        <text x="20" y="64" class="zone-label">Untrusted zone · vLLM forward pass over θ̃</text>
+        <text x="20" y="80" class="zone-sublabel">all weights pre-multiplied by Q̂_· and post-multiplied by P̂_· · Π absorbed into embed + head · noise α_e·ε, α_h·ε baked into embed + head</text>
+
+        <!-- INPUT: residual stream in obfuscated space -->
+        <rect x="380" y="100" width="540" height="46" class="box box-gpu box-strong"/>
+        <text x="650" y="120" class="box-label" text-anchor="middle">H̃_in   shape (n, d) — in obfuscated residual space (right-multiplied by P̂_ℓ-1)</text>
+        <text x="650" y="138" class="box-mono" text-anchor="middle">residual stream is dim d; internal block dim is d+2h</text>
+
+        <!-- residual split -->
+        <path d="M650 146 L650 164" class="arrow arrow-secret" marker-end="url(#ahxblk)"/>
+        <circle cx="650" cy="166" r="4" fill="var(--ink)"/>
+
+        <!-- attention residual arc -->
+        <path d="M650 166 C 220 166, 200 380, 644 470" class="arrow" stroke="var(--client)" stroke-dasharray="3 2" fill="none" marker-end="url(#ahxblk)"/>
+        <text x="160" y="316" class="arrow-label attest" transform="rotate(-90 160 316)">residual (around Norm + sub-block)</text>
+
+        <!-- ① RMSNorm₁ (pre-LN) -->
+        <path d="M650 168 L650 184" class="arrow arrow-secret"/>
+        <rect x="500" y="184" width="300" height="34" class="box box-gpu box-strong"/>
+        <text x="650" y="206" class="box-label" text-anchor="middle">① RMSNorm₁   (pre-LN, weights obfuscated covariantly)</text>
+
+        <!-- PLE branch (E2B / E4B only) -->
+        <path d="M500 200 C 340 200, 320 230, 360 250" class="arrow arrow-secret" marker-end="url(#ahxblk)" stroke-dasharray="2 3"/>
+        <text x="240" y="216" class="arrow-label attest">PLE gather (E2B/E4B only)</text>
+        <rect x="200" y="250" width="280" height="60" class="box box-gpu"/>
+        <text x="340" y="270" class="box-label" text-anchor="middle">PLE: gather row τ(token_id) · ℓ</text>
+        <text x="340" y="288" class="box-mono" text-anchor="middle">W̃_PLE[τ(tok_id), :, ℓ] (vocab-axis permuted)</text>
+        <text x="340" y="302" class="box-mono" text-anchor="middle">project 256 → d via W̃_PLE_proj^ℓ · P̂_ℓ</text>
+
+        <!-- ② QKV (obfuscated) -->
+        <path d="M650 218 L650 234" class="arrow arrow-secret" marker-end="url(#ahxblk)"/>
+        <rect x="500" y="234" width="300" height="56" class="box box-gpu"/>
+        <text x="650" y="252" class="box-label" text-anchor="middle">② Q̃, K̃, Ṽ projections</text>
+        <text x="650" y="268" class="box-mono" text-anchor="middle">W̃_q = Q̂_q W_q R̂_qk Ĥ_qk Ẑ_block</text>
+        <text x="650" y="282" class="box-mono" text-anchor="middle">W̃_k = Q̂_k W_k R̂_qk Ĥ_qk^-1 Ẑ_block^η   ·   W̃_v = Q̂_v W_v Û_vo</text>
+
+        <!-- ③ RoPE -->
+        <path d="M650 290 L650 306" class="arrow arrow-secret" marker-end="url(#ahxblk)"/>
+        <rect x="500" y="306" width="300" height="48" class="box box-gpu"/>
+        <text x="650" y="324" class="box-label" text-anchor="middle">③ RoPE on Q̃, K̃ (p-RoPE in global layers)</text>
+        <text x="650" y="340" class="box-mono" text-anchor="middle">global: rotate first p·d_head dims, base 1M</text>
+        <text x="650" y="352" class="box-mono" text-anchor="middle">local: rotate all, base 10K, W=512 sliding window</text>
+
+        <!-- ④ Attention with K=V untied -->
+        <path d="M650 354 L650 370" class="arrow arrow-secret" marker-end="url(#ahxblk)"/>
+        <rect x="500" y="370" width="300" height="56" class="box box-gpu"/>
+        <text x="650" y="388" class="box-label" text-anchor="middle">④ GQA attention · inter-head perms applied</text>
+        <text x="650" y="404" class="box-mono" text-anchor="middle">softmax(Q̃ K̃^T / √d_head) Ṽ</text>
+        <text x="650" y="418" class="box-mono" text-anchor="middle">τ_kv shuffles K/V heads · τ_group shuffles Q/O groups · K,V stored separately in global layers</text>
+
+        <!-- ⑤ Output projection -->
+        <path d="M650 426 L650 442" class="arrow arrow-secret" marker-end="url(#ahxblk)"/>
+        <rect x="500" y="442" width="300" height="34" class="box box-gpu"/>
+        <text x="650" y="464" class="box-label" text-anchor="middle">⑤ Õ = attn · Û_vo^-1 · P̂_o   (lands in P̂_ℓ space)</text>
+
+        <!-- + merge 1 (PLE + residual + attn output) -->
+        <path d="M650 476 L650 488" class="arrow arrow-secret"/>
+        <path d="M340 310 C 340 480, 600 480, 642 488" class="arrow arrow-secret" marker-end="url(#ahxblk)" stroke-dasharray="2 3"/>
+        <circle cx="650" cy="490" r="9" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+        <text x="650" y="494" text-anchor="middle" font-size="13" font-weight="700">+</text>
+        <text x="690" y="494" class="arrow-label secret">+ residual + PLE</text>
+
+        <!-- FFN residual split -->
+        <path d="M650 498 L650 524" class="arrow arrow-secret" marker-end="url(#ahxblk)"/>
+        <circle cx="650" cy="526" r="4" fill="var(--ink)"/>
+        <path d="M650 526 C 220 526, 200 740, 644 798" class="arrow" stroke="var(--client)" stroke-dasharray="3 2" fill="none" marker-end="url(#ahxblk)"/>
+        <text x="160" y="660" class="arrow-label attest" transform="rotate(-90 160 660)">residual (around Norm + sub-block)</text>
+
+        <!-- ⑥ RMSNorm₂ -->
+        <path d="M650 528 L650 542" class="arrow arrow-secret"/>
+        <rect x="500" y="542" width="300" height="34" class="box box-gpu box-strong"/>
+        <text x="650" y="564" class="box-label" text-anchor="middle">⑥ RMSNorm₂   (pre-LN, weights obfuscated covariantly)</text>
+
+        <!-- ⑦ Gate ∥ Up (fork) -->
+        <path d="M650 576 L650 594" class="arrow arrow-secret"/>
+        <circle cx="650" cy="596" r="4" fill="var(--ink)"/>
+        <path d="M650 596 C 650 608, 540 608, 540 620" class="arrow arrow-secret" marker-end="url(#ahxblk)"/>
+        <path d="M650 596 C 650 608, 760 608, 760 620" class="arrow arrow-secret" marker-end="url(#ahxblk)"/>
+        <rect x="440" y="620" width="200" height="40" class="box box-gpu"/>
+        <text x="540" y="638" class="box-label" text-anchor="middle">⑦a W̃_gate = Q̂_· W_gate P̂_·</text>
+        <text x="540" y="654" class="box-mono" text-anchor="middle">obfuscated SwiGLU gate</text>
+        <rect x="660" y="620" width="200" height="40" class="box box-gpu"/>
+        <text x="760" y="638" class="box-label" text-anchor="middle">⑦b W̃_up = Q̂_· W_up P̂_·</text>
+        <text x="760" y="654" class="box-mono" text-anchor="middle">obfuscated SwiGLU up</text>
+
+        <!-- ⑧ SiLU + ⊙ -->
+        <path d="M540 660 L540 680" class="arrow arrow-secret" marker-end="url(#ahxblk)"/>
+        <rect x="470" y="680" width="140" height="32" class="box box-gpu"/>
+        <text x="540" y="700" class="box-label" text-anchor="middle">⑧ SiLU(gate)</text>
+        <path d="M760 660 L760 720" class="arrow arrow-secret" marker-end="url(#ahxblk)"/>
+        <path d="M540 712 C 540 728, 640 728, 642 736" class="arrow arrow-secret" marker-end="url(#ahxblk)"/>
+        <path d="M760 720 C 760 730, 660 730, 658 736" class="arrow arrow-secret" marker-end="url(#ahxblk)"/>
+        <circle cx="650" cy="744" r="9" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+        <text x="650" y="748" text-anchor="middle" font-size="13" font-weight="700">⊙</text>
+        <text x="690" y="748" class="arrow-label secret">silu(gate) ⊙ up</text>
+
+        <!-- ⑨ Down projection -->
+        <path d="M650 753 L650 770" class="arrow arrow-secret" marker-end="url(#ahxblk)"/>
+        <rect x="500" y="770" width="300" height="34" class="box box-gpu"/>
+        <text x="650" y="792" class="box-label" text-anchor="middle">⑨ W̃_down = Q̂_· W_down P̂_ℓ+1   (lands in next-layer P̂ space)</text>
+
+        <!-- + merge 2 -->
+        <path d="M650 804 L650 820" class="arrow arrow-secret"/>
+        <circle cx="650" cy="822" r="9" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+        <text x="650" y="826" text-anchor="middle" font-size="13" font-weight="700">+</text>
+
+        <!-- → next block -->
+        <path d="M650 832 L650 850" class="arrow arrow-secret" marker-end="url(#ahxblk)"/>
+        <text x="650" y="868" text-anchor="middle" font-size="11" fill="var(--ink-2)">→ next block (×34 or ×41) · final RMSNorm · W̃_head = Q̂_head · (W_h + α_h·ε) · Π^T</text>
+        <text x="650" y="884" text-anchor="middle" font-size="11" fill="var(--ink-2)">→ obfuscated logits over permuted vocab · sampler picks an obfuscated next-token ID · detokenize to obfuscated text · return</text>
+      </svg>
+    </div>
+
+    <p class="lede" style="margin-top:0; font-size:14px;">
+      <strong>What to look for between this and a stock Gemma 4 block.</strong>
+      ① <em>Same topology</em>: pre-LN RMSNorm, GQA attention, SwiGLU FFN, residual. vLLM's stock forward graph runs unchanged.
+      ② <em>Every weight tensor differs</em>: each weight has absorbed an Algorithm-1 left-multiplied Q̂ and a right-multiplied P̂ from the matching base set. The cancellation runs through the entire forward pass — <code>Q̂<sub>q</sub>·P̂<sub>previous_layer</sub> = I<sub>d</sub></code> means the obfuscation contributions to the inputs land back on the unit when they hit the next Q̂.
+      ③ <em>Three Gemma-specific deltas</em>: the PLE branch on E-series, the K=V untie + separate storage in global layers, and the p-RoPE-restricted R̂<sub>qk</sub> / Ĥ<sub>qk</sub> / Ẑ<sub>block</sub>.
+      ④ <em>No new ops</em>: there are no AloePri-specific kernels, no protocol-aware attention variant, no custom sampler. The entire scheme is "different numbers in the same matmuls."
+    </p>
+
+    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:32px 0 8px;">Where the obfuscation actually lives</h4>
+    <table class="spec">
+      <thead>
+        <tr><th>Layer / op</th><th>Plaintext form</th><th>Obfuscated form</th><th>Composition argument</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Embedding</td>
+          <td><code>W<sub>e</sub>[x, :]</code></td>
+          <td><code>(Π · (W<sub>e</sub> + α<sub>e</sub>·ε) · P̂<sub>embed</sub>)[τ(x), :]</code></td>
+          <td>Π row-permutes; P̂<sub>embed</sub> right-multiplies so output lands in P̂<sub>embed</sub> space; noise defeats VMA</td>
+        </tr>
+        <tr>
+          <td>RMSNorm</td>
+          <td><code>x · γ / ‖x‖<sub>RMS</sub></code></td>
+          <td>Covariant via paper §5.2.4: γ absorbs the Q̂ acting on the right-multiplication of the previous layer; norm is invariant under right-orthogonal action when applied within obfuscated space</td>
+          <td>Norm-preserving by construction; absorbing γ into the obfuscated weight chain is the point of the covariant property</td>
+        </tr>
+        <tr>
+          <td>Q / K / V projections</td>
+          <td><code>x · W<sub>q,k,v</sub></code></td>
+          <td>See Algorithm 2 §5.2.3 — intra-head <code>R̂<sub>qk</sub>, Ĥ<sub>qk</sub>, Ẑ<sub>block</sub>, Û<sub>vo</sub></code> applied; inter-head <code>τ<sub>kv</sub>, τ<sub>group</sub></code> permute heads</td>
+          <td>R̂<sub>qk</sub> is a rotation in RoPE-block space — commutes with RoPE; Ẑ<sub>block</sub> is a permutation of RoPE 2-blocks — softmax / dot-product invariant since both Q and K get permuted identically</td>
+        </tr>
+        <tr>
+          <td>Output projection</td>
+          <td><code>attn · W<sub>o</sub></code></td>
+          <td><code>(attn · Û<sub>vo</sub><sup>-1</sup>) · W<sub>o</sub> · P̂<sub>o</sub></code></td>
+          <td>Û<sub>vo</sub> cancels the V-side; P̂<sub>o</sub> lifts back into the layer's obfuscated residual space</td>
+        </tr>
+        <tr>
+          <td>FFN (gate / up / down)</td>
+          <td>standard SwiGLU</td>
+          <td>Each weight wrapped <code>Q̂ · W · P̂</code>; SiLU and Hadamard product commute with the elementwise key-matrix structure since Q̂ acts on the d-axis</td>
+          <td>Sequential composition theorem (paper §4.2.1) chains the Q̂ at gate / up's input with the P̂ at down's output; intermediate inflated dim absorbs the expansion <code>h</code></td>
+        </tr>
+        <tr>
+          <td>PLE gather (E-series)</td>
+          <td><code>W<sub>PLE</sub>[tok, :, ℓ]</code></td>
+          <td><code>(W<sub>PLE</sub>[τ<sup>-1</sup>(τ(tok)), :, ℓ]) · W̃<sub>PLE_proj</sub><sup>ℓ</sup></code> = same value, projected via <code>P̂<sub>ℓ</sub></code></td>
+          <td>Vocabulary-axis permutation is invariant under gather since the lookup key is permuted in lockstep; per-layer projection's right-mult P̂<sub>ℓ</sub> matches the residual-stream key</td>
+        </tr>
+        <tr>
+          <td>LM head</td>
+          <td><code>H<sub>final</sub> · W<sub>h</sub></code></td>
+          <td><code>(H̃<sub>final</sub> · Q̂<sub>head</sub>) · (W<sub>h</sub> + α<sub>h</sub>·ε) · Π<sup>T</sup></code></td>
+          <td>Q̂<sub>head</sub> cancels the residual stream's P̂; Π<sup>T</sup> obfuscates the output-vocabulary identity so the sampler picks τ(true_next_token); noise α<sub>h</sub>·ε defeats head-side VMA</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p class="prose" style="margin-top:24px;">
+      The composition theorems in paper §4.2 (sequential, parallel, summation) are what make this scheme work at scale: any DAG built from covariant-obfuscated nodes is itself covariant-obfuscated, with the obfuscation error bounded by the sum of per-component errors. That's why adding new layer types (PLE, hybrid attention, p-RoPE) is a per-component obfuscation derivation rather than a re-design of the whole protocol — each one is a leaf that the composition theorems lift into the full forward.
+    </p>
+  </section>
+
+  <footer class="colophon-foot">
+    <span class="rev">private-rag · prototype · generation · AloePri</span>
+  </footer>
+</div>
+</body>
+</html>

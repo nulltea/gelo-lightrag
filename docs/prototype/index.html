@@ -27,6 +27,7 @@
       <a href="storage.html">Storage · CAPRISE</a>
       <a href="reranking.html">Reranking · GELO</a>
       <a href="graphrag.html">GraphRAG · Compass</a>
+      <a href="aloepri-llm.html">Generation · AloePri</a>
     </div>
   </nav>
 
@@ -517,8 +518,21 @@
         </ul>
         <span class="arrow">read more</span>
       </a>
-      <a class="path-card" href="#hardware">
+      <a class="path-card" href="aloepri-llm.html">
         <div class="num">§F</div>
+        <h3>Generation · AloePri</h3>
+        <p class="tagline"><em>Forward-looking.</em> Second private-inference path for the generative LLM step, complementary to the GELO TEE-GPU stack. Model is rewritten once offline into an obfuscated artifact (covariant obfuscation, arXiv 2603.01499); any unmodified vLLM / SGLang server can host it; the trusted client wrapper holds only a secret token-level permutation τ and the tokenizer. Prompts cross the wire as gibberish text — vLLM never learns they aren't English. Trade vs GELO: no TEE required, scales to 671B per paper, in exchange for static obfuscation (TTRSR ≤ 15% empirical, not information-theoretic per-batch).</p>
+        <ul>
+          <li>target: Gemma 4 E2B / E4B (primary) · 31B dense (stretch)</li>
+          <li><code>obfuscate_gemma4</code> · offline weight rewriter · ~1 hour one-shot per model</li>
+          <li><code>AloePriGemma4ForCausalLM</code> · vLLM model class · accepts d → d+2h shape</li>
+          <li><code>AloePriClient</code> · trusted-side tokenize → τ-map → detokenize → POST wrapper</li>
+          <li>Gemma-specific deviations: K=V untie · PLE table vocab-axis permute · p-RoPE-aware R̂<sub>qk</sub></li>
+        </ul>
+        <span class="arrow">read more</span>
+      </a>
+      <a class="path-card" href="#hardware">
+        <div class="num">§G</div>
         <h3>Hardware</h3>
         <p class="tagline">AMD EPYC SEV-SNP for the TEE, commodity Vulkan GPU via VFIO passthrough for offload. No confidential-compute GPU needed — GELO masks make the GPU information-theoretically blind regardless.</p>
         <ul>
@@ -593,6 +607,7 @@
         <li><a href="storage.html">Storage · CAPRISE-at-rest</a> — production storage path · two-party HKDF</li>
         <li><a href="storage-remoterag.html">Storage · RemoteRAG</a> — alternative explored, not pursued</li>
         <li><a href="graphrag.html">GraphRAG · Compass</a> — shipped · Variant A · Ring-ORAM + XorMM under SEV-SNP · M0–M8.1 · benched</li>
+        <li><a href="aloepri-llm.html">Generation · AloePri</a> — forward-looking · obfuscated Gemma 4 served via unmodified vLLM · no TEE in the loop</li>
         <li><a href="caprise-two-party-kdf.md">CAPRISE two-party KDF spec</a> — Option 3 design + delivery</li>
       </ul>
     </div>
