@@ -22,6 +22,7 @@
 |---|---|
 | 2026-05-18 | Plan written. Pending kickoff. |
 | 2026-05-18 | Design choices locked: HF `transformers` is the M1.8 accuracy baseline; decode global attention uses the embedding-stack length-based auto-switch; fused permuted attention promoted from §7.2 deferred into v1 scope as M1.10; Gemma 4 31B stretch dropped from scope (revisit if a 64 GB SEV-SNP SKU becomes available). |
+| 2026-05-18 | M1.0 LLM-serving harness landed (commit `54d2c12`): `KvCache`, `causal_gqa_attention_cached`, `RopeTables::apply_at`, `forward::run_prefill` + `run_decode_step`, `generation::generate` (greedy). Decode-replay invariant test passes; full gelo-embedder + gelo-reranker suites still 100% green. |
 
 (Update this table at every weekly sync.)
 
