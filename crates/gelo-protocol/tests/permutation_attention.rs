@@ -651,6 +651,64 @@ fn empirical_direction_recovery_is_bounded() {
 }
 
 #[test]
+fn trait_method_cached_sigma_zero_matches_plaintext_executor() {
+    // Asymmetric Q × KV at decode shape (n_q=1, q_pos_offset=n_kv-1)
+    // and continuation-prefill shape (n_q small, q_pos_offset > 0).
+    // The InProcess masked path must produce bit-exact (f32 floor)
+    // output as the Plaintext baseline at σ=0.
+    let h = 4;
+    let d_head = 32;
+    let scale = 1.0 / (d_head as f32).sqrt();
+
+    for (n_q, n_kv) in [(1usize, 64usize), (4, 32), (8, 8)] {
+        let q_pos_offset = n_kv - n_q;
+        let mut rng = ChaCha20Rng::seed_from_u64(0xCACE_DECA ^ (n_q as u64 * 31 + n_kv as u64));
+        let q = random_q3(h, n_q, d_head, &mut rng);
+        let k = random_q3(h, n_kv, d_head, &mut rng);
+        let v = random_q3(h, n_kv, d_head, &mut rng);
+
+        let mut plain_exec = PlaintextExecutor::new(RayonCpuEngine::new());
+        let plain_out = plain_exec
+            .offload_attention_permuted_cached(
+                q.view(),
+                k.view(),
+                v.view(),
+                scale,
+                q_pos_offset,
+                gelo_protocol::attention::AttentionMask::Causal,
+            )
+            .unwrap();
+
+        let mut in_proc = InProcessTrustedExecutor::with_seed(
+            RayonCpuEngine::new(),
+            MaskSeed([42u8 ^ n_q as u8 ^ n_kv as u8; 32]),
+        )
+        .with_perm_attention(PermAttnConfig::DISABLED_NOISE);
+        let in_proc_out = in_proc
+            .offload_attention_permuted_cached(
+                q.view(),
+                k.view(),
+                v.view(),
+                scale,
+                q_pos_offset,
+                gelo_protocol::attention::AttentionMask::Causal,
+            )
+            .unwrap();
+
+        let drift = plain_out
+            .iter()
+            .zip(in_proc_out.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            drift < 1e-5,
+            "trait-method cached parity at σ=0 must hold to f32 floor: \
+             n_q={n_q} n_kv={n_kv} q_pos_offset={q_pos_offset} drift={drift}",
+        );
+    }
+}
+
+#[test]
 fn trait_method_causal_mask_matches_plaintext() {
     // With AttentionMask::Causal, the InProcessTrustedExecutor must
     // produce output equivalent to the PlaintextExecutor's causal

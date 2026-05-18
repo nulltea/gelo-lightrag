@@ -625,4 +625,88 @@ pub trait TrustedExecutor {
         }
         Ok(out)
     }
+
+    /// Cached-KV variant of [`Self::offload_attention_permuted`] for
+    /// the autoregressive generation shape. Same protocol semantics
+    /// (Amulet softmax-equivariance under fresh per-call permutations
+    /// + Hidden-No-More σ-noise) but allows `n_q ≤ n_kv` for the
+    /// decode / continuation-prefill case.
+    ///
+    /// `q_pos_offset` is the absolute position of Q row 0 in the
+    /// full sequence. Q row `i` is at absolute position
+    /// `q_pos_offset + i` and may attend to K rows `0..=(q_pos_offset
+    /// + i)`. For decode (`n_q = 1`, `q_pos_offset = n_kv − 1`) the
+    /// causal mask is a no-op.
+    ///
+    /// Shapes:
+    ///   q: `(num_heads, n_q,  d_head)`
+    ///   k: `(num_heads, n_kv, d_head)`
+    ///   v: `(num_heads, n_kv, d_head)`
+    ///   → `(num_heads, n_q,  d_head)`
+    ///
+    /// Default impl falls back to **plain** asymmetric multi-head
+    /// attention with explicit `-inf` causal mask — no privacy.
+    /// Real implementations override to call
+    /// `crate::attention::permuted_attention_cached` under the
+    /// executor's fresh-per-call RNG.
+    fn offload_attention_permuted_cached(
+        &mut self,
+        q: ArrayView3<f32>,
+        k: ArrayView3<f32>,
+        v: ArrayView3<f32>,
+        scale: f32,
+        q_pos_offset: usize,
+        mask: crate::attention::AttentionMask,
+    ) -> Result<Array3<f32>> {
+        let (h, n_q, d_head) = q.dim();
+        let n_kv = k.dim().1;
+        if n_q > n_kv {
+            return Err(anyhow!(
+                "offload_attention_permuted_cached: n_q ({n_q}) > n_kv ({n_kv})"
+            ));
+        }
+        if q_pos_offset + n_q > n_kv {
+            return Err(anyhow!(
+                "offload_attention_permuted_cached: q_pos_offset ({q_pos_offset}) + \
+                 n_q ({n_q}) must be ≤ n_kv ({n_kv})"
+            ));
+        }
+        let mut out = Array3::<f32>::zeros((h, n_q, d_head));
+        for hi in 0..h {
+            let qh = q.index_axis(Axis(0), hi);
+            let kh = k.index_axis(Axis(0), hi);
+            let vh = v.index_axis(Axis(0), hi);
+            let mut scores = qh.dot(&kh.t());
+            scores.mapv_inplace(|x| x * scale);
+            if let crate::attention::AttentionMask::Causal = mask {
+                for i in 0..n_q {
+                    let q_abs = q_pos_offset + i;
+                    for j in 0..n_kv {
+                        if j > q_abs {
+                            scores[(i, j)] = f32::NEG_INFINITY;
+                        }
+                    }
+                }
+            }
+            let mut probs = Array2::<f32>::zeros(scores.dim());
+            for r in 0..scores.nrows() {
+                let row = scores.row(r);
+                let m = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                let mut s = 0.0f32;
+                for (c, v) in row.iter().enumerate() {
+                    let e = (*v - m).exp();
+                    probs[(r, c)] = e;
+                    s += e;
+                }
+                if s > 0.0 {
+                    let inv = 1.0 / s;
+                    for c in 0..probs.ncols() {
+                        probs[(r, c)] *= inv;
+                    }
+                }
+            }
+            out.index_axis_mut(Axis(0), hi).assign(&probs.dot(&vh));
+        }
+        Ok(out)
+    }
 }

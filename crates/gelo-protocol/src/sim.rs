@@ -803,6 +803,36 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         })
     }
 
+    fn offload_attention_permuted_cached(
+        &mut self,
+        q: ArrayView3<f32>,
+        k: ArrayView3<f32>,
+        v: ArrayView3<f32>,
+        scale: f32,
+        q_pos_offset: usize,
+        mask: attention::AttentionMask,
+    ) -> Result<Array3<f32>> {
+        // Same protocol as the symmetric `offload_attention_permuted`
+        // (Amulet equivariance + Hidden-No-More σ-noise + F1+ in-TEE
+        // softmax) extended to `n_q ≤ n_kv` via two independent
+        // permutations sampled from `self.rng`. Used by the cached
+        // generation path (`decoder_block_cached`) on Global layers
+        // past the auto-switch threshold.
+        profile::time("gelo:perm_attention_cached", || {
+            attention::permuted_attention_cached(
+                &self.engine,
+                q,
+                k,
+                v,
+                scale,
+                q_pos_offset,
+                mask,
+                self.perm_attn,
+                &mut self.rng,
+            )
+        })
+    }
+
     fn provision_ple_table(&mut self, table: crate::ple::PleTable) -> Result<()> {
         // The table is shared by `Arc` across rayon worker clones; we
         // store it inside the trusted executor's owned state and never
