@@ -406,6 +406,27 @@ pub(crate) fn sample_permutation<R: RngCore>(n: usize, rng: &mut R) -> Vec<usize
 }
 
 /// Add `N(0, σ²·I)` noise to a 3D view element-wise.
+///
+/// On small tensors stays single-threaded scalar (rayon work-stealing
+/// has a ~100 μs fixed cost per call that doesn't amortise below
+/// ~32 K elements). On larger tensors — the Qwen3-class cached K
+/// shape `(num_heads, n_kv, d_head)` at decode time, ~4.2 M elements
+/// per layer — splits along the heads axis with **independent
+/// ChaCha20 streams seeded from the parent RNG**, parallelising
+/// across cores via rayon.
+///
+/// The seed-derivation step advances `rng` by `n_heads · 32 bytes`,
+/// so the parent stream state after the call is the same number of
+/// bytes consumed as the previous serial implementation would have
+/// consumed. Per-element noise distribution is unchanged (independent
+/// `N(0, σ²)` everywhere); only the cross-head correlation structure
+/// differs — which is invariant for HNM-class security arguments
+/// since the attack model is per-element / per-row, not cross-head.
+///
+/// Phase 4 diagnosis: the unoptimised scalar version dominated TPOT
+/// in the permuted_cached path at long n_kv (2.4 s/decode-step at
+/// n_kv = 2 048 on Qwen3-1.7B). This rewrite is the M1.10 follow-up
+/// (`docs/plans/m1-10-phase4-findings.md` §4.3).
 fn add_gaussian_3d_inplace<R: RngCore>(
     mut m: ndarray::ArrayViewMut3<'_, f32>,
     sigma: f32,
@@ -414,11 +435,46 @@ fn add_gaussian_3d_inplace<R: RngCore>(
     if sigma == 0.0 {
         return;
     }
-    let normal = StandardNormal;
-    for v in m.iter_mut() {
-        let z: f32 = normal.sample(rng);
-        *v += sigma * z;
+    // Below ~32 K elements, scalar serial wins (no rayon scheduling
+    // tax). Above that, parallelise across the heads axis.
+    const PARALLEL_THRESHOLD: usize = 32_768;
+    let total = m.shape().iter().product::<usize>();
+    if total < PARALLEL_THRESHOLD {
+        let normal = StandardNormal;
+        for v in m.iter_mut() {
+            let z: f32 = normal.sample(rng);
+            *v += sigma * z;
+        }
+        return;
     }
+
+    // Pre-derive one independent ChaCha20 seed per head from the
+    // parent RNG. Advances the parent RNG by `n_heads · 32 bytes`.
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha20Rng;
+    let n_heads = m.shape()[0];
+    let seeds: Vec<[u8; 32]> = (0..n_heads)
+        .map(|_| {
+            let mut s = [0u8; 32];
+            rng.fill_bytes(&mut s);
+            s
+        })
+        .collect();
+
+    // Rayon-parallel across heads. Each worker creates its own RNG
+    // from its pre-derived seed; no shared mutable state.
+    use ndarray::parallel::prelude::*;
+    m.axis_iter_mut(Axis(0))
+        .into_par_iter()
+        .enumerate()
+        .for_each(|(h, mut head_slice)| {
+            let mut local_rng = ChaCha20Rng::from_seed(seeds[h]);
+            let normal = StandardNormal;
+            for v in head_slice.iter_mut() {
+                let z: f32 = normal.sample(&mut local_rng);
+                *v += sigma * z;
+            }
+        });
 }
 
 /// Row-wise numerically stable softmax. `(n, m) → (n, m)`.
