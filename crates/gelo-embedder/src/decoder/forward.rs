@@ -256,12 +256,31 @@ fn decoder_block_cached(
     };
 
     // RoPE — rotate Q and K at absolute positions
-    // `q_pos_offset..q_pos_offset + n_q`. This is the load-bearing
-    // change vs the legacy block: decode-step Q/K rotate at the
-    // sequence's current tail, not at position 0.
+    // `q_pos_offset..q_pos_offset + n_q`. Per the Gemma 4 p-RoPE
+    // recipe: global layers rotate only the first `rotated_dim` of
+    // each head; local layers rotate the full head_dim. The dispatch
+    // mirrors the attention-class dispatch below.
     profile::time("tee:rope", || {
-        rope.apply_at(q_new.view_mut(), cfg.num_attention_heads, q_pos_offset);
-        rope.apply_at(k_new.view_mut(), cfg.num_key_value_heads, q_pos_offset);
+        let class = cfg.effective_attention_class(layer_idx as usize);
+        let rotated_dim = match (class, cfg.partial_rope) {
+            (AttentionClass::Global, Some(_)) => cfg.rotated_dim(),
+            // Local layers always rotate the full head_dim (Gemma 4
+            // spec). Models with `partial_rope = None` likewise use
+            // full rotation everywhere.
+            _ => cfg.head_dim_value(),
+        };
+        rope.apply_partial_at(
+            q_new.view_mut(),
+            cfg.num_attention_heads,
+            q_pos_offset,
+            rotated_dim,
+        );
+        rope.apply_partial_at(
+            k_new.view_mut(),
+            cfg.num_key_value_heads,
+            q_pos_offset,
+            rotated_dim,
+        );
     });
 
     // Append fresh K, V to the cache before attention so the kernel

@@ -513,6 +513,61 @@ fn hybrid_with_tight_window_diverges_at_hidden_state() {
 }
 
 #[test]
+fn partial_rope_diverges_from_full_rope() {
+    // p-RoPE on global layers must produce a different hidden state
+    // than full rotation. With a 6-layer 2:1 hybrid config and
+    // partial_rope=0.25 (rotated_dim = head_dim*0.25, snap-even), the
+    // global layers (li=2, 5) skip rotation on the last 75% of each
+    // head's dims. Compare vs the same weights with partial_rope=None.
+    let mut p_rope = gemma4_shaped_config(); // partial_rope = Some(0.25)
+    let mut full_rope = p_rope.clone();
+    full_rope.partial_rope = None;
+
+    let mut rng = ChaCha20Rng::from_seed([88u8; 32]);
+    let weights = Arc::new(synth_weights(&p_rope, &mut rng));
+    let rope = RopeTables::new(
+        p_rope.head_dim_value(),
+        p_rope.max_position_embeddings,
+        p_rope.rope_theta,
+    );
+
+    let prompt = vec![1u32, 2, 3, 4];
+
+    let mut engine_a = RayonCpuEngine::new();
+    provision_decoder(&weights, &p_rope, &mut engine_a);
+    let mut exec_a = PlaintextExecutor::new(engine_a);
+    let mut cache_a = KvCache::new(weights.layers.len(), prompt.len() + 4, p_rope.kv_dim());
+    let h_partial = forward::run_prefill(&p_rope, &weights, &rope, &mut exec_a, &prompt, &mut cache_a).unwrap();
+
+    let mut engine_b = RayonCpuEngine::new();
+    provision_decoder(&weights, &full_rope, &mut engine_b);
+    let mut exec_b = PlaintextExecutor::new(engine_b);
+    let mut cache_b = KvCache::new(weights.layers.len(), prompt.len() + 4, full_rope.kv_dim());
+    let h_full = forward::run_prefill(&full_rope, &weights, &rope, &mut exec_b, &prompt, &mut cache_b).unwrap();
+
+    // Used to silence the unused-variable warning if both configs ever
+    // happen to produce identical output (they should not for this
+    // synthetic — assertion below catches it).
+    let _ = (&p_rope, &full_rope);
+
+    let last = prompt.len() - 1;
+    let max_abs_diff: f32 = h_partial
+        .row(last)
+        .iter()
+        .zip(h_full.row(last).iter())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(
+        max_abs_diff > 1e-4,
+        "p-RoPE produced identical hidden state to full rotation \
+         (max abs diff = {max_abs_diff}) — partial_rope dispatch likely not wired",
+    );
+
+    // Silence "mutable but never mutated" if compiler complains.
+    let _ = &mut p_rope;
+}
+
+#[test]
 fn hybrid_decode_replay_invariant_holds() {
     // The M1.0 decode-replay invariant must still hold under hybrid
     // attention: greedy generate(prompt, k) → tokens t1..tk, and
