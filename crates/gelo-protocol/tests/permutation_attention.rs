@@ -699,3 +699,241 @@ fn trait_method_causal_mask_matches_plaintext() {
         "permuted causal mask must reproduce plain causal attention at σ=0: drift={drift}",
     );
 }
+
+// ---------------------------------------------------------------------------
+// M1.10.0.3 — Phase-0 regression: engine cannot recover π via the exact-zero
+// count attack on the softmax output. The F1+ resolution (in-TEE softmax +
+// soft causal mask -C = 30, replacing -∞) removes the trivial mask-pattern
+// leak. See docs/plans/m1-10-security-review.md.
+//
+// What this test DEFENDS:
+//   (a) Exact-zero count attack: if blocked positions softmax to exactly 0
+//       (-∞ mask), the per-row count of zeros equals (n - 1 - perm[i])
+//       and recovers π directly. F1+ uses -C = 30 so blocked positions
+//       softmax to ~exp(-30) ≈ 9.4e-14, not exact zero. This test asserts
+//       the captured tensor passed to the 2nd matmul_dynamic_batched
+//       (= probs in the permuted_attention flow) contains zero exact-zero
+//       entries per row.
+//   (b) Softmax-on-GPU leak: even with -C, sending the scaled+masked score
+//       tensor through `engine.softmax_batched` would expose the mask
+//       pattern at the input layer. F1+ keeps softmax in-TEE; this test
+//       asserts the engine's `softmax_batched` is NEVER invoked during a
+//       Causal-masked permuted_attention call.
+//
+// What this test does NOT cover (documented gap; F1++ is the follow-up):
+//   * Threshold-count attack — counting probs entries below some small
+//     threshold T (e.g. 1e-12) still recovers per-row blocked counts and
+//     hence π. The standard mitigation is to add small Gaussian noise to
+//     probs in-TEE before sending to GPU (σ ≈ 1e-6, comfortably below
+//     parity tolerance). Tracked as a follow-up in the security review.
+// ---------------------------------------------------------------------------
+
+use anyhow::Result;
+use gelo_protocol::WeightHandle;
+use gelo_protocol::attention as ga;
+use gelo_protocol::substrate::GpuOffloadEngine;
+use ndarray::ArrayView3;
+use std::sync::Mutex;
+
+/// Engine that wraps an honest `RayonCpuEngine` and records every input
+/// the engine sees from a `permuted_attention` forward pass. Used to
+/// run recovery attacks on the captured tensors.
+struct SpyEngine {
+    inner: Mutex<RayonCpuEngine>,
+    softmax_call_count: Mutex<usize>,
+    /// Captures every LHS tensor passed to `matmul_dynamic_batched`,
+    /// in call order. Call 0 is `Q · Kᵀ` (input: permuted noisy Q);
+    /// call 1 is `probs · V` (input: softmax output — the tensor the
+    /// exact-zero attack would target).
+    matmul_batched_lhs: Mutex<Vec<ndarray::Array3<f32>>>,
+}
+
+impl SpyEngine {
+    fn new() -> Self {
+        Self {
+            inner: Mutex::new(RayonCpuEngine::new()),
+            softmax_call_count: Mutex::new(0),
+            matmul_batched_lhs: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl GpuOffloadEngine for SpyEngine {
+    fn register_weight(&mut self, handle: WeightHandle, weight: ArrayView2<f32>) -> Result<()> {
+        self.inner.lock().unwrap().register_weight(handle, weight)
+    }
+    fn matmul(&self, handle: WeightHandle, input: ArrayView2<f32>) -> Result<ndarray::Array2<f32>> {
+        self.inner.lock().unwrap().matmul(handle, input)
+    }
+    fn matmul_dynamic(
+        &self,
+        lhs: ArrayView2<f32>,
+        rhs: ArrayView2<f32>,
+    ) -> Result<ndarray::Array2<f32>> {
+        self.inner.lock().unwrap().matmul_dynamic(lhs, rhs)
+    }
+    fn matmul_dynamic_batched(
+        &self,
+        lhs: ArrayView3<f32>,
+        rhs: ArrayView3<f32>,
+    ) -> Result<ndarray::Array3<f32>> {
+        self.matmul_batched_lhs.lock().unwrap().push(lhs.to_owned());
+        self.inner.lock().unwrap().matmul_dynamic_batched(lhs, rhs)
+    }
+    fn softmax_batched(&self, input: ArrayView3<f32>) -> Result<ndarray::Array3<f32>> {
+        *self.softmax_call_count.lock().unwrap() += 1;
+        self.inner.lock().unwrap().softmax_batched(input)
+    }
+}
+
+#[test]
+fn f1plus_softmax_runs_in_tee_not_on_engine() {
+    // M1.10.0.3 part (i): under F1+, the engine's softmax_batched
+    // MUST NOT be invoked by permuted_attention. Softmax runs in-TEE
+    // so the mask pattern (which the score+mask tensor would carry)
+    // never reaches the engine.
+    let h = 4;
+    let n = 32;
+    let d_head = 16;
+    let scale = 1.0 / (d_head as f32).sqrt();
+
+    let spy = SpyEngine::new();
+    let mut rng = ChaCha20Rng::seed_from_u64(0xF1A5_F1A5);
+    let q = random_q3(h, n, d_head, &mut rng);
+    let k = random_q3(h, n, d_head, &mut rng);
+    let v = random_q3(h, n, d_head, &mut rng);
+
+    let _ = ga::permuted_attention(
+        &spy,
+        q.view(),
+        k.view(),
+        v.view(),
+        scale,
+        ga::AttentionMask::Causal,
+        PermAttnConfig::HIDDEN_NO_MORE,
+        &mut rng,
+    )
+    .expect("permuted_attention through spy");
+
+    let softmax_calls = *spy.softmax_call_count.lock().unwrap();
+    assert_eq!(
+        softmax_calls, 0,
+        "F1+ resolution: engine.softmax_batched MUST NOT be invoked under \
+         Causal mask (softmax must run in-TEE). Observed {softmax_calls} calls.",
+    );
+
+    // Sanity: two matmul_dynamic_batched calls (Q·Kᵀ and probs·V) are expected.
+    let matmul_calls = spy.matmul_batched_lhs.lock().unwrap().len();
+    assert_eq!(
+        matmul_calls, 2,
+        "permuted_attention should issue exactly 2 batched matmul calls (Q·Kᵀ \
+         and probs·V); observed {matmul_calls}.",
+    );
+}
+
+#[test]
+fn f1plus_probs_have_no_exact_zeros_under_causal_mask() {
+    // M1.10.0.3 part (ii): the softmax output (= LHS of the 2nd
+    // batched matmul, = `probs` in permuted_attention) must contain
+    // zero exact-zero entries under F1+. With a `-∞` mask, blocked
+    // positions softmax to 0 exactly and trivially leak π via per-row
+    // exact-zero counting. With `-C = 30`, blocked positions softmax
+    // to ~exp(-30) ≈ 9.4e-14 — small but representable; the exact-zero
+    // attack yields no signal.
+    let h = 4;
+    let d_head = 16;
+    let scale = 1.0 / (d_head as f32).sqrt();
+
+    for n in [64usize, 256, 1024] {
+        let spy = SpyEngine::new();
+        let mut rng = ChaCha20Rng::seed_from_u64(0xCAFE_DAD_u64.wrapping_add(n as u64));
+        let q = random_q3(h, n, d_head, &mut rng);
+        let k = random_q3(h, n, d_head, &mut rng);
+        let v = random_q3(h, n, d_head, &mut rng);
+
+        let _ = ga::permuted_attention(
+            &spy,
+            q.view(),
+            k.view(),
+            v.view(),
+            scale,
+            ga::AttentionMask::Causal,
+            PermAttnConfig::HIDDEN_NO_MORE,
+            &mut rng,
+        )
+        .expect("permuted_attention through spy");
+
+        // 2nd matmul LHS = the softmax output (probs).
+        let captured = spy.matmul_batched_lhs.lock().unwrap();
+        assert_eq!(captured.len(), 2);
+        let probs = &captured[1];
+
+        // For each row across all heads, count exact zeros. Under F1+
+        // every row should have zero exact-zero entries (the soft mask
+        // produces ~1e-14, not 0). The original -∞ implementation
+        // would produce row-i count of (n - 1 - perm[i]) and trivially
+        // leak π via Spearman correlation.
+        let mut max_exact_zeros_per_row = 0usize;
+        for hi in 0..probs.shape()[0] {
+            for i in 0..probs.shape()[1] {
+                let row = probs.slice(ndarray::s![hi, i, ..]);
+                let zeros = row.iter().filter(|&&x| x == 0.0_f32).count();
+                if zeros > max_exact_zeros_per_row {
+                    max_exact_zeros_per_row = zeros;
+                }
+            }
+        }
+        assert_eq!(
+            max_exact_zeros_per_row, 0,
+            "F1+ resolution: probs must have no exact-zero entries (mask uses \
+             -C=30 not -∞). At n={n}, max exact zeros in any row = \
+             {max_exact_zeros_per_row}; this would leak π via exact-zero counting.",
+        );
+    }
+}
+
+#[test]
+fn f1plus_baseline_neg_inf_demonstration_only() {
+    // M1.10.0.3 part (iii): demonstration that the F1+ improvement is
+    // not vacuous. We simulate what would happen if we'd kept `-∞` as
+    // the mask: per-row exact-zero count perfectly recovers π. This is
+    // the attack F1+ is designed to defeat. The test asserts the
+    // attack SUCCEEDS on the `-∞` baseline (to lock in the threat as
+    // real), motivating the F1+ change above.
+    //
+    // We synthesise the baseline by directly building the softmax of a
+    // -∞-masked score tensor and running the attack on it; we do NOT
+    // exercise the production code with -∞ since the production code
+    // no longer admits that path.
+    let n = 64usize;
+    let mut rng = ChaCha20Rng::seed_from_u64(0xDEAD_C0DE);
+    let mut perm: Vec<usize> = (0..n).collect();
+    perm.shuffle(&mut rng);
+
+    // Build a single-head random score row with realistic magnitudes,
+    // then add -∞ at "blocked" positions per the permuted causal mask.
+    let mut scores = Array2::<f32>::from_shape_fn((n, n), |_| rng.random::<f32>() * 2.0 - 1.0);
+    for i in 0..n {
+        for j in 0..n {
+            if perm[j] > perm[i] {
+                scores[(i, j)] = f32::NEG_INFINITY;
+            }
+        }
+    }
+
+    let probs = softmax_rowwise(scores.view());
+    let mut recovered = vec![0usize; n];
+    for i in 0..n {
+        let row = probs.slice(ndarray::s![i, ..]);
+        let blocked = row.iter().filter(|&&x| x == 0.0_f32).count();
+        // perm[i] = n - 1 - blocked.
+        recovered[i] = n.saturating_sub(1).saturating_sub(blocked);
+    }
+
+    // Under -∞ this recovery is perfect.
+    assert_eq!(
+        recovered, perm,
+        "baseline -∞ leak demonstration: per-row exact-zero count should \
+         exactly recover π. This is the attack F1+'s -C mask removes.",
+    );
+}
