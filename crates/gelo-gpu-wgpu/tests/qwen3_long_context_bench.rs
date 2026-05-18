@@ -335,6 +335,33 @@ fn qwen3_1_7b_long_context_breakdown() -> Result<()> {
     provision_decoder_weights(&cfg_offload, &weights, &mut gpu_gelo)?;
     eprintln!("RSS after gpu_gelo provision: {}", fmt_gib(rss_bytes()));
 
+    // 3. gpu_gelo_permuted (M1.10 Phase 1 dispatch — permuted_cached
+    //    attention via F1+ in-TEE softmax + soft causal mask).
+    //    Use a separate config that forces the path on at every n_q
+    //    and disables OutAttnMult (cached path doesn't call it anyway,
+    //    but `perm_attention_enabled_for` consults the OutAttnMult
+    //    threshold as a tiebreaker; explicit disable makes the bench
+    //    cell unambiguous).
+    eprintln!("[gpu_gelo_permuted] provisioning (M1.10 Phase 1 permuted_cached path)...");
+    let mut cfg_permuted = cfg_offload.clone();
+    cfg_permuted.use_perm_attention = true;
+    cfg_permuted.perm_attention_min_seq_len = Some(0);
+    cfg_permuted.use_out_attn_mult = false;
+    let mut gpu_gelo_permuted = InProcessTrustedExecutor::with_seed(
+        gpu_root.clone_shared(),
+        MaskSeed::from_bytes([29u8; 32]),
+    );
+    // Hidden-No-More-class noise on Q/K under permutation;
+    // F1+ soft causal mask C=30 is enabled by default.
+    gpu_gelo_permuted.set_perm_attention(
+        gelo_protocol::PermAttnConfig::HIDDEN_NO_MORE,
+    );
+    provision_decoder_weights(&cfg_permuted, &weights, &mut gpu_gelo_permuted)?;
+    eprintln!(
+        "RSS after gpu_gelo_permuted provision: {}",
+        fmt_gib(rss_bytes())
+    );
+
     // Pre-build all prompts. Reused across both cells so the timing
     // measures protocol overhead, not tokenisation.
     let prompts: Vec<Vec<u32>> = PROMPT_LENGTHS
@@ -358,19 +385,28 @@ fn qwen3_1_7b_long_context_breakdown() -> Result<()> {
     let _ = time_generate(
         "warm_gelo", &cfg_offload, &weights, &rope, &mut gpu_gelo, warm_ids, 2,
     )?;
+    let _ = time_generate(
+        "warm_gelo_permuted",
+        &cfg_permuted,
+        &weights,
+        &rope,
+        &mut gpu_gelo_permuted,
+        warm_ids,
+        2,
+    )?;
     eprintln!("RSS after warmup: {}", fmt_gib(rss_bytes()));
 
-    // Measure — interleave (cell, length) pairs so system-wide noise
-    // (FS, thermal) hits both cells equivalently at each shape.
+    // Measure — interleave (cell, length) triples so system-wide noise
+    // (FS, thermal) hits all cells equivalently at each shape.
     eprintln!("[measure] timed generate({MAX_TOKENS}) per (cell, length)...");
-    let mut results: Vec<CellTiming> = Vec::with_capacity(PROMPT_LENGTHS.len() * 2);
+    let mut results: Vec<CellTiming> = Vec::with_capacity(PROMPT_LENGTHS.len() * 3);
     for (n_target, ids) in PROMPT_LENGTHS.iter().zip(prompts.iter()) {
         eprintln!("  --- n={n_target} ---");
         let r_plain = time_generate(
             "gpu_plain", &cfg_offload, &weights, &rope, &mut gpu_plain, ids, MAX_TOKENS,
         )?;
         eprintln!(
-            "    gpu_plain n={n_target}: TTFT {:.0} ms · TPOT {:.1} ms",
+            "    gpu_plain          n={n_target}: TTFT {:.0} ms · TPOT {:.1} ms",
             r_plain.ttft.as_secs_f64() * 1000.0,
             r_plain.decode_mean_ms(),
         );
@@ -378,12 +414,27 @@ fn qwen3_1_7b_long_context_breakdown() -> Result<()> {
             "gpu_gelo", &cfg_offload, &weights, &rope, &mut gpu_gelo, ids, MAX_TOKENS,
         )?;
         eprintln!(
-            "    gpu_gelo  n={n_target}: TTFT {:.0} ms · TPOT {:.1} ms",
+            "    gpu_gelo           n={n_target}: TTFT {:.0} ms · TPOT {:.1} ms",
             r_gelo.ttft.as_secs_f64() * 1000.0,
             r_gelo.decode_mean_ms(),
         );
+        let r_permuted = time_generate(
+            "gpu_gelo_permuted",
+            &cfg_permuted,
+            &weights,
+            &rope,
+            &mut gpu_gelo_permuted,
+            ids,
+            MAX_TOKENS,
+        )?;
+        eprintln!(
+            "    gpu_gelo_permuted  n={n_target}: TTFT {:.0} ms · TPOT {:.1} ms",
+            r_permuted.ttft.as_secs_f64() * 1000.0,
+            r_permuted.decode_mean_ms(),
+        );
         results.push(r_plain);
         results.push(r_gelo);
+        results.push(r_permuted);
     }
 
     eprintln!();
@@ -400,13 +451,16 @@ fn qwen3_1_7b_long_context_breakdown() -> Result<()> {
         "total (s)", "vs gpu_plain"
     );
     eprintln!("{}", "-".repeat(118));
-    for chunk in results.chunks_exact(2) {
+    for chunk in results.chunks_exact(3) {
         let plain = &chunk[0];
         let gelo = &chunk[1];
-        let overhead_pct =
+        let permuted = &chunk[2];
+        let gelo_overhead =
             100.0 * (gelo.total().as_secs_f64() / plain.total().as_secs_f64() - 1.0);
+        let permuted_overhead =
+            100.0 * (permuted.total().as_secs_f64() / plain.total().as_secs_f64() - 1.0);
         eprintln!(
-            "{:<14} {:>9} {:>11.1} {:>13.1} {:>11.1} {:>12.1} {:>15.3} {:>13}",
+            "{:<20} {:>9} {:>11.1} {:>13.1} {:>11.1} {:>12.1} {:>15.3} {:>13}",
             plain.cell,
             plain.n_prompt,
             plain.ttft.as_secs_f64() * 1000.0,
@@ -417,7 +471,7 @@ fn qwen3_1_7b_long_context_breakdown() -> Result<()> {
             "(base)",
         );
         eprintln!(
-            "{:<14} {:>9} {:>11.1} {:>13.1} {:>11.1} {:>12.1} {:>15.3} {:>+12.1}%",
+            "{:<20} {:>9} {:>11.1} {:>13.1} {:>11.1} {:>12.1} {:>15.3} {:>+12.1}%",
             gelo.cell,
             gelo.n_prompt,
             gelo.ttft.as_secs_f64() * 1000.0,
@@ -425,7 +479,18 @@ fn qwen3_1_7b_long_context_breakdown() -> Result<()> {
             gelo.decode_median_ms(),
             gelo.decode_stddev_ms(),
             gelo.total().as_secs_f64(),
-            overhead_pct,
+            gelo_overhead,
+        );
+        eprintln!(
+            "{:<20} {:>9} {:>11.1} {:>13.1} {:>11.1} {:>12.1} {:>15.3} {:>+12.1}%",
+            permuted.cell,
+            permuted.n_prompt,
+            permuted.ttft.as_secs_f64() * 1000.0,
+            permuted.decode_mean_ms(),
+            permuted.decode_median_ms(),
+            permuted.decode_stddev_ms(),
+            permuted.total().as_secs_f64(),
+            permuted_overhead,
         );
         eprintln!();
     }

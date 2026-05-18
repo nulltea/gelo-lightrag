@@ -242,20 +242,34 @@ same result as composed default within `1e-4`.
 This phase lands the dispatcher and validates correctness while the
 fused-kernel work in Phase 2 proceeds in parallel.
 
-### Phase 2 — Engine kernel (~3 weeks, the meat)
+### Phase 2 — ~~Engine kernel~~ **DEPRECATED 2026-05-18 post-F1+**
 
-**Decision criterion** (see §6): Option A (cubek-direct) if
-`cubek-attention` v0.1.1 API is stable enough at start of Phase 2;
-otherwise Option B (burn upstream PR); otherwise Option C (custom
-WGSL).
+> **Structural conflict with F1+.** Phase 2's `fused_attention_batched`
+> override takes a mask tensor and runs softmax internally on the GPU.
+> Under F1+ the causal mask **must not** be sent to the GPU and softmax
+> **must** run in-TEE — otherwise the score-input pattern reconstructs
+> π. Any fused-flash kernel that conforms to the existing trait
+> signature re-introduces exactly the leak F1+ closes. The four
+> candidate work-arounds (drop the mask argument and let the kernel
+> infer causality from `q_pos_offset` / pre-noise scores inside the
+> kernel / HE-mask under encrypted softmax / pattern-invariant mask
+> shapes) are all research-level — they either weaken the threat
+> model, require crypto we don't carry, or change model semantics.
+>
+> Under F1+ the GPU-side dispatch is **already optimal for our threat
+> model**: two `matmul_dynamic_batched` calls with in-TEE softmax
+> between them. There is no further "fusion" available without
+> giving back the security argument.
+>
+> Any future engine-side perf work on the M1.10 path lives outside
+> this milestone — likely re-scoped as "matmul kernel tuning"
+> (better cubek autotune entries for the shapes we actually
+> dispatch) rather than "fused attention." That re-scoping is
+> separate from M1.10 and tracked when the long-context bench
+> surfaces a matmul-perf bottleneck post-F1+.
 
-- M1.10.2.1 Engine override of `fused_attention_batched` in
-  `crates/gelo-gpu-wgpu/src/lib.rs`.
-- M1.10.2.2 Regression: `fused_attention_tests` (substrate.rs:222+)
-  passes with the override.
-- M1.10.2.3 Per-shape autotune entry in the cubecl `TuneCache` for
-  fused-attention shapes that occur in Qwen3-1.7B prefill at
-  n ∈ {256, 512, 1024, 2048, 4096}.
+The original Option A / B / C analysis in §6 below is preserved for
+historical reference but no longer load-bearing.
 
 ### Phase 3 — Auto-switch threshold tuning (~2 days)
 
@@ -273,7 +287,7 @@ WGSL).
   with auto-switch.
 - M1.10.4.2 Acceptance gate (§7).
 
-## 6. Engine kernel — three options
+## 6. ~~Engine kernel — three options~~ (historical, Phase 2 deprecated)
 
 Same A/B/C breakdown as `path-1-gelo-gemma.md` §M1.10, refreshed:
 
