@@ -767,3 +767,79 @@ fn overflow_max_position_embeddings_errors() {
     .unwrap_err();
     assert!(err.to_string().contains("max_position_embeddings"));
 }
+
+/// M1.10.1.3 — Parity test for the new `decoder_block_cached`
+/// permuted-attention dispatch. With `use_perm_attention = true` and
+/// `perm_attention_min_seq_len = Some(0)` (force the path on at any
+/// n_q ≥ 0), the cached prefill / decode loop routes Global-layer
+/// attention through `causal_gqa_attention_permuted_cached`. At
+/// `PermAttnConfig::DISABLED_NOISE` (σ = 0) the math is exact under
+/// the Amulet equivariance identity, so generated token sequences
+/// must match the in-TEE path bit-for-bit.
+#[test]
+fn permuted_cached_dispatch_at_sigma_zero_matches_in_tee() {
+    use gelo_protocol::rng::MaskSeed;
+    use gelo_protocol::{InProcessTrustedExecutor, PermAttnConfig};
+
+    let cfg_in_tee = tiny_decoder_config();
+    let mut cfg_permuted = cfg_in_tee.clone();
+    cfg_permuted.use_perm_attention = true;
+    cfg_permuted.perm_attention_min_seq_len = Some(0); // force permuted at every n_q
+    cfg_permuted.use_out_attn_mult = false; // disable OutAttnMult so perm wins
+
+    let mut rng = ChaCha20Rng::from_seed([23u8; 32]);
+    let weights = Arc::new(synth_weights(&cfg_in_tee, &mut rng));
+    let rope = RopeTables::new(
+        cfg_in_tee.head_dim_value(),
+        cfg_in_tee.max_position_embeddings,
+        cfg_in_tee.rope_theta,
+    );
+
+    let input_ids: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 0];
+
+    // Baseline: in-TEE attention via the existing cached path.
+    let mut e_in_tee = RayonCpuEngine::new();
+    provision_decoder(&weights, &cfg_in_tee, &mut e_in_tee);
+    let mut exec_in_tee = InProcessTrustedExecutor::with_seed(e_in_tee, MaskSeed([5u8; 32]));
+    exec_in_tee.set_perm_attention(PermAttnConfig::DISABLED_NOISE);
+    let out_in_tee = generate(
+        &cfg_in_tee,
+        &weights,
+        &rope,
+        &mut exec_in_tee,
+        &input_ids,
+        &GenerationConfig {
+            max_tokens: 6,
+            eos_token_ids: Vec::new(),
+            sampler: SamplerConfig::Greedy,
+        },
+    )
+    .unwrap();
+
+    // Permuted dispatch: same setup but `use_perm_attention = true`,
+    // threshold = 0. At σ = 0 the protocol is exact equivariance.
+    let mut e_permuted = RayonCpuEngine::new();
+    provision_decoder(&weights, &cfg_permuted, &mut e_permuted);
+    let mut exec_permuted = InProcessTrustedExecutor::with_seed(e_permuted, MaskSeed([5u8; 32]));
+    exec_permuted.set_perm_attention(PermAttnConfig::DISABLED_NOISE);
+    let out_permuted = generate(
+        &cfg_permuted,
+        &weights,
+        &rope,
+        &mut exec_permuted,
+        &input_ids,
+        &GenerationConfig {
+            max_tokens: 6,
+            eos_token_ids: Vec::new(),
+            sampler: SamplerConfig::Greedy,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        out_in_tee.tokens, out_permuted.tokens,
+        "M1.10.1.3: permuted_cached dispatch at σ=0 must emit byte-identical \
+         tokens to the in-TEE cached path. in_tee={:?} permuted={:?}",
+        out_in_tee.tokens, out_permuted.tokens,
+    );
+}

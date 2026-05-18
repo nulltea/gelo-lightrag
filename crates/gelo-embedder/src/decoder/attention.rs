@@ -300,6 +300,84 @@ pub fn causal_gqa_attention_cached(
     output
 }
 
+/// Permutation-shielded asymmetric causal GQA attention. Same shape
+/// contract as [`causal_gqa_attention_cached`] but offloads the heavy
+/// path (Q·Kᵀ, ·V) through the trusted executor's
+/// `offload_attention_permuted_cached`. Causal masking + softmax stay
+/// in-TEE per the F1+ resolution (see
+/// `docs/plans/m1-10-security-review.md`).
+///
+/// Engaged when `cfg.use_perm_attention && n_q ≥ perm_attention_threshold`
+/// on Global layers; the cost crossover is set by the same threshold
+/// the embedder path uses (default 64), since the per-call protocol
+/// overhead doesn't depend on n_kv — it's amortised by the Q·K^T
+/// matmul whose compute scales with n_q.
+pub fn causal_gqa_attention_permuted_cached(
+    exec: &mut impl TrustedExecutor,
+    q: ArrayView2<'_, f32>,
+    k: ArrayView2<'_, f32>,
+    v: ArrayView2<'_, f32>,
+    num_q_heads: usize,
+    num_kv_heads: usize,
+    head_dim: usize,
+    q_pos_offset: usize,
+) -> Result<Array2<f32>> {
+    assert!(num_q_heads >= num_kv_heads);
+    assert_eq!(num_q_heads % num_kv_heads, 0);
+    let group = num_q_heads / num_kv_heads;
+    let n_q = q.nrows();
+    let n_kv = k.nrows();
+    assert_eq!(v.nrows(), n_kv, "K and V must agree on n_kv");
+    assert!(
+        n_q + q_pos_offset <= n_kv,
+        "asymmetric attention: q_pos_offset {q_pos_offset} + n_q {n_q} > n_kv {n_kv}",
+    );
+    assert_eq!(q.ncols(), num_q_heads * head_dim);
+    assert_eq!(k.ncols(), num_kv_heads * head_dim);
+    assert_eq!(v.ncols(), num_kv_heads * head_dim);
+    let scale = 1.0_f32 / (head_dim as f32).sqrt();
+
+    // Reshape (n, num_q_heads · head_dim) → (num_q_heads, n, head_dim),
+    // GQA-replicating K/V so each Q head has its own KV-head view.
+    let (q3, k3, v3) = profile::time("tee:perm_attn_cached_pack", || {
+        let mut q3 = Array3::<f32>::zeros((num_q_heads, n_q, head_dim));
+        let mut k3 = Array3::<f32>::zeros((num_q_heads, n_kv, head_dim));
+        let mut v3 = Array3::<f32>::zeros((num_q_heads, n_kv, head_dim));
+        for qh in 0..num_q_heads {
+            let q_off = qh * head_dim;
+            let kvh = qh / group;
+            let kv_off = kvh * head_dim;
+            q3.index_axis_mut(Axis(0), qh)
+                .assign(&q.slice(ndarray::s![.., q_off..q_off + head_dim]));
+            k3.index_axis_mut(Axis(0), qh)
+                .assign(&k.slice(ndarray::s![.., kv_off..kv_off + head_dim]));
+            v3.index_axis_mut(Axis(0), qh)
+                .assign(&v.slice(ndarray::s![.., kv_off..kv_off + head_dim]));
+        }
+        (q3, k3, v3)
+    });
+
+    let out3 = exec.offload_attention_permuted_cached(
+        q3.view(),
+        k3.view(),
+        v3.view(),
+        scale,
+        q_pos_offset,
+        AttentionMask::Causal,
+    )?;
+
+    let mut output = Array2::<f32>::zeros((n_q, num_q_heads * head_dim));
+    profile::time("tee:perm_attn_cached_unpack", || {
+        for qh in 0..num_q_heads {
+            let q_off = qh * head_dim;
+            output
+                .slice_mut(ndarray::s![.., q_off..q_off + head_dim])
+                .assign(&out3.index_axis(Axis(0), qh));
+        }
+    });
+    Ok(output)
+}
+
 fn apply_asymmetric_causal_mask(scores: &mut Array2<f32>, q_pos_offset: usize) {
     // Score row `i` corresponds to Q absolute position `q_pos_offset + i`.
     // Mask out K columns strictly greater than that absolute position.

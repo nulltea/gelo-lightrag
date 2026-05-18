@@ -6,7 +6,8 @@ use gelo_protocol::{TrustedExecutor, WeightHandle, WeightKind};
 
 use super::attention::{
     causal_gqa_attention, causal_gqa_attention_cached, causal_gqa_attention_permuted,
-    causal_gqa_attention_swa_cached, causal_gqa_attention_with_offload,
+    causal_gqa_attention_permuted_cached, causal_gqa_attention_swa_cached,
+    causal_gqa_attention_with_offload,
 };
 use super::config::{AttentionClass, DecoderConfig};
 use super::kv_cache::KvCache;
@@ -352,22 +353,43 @@ fn decoder_block_cached(
                 window,
             )
         }),
-        AttentionClass::Global => profile::time("tee:attn_cached", || {
-            // v1 keeps global attention in-TEE under the locked design
-            // decision (see docs/plans/path-1-gelo-gemma.md M1.3). The
-            // OutAttnMult / permuted / fused-permuted paths land at
-            // M1.10; until then the in-TEE cached path is the
-            // correctness-first default at all context lengths.
-            causal_gqa_attention_cached(
-                q_new.view(),
-                k_cached,
-                v_cached,
-                cfg.num_attention_heads,
-                cfg.num_key_value_heads,
-                cfg.head_dim_value(),
-                q_pos_offset,
-            )
-        }),
+        AttentionClass::Global => {
+            // M1.10.1.2: route Global cached attention through the
+            // permutation-shielded path when the per-batch auto-switch
+            // engages. The threshold compares against `n_q` (number of
+            // NEW Q rows this forward) — at decode shape (n_q=1) the
+            // permuted overhead would dominate so we stay in-TEE; at
+            // prefill (n_q = n_prompt ≥ threshold) the permuted path
+            // engages. Falls back to in-TEE when offload=false or the
+            // master switch is off — the M1.3 default behaviour.
+            let n_q = q_new.shape()[0];
+            if offload && cfg.perm_attention_enabled_for(n_q) {
+                profile::time("tee:attn_permuted_cached", || {
+                    causal_gqa_attention_permuted_cached(
+                        exec,
+                        q_new.view(),
+                        k_cached,
+                        v_cached,
+                        cfg.num_attention_heads,
+                        cfg.num_key_value_heads,
+                        cfg.head_dim_value(),
+                        q_pos_offset,
+                    )
+                })?
+            } else {
+                profile::time("tee:attn_cached", || {
+                    causal_gqa_attention_cached(
+                        q_new.view(),
+                        k_cached,
+                        v_cached,
+                        cfg.num_attention_heads,
+                        cfg.num_key_value_heads,
+                        cfg.head_dim_value(),
+                        q_pos_offset,
+                    )
+                })
+            }
+        }
     };
 
     // Output projection — fresh mask per the per-offload protocol.
