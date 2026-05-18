@@ -248,6 +248,156 @@ pub fn permuted_attention<R: RngCore, E: GpuOffloadEngine + ?Sized>(
     Ok(out)
 }
 
+/// Asymmetric permutation-shielded attention for the cached-KV
+/// generation shape. Generalises [`permuted_attention`] to `n_q ≤ n_kv`
+/// by sampling **two independent** row permutations — one over the
+/// Q axis (`π_q ∈ S_{n_q}`), one over the K/V axis
+/// (`π_kv ∈ S_{n_kv}`) — and applying the asymmetric Amulet identity:
+///
+/// ```text
+///   softmax(πQ·Q · (πKV·K)ᵀ · /√d + M_perm) · πKV·V
+///   = πQ · softmax(Q·Kᵀ/√d + M_orig) · V
+/// ```
+///
+/// where `M_perm[i,j] = M_orig[πQ(i), πKV(j)]` and the original
+/// causal mask is
+/// `M_orig[i,j] = 0 if j ≤ q_pos_offset + i else -∞` (replaced by
+/// `-cfg.causal_mask_neg` under F1+).
+///
+/// Shapes:
+///   q: `(num_heads, n_q,  d_head)`
+///   k: `(num_heads, n_kv, d_head)`
+///   v: `(num_heads, n_kv, d_head)`
+///   → `(num_heads, n_q,  d_head)`
+///
+/// `q_pos_offset` is the absolute position of Q row 0 in the full
+/// sequence. Q row `i` then attends to K rows `0..=(q_pos_offset + i)`.
+/// For decode (`n_q = 1`, `q_pos_offset = n_kv − 1`) the mask is a
+/// no-op (every Q row sees every K row); the function still samples
+/// `π_q ∈ S_1` (trivial) and `π_kv ∈ S_{n_kv}` so the engine sees
+/// row-permuted K/V uniformly.
+///
+/// Engine usage (F1+ — same as [`permuted_attention`]):
+/// - `matmul_dynamic_batched` for `(πQ·Q + η_Q)(πKV·K + η_K)ᵀ`
+/// - **in-TEE** row-wise softmax — keeps the causal mask off the GPU
+/// - `matmul_dynamic_batched` for `probs · πKV·V`
+pub fn permuted_attention_cached<R: RngCore, E: GpuOffloadEngine + ?Sized>(
+    engine: &E,
+    q: ArrayView3<'_, f32>,
+    k: ArrayView3<'_, f32>,
+    v: ArrayView3<'_, f32>,
+    scale: f32,
+    q_pos_offset: usize,
+    mask: AttentionMask,
+    cfg: PermAttnConfig,
+    rng: &mut R,
+) -> Result<Array3<f32>> {
+    let (num_heads, n_q, d_head) = q.dim();
+    let n_kv = k.dim().1;
+    if k.dim() != (num_heads, n_kv, d_head) {
+        return Err(anyhow::anyhow!(
+            "permuted_attention_cached: K shape {:?} expected {:?}",
+            k.dim(),
+            (num_heads, n_kv, d_head)
+        ));
+    }
+    if v.dim() != (num_heads, n_kv, d_head) {
+        return Err(anyhow::anyhow!(
+            "permuted_attention_cached: V shape {:?} expected {:?}",
+            v.dim(),
+            (num_heads, n_kv, d_head)
+        ));
+    }
+    if n_q > n_kv {
+        return Err(anyhow::anyhow!(
+            "permuted_attention_cached: n_q ({n_q}) cannot exceed n_kv ({n_kv})"
+        ));
+    }
+    if q_pos_offset + n_q > n_kv {
+        return Err(anyhow::anyhow!(
+            "permuted_attention_cached: q_pos_offset ({q_pos_offset}) + n_q ({n_q}) \
+             must be ≤ n_kv ({n_kv})"
+        ));
+    }
+
+    // Two independent permutations for the asymmetric case.
+    let perm_q = sample_permutation(n_q, rng);
+    let perm_kv = sample_permutation(n_kv, rng);
+
+    // Permute Q on its (n_q) axis, K/V on their (n_kv) axis.
+    let mut q_perm = Array3::<f32>::zeros((num_heads, n_q, d_head));
+    let mut k_perm = Array3::<f32>::zeros((num_heads, n_kv, d_head));
+    let mut v_perm = Array3::<f32>::zeros((num_heads, n_kv, d_head));
+    for h in 0..num_heads {
+        let qh = q.index_axis(Axis(0), h);
+        let kh = k.index_axis(Axis(0), h);
+        let vh = v.index_axis(Axis(0), h);
+        for (i, &src) in perm_q.iter().enumerate() {
+            q_perm.slice_mut(s![h, i, ..]).assign(&qh.row(src));
+        }
+        for (i, &src) in perm_kv.iter().enumerate() {
+            k_perm.slice_mut(s![h, i, ..]).assign(&kh.row(src));
+            v_perm.slice_mut(s![h, i, ..]).assign(&vh.row(src));
+        }
+    }
+
+    // Hidden-No-More-class additive noise on Q, K only.
+    if cfg.noise_sigma > 0.0 {
+        add_gaussian_3d_inplace(q_perm.view_mut(), cfg.noise_sigma, rng);
+        add_gaussian_3d_inplace(k_perm.view_mut(), cfg.noise_sigma, rng);
+    }
+
+    let kt_perm_view = k_perm.view().permuted_axes([0, 2, 1]);
+    let mut scores = engine.matmul_dynamic_batched(q_perm.view(), kt_perm_view)?;
+    scores.mapv_inplace(|x| x * scale);
+
+    // Apply asymmetric permuted causal mask in-TEE. Shape (n_q, n_kv).
+    // Original: mask_orig[i, j] = -C if j > q_pos_offset + i else 0.
+    // Permuted: mask_perm[i, j] = mask_orig[perm_q[i], perm_kv[j]]
+    //                           = -C if perm_kv[j] > q_pos_offset + perm_q[i] else 0.
+    if let AttentionMask::Causal = mask {
+        let neg = -cfg.causal_mask_neg;
+        let mut mask_mat = Array2::<f32>::zeros((n_q, n_kv));
+        for i in 0..n_q {
+            let q_abs = q_pos_offset + perm_q[i];
+            for j in 0..n_kv {
+                if perm_kv[j] > q_abs {
+                    mask_mat[(i, j)] = neg;
+                }
+            }
+        }
+        for h in 0..num_heads {
+            for i in 0..n_q {
+                for j in 0..n_kv {
+                    scores[(h, i, j)] += mask_mat[(i, j)];
+                }
+            }
+        }
+    }
+
+    // F1+ in-TEE softmax. Same reasoning as `permuted_attention`.
+    let mut probs = Array3::<f32>::zeros((num_heads, n_q, n_kv));
+    for h in 0..num_heads {
+        let scores_h = scores.index_axis(Axis(0), h);
+        let probs_h = softmax_rowwise(scores_h);
+        probs.index_axis_mut(Axis(0), h).assign(&probs_h);
+    }
+    let _ = engine; // kept in signature for the second GPU call
+
+    let out_perm = engine.matmul_dynamic_batched(probs.view(), v_perm.view())?;
+
+    // Recovery via π_q⁻¹ on the Q axis.
+    let mut out = Array3::<f32>::zeros((num_heads, n_q, d_head));
+    for h in 0..num_heads {
+        for (i, &src) in perm_q.iter().enumerate() {
+            out.slice_mut(s![h, src, ..])
+                .assign(&out_perm.slice(s![h, i, ..]));
+        }
+    }
+
+    Ok(out)
+}
+
 /// Sample a fresh row permutation π ∈ S_n.
 pub(crate) fn sample_permutation<R: RngCore>(n: usize, rng: &mut R) -> Vec<usize> {
     let mut perm: Vec<usize> = (0..n).collect();
@@ -397,6 +547,238 @@ mod tests {
         assert!(
             drift < 5e-2,
             "σ=0.01 multi-head drift should stay below 5e-2 elementwise: drift={drift}",
+        );
+    }
+
+    /// Plain reference for the asymmetric (cached-KV) shape:
+    /// `softmax(Q · Kᵀ / √d + M_orig) · V` per head, where the
+    /// original causal mask blocks K positions beyond
+    /// `q_pos_offset + q_row`. Used to validate
+    /// `permuted_attention_cached` against an unpermuted baseline.
+    fn plain_multi_head_attention_cached(
+        q: ArrayView3<'_, f32>,
+        k: ArrayView3<'_, f32>,
+        v: ArrayView3<'_, f32>,
+        scale: f32,
+        q_pos_offset: usize,
+        causal: bool,
+    ) -> Array3<f32> {
+        let (h, n_q, d) = q.dim();
+        let n_kv = k.dim().1;
+        let mut out = Array3::<f32>::zeros((h, n_q, d));
+        for hi in 0..h {
+            let qh = q.index_axis(Axis(0), hi);
+            let kh = k.index_axis(Axis(0), hi);
+            let vh = v.index_axis(Axis(0), hi);
+            let mut scores = qh.dot(&kh.t());
+            scores.mapv_inplace(|x| x * scale);
+            if causal {
+                for i in 0..n_q {
+                    let q_abs = q_pos_offset + i;
+                    for j in 0..n_kv {
+                        if j > q_abs {
+                            scores[(i, j)] = f32::NEG_INFINITY;
+                        }
+                    }
+                }
+            }
+            let probs = softmax_rowwise(scores.view());
+            out.index_axis_mut(Axis(0), hi).assign(&probs.dot(&vh));
+        }
+        out
+    }
+
+    #[test]
+    fn permuted_attention_cached_matches_full_prefill_at_sigma_zero() {
+        // n_q = n_kv, q_pos_offset = 0: should match the symmetric
+        // permuted_attention's input regime (full prefill). σ=0 forces
+        // bit-exact equivariance.
+        let h = 4;
+        let n = 16;
+        let d = 32;
+        let scale = 1.0 / (d as f32).sqrt();
+        let mut rng = ChaCha20Rng::seed_from_u64(0xC4C4_E0E0);
+        let q = random_q3(h, n, d, &mut rng);
+        let k = random_q3(h, n, d, &mut rng);
+        let v = random_q3(h, n, d, &mut rng);
+        let engine = RayonCpuEngine::new();
+
+        let plain =
+            plain_multi_head_attention_cached(q.view(), k.view(), v.view(), scale, 0, true);
+        let out = permuted_attention_cached(
+            &engine,
+            q.view(),
+            k.view(),
+            v.view(),
+            scale,
+            0,
+            AttentionMask::Causal,
+            PermAttnConfig::DISABLED_NOISE,
+            &mut rng,
+        )
+        .unwrap();
+
+        let drift = (&plain - &out)
+            .iter()
+            .map(|x| x.abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            drift < 1e-5,
+            "σ=0 cached prefill equivariance must be bit-exact: drift={drift}",
+        );
+    }
+
+    #[test]
+    fn permuted_attention_cached_decode_shape_matches_plain() {
+        // n_q = 1, q_pos_offset = n_kv - 1: the typical decode-step
+        // shape where one new query attends to the full cache. The
+        // causal mask is a no-op (every kv position is allowed).
+        let h = 4;
+        let d = 32;
+        let scale = 1.0 / (d as f32).sqrt();
+
+        for n_kv in [8usize, 64, 256] {
+            let mut rng = ChaCha20Rng::seed_from_u64(0xDEC0_DE00 ^ n_kv as u64);
+            let q = random_q3(h, 1, d, &mut rng);
+            let k = random_q3(h, n_kv, d, &mut rng);
+            let v = random_q3(h, n_kv, d, &mut rng);
+            let engine = RayonCpuEngine::new();
+
+            let q_pos_offset = n_kv - 1;
+            let plain = plain_multi_head_attention_cached(
+                q.view(), k.view(), v.view(), scale, q_pos_offset, true,
+            );
+            let out = permuted_attention_cached(
+                &engine,
+                q.view(),
+                k.view(),
+                v.view(),
+                scale,
+                q_pos_offset,
+                AttentionMask::Causal,
+                PermAttnConfig::DISABLED_NOISE,
+                &mut rng,
+            )
+            .unwrap();
+
+            let drift = (&plain - &out)
+                .iter()
+                .map(|x| x.abs())
+                .fold(0.0f32, f32::max);
+            assert!(
+                drift < 1e-5,
+                "decode-shape (n_q=1, n_kv={n_kv}) must be bit-exact at σ=0: drift={drift}",
+            );
+        }
+    }
+
+    #[test]
+    fn permuted_attention_cached_partial_prefill_at_sigma_zero() {
+        // Continuation-prefill shape: n_q small, q_pos_offset > 0.
+        // Realistic case for the second turn of a chat where the
+        // cache already holds prior turns.
+        let h = 4;
+        let d = 32;
+        let scale = 1.0 / (d as f32).sqrt();
+
+        let n_q = 4;
+        let n_kv = 16;
+        let q_pos_offset = n_kv - n_q;
+        let mut rng = ChaCha20Rng::seed_from_u64(0xBEEF_C0DE);
+        let q = random_q3(h, n_q, d, &mut rng);
+        let k = random_q3(h, n_kv, d, &mut rng);
+        let v = random_q3(h, n_kv, d, &mut rng);
+        let engine = RayonCpuEngine::new();
+
+        let plain = plain_multi_head_attention_cached(
+            q.view(), k.view(), v.view(), scale, q_pos_offset, true,
+        );
+        let out = permuted_attention_cached(
+            &engine,
+            q.view(),
+            k.view(),
+            v.view(),
+            scale,
+            q_pos_offset,
+            AttentionMask::Causal,
+            PermAttnConfig::DISABLED_NOISE,
+            &mut rng,
+        )
+        .unwrap();
+
+        let drift = (&plain - &out)
+            .iter()
+            .map(|x| x.abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            drift < 1e-5,
+            "continuation-prefill must be bit-exact at σ=0: drift={drift}",
+        );
+    }
+
+    #[test]
+    fn permuted_attention_cached_drift_bounded_at_hnm_sigma() {
+        // σ=0.01: same Hidden-No-More noise level as the symmetric
+        // test. Decode shape, n_kv=64.
+        let h = 4;
+        let d = 64;
+        let scale = 1.0 / (d as f32).sqrt();
+        let n_kv = 64;
+        let q_pos_offset = n_kv - 1;
+        let mut rng = ChaCha20Rng::seed_from_u64(0xFEED_C0DE);
+        let q = random_q3(h, 1, d, &mut rng);
+        let k = random_q3(h, n_kv, d, &mut rng);
+        let v = random_q3(h, n_kv, d, &mut rng);
+        let engine = RayonCpuEngine::new();
+
+        let plain = plain_multi_head_attention_cached(
+            q.view(), k.view(), v.view(), scale, q_pos_offset, true,
+        );
+        let out = permuted_attention_cached(
+            &engine,
+            q.view(),
+            k.view(),
+            v.view(),
+            scale,
+            q_pos_offset,
+            AttentionMask::Causal,
+            PermAttnConfig::HIDDEN_NO_MORE,
+            &mut rng,
+        )
+        .unwrap();
+
+        let drift = (&plain - &out)
+            .iter()
+            .map(|x| x.abs())
+            .fold(0.0f32, f32::max);
+        // Same tolerance as the symmetric drift test — σ=0.01 noise
+        // dominates this bound.
+        assert!(
+            drift < 5e-2,
+            "σ=0.01 decode-shape drift should stay below 5e-2: drift={drift}",
+        );
+    }
+
+    #[test]
+    fn permuted_attention_cached_rejects_n_q_gt_n_kv() {
+        let engine = RayonCpuEngine::new();
+        let mut rng = ChaCha20Rng::seed_from_u64(0);
+        let q = Array3::<f32>::zeros((2, 8, 4));
+        let k = Array3::<f32>::zeros((2, 4, 4));
+        let v = Array3::<f32>::zeros((2, 4, 4));
+        assert!(
+            permuted_attention_cached(
+                &engine,
+                q.view(),
+                k.view(),
+                v.view(),
+                1.0,
+                0,
+                AttentionMask::None,
+                PermAttnConfig::DISABLED_NOISE,
+                &mut rng,
+            )
+            .is_err(),
         );
     }
 
