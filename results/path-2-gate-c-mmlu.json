@@ -1,0 +1,3364 @@
+{
+  "task": "mmlu",
+  "plaintext_acc": 0.545,
+  "keymat_acc": 0.55,
+  "delta": 0.0050000000000000044,
+  "delta_pct_pp": 0.5000000000000004,
+  "n": 200,
+  "results": {
+    "plaintext": {
+      "n": 200,
+      "correct": 109,
+      "parsed": 197,
+      "accuracy": 0.545,
+      "parse_rate": 0.985,
+      "by_subject": {
+        "professional accounting": {
+          "n": 7,
+          "correct": 4,
+          "accuracy": 0.5714285714285714
+        },
+        "econometrics": {
+          "n": 3,
+          "correct": 2,
+          "accuracy": 0.6666666666666666
+        },
+        "business ethics": {
+          "n": 2,
+          "correct": 1,
+          "accuracy": 0.5
+        },
+        "professional law": {
+          "n": 25,
+          "correct": 9,
+          "accuracy": 0.36
+        },
+        "high school microeconomics": {
+          "n": 4,
+          "correct": 4,
+          "accuracy": 1.0
+        },
+        "high school macroeconomics": {
+          "n": 4,
+          "correct": 2,
+          "accuracy": 0.5
+        },
+        "high school government and politics": {
+          "n": 5,
+          "correct": 4,
+          "accuracy": 0.8
+        },
+        "elementary mathematics": {
+          "n": 4,
+          "correct": 1,
+          "accuracy": 0.25
+        },
+        "conceptual physics": {
+          "n": 6,
+          "correct": 2,
+          "accuracy": 0.3333333333333333
+        },
+        "moral scenarios": {
+          "n": 13,
+          "correct": 4,
+          "accuracy": 0.3076923076923077
+        },
+        "college physics": {
+          "n": 1,
+          "correct": 1,
+          "accuracy": 1.0
+        },
+        "nutrition": {
+          "n": 5,
+          "correct": 0,
+          "accuracy": 0.0
+        },
+        "machine learning": {
+          "n": 4,
+          "correct": 2,
+          "accuracy": 0.5
+        },
+        "clinical knowledge": {
+          "n": 5,
+          "correct": 5,
+          "accuracy": 1.0
+        },
+        "computer security": {
+          "n": 3,
+          "correct": 2,
+          "accuracy": 0.6666666666666666
+        },
+        "high school geography": {
+          "n": 7,
+          "correct": 4,
+          "accuracy": 0.5714285714285714
+        },
+        "moral disputes": {
+          "n": 5,
+          "correct": 4,
+          "accuracy": 0.8
+        },
+        "philosophy": {
+          "n": 5,
+          "correct": 4,
+          "accuracy": 0.8
+        },
+        "high school computer science": {
+          "n": 1,
+          "correct": 0,
+          "accuracy": 0.0
+        },
+        "medical genetics": {
+          "n": 1,
+          "correct": 1,
+          "accuracy": 1.0
+        },
+        "security studies": {
+          "n": 4,
+          "correct": 2,
+          "accuracy": 0.5
+        },
+        "anatomy": {
+          "n": 2,
+          "correct": 1,
+          "accuracy": 0.5
+        },
+        "professional medicine": {
+          "n": 5,
+          "correct": 3,
+          "accuracy": 0.6
+        },
+        "global facts": {
+          "n": 4,
+          "correct": 2,
+          "accuracy": 0.5
+        },
+        "high school statistics": {
+          "n": 4,
+          "correct": 2,
+          "accuracy": 0.5
+        },
+        "formal logic": {
+          "n": 2,
+          "correct": 0,
+          "accuracy": 0.0
+        },
+        "professional psychology": {
+          "n": 7,
+          "correct": 3,
+          "accuracy": 0.42857142857142855
+        },
+        "human aging": {
+          "n": 6,
+          "correct": 5,
+          "accuracy": 0.8333333333333334
+        },
+        "high school world history": {
+          "n": 5,
+          "correct": 4,
+          "accuracy": 0.8
+        },
+        "world religions": {
+          "n": 2,
+          "correct": 2,
+          "accuracy": 1.0
+        },
+        "high school mathematics": {
+          "n": 8,
+          "correct": 3,
+          "accuracy": 0.375
+        },
+        "miscellaneous": {
+          "n": 7,
+          "correct": 3,
+          "accuracy": 0.42857142857142855
+        },
+        "electrical engineering": {
+          "n": 1,
+          "correct": 1,
+          "accuracy": 1.0
+        },
+        "college medicine": {
+          "n": 2,
+          "correct": 1,
+          "accuracy": 0.5
+        },
+        "high school physics": {
+          "n": 3,
+          "correct": 2,
+          "accuracy": 0.6666666666666666
+        },
+        "sociology": {
+          "n": 2,
+          "correct": 2,
+          "accuracy": 1.0
+        },
+        "prehistory": {
+          "n": 3,
+          "correct": 2,
+          "accuracy": 0.6666666666666666
+        },
+        "high school chemistry": {
+          "n": 1,
+          "correct": 0,
+          "accuracy": 0.0
+        },
+        "college mathematics": {
+          "n": 2,
+          "correct": 1,
+          "accuracy": 0.5
+        },
+        "us foreign policy": {
+          "n": 1,
+          "correct": 0,
+          "accuracy": 0.0
+        },
+        "high school us history": {
+          "n": 1,
+          "correct": 1,
+          "accuracy": 1.0
+        },
+        "high school european history": {
+          "n": 1,
+          "correct": 1,
+          "accuracy": 1.0
+        },
+        "high school biology": {
+          "n": 3,
+          "correct": 3,
+          "accuracy": 1.0
+        },
+        "high school psychology": {
+          "n": 3,
+          "correct": 2,
+          "accuracy": 0.6666666666666666
+        },
+        "virology": {
+          "n": 1,
+          "correct": 1,
+          "accuracy": 1.0
+        },
+        "college chemistry": {
+          "n": 1,
+          "correct": 1,
+          "accuracy": 1.0
+        },
+        "jurisprudence": {
+          "n": 1,
+          "correct": 1,
+          "accuracy": 1.0
+        },
+        "college computer science": {
+          "n": 2,
+          "correct": 0,
+          "accuracy": 0.0
+        },
+        "international law": {
+          "n": 2,
+          "correct": 2,
+          "accuracy": 1.0
+        },
+        "management": {
+          "n": 1,
+          "correct": 1,
+          "accuracy": 1.0
+        },
+        "college biology": {
+          "n": 1,
+          "correct": 0,
+          "accuracy": 0.0
+        },
+        "marketing": {
+          "n": 1,
+          "correct": 0,
+          "accuracy": 0.0
+        },
+        "abstract algebra": {
+          "n": 1,
+          "correct": 1,
+          "accuracy": 1.0
+        }
+      },
+      "details": [
+        {
+          "subject": "professional accounting",
+          "gold": "A",
+          "pred": "D",
+          "raw": " D",
+          "correct": false
+        },
+        {
+          "subject": "econometrics",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "business ethics",
+          "gold": "C",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "professional law",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "high school microeconomics",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D. all barriers",
+          "correct": true
+        },
+        {
+          "subject": "high school macroeconomics",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A. The capital",
+          "correct": true
+        },
+        {
+          "subject": "high school government and politics",
+          "gold": "B",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "elementary mathematics",
+          "gold": "C",
+          "pred": "B",
+          "raw": " B. 2",
+          "correct": false
+        },
+        {
+          "subject": "professional law",
+          "gold": "C",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "conceptual physics",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C. radiation.",
+          "correct": true
+        },
+        {
+          "subject": "professional law",
+          "gold": "D",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "professional law",
+          "gold": "B",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "moral scenarios",
+          "gold": "A",
+          "pred": "B",
+          "raw": " B. Wrong,",
+          "correct": false
+        },
+        {
+          "subject": "college physics",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D. 2",
+          "correct": true
+        },
+        {
+          "subject": "nutrition",
+          "gold": "D",
+          "pred": "A",
+          "raw": " A, B,",
+          "correct": false
+        },
+        {
+          "subject": "machine learning",
+          "gold": "A",
+          "pred": "D",
+          "raw": " D",
+          "correct": false
+        },
+        {
+          "subject": "clinical knowledge",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B, D",
+          "correct": true
+        },
+        {
+          "subject": "clinical knowledge",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "computer security",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "high school geography",
+          "gold": "C",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "high school government and politics",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "moral disputes",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "philosophy",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "business ethics",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A. Social Contract",
+          "correct": true
+        },
+        {
+          "subject": "moral scenarios",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B. Wrong,",
+          "correct": true
+        },
+        {
+          "subject": "high school computer science",
+          "gold": "C",
+          "pred": "A",
+          "raw": " A. strA",
+          "correct": false
+        },
+        {
+          "subject": "professional law",
+          "gold": "B",
+          "pred": "D",
+          "raw": " D",
+          "correct": false
+        },
+        {
+          "subject": "professional law",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "professional law",
+          "gold": "A",
+          "pred": "C",
+          "raw": " C and D",
+          "correct": false
+        },
+        {
+          "subject": "moral scenarios",
+          "gold": "D",
+          "pred": "B",
+          "raw": " B. Wrong,",
+          "correct": false
+        },
+        {
+          "subject": "machine learning",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "high school geography",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "medical genetics",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "nutrition",
+          "gold": "C",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "high school microeconomics",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "security studies",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "anatomy",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "professional medicine",
+          "gold": "A",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "security studies",
+          "gold": "B",
+          "pred": "A",
+          "raw": " A, B,",
+          "correct": false
+        },
+        {
+          "subject": "global facts",
+          "gold": "A",
+          "pred": "B",
+          "raw": " B. 4",
+          "correct": false
+        },
+        {
+          "subject": "professional law",
+          "gold": "C",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "machine learning",
+          "gold": "A",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "high school statistics",
+          "gold": "C",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "high school microeconomics",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "formal logic",
+          "gold": "D",
+          "pred": "A",
+          "raw": " A. Valid",
+          "correct": false
+        },
+        {
+          "subject": "high school geography",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "professional psychology",
+          "gold": "A",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "high school statistics",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "conceptual physics",
+          "gold": "B",
+          "pred": "C",
+          "raw": " C. more than",
+          "correct": false
+        },
+        {
+          "subject": "computer security",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "human aging",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "conceptual physics",
+          "gold": "A",
+          "pred": "D",
+          "raw": " D. None of",
+          "correct": false
+        },
+        {
+          "subject": "high school world history",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D. apartheid.",
+          "correct": true
+        },
+        {
+          "subject": "world religions",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "high school statistics",
+          "gold": "D",
+          "pred": "A",
+          "raw": " A, B,",
+          "correct": false
+        },
+        {
+          "subject": "philosophy",
+          "gold": "D",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "high school mathematics",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "security studies",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "clinical knowledge",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "professional law",
+          "gold": "A",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "miscellaneous",
+          "gold": "B",
+          "pred": "C",
+          "raw": " C. proportional",
+          "correct": false
+        },
+        {
+          "subject": "moral scenarios",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B. Wrong,",
+          "correct": true
+        },
+        {
+          "subject": "electrical engineering",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "human aging",
+          "gold": "B",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "college medicine",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "moral scenarios",
+          "gold": "A",
+          "pred": "B",
+          "raw": " B. Wrong,",
+          "correct": false
+        },
+        {
+          "subject": "high school physics",
+          "gold": "A",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "sociology",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "prehistory",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "prehistory",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "high school world history",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "nutrition",
+          "gold": "A",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "high school chemistry",
+          "gold": "B",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "professional law",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "college mathematics",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "clinical knowledge",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "professional law",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B. Yes,",
+          "correct": true
+        },
+        {
+          "subject": "high school government and politics",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "professional psychology",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "high school physics",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "college medicine",
+          "gold": "A",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "world religions",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D. tafs",
+          "correct": true
+        },
+        {
+          "subject": "high school government and politics",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B. Fifty-one",
+          "correct": true
+        },
+        {
+          "subject": "conceptual physics",
+          "gold": "A",
+          "pred": "D",
+          "raw": " D. Both C",
+          "correct": false
+        },
+        {
+          "subject": "human aging",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "high school microeconomics",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A. A government",
+          "correct": true
+        },
+        {
+          "subject": "miscellaneous",
+          "gold": "D",
+          "pred": "C",
+          "raw": " C. The Moon",
+          "correct": false
+        },
+        {
+          "subject": "professional accounting",
+          "gold": "C",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "us foreign policy",
+          "gold": "C",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "high school world history",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "global facts",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "high school world history",
+          "gold": "A",
+          "pred": "D",
+          "raw": " D",
+          "correct": false
+        },
+        {
+          "subject": "high school us history",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "high school european history",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "professional law",
+          "gold": "A",
+          "pred": "D",
+          "raw": " D",
+          "correct": false
+        },
+        {
+          "subject": "high school mathematics",
+          "gold": "A",
+          "pred": "B",
+          "raw": " \\boxed{B",
+          "correct": false
+        },
+        {
+          "subject": "professional law",
+          "gold": "D",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "professional law",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B. No,",
+          "correct": true
+        },
+        {
+          "subject": "professional accounting",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "college mathematics",
+          "gold": "D",
+          "pred": "B",
+          "raw": " B. II only",
+          "correct": false
+        },
+        {
+          "subject": "philosophy",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "professional accounting",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "high school biology",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "moral scenarios",
+          "gold": "A",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "professional law",
+          "gold": "B",
+          "pred": "D",
+          "raw": " D",
+          "correct": false
+        },
+        {
+          "subject": "high school macroeconomics",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "high school biology",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "miscellaneous",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D. Pinch",
+          "correct": true
+        },
+        {
+          "subject": "human aging",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C, D",
+          "correct": true
+        },
+        {
+          "subject": "high school mathematics",
+          "gold": "B",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "professional accounting",
+          "gold": "C",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "professional law",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "moral scenarios",
+          "gold": "D",
+          "pred": "B",
+          "raw": " B. Wrong,",
+          "correct": false
+        },
+        {
+          "subject": "high school geography",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D. Spain",
+          "correct": true
+        },
+        {
+          "subject": "professional law",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "high school psychology",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "virology",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "professional psychology",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "professional psychology",
+          "gold": "D",
+          "pred": "B",
+          "raw": " B, D",
+          "correct": false
+        },
+        {
+          "subject": "college chemistry",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "high school government and politics",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "sociology",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "clinical knowledge",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "security studies",
+          "gold": "D",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "high school psychology",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D. supere",
+          "correct": true
+        },
+        {
+          "subject": "jurisprudence",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "high school mathematics",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "college computer science",
+          "gold": "C",
+          "pred": "B",
+          "raw": " B. 5",
+          "correct": false
+        },
+        {
+          "subject": "high school geography",
+          "gold": "D",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "moral scenarios",
+          "gold": "A",
+          "pred": "B",
+          "raw": " B. Wrong,",
+          "correct": false
+        },
+        {
+          "subject": "professional law",
+          "gold": "D",
+          "pred": null,
+          "raw": " The correct answer is",
+          "correct": false
+        },
+        {
+          "subject": "high school psychology",
+          "gold": "D",
+          "pred": "A",
+          "raw": " A, B,",
+          "correct": false
+        },
+        {
+          "subject": "high school geography",
+          "gold": "C",
+          "pred": "D",
+          "raw": " D. Bali.",
+          "correct": false
+        },
+        {
+          "subject": "professional law",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "moral disputes",
+          "gold": "B",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "international law",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "professional accounting",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "miscellaneous",
+          "gold": "C",
+          "pred": "B",
+          "raw": " B, C,",
+          "correct": false
+        },
+        {
+          "subject": "elementary mathematics",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "high school mathematics",
+          "gold": "C",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "elementary mathematics",
+          "gold": "D",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "high school macroeconomics",
+          "gold": "D",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "professional medicine",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "moral scenarios",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "moral scenarios",
+          "gold": "D",
+          "pred": "B",
+          "raw": " B. Wrong,",
+          "correct": false
+        },
+        {
+          "subject": "high school mathematics",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "professional medicine",
+          "gold": "D",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "nutrition",
+          "gold": "B",
+          "pred": "A",
+          "raw": " A, B,",
+          "correct": false
+        },
+        {
+          "subject": "management",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "nutrition",
+          "gold": "B",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "international law",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "high school world history",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "high school geography",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "elementary mathematics",
+          "gold": "C",
+          "pred": "B",
+          "raw": " B. 7",
+          "correct": false
+        },
+        {
+          "subject": "moral disputes",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B and D",
+          "correct": true
+        },
+        {
+          "subject": "miscellaneous",
+          "gold": "A",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "computer security",
+          "gold": "A",
+          "pred": "D",
+          "raw": " D",
+          "correct": false
+        },
+        {
+          "subject": "professional medicine",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "college biology",
+          "gold": "A",
+          "pred": "D",
+          "raw": " D. Desert",
+          "correct": false
+        },
+        {
+          "subject": "conceptual physics",
+          "gold": "B",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "formal logic",
+          "gold": "D",
+          "pred": null,
+          "raw": " The conclusion of the",
+          "correct": false
+        },
+        {
+          "subject": "prehistory",
+          "gold": "D",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "global facts",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "professional psychology",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "professional law",
+          "gold": "C",
+          "pred": "B",
+          "raw": " B. No,",
+          "correct": false
+        },
+        {
+          "subject": "machine learning",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "philosophy",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "college computer science",
+          "gold": "D",
+          "pred": "B",
+          "raw": " B. II only",
+          "correct": false
+        },
+        {
+          "subject": "human aging",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "human aging",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "philosophy",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "miscellaneous",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B. Conveyor",
+          "correct": true
+        },
+        {
+          "subject": "moral scenarios",
+          "gold": "C",
+          "pred": "B",
+          "raw": " B. Wrong,",
+          "correct": false
+        },
+        {
+          "subject": "high school macroeconomics",
+          "gold": "A",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "moral scenarios",
+          "gold": "C",
+          "pred": "B",
+          "raw": " B. Wrong,",
+          "correct": false
+        },
+        {
+          "subject": "anatomy",
+          "gold": "C",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "professional law",
+          "gold": "D",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "professional law",
+          "gold": "C",
+          "pred": "B",
+          "raw": " B. Fourteenth",
+          "correct": false
+        },
+        {
+          "subject": "econometrics",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A. (ii",
+          "correct": true
+        },
+        {
+          "subject": "professional law",
+          "gold": "A",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "moral scenarios",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B. Wrong,",
+          "correct": true
+        },
+        {
+          "subject": "professional medicine",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "high school mathematics",
+          "gold": "A",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "professional psychology",
+          "gold": "B",
+          "pred": "C",
+          "raw": " C and D",
+          "correct": false
+        },
+        {
+          "subject": "professional accounting",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "high school statistics",
+          "gold": "D",
+          "pred": "D",
+          "raw": " \\boxed{D",
+          "correct": true
+        },
+        {
+          "subject": "econometrics",
+          "gold": "D",
+          "pred": "B",
+          "raw": " B. Residual",
+          "correct": false
+        },
+        {
+          "subject": "high school physics",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C. The proton",
+          "correct": true
+        },
+        {
+          "subject": "marketing",
+          "gold": "B",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "global facts",
+          "gold": "D",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "miscellaneous",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "abstract algebra",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "professional law",
+          "gold": "B",
+          "pred": null,
+          "raw": " The correct answer is",
+          "correct": false
+        },
+        {
+          "subject": "professional law",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "high school mathematics",
+          "gold": "A",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "moral disputes",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "professional psychology",
+          "gold": "C",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "high school biology",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "moral disputes",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "conceptual physics",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        }
+      ],
+      "wall_s": 14.155105590820312
+    },
+    "keymat-h128-fp32": {
+      "n": 200,
+      "correct": 110,
+      "parsed": 199,
+      "accuracy": 0.55,
+      "parse_rate": 0.995,
+      "by_subject": {
+        "professional accounting": {
+          "n": 7,
+          "correct": 4,
+          "accuracy": 0.5714285714285714
+        },
+        "econometrics": {
+          "n": 3,
+          "correct": 2,
+          "accuracy": 0.6666666666666666
+        },
+        "business ethics": {
+          "n": 2,
+          "correct": 2,
+          "accuracy": 1.0
+        },
+        "professional law": {
+          "n": 25,
+          "correct": 8,
+          "accuracy": 0.32
+        },
+        "high school microeconomics": {
+          "n": 4,
+          "correct": 4,
+          "accuracy": 1.0
+        },
+        "high school macroeconomics": {
+          "n": 4,
+          "correct": 2,
+          "accuracy": 0.5
+        },
+        "high school government and politics": {
+          "n": 5,
+          "correct": 3,
+          "accuracy": 0.6
+        },
+        "elementary mathematics": {
+          "n": 4,
+          "correct": 1,
+          "accuracy": 0.25
+        },
+        "conceptual physics": {
+          "n": 6,
+          "correct": 3,
+          "accuracy": 0.5
+        },
+        "moral scenarios": {
+          "n": 13,
+          "correct": 4,
+          "accuracy": 0.3076923076923077
+        },
+        "college physics": {
+          "n": 1,
+          "correct": 1,
+          "accuracy": 1.0
+        },
+        "nutrition": {
+          "n": 5,
+          "correct": 1,
+          "accuracy": 0.2
+        },
+        "machine learning": {
+          "n": 4,
+          "correct": 1,
+          "accuracy": 0.25
+        },
+        "clinical knowledge": {
+          "n": 5,
+          "correct": 5,
+          "accuracy": 1.0
+        },
+        "computer security": {
+          "n": 3,
+          "correct": 3,
+          "accuracy": 1.0
+        },
+        "high school geography": {
+          "n": 7,
+          "correct": 4,
+          "accuracy": 0.5714285714285714
+        },
+        "moral disputes": {
+          "n": 5,
+          "correct": 4,
+          "accuracy": 0.8
+        },
+        "philosophy": {
+          "n": 5,
+          "correct": 4,
+          "accuracy": 0.8
+        },
+        "high school computer science": {
+          "n": 1,
+          "correct": 0,
+          "accuracy": 0.0
+        },
+        "medical genetics": {
+          "n": 1,
+          "correct": 1,
+          "accuracy": 1.0
+        },
+        "security studies": {
+          "n": 4,
+          "correct": 2,
+          "accuracy": 0.5
+        },
+        "anatomy": {
+          "n": 2,
+          "correct": 1,
+          "accuracy": 0.5
+        },
+        "professional medicine": {
+          "n": 5,
+          "correct": 2,
+          "accuracy": 0.4
+        },
+        "global facts": {
+          "n": 4,
+          "correct": 2,
+          "accuracy": 0.5
+        },
+        "high school statistics": {
+          "n": 4,
+          "correct": 2,
+          "accuracy": 0.5
+        },
+        "formal logic": {
+          "n": 2,
+          "correct": 1,
+          "accuracy": 0.5
+        },
+        "professional psychology": {
+          "n": 7,
+          "correct": 2,
+          "accuracy": 0.2857142857142857
+        },
+        "human aging": {
+          "n": 6,
+          "correct": 5,
+          "accuracy": 0.8333333333333334
+        },
+        "high school world history": {
+          "n": 5,
+          "correct": 3,
+          "accuracy": 0.6
+        },
+        "world religions": {
+          "n": 2,
+          "correct": 2,
+          "accuracy": 1.0
+        },
+        "high school mathematics": {
+          "n": 8,
+          "correct": 5,
+          "accuracy": 0.625
+        },
+        "miscellaneous": {
+          "n": 7,
+          "correct": 3,
+          "accuracy": 0.42857142857142855
+        },
+        "electrical engineering": {
+          "n": 1,
+          "correct": 1,
+          "accuracy": 1.0
+        },
+        "college medicine": {
+          "n": 2,
+          "correct": 2,
+          "accuracy": 1.0
+        },
+        "high school physics": {
+          "n": 3,
+          "correct": 2,
+          "accuracy": 0.6666666666666666
+        },
+        "sociology": {
+          "n": 2,
+          "correct": 1,
+          "accuracy": 0.5
+        },
+        "prehistory": {
+          "n": 3,
+          "correct": 1,
+          "accuracy": 0.3333333333333333
+        },
+        "high school chemistry": {
+          "n": 1,
+          "correct": 0,
+          "accuracy": 0.0
+        },
+        "college mathematics": {
+          "n": 2,
+          "correct": 1,
+          "accuracy": 0.5
+        },
+        "us foreign policy": {
+          "n": 1,
+          "correct": 0,
+          "accuracy": 0.0
+        },
+        "high school us history": {
+          "n": 1,
+          "correct": 1,
+          "accuracy": 1.0
+        },
+        "high school european history": {
+          "n": 1,
+          "correct": 1,
+          "accuracy": 1.0
+        },
+        "high school biology": {
+          "n": 3,
+          "correct": 3,
+          "accuracy": 1.0
+        },
+        "high school psychology": {
+          "n": 3,
+          "correct": 3,
+          "accuracy": 1.0
+        },
+        "virology": {
+          "n": 1,
+          "correct": 1,
+          "accuracy": 1.0
+        },
+        "college chemistry": {
+          "n": 1,
+          "correct": 1,
+          "accuracy": 1.0
+        },
+        "jurisprudence": {
+          "n": 1,
+          "correct": 1,
+          "accuracy": 1.0
+        },
+        "college computer science": {
+          "n": 2,
+          "correct": 0,
+          "accuracy": 0.0
+        },
+        "international law": {
+          "n": 2,
+          "correct": 2,
+          "accuracy": 1.0
+        },
+        "management": {
+          "n": 1,
+          "correct": 0,
+          "accuracy": 0.0
+        },
+        "college biology": {
+          "n": 1,
+          "correct": 1,
+          "accuracy": 1.0
+        },
+        "marketing": {
+          "n": 1,
+          "correct": 0,
+          "accuracy": 0.0
+        },
+        "abstract algebra": {
+          "n": 1,
+          "correct": 1,
+          "accuracy": 1.0
+        }
+      },
+      "details": [
+        {
+          "subject": "professional accounting",
+          "gold": "A",
+          "pred": "D",
+          "raw": " D",
+          "correct": false
+        },
+        {
+          "subject": "econometrics",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "business ethics",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "professional law",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "high school microeconomics",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D. all barriers",
+          "correct": true
+        },
+        {
+          "subject": "high school macroeconomics",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A. The capital",
+          "correct": true
+        },
+        {
+          "subject": "high school government and politics",
+          "gold": "B",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "elementary mathematics",
+          "gold": "C",
+          "pred": "B",
+          "raw": " B. 2",
+          "correct": false
+        },
+        {
+          "subject": "professional law",
+          "gold": "C",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "conceptual physics",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C. radiation.",
+          "correct": true
+        },
+        {
+          "subject": "professional law",
+          "gold": "D",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "professional law",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "moral scenarios",
+          "gold": "A",
+          "pred": "B",
+          "raw": " B. Wrong,",
+          "correct": false
+        },
+        {
+          "subject": "college physics",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D. 2",
+          "correct": true
+        },
+        {
+          "subject": "nutrition",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D. Obesity",
+          "correct": true
+        },
+        {
+          "subject": "machine learning",
+          "gold": "A",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "clinical knowledge",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "clinical knowledge",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "computer security",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "high school geography",
+          "gold": "C",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "high school government and politics",
+          "gold": "B",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "moral disputes",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "philosophy",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "business ethics",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A. Social Contract",
+          "correct": true
+        },
+        {
+          "subject": "moral scenarios",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B. Wrong,",
+          "correct": true
+        },
+        {
+          "subject": "high school computer science",
+          "gold": "C",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "professional law",
+          "gold": "B",
+          "pred": "D",
+          "raw": " D",
+          "correct": false
+        },
+        {
+          "subject": "professional law",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "professional law",
+          "gold": "A",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "moral scenarios",
+          "gold": "D",
+          "pred": "B",
+          "raw": " B. Wrong,",
+          "correct": false
+        },
+        {
+          "subject": "machine learning",
+          "gold": "B",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "high school geography",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "medical genetics",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "nutrition",
+          "gold": "C",
+          "pred": "D",
+          "raw": " D",
+          "correct": false
+        },
+        {
+          "subject": "high school microeconomics",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "security studies",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "anatomy",
+          "gold": "A",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "professional medicine",
+          "gold": "A",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "security studies",
+          "gold": "B",
+          "pred": "A",
+          "raw": " A, B,",
+          "correct": false
+        },
+        {
+          "subject": "global facts",
+          "gold": "A",
+          "pred": "B",
+          "raw": " B. 4",
+          "correct": false
+        },
+        {
+          "subject": "professional law",
+          "gold": "C",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "machine learning",
+          "gold": "A",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "high school statistics",
+          "gold": "C",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "high school microeconomics",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "formal logic",
+          "gold": "D",
+          "pred": "A",
+          "raw": " A. Valid",
+          "correct": false
+        },
+        {
+          "subject": "high school geography",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "professional psychology",
+          "gold": "A",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "high school statistics",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "conceptual physics",
+          "gold": "B",
+          "pred": "A",
+          "raw": " A. less than",
+          "correct": false
+        },
+        {
+          "subject": "computer security",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "human aging",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "conceptual physics",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A. increase.",
+          "correct": true
+        },
+        {
+          "subject": "high school world history",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "world religions",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B. Submission",
+          "correct": true
+        },
+        {
+          "subject": "high school statistics",
+          "gold": "D",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "philosophy",
+          "gold": "D",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "high school mathematics",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "security studies",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "clinical knowledge",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "professional law",
+          "gold": "A",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "miscellaneous",
+          "gold": "B",
+          "pred": "A",
+          "raw": " A. regressive",
+          "correct": false
+        },
+        {
+          "subject": "moral scenarios",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B. Wrong,",
+          "correct": true
+        },
+        {
+          "subject": "electrical engineering",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "human aging",
+          "gold": "B",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "college medicine",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "moral scenarios",
+          "gold": "A",
+          "pred": "B",
+          "raw": " B. Wrong,",
+          "correct": false
+        },
+        {
+          "subject": "high school physics",
+          "gold": "A",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "sociology",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "prehistory",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B. Uruk",
+          "correct": true
+        },
+        {
+          "subject": "prehistory",
+          "gold": "D",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "high school world history",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "nutrition",
+          "gold": "A",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "high school chemistry",
+          "gold": "B",
+          "pred": "D",
+          "raw": " D. 3",
+          "correct": false
+        },
+        {
+          "subject": "professional law",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "college mathematics",
+          "gold": "A",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "clinical knowledge",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "professional law",
+          "gold": "B",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "high school government and politics",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "professional psychology",
+          "gold": "A",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "high school physics",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "college medicine",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "world religions",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D. tafs",
+          "correct": true
+        },
+        {
+          "subject": "high school government and politics",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B. Fifty-one",
+          "correct": true
+        },
+        {
+          "subject": "conceptual physics",
+          "gold": "A",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "human aging",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "high school microeconomics",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "miscellaneous",
+          "gold": "D",
+          "pred": "C",
+          "raw": " C. The Moon",
+          "correct": false
+        },
+        {
+          "subject": "professional accounting",
+          "gold": "C",
+          "pred": "A",
+          "raw": " A. $0",
+          "correct": false
+        },
+        {
+          "subject": "us foreign policy",
+          "gold": "C",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "high school world history",
+          "gold": "A",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "global facts",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "high school world history",
+          "gold": "A",
+          "pred": "D",
+          "raw": " D",
+          "correct": false
+        },
+        {
+          "subject": "high school us history",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "high school european history",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "professional law",
+          "gold": "A",
+          "pred": "D",
+          "raw": " D",
+          "correct": false
+        },
+        {
+          "subject": "high school mathematics",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "professional law",
+          "gold": "D",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "professional law",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B. No,",
+          "correct": true
+        },
+        {
+          "subject": "professional accounting",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "college mathematics",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "philosophy",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "professional accounting",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "high school biology",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "moral scenarios",
+          "gold": "A",
+          "pred": "B",
+          "raw": " B. Wrong,",
+          "correct": false
+        },
+        {
+          "subject": "professional law",
+          "gold": "B",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "high school macroeconomics",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "high school biology",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "miscellaneous",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D. Pinch",
+          "correct": true
+        },
+        {
+          "subject": "human aging",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "high school mathematics",
+          "gold": "B",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "professional accounting",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "professional law",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "moral scenarios",
+          "gold": "D",
+          "pred": "B",
+          "raw": " B. Wrong,",
+          "correct": false
+        },
+        {
+          "subject": "high school geography",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "professional law",
+          "gold": "B",
+          "pred": "D",
+          "raw": " D",
+          "correct": false
+        },
+        {
+          "subject": "high school psychology",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "virology",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "professional psychology",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "professional psychology",
+          "gold": "D",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "college chemistry",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D. Arsen",
+          "correct": true
+        },
+        {
+          "subject": "high school government and politics",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "sociology",
+          "gold": "B",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "clinical knowledge",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "security studies",
+          "gold": "D",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "high school psychology",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D. supere",
+          "correct": true
+        },
+        {
+          "subject": "jurisprudence",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "high school mathematics",
+          "gold": "B",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "college computer science",
+          "gold": "C",
+          "pred": "B",
+          "raw": " B. 5",
+          "correct": false
+        },
+        {
+          "subject": "high school geography",
+          "gold": "D",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "moral scenarios",
+          "gold": "A",
+          "pred": "B",
+          "raw": " B. Wrong,",
+          "correct": false
+        },
+        {
+          "subject": "professional law",
+          "gold": "D",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "high school psychology",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "high school geography",
+          "gold": "C",
+          "pred": "D",
+          "raw": " D. Bali.",
+          "correct": false
+        },
+        {
+          "subject": "professional law",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "moral disputes",
+          "gold": "B",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "international law",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "professional accounting",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "miscellaneous",
+          "gold": "C",
+          "pred": "B",
+          "raw": " B, C,",
+          "correct": false
+        },
+        {
+          "subject": "elementary mathematics",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A. 1",
+          "correct": true
+        },
+        {
+          "subject": "high school mathematics",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "elementary mathematics",
+          "gold": "D",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "high school macroeconomics",
+          "gold": "D",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "professional medicine",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "moral scenarios",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B. Wrong,",
+          "correct": true
+        },
+        {
+          "subject": "moral scenarios",
+          "gold": "D",
+          "pred": "B",
+          "raw": " B. Wrong,",
+          "correct": false
+        },
+        {
+          "subject": "high school mathematics",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "professional medicine",
+          "gold": "D",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "nutrition",
+          "gold": "B",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "management",
+          "gold": "B",
+          "pred": "D",
+          "raw": " D",
+          "correct": false
+        },
+        {
+          "subject": "nutrition",
+          "gold": "B",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "international law",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "high school world history",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "high school geography",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "elementary mathematics",
+          "gold": "C",
+          "pred": "B",
+          "raw": " B. 7",
+          "correct": false
+        },
+        {
+          "subject": "moral disputes",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B and D",
+          "correct": true
+        },
+        {
+          "subject": "miscellaneous",
+          "gold": "A",
+          "pred": "B",
+          "raw": " B. 3",
+          "correct": false
+        },
+        {
+          "subject": "computer security",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "professional medicine",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "college biology",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "conceptual physics",
+          "gold": "B",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "formal logic",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "prehistory",
+          "gold": "D",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "global facts",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B. 9",
+          "correct": true
+        },
+        {
+          "subject": "professional psychology",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "professional law",
+          "gold": "C",
+          "pred": "A",
+          "raw": " A. No,",
+          "correct": false
+        },
+        {
+          "subject": "machine learning",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "philosophy",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "college computer science",
+          "gold": "D",
+          "pred": "B",
+          "raw": " B. II only",
+          "correct": false
+        },
+        {
+          "subject": "human aging",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "human aging",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "philosophy",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "miscellaneous",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "moral scenarios",
+          "gold": "C",
+          "pred": "B",
+          "raw": " B. Wrong,",
+          "correct": false
+        },
+        {
+          "subject": "high school macroeconomics",
+          "gold": "A",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "moral scenarios",
+          "gold": "C",
+          "pred": "B",
+          "raw": " B. Wrong,",
+          "correct": false
+        },
+        {
+          "subject": "anatomy",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "professional law",
+          "gold": "D",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "professional law",
+          "gold": "C",
+          "pred": "B",
+          "raw": " B. Fourteenth",
+          "correct": false
+        },
+        {
+          "subject": "econometrics",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A. (ii",
+          "correct": true
+        },
+        {
+          "subject": "professional law",
+          "gold": "A",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "moral scenarios",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B. Wrong,",
+          "correct": true
+        },
+        {
+          "subject": "professional medicine",
+          "gold": "A",
+          "pred": "D",
+          "raw": " D",
+          "correct": false
+        },
+        {
+          "subject": "high school mathematics",
+          "gold": "A",
+          "pred": "A",
+          "raw": " A",
+          "correct": true
+        },
+        {
+          "subject": "professional psychology",
+          "gold": "B",
+          "pred": "C",
+          "raw": " C",
+          "correct": false
+        },
+        {
+          "subject": "professional accounting",
+          "gold": "B",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "high school statistics",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "econometrics",
+          "gold": "D",
+          "pred": "B",
+          "raw": " B",
+          "correct": false
+        },
+        {
+          "subject": "high school physics",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "marketing",
+          "gold": "B",
+          "pred": "A",
+          "raw": " A. Promote",
+          "correct": false
+        },
+        {
+          "subject": "global facts",
+          "gold": "D",
+          "pred": "A",
+          "raw": " A. 2",
+          "correct": false
+        },
+        {
+          "subject": "miscellaneous",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "abstract algebra",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "professional law",
+          "gold": "B",
+          "pred": null,
+          "raw": " The correct answer is",
+          "correct": false
+        },
+        {
+          "subject": "professional law",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "high school mathematics",
+          "gold": "A",
+          "pred": "B",
+          "raw": " B. 7",
+          "correct": false
+        },
+        {
+          "subject": "moral disputes",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        },
+        {
+          "subject": "professional psychology",
+          "gold": "C",
+          "pred": "A",
+          "raw": " A",
+          "correct": false
+        },
+        {
+          "subject": "high school biology",
+          "gold": "C",
+          "pred": "C",
+          "raw": " C",
+          "correct": true
+        },
+        {
+          "subject": "moral disputes",
+          "gold": "D",
+          "pred": "D",
+          "raw": " D",
+          "correct": true
+        },
+        {
+          "subject": "conceptual physics",
+          "gold": "B",
+          "pred": "B",
+          "raw": " B",
+          "correct": true
+        }
+      ],
+      "wall_s": 29.34588932991028
+    }
+  }
+}

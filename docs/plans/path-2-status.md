@@ -5,6 +5,342 @@ a plan assumption. Most recent entry on top.
 
 ---
 
+## 2026-05-18 · Item 7 done **partial** — head-shuffle works, intra-head blocked by Qwen3 QK-norm
+
+Ported paper §5.2.3 Algorithm 2 to numpy in `python/path-2/lib/alg2.py`
+(key generation: R̂_qk, Ĥ_qk, Ẑ_block, τ_kv, τ_group; static weight
+rewrite via `_apply_output_transform`-equivalent + GQA-aware feature
+ordering). Added `--alg2` flag to the rewriter.
+
+**Smoke-test outcome:** the full paper Algorithm 2 (intra-head dense
++ head-shuffle + QK-norm §5.2.5 fold) **breaks the model** —
+degenerate output like `" ..................... a again  ..."` on
+`"What is the capital of France?"`. Bisecting:
+
+| Transform configuration | Smoke output |
+|---|---|
+| Full alg2 (intra + Ẑ + head + QK-norm fold) | degenerate (".... a again ...") |
+| Ẑ_block off (β=1), rest on | degenerate |
+| Intra-head off, head+QK-norm-fold on | degenerate (".... of ......") |
+| QK-norm fold only, head off, intra off | degenerate |
+| **Head-shuffle only** (intra off, QK fold off) | **coherent — "The capital of France is Paris."** |
+
+**Root cause: QK-norm §5.2.5 fold mathematically broken for Qwen3.**
+Paper §5.2.5's fusion replaces per-element γ with scalar κ and folds
+γ backward into the adjacent linear. The construction is **exact in
+expectation** under i.i.d. Gaussian-input assumption — κ ≈
+√(mean(γ²)) makes the RMS of (q·γ) approximately equal κ·RMS(q).
+Empirically, Qwen3's `attn_q_norm.weight` / `attn_k_norm.weight`
+have non-uniform per-dim γ, AND the model's Q/K vectors are
+trained to put information in the high-γ dims (so q² and γ² are
+positively correlated). The Gaussian assumption fails, the κ
+approximation is off per-input, and attention scores degrade enough
+to make the model produce high-prior-token loops.
+
+This was foreseeable from the earlier grill but I underweighted
+the *empirical* impact. The norm-doubling concern in path-2-status
+(57 → 113 κ-sites) wasn't just an accuracy budget worry — for
+QK-norm specifically, even one site breaks attention because the
+per-input bias compounds inside the softmax.
+
+Without the QK-norm fold, **all intra-head transforms (R̂_qk, Ĥ_qk,
+Ẑ_block) become inapplicable.** They each require the Q/K vectors
+to flow through a scalar-only norm so they can commute with R̂_qk
+(rotation). Per-element γ_qk doesn't commute. Same issue for Ẑ_block
+(permutes pair-positions with non-uniform γ).
+
+**Head-shuffle (τ_kv, τ_group) is the one Algorithm 2 component
+that survives.** It permutes whole heads — γ_qk is broadcast across
+heads and is invariant under head reordering. Mathematically clean,
+empirically verified.
+
+**Item 7 final implementation (Qwen3-restricted):**
+- Per-layer τ_kv ∈ S_8, τ_group ∈ S_2 (random non-identity)
+- W_q, W_k, W_v rows permuted by the GQA-aware feature order
+- W_o columns permuted by the Q-head feature order
+- No intra-head dense, no QK-norm fold, no R̂_qk / Ĥ_qk / Ẑ_block
+- `attn_q_norm.weight` and `attn_k_norm.weight` left untouched
+
+**What we lose vs paper Algorithm 2:** R̂_qk / Ĥ_qk / Ẑ_block were
+the principal ISA-defense transforms (they scramble the per-head
+QK^T values directly). Head-shuffle alone scrambles only **which
+head** produced which score, which is a weaker defense — an ISA
+attacker can train an inverter on the full set of (head, position)
+attention patterns, treating "permuted head ordering" as
+recoverable noise.
+
+The gap is the same one identified earlier between paper claims and
+public reference code: the paper §7.1 says Qwen3 was evaluated, but
+the public `sheng1feng/Aloepri @ 60e8ea3` has no Qwen3-specific
+QK-norm handling. ByteDance's internal industrial version may have
+a fix (per-norm-site κ tuning? a different fusion scheme?); the
+public release doesn't, and re-deriving it from first principles
+hits the i.i.d. Gaussian assumption wall.
+
+**Future work options if intra-head defense becomes critical:**
+- (a) Per-norm-site κ calibration — measure actual `RMS(q·γ)/RMS(q)`
+  on a real input distribution rather than assuming Gaussian.
+  Requires running the plaintext model on a corpus.
+- (b) Restrict R̂_qk / Ĥ_qk / Ẑ_block to commute with γ structurally
+  — e.g., only permute pairs `(i, i+half)` where γ_i ≈ γ_{i+half}.
+  Likely yields a very small effective group.
+- (c) Modify llama.cpp to add a "scaled-RMSNorm" op that compensates
+  for fold bias at runtime. Forks the serving stack — opposite of
+  AloePri's "no infra change" design goal.
+
+All deferred to a post-item-10 (attack benchmark) decision point.
+If head-shuffle alone defeats ISA enough on Qwen3 1.7B, the gap is
+academic; if ISA still gets > 15% TTRSR, we revisit.
+
+**Artifact:** `keymat-h128-pi-noise-alg2-fp32.gguf` (8.6 GB,
+identical size to items 6+8 since head-shuffle is just a row
+permutation). Key file 459 KB (up from 421 KB) — adds per-layer
+`tau_kv`, `tau_group`, plus identity q_matrix / k_matrix stored for
+metadata completeness.
+
+**Smoke test:** `"What is the capital of France?"` → `"The capital of
+France is Paris.\n\nNo, that's not right..."` — byte-identical to
+items 6+8 artifact at the same prompt, which confirms head-shuffle
+is correctness-preserving (model produces the same trajectory; only
+the *internal head indexing* changes).
+
+---
+
+## 2026-05-18 · Item 8 done — α_e/α_h Gaussian noise on embed + head
+
+Added `--noise-alpha-e`, `--noise-alpha-h`, `--noise-seed` flags to
+the rewriter. Noise is sampled from `N(0, σ² I)` with `σ = std(W)`
+of the relevant matrix, scaled by α, and added BEFORE Π / §5.2.5 /
+keymat transforms.
+
+**Paper defaults applied:** α_e = 1.0 (load-bearing for VMA defense
+per §7.3), α_h = 0.2.
+
+**Empirically observed σ:** σ_e = σ_h = 0.0345 (identical because
+the bartowski source GGUF stores `token_embd` and `output` as
+separate tensors with byte-identical content — Qwen3 ships tied
+embeddings; the GGUF just duplicates them. The applied noise is
+independently sampled so the post-noise W_e and W_h differ.)
+
+**Smoke test** (`keymat-h128-pi-noise-fp32.gguf` on port 11451):
+
+- Prompt: `"What is the capital of France?"`, max_tokens=24, seed=0.
+- Output: `" The capital of France is Paris.\n\nNo, that's not right.
+  The capital of France is Paris, but the capital"`
+- Genuinely **better** than keymat-only's output for this prompt
+  (which was `"Also, what is the largest city in the United States?"`).
+  The shift is real (different noise → different model behavior)
+  but well within "coherent" — α_e=1.0 doesn't break generation.
+- `out_of_range_ids: []` again — Π/active-range guarantees hold.
+
+**GGUF metadata additions:** `aloepri.noise_alpha_e` (float32),
+`aloepri.noise_alpha_h` (float32). Seed is **not** stored (kept
+client-side; reproducibility requires the rewriter args, not the
+artifact metadata).
+
+**Artifact:** `keymat-h128-pi-noise-fp32.gguf` (8.6 GB) +
+`.gguf.key.npz` (the τ-only key — noise has no key, just adds bits
+to the artifact). The container `llama-qwen3-keymat-pi-noise-fp32`
+was spawned for smoke and torn down after.
+
+**Acceptance:** model still produces coherent output under paper-
+default noise. Numeric accuracy delta vs the no-noise keymat is
+deferred to next Gate-C run.
+
+---
+
+## 2026-05-18 · Item 6 done — Π token-permutation + AloePri client landed
+
+Added `--pi` mode to the rewriter and built `python/path-2/aloepri_client.py`.
+Wire-payload privacy now closed (was: plaintext over the network).
+
+**Offline rewrite changes** (`obfuscate_qwen3_gguf.py`):
+
+- New flags: `--pi`, `--pi-seed`, `--key-out`.
+- τ sampled as a permutation of `[0, 151669)` only (the tokenizer's
+  active vocab); IDs `[151669, 151936)` are GGUF padding slots and
+  stay identity. This eliminates the ~5%-per-32-token corruption
+  risk from sampling into the un-decodable padding range.
+- Row-permute `token_embd` and `output` by τ⁻¹ before the §5.2.5
+  fusion + Algorithm 1 keymat transforms. Π commutes with keymat
+  (different axes), so ordering doesn't change correctness — but
+  cleaner to apply Π first.
+- Key file `<out>.gguf.key.npz` written 0600: `{tau, pi_seed,
+  vocab_size, active_size, arch, version}`. `pi_seed` is **not**
+  written to GGUF metadata so the server cannot reconstruct τ.
+- New GGUF metadata `aloepri.pi_applied: bool` (server-visible — the
+  server's tokenizer config still names BOS=151643 etc., but those
+  IDs now point at random embeddings, so this flag is purely
+  informational).
+
+**Client** (`aloepri_client.py`):
+
+- Uses llama.cpp's **native** `/completion` endpoint with `prompt`
+  as an int array and `return_tokens=true`. Bypasses the OpenAI-compat
+  text-roundtrip protocol entirely; no tokenize↔detokenize on the
+  wire to break with BPE edge cases. Server still treats the int
+  array as if it tokenized text to those IDs.
+- `KeyMaterial.load()` reads the key file; `tau`, `inv_tau`,
+  `active_size` exposed.
+- Refuses to run if `tokenizer.vocab_size != key.active_size` —
+  cross-checks that the tokenizer used by the client matches the
+  one the artifact was built against.
+- Streaming + EOS handling explicitly **deferred to v2** (per
+  next-steps handoff). v1 uses bounded `n_predict`.
+
+**Smoke test** (port 11450, single-container spawn):
+
+- Prompt: `"What is the capital of France?"`, max_tokens=24, seed=0.
+- Plaintext IDs: `[3838, 374, 279, 6722, 315, 9625, 30]`
+- Obfuscated IDs sent on wire: `[137397, 44230, 90908, 60247, 33846,
+  135351, 102727]`
+- What the server's stock tokenizer *would* decode those obf IDs to
+  (i.e. what a passive observer sees as the "prompt"):
+  `'いるとupgrade Printf\tmodeocyCIÓN芬'`
+- Model output via client: `" Also, what is the largest city in the
+  United States? What is the capital of Japan? What is the capital of"`
+- **Byte-identical** to the keymat-only (no-Π) baseline on `:11446`
+  for the same prompt/seed — confirms Π is correctness-preserving
+  (commutes with keymat on the residual axis) and was generated
+  + applied symmetrically.
+- `out_of_range_ids: []` — the active-size restriction worked; no
+  un-decodable IDs in the response.
+
+**Artifact:** `keymat-h128-pi-fp32.gguf` (8.6 GB; same size as
+keymat-only since Π is just a row permutation) + `.gguf.key.npz`
+(422 KB, mode 0600).
+
+**Container hygiene:** spawned a single fresh container
+(`llama-qwen3-keymat-pi-fp32` on :11450) for smoke; tearing it down
+before moving to item 8.
+
+---
+
+## 2026-05-18 · Gate C — partial: MMLU/PIQA/HumanEval done, IFEval deferred
+
+Ran 3 of 4 Gate C tasks on Qwen3 1.7B Q8_0 plaintext vs keymat h128
+fp32. Results below. IFEval deferred (initial run crashed on read
+timeout while many idle containers were competing for Vulkan iGPU
+memory; per user instruction we tore down all model containers
+rather than re-run).
+
+| Task | n | Plaintext | Keymat (fp32) | Δ (pp) | Notes |
+|---|---:|---:|---:|---:|---|
+| MMLU 0-shot | 200 | 54.5% | 55.0% | **+0.5** | within sampling noise (SE ≈ 3.5pp); keymat numerically *better* |
+| PIQA 0-shot | 200 | 68.5% | 64.5% | **−4.0** | just past paper 3.5pp; SE ≈ 3.3pp |
+| HumanEval pass@1 | 50 | 40.0% | 34.0% | **−6.0** | SE ≈ 6.9pp at n=50; marginal |
+| IFEval (subset) | 50 | — | — | — | deferred |
+
+**Pattern:** multi-choice / knowledge tasks (MMLU) survive cleanly;
+generative tasks (PIQA solutions selection on a base model, HumanEval
+code completion) drift more. Plausible mechanism: e_C^AloePri
+compounds multiplicatively across hundreds of generated tokens vs.
+a single-token decision in multi-choice.
+
+**Decision-tree position** per `path-2-aloepri-next-steps.md` Gate C:
+- MMLU clearly **≤ 3.5%** (paper-bound)
+- PIQA / HumanEval in the **3.5%–10% band** ("paper-bound territory…
+  proceed but flag in M0.4 report"), with sampling noise making the
+  direction-of-effect statistically ambiguous on 50–200 prompts.
+- No task is in the > 10% "stop and tune" band.
+
+**Verdict:** Proceed to deferred items (Π token permutation → Algorithm
+2 attention → α_e/α_h noise → attack benchmark) per user direction.
+The 4th-task IFEval and a larger-n re-run (1000+ prompts each) are
+deferred to a later session when (a) a sweep-of-hyperparameters is
+also under consideration, or (b) M0.2 full framework lands.
+
+**Harness scaffold landed** in `python/path-2/evals/` — reusable for
+later sweeps. Results in `results/path-2-gate-c-{mmlu,piqa,humaneval}.json`.
+
+**Container hygiene fix** (after user feedback): future benchmarks
+spawn only the containers under test and tear them down after; saved
+as `feedback_llama_containers_ephemeral` memory.
+
+---
+
+## 2026-05-18 · Gate B — both endpoints fully deterministic on Vulkan + flash-attn
+
+Ran `python/path-2/gate_b_determinism.py`: 5 prompts × 3 replicates ×
+2 endpoints (`:11441` plaintext, `:11446` keymat h128 fp32),
+`temperature=0.0`, `seed=0`, `max_tokens=32`.
+
+All 30 replicates **byte-identical within their (prompt, endpoint)
+group.** Determinism class on every prompt: `fully-deterministic`.
+The earlier concern about Vulkan workgroup ordering + flash-attn
+reduction-order non-determinism does not manifest here — likely
+because `-np 1` (single slot) removes batching variability, and the
+Strix Halo Vulkan FA path appears to use a deterministic tile
+schedule under fixed launch geometry.
+
+**Plaintext-vs-keymat divergence** (cross-LCP, chars / mean response
+length):
+
+| Prompt | divergence char | response length |
+|---|---:|---:|
+| "What is the capital of France?" | 19 | ~145 |
+| "Write a haiku about autumn." | 1 | ~86 |
+| "def fibonacci(n):" | 5 | ~93 |
+| "Translate to French: Hello…" | 5 | ~142 |
+| "Once upon a time in a faraway land," | 48 | ~152 |
+
+Conclusion: e_C^AloePri produces **real, deterministic** divergence
+from plaintext early in every completion. Gate C runs on Vulkan
+(no CPU fallback needed); the accuracy delta we measure will be
+signal, not sampling noise.
+
+Results: `results/path-2-gate-b.json`.
+
+---
+
+## 2026-05-18 · Gate A — Q8_0/Q6_K/Q5_K_M all fail; fp32 required for keymat artifact
+
+Quantised `keymat-h128-fp32.gguf` (8.6 GB) to Q8_0, Q6_K, Q5_K_M and
+ran identical smoke prompt (`"What is the capital of France?"`,
+temperature 0.0, max_tokens 24, seed 0) on each. All three quantised
+artifacts produce **degenerate** output:
+
+| Format | Size | Output (first 24 tokens) |
+|---|---:|---|
+| fp32 (ref) | 8.6 GB | `" Also, what is the largest city in the United States? What is the capital of Japan? What is the capital of"` |
+| Q8_0 | 2.3 GB | `" ( ( ( ( ,chein,zech,  \tswitch , , alysis , ,     く"` |
+| Q6_K | 1.8 GB | `glm_termumbaและการacre庾iones Chattanooga…` (server returned 500 — output failed re-tokenisation) |
+| Q5_K_M | 1.6 GB | `"phenhqymologyaverholes澈%nCANasse有名imusted的女儿战争べきuctor célib.slice…"` |
+
+**Root cause** (predicted in the next-steps handoff §A caveat,
+confirmed empirically): AloePri-obfuscated weights have heavy-tailed
+per-row distributions (paper-default `λ` makes `P̂_R` non-orthonormal;
+keymat at `h=128` further amplifies the spread). Q8_0's 32-element
+fixed-scale blocks lose the small values to zero when a block also
+contains an outlier. K-quants (Q6_K, Q5_K_M) have more flexible
+scaling but still can't preserve the precision needed to keep the
+covariant chain intact.
+
+**Verdict:** fp32 is the **production format** for AloePri-obfuscated
+GGUF artifacts. Gate B and Gate C run on `:11446` (keymat h128 fp32).
+
+Implications:
+- Disk cost per model variant ≈ 9 GB. Manageable for v1; revisit at
+  E4B (~20 GB fp32 estimated) if scale becomes a problem.
+- Decode speed per the existing `:11446` baseline is acceptable
+  (Vulkan iGPU handles 8.6 GB; see M2.0 notes for per-token timing).
+- **Potential remediation knobs** for a future "obfuscated artifact
+  that survives Q8_0" research stream: smaller `λ` (P̂_R closer to
+  orthonormal → smaller within-row variance → friendlier to
+  per-block scaling); QR-project P̂_R to the orthogonal manifold;
+  reduce `h` (trade-off: less internal expansion, weaker
+  obfuscation). Deferred — fp32 unblocks Gate B/C immediately.
+
+**Failed-experiment artifacts kept on disk:**
+- `keymat-h128-Q8_0.gguf` (2.3 GB), `keymat-h128-Q6_K.gguf` (1.8 GB),
+  `keymat-h128-Q5_K_M.gguf` (1.6 GB) — total 5.7 GB to reclaim
+- Containers: `llama-qwen3-1p7b-aloepri-h128-Q8_0` (:11447),
+  `…-Q6_K` (:11448), `…-Q5_K_M` (:11449) — keep until Gate B/C
+  decide we don't need them as a regression reference; tear down
+  during Gate C cleanup if not needed.
+
+---
+
 ## 2026-05-18 · M2.3 verdict re-confirmed at outcome (1) after §5.2.5 reread
 
 The earlier "verdict downgrade" entry in this log was wrong. I had
