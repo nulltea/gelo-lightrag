@@ -26,8 +26,9 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use rand_distr::{Distribution, StandardNormal};
 
-use gelo_embedder::decoder::config::DecoderConfig;
+use gelo_embedder::decoder::config::{AttentionClass, DecoderConfig};
 use gelo_embedder::decoder::forward;
+use gelo_embedder::decoder::gemma4::gemma4_attention_classes;
 use gelo_embedder::decoder::generation::{GenerationConfig, SamplerConfig, generate};
 use gelo_embedder::decoder::kv_cache::KvCache;
 use gelo_embedder::decoder::rope::RopeTables;
@@ -55,6 +56,9 @@ fn tiny_decoder_config() -> DecoderConfig {
         out_attn_mult_min_seq_len: None,
         use_perm_attention: false,
         perm_attention_min_seq_len: None,
+        attention_classes: None,
+        partial_rope: None,
+        kv_shared_in_global: false,
     }
 }
 
@@ -304,6 +308,79 @@ fn max_tokens_zero_returns_empty() {
     )
     .unwrap();
     assert!(out.tokens.is_empty());
+    assert!(!out.stopped_on_eos);
+}
+
+/// Build a small Gemma 4-shaped synthetic decoder: 6 layers, 2:1
+/// local:global pattern, window W=4. Same head/dim layout as the
+/// tiny config so the existing `synth_weights` helper applies.
+///
+/// Purpose: M1.1 acceptance gate — the new `attention_classes` /
+/// `partial_rope` / `kv_shared_in_global` fields propagate through
+/// `DecoderConfig` without breaking the existing forward path. M1.3
+/// will wire the hybrid dispatch; until then `effective_attention_class`
+/// is read but not yet consulted by the attention kernel.
+fn gemma4_shaped_config() -> DecoderConfig {
+    let mut cfg = tiny_decoder_config();
+    cfg.num_hidden_layers = 6;
+    cfg.attention_classes = Some(gemma4_attention_classes(6, 2, 4));
+    cfg.partial_rope = Some(0.25);
+    cfg.kv_shared_in_global = true;
+    cfg
+}
+
+#[test]
+fn gemma4_shaped_attention_class_vector_is_valid() {
+    let cfg = gemma4_shaped_config();
+    let classes = cfg.attention_classes.as_ref().unwrap();
+    assert_eq!(classes.len(), 6);
+    // 2:1 pattern: [L, L, G, L, L, G_last_override]. Position 5 is the
+    // last layer — always Global per the spec.
+    assert_eq!(classes[0], AttentionClass::Local { window: 4 });
+    assert_eq!(classes[1], AttentionClass::Local { window: 4 });
+    assert_eq!(classes[2], AttentionClass::Global);
+    assert_eq!(classes[3], AttentionClass::Local { window: 4 });
+    assert_eq!(classes[4], AttentionClass::Local { window: 4 });
+    assert_eq!(classes[5], AttentionClass::Global);
+    assert!(cfg.is_hybrid_attention());
+    // head_dim=8 · 0.25 = 2 (already even).
+    assert_eq!(cfg.rotated_dim(), 2);
+}
+
+#[test]
+fn gemma4_shaped_decoder_runs_generate() {
+    // Confirm the new config fields don't break the existing forward
+    // path. The hybrid dispatch isn't wired yet (M1.3) so the
+    // `attention_classes` vector is loaded but not yet consulted by
+    // the attention kernel — all 6 layers behave as Global under the
+    // existing code. This test guards against an accidental
+    // serde / borrow / shape regression in `DecoderConfig`.
+    let cfg = gemma4_shaped_config();
+    let mut rng = ChaCha20Rng::from_seed([42u8; 32]);
+    let weights = Arc::new(synth_weights(&cfg, &mut rng));
+    let rope = RopeTables::new(
+        cfg.head_dim_value(),
+        cfg.max_position_embeddings,
+        cfg.rope_theta,
+    );
+    let mut engine = RayonCpuEngine::new();
+    provision_decoder(&weights, &cfg, &mut engine);
+    let mut exec = PlaintextExecutor::new(engine);
+
+    let out = generate(
+        &cfg,
+        &weights,
+        &rope,
+        &mut exec,
+        &[1u32, 3, 5],
+        &GenerationConfig {
+            max_tokens: 3,
+            eos_token_ids: Vec::new(),
+            sampler: SamplerConfig::Greedy,
+        },
+    )
+    .unwrap();
+    assert_eq!(out.tokens.len(), 3);
     assert!(!out.stopped_on_eos);
 }
 
