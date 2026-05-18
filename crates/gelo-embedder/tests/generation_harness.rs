@@ -349,12 +349,10 @@ fn gemma4_shaped_attention_class_vector_is_valid() {
 
 #[test]
 fn gemma4_shaped_decoder_runs_generate() {
-    // Confirm the new config fields don't break the existing forward
-    // path. The hybrid dispatch isn't wired yet (M1.3) so the
-    // `attention_classes` vector is loaded but not yet consulted by
-    // the attention kernel — all 6 layers behave as Global under the
-    // existing code. This test guards against an accidental
-    // serde / borrow / shape regression in `DecoderConfig`.
+    // M1.3 wiring: the `attention_classes` vector is now consulted
+    // per-layer. With the 6-layer 2:1 pattern from
+    // `gemma4_shaped_config()`, four layers run sliding-window
+    // (W = 4) and two run global causal. Both paths stay in-TEE.
     let cfg = gemma4_shaped_config();
     let mut rng = ChaCha20Rng::from_seed([42u8; 32]);
     let weights = Arc::new(synth_weights(&cfg, &mut rng));
@@ -382,6 +380,196 @@ fn gemma4_shaped_decoder_runs_generate() {
     .unwrap();
     assert_eq!(out.tokens.len(), 3);
     assert!(!out.stopped_on_eos);
+}
+
+#[test]
+fn hybrid_with_max_window_matches_all_global() {
+    // M1.3 dispatch correctness: a hybrid config whose local layers
+    // use `window = max_position_embeddings` must produce identical
+    // output to a config with `attention_classes = None`. The SWA
+    // kernel collapses to dense causal when window ≥ n_kv (see
+    // `decoder::attention::tests::swa_with_window_ge_seq_matches_dense_causal`).
+    let mut hybrid = tiny_decoder_config();
+    hybrid.num_hidden_layers = 4;
+    hybrid.attention_classes = Some(vec![
+        AttentionClass::Local {
+            window: hybrid.max_position_embeddings,
+        },
+        AttentionClass::Global,
+        AttentionClass::Local {
+            window: hybrid.max_position_embeddings,
+        },
+        AttentionClass::Global,
+    ]);
+
+    let mut all_global = hybrid.clone();
+    all_global.attention_classes = None;
+
+    let mut rng = ChaCha20Rng::from_seed([99u8; 32]);
+    let weights = Arc::new(synth_weights(&hybrid, &mut rng));
+    let rope = RopeTables::new(
+        hybrid.head_dim_value(),
+        hybrid.max_position_embeddings,
+        hybrid.rope_theta,
+    );
+
+    let prompt = vec![1u32, 2, 3];
+    let gen_cfg = GenerationConfig {
+        max_tokens: 4,
+        eos_token_ids: Vec::new(),
+        sampler: SamplerConfig::Greedy,
+    };
+
+    let mut engine_a = RayonCpuEngine::new();
+    provision_decoder(&weights, &hybrid, &mut engine_a);
+    let mut exec_a = PlaintextExecutor::new(engine_a);
+    let out_a = generate(&hybrid, &weights, &rope, &mut exec_a, &prompt, &gen_cfg).unwrap();
+
+    let mut engine_b = RayonCpuEngine::new();
+    provision_decoder(&weights, &all_global, &mut engine_b);
+    let mut exec_b = PlaintextExecutor::new(engine_b);
+    let out_b = generate(
+        &all_global,
+        &weights,
+        &rope,
+        &mut exec_b,
+        &prompt,
+        &gen_cfg,
+    )
+    .unwrap();
+
+    assert_eq!(
+        out_a.tokens, out_b.tokens,
+        "hybrid(W=max) vs all-global diverged",
+    );
+}
+
+#[test]
+fn hybrid_with_tight_window_diverges_at_hidden_state() {
+    // Inverse sanity check: a tight window MUST produce different
+    // hidden states than dense causal on a deep-enough sequence.
+    // (Sampled tokens are argmax-collapsed on the synthetic LM head,
+    // so we compare hidden states directly — more sensitive and
+    // doesn't depend on the random embedding being non-degenerate.)
+    let mut hybrid = tiny_decoder_config();
+    hybrid.num_hidden_layers = 4;
+    hybrid.attention_classes = Some(vec![
+        AttentionClass::Local { window: 2 }, // tight
+        AttentionClass::Global,
+        AttentionClass::Local { window: 2 },
+        AttentionClass::Global,
+    ]);
+
+    let mut all_global = hybrid.clone();
+    all_global.attention_classes = None;
+
+    let mut rng = ChaCha20Rng::from_seed([77u8; 32]);
+    let weights = Arc::new(synth_weights(&hybrid, &mut rng));
+    let rope = RopeTables::new(
+        hybrid.head_dim_value(),
+        hybrid.max_position_embeddings,
+        hybrid.rope_theta,
+    );
+
+    let prompt = vec![1u32, 2, 3, 4, 5, 6];
+
+    let mut engine_a = RayonCpuEngine::new();
+    provision_decoder(&weights, &hybrid, &mut engine_a);
+    let mut exec_a = PlaintextExecutor::new(engine_a);
+    let mut cache_a = KvCache::new(weights.layers.len(), prompt.len() + 4, hybrid.kv_dim());
+    let h_hybrid = forward::run_prefill(&hybrid, &weights, &rope, &mut exec_a, &prompt, &mut cache_a)
+        .unwrap();
+
+    let mut engine_b = RayonCpuEngine::new();
+    provision_decoder(&weights, &all_global, &mut engine_b);
+    let mut exec_b = PlaintextExecutor::new(engine_b);
+    let mut cache_b = KvCache::new(weights.layers.len(), prompt.len() + 4, all_global.kv_dim());
+    let h_global = forward::run_prefill(
+        &all_global,
+        &weights,
+        &rope,
+        &mut exec_b,
+        &prompt,
+        &mut cache_b,
+    )
+    .unwrap();
+
+    // The last row's hidden state must differ between the two
+    // configurations — the tight window changes what the global
+    // layers see (because hidden state propagates), and any divergence
+    // at any layer accumulates into the final state.
+    let last = prompt.len() - 1;
+    let max_abs_diff: f32 = h_hybrid
+        .row(last)
+        .iter()
+        .zip(h_global.row(last).iter())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(
+        max_abs_diff > 1e-4,
+        "tight-window hybrid produced identical hidden state to all-global \
+         (max abs diff = {max_abs_diff}) — dispatch likely not wired",
+    );
+}
+
+#[test]
+fn hybrid_decode_replay_invariant_holds() {
+    // The M1.0 decode-replay invariant must still hold under hybrid
+    // attention: greedy generate(prompt, k) → tokens t1..tk, and
+    // prefilling on (prompt ++ t1..tk) must recover the same sequence
+    // by per-position argmax. This exercises both the local and
+    // global attention paths in the cache-aware kernel.
+    let cfg = gemma4_shaped_config();
+    let mut rng = ChaCha20Rng::from_seed([55u8; 32]);
+    let weights = Arc::new(synth_weights(&cfg, &mut rng));
+    let rope = RopeTables::new(
+        cfg.head_dim_value(),
+        cfg.max_position_embeddings,
+        cfg.rope_theta,
+    );
+
+    let prompt = vec![2u32, 4, 6];
+    let gen_cfg = GenerationConfig {
+        max_tokens: 4,
+        eos_token_ids: Vec::new(),
+        sampler: SamplerConfig::Greedy,
+    };
+
+    let mut engine_a = RayonCpuEngine::new();
+    provision_decoder(&weights, &cfg, &mut engine_a);
+    let mut exec_a = PlaintextExecutor::new(engine_a);
+    let out = generate(&cfg, &weights, &rope, &mut exec_a, &prompt, &gen_cfg).unwrap();
+    assert_eq!(out.tokens.len(), 4);
+
+    let mut full = prompt.clone();
+    full.extend_from_slice(&out.tokens);
+
+    let mut engine_b = RayonCpuEngine::new();
+    provision_decoder(&weights, &cfg, &mut engine_b);
+    let mut exec_b = PlaintextExecutor::new(engine_b);
+    let mut cache = KvCache::new(weights.layers.len(), full.len() + 1, cfg.kv_dim());
+    let hidden = forward::run_prefill(&cfg, &weights, &rope, &mut exec_b, &full, &mut cache)
+        .unwrap();
+
+    let token_embedding = &weights.token_embedding;
+    let vocab = token_embedding.nrows();
+    for (k, &expected) in out.tokens.iter().enumerate() {
+        let pos = prompt.len() - 1 + k;
+        let h_row = hidden.row(pos);
+        let mut logits = ndarray::Array1::<f32>::zeros(vocab);
+        for v in 0..vocab {
+            logits[v] = h_row
+                .iter()
+                .zip(token_embedding.row(v).iter())
+                .map(|(a, b)| a * b)
+                .sum();
+        }
+        let got = argmax_row(logits.view());
+        assert_eq!(
+            got, expected,
+            "hybrid replay mismatch at output step {k} (prefill pos {pos})",
+        );
+    }
 }
 
 #[test]

@@ -314,6 +314,111 @@ fn apply_asymmetric_causal_mask(scores: &mut Array2<f32>, q_pos_offset: usize) {
     }
 }
 
+/// Sliding-window causal GQA attention (Gemma 4 local layers).
+///
+/// Same shape contract as [`causal_gqa_attention_cached`] but Q row at
+/// absolute position `p = q_pos_offset + i` attends only to K rows in
+/// `[max(0, p - window + 1), p]` — i.e. the most recent `window`
+/// tokens including itself. Sets the rest of the row to `-inf` before
+/// softmax.
+///
+/// When `window >= n_kv` (no clamping ever fires), the kernel is
+/// identical to [`causal_gqa_attention_cached`]; this collapse is the
+/// load-bearing property the v1 parity tests check.
+///
+/// **Why this stays in-TEE.** The band-diagonal mask is not
+/// permutation-invariant (per `docs/prototype/gelo-llm.html` §02), so
+/// the permuted-attention path doesn't extend to SWA. OutAttnMult's
+/// 2n×2n operand destroys the band sparsity. v1 therefore runs SWA
+/// on CPU under AOCL-BLIS — cheap at every realistic context length
+/// because the per-layer cost is `O(n · window)` rather than
+/// `O(n²)`.
+#[allow(clippy::too_many_arguments)]
+pub fn causal_gqa_attention_swa_cached(
+    q: ArrayView2<'_, f32>,
+    k: ArrayView2<'_, f32>,
+    v: ArrayView2<'_, f32>,
+    num_q_heads: usize,
+    num_kv_heads: usize,
+    head_dim: usize,
+    q_pos_offset: usize,
+    window: usize,
+) -> Array2<f32> {
+    assert!(num_q_heads >= num_kv_heads);
+    assert_eq!(num_q_heads % num_kv_heads, 0);
+    assert!(window > 0, "swa window must be > 0");
+    let group = num_q_heads / num_kv_heads;
+    let n_q = q.nrows();
+    let n_kv = k.nrows();
+    assert_eq!(v.nrows(), n_kv, "K and V must agree on n_kv");
+    assert!(
+        n_q + q_pos_offset <= n_kv,
+        "swa attention: q_pos_offset {q_pos_offset} + n_q {n_q} > n_kv {n_kv}",
+    );
+    assert_eq!(q.ncols(), num_q_heads * head_dim);
+    assert_eq!(k.ncols(), num_kv_heads * head_dim);
+    assert_eq!(v.ncols(), num_kv_heads * head_dim);
+    let scale = 1.0_f32 / (head_dim as f32).sqrt();
+
+    let mut output = Array2::<f32>::zeros((n_q, num_q_heads * head_dim));
+
+    let per_head = |qh: usize, mut dst: ndarray::ArrayViewMut2<f32>| {
+        let kvh = qh / group;
+        let q_off = qh * head_dim;
+        let kv_off = kvh * head_dim;
+
+        let qh_view = q.slice(ndarray::s![.., q_off..q_off + head_dim]);
+        let kh_view = k.slice(ndarray::s![.., kv_off..kv_off + head_dim]);
+        let vh_view = v.slice(ndarray::s![.., kv_off..kv_off + head_dim]);
+
+        let mut scores = qh_view.dot(&kh_view.t()); // (n_q, n_kv)
+        scores *= scale;
+        apply_swa_causal_mask(&mut scores, q_pos_offset, window);
+        softmax_inplace(&mut scores);
+        let ctx = scores.dot(&vh_view);
+        dst.assign(&ctx);
+    };
+
+    if n_q >= 64 {
+        use ndarray::parallel::prelude::*;
+        output
+            .axis_chunks_iter_mut(Axis(1), head_dim)
+            .into_par_iter()
+            .enumerate()
+            .for_each(|(qh, dst)| per_head(qh, dst));
+    } else {
+        for qh in 0..num_q_heads {
+            let q_off = qh * head_dim;
+            let dst = output.slice_mut(ndarray::s![.., q_off..q_off + head_dim]);
+            per_head(qh, dst);
+        }
+    }
+    output
+}
+
+fn apply_swa_causal_mask(scores: &mut Array2<f32>, q_pos_offset: usize, window: usize) {
+    // Score row `i` is Q at absolute position p = q_pos_offset + i. It
+    // attends to K columns in [lo, p], where lo = max(0, p - window + 1).
+    // Mask everything outside that band.
+    for (i, mut row) in scores.axis_iter_mut(Axis(0)).enumerate() {
+        let abs_q = q_pos_offset + i;
+        let lo = abs_q.saturating_sub(window - 1);
+        let hi = abs_q; // inclusive upper bound on K column index
+        let row_slice = row
+            .as_slice_mut()
+            .expect("Array2 rows are contiguous in row-major");
+        // Head end: K columns 0..lo are outside the window → mask.
+        for v in row_slice.iter_mut().take(lo) {
+            *v = f32::NEG_INFINITY;
+        }
+        // Tail end: K columns hi+1.. are future positions → mask
+        // (causal). Re-uses the asymmetric-causal contract.
+        for v in row_slice.iter_mut().skip(hi + 1) {
+            *v = f32::NEG_INFINITY;
+        }
+    }
+}
+
 fn apply_causal_mask(scores: &mut Array2<f32>) {
     // Mask the strictly upper triangle. Writing through contiguous row
     // slices lets LLVM emit a tight memset-style store (avoiding the
@@ -465,6 +570,196 @@ mod tests {
             assert!(
                 (a - b).abs() < 1e-5,
                 "decode replay mismatch: full={a} decode={b}",
+            );
+        }
+    }
+
+    #[test]
+    fn swa_with_window_ge_seq_matches_dense_causal() {
+        // Window >= n_kv → no positions ever masked out at the head;
+        // result equals dense causal attention.
+        let n = 8;
+        let n_q_heads = 4;
+        let n_kv_heads = 2;
+        let head_dim = 4;
+        let q_dim = n_q_heads * head_dim;
+        let kv_dim = n_kv_heads * head_dim;
+        let q = rand_matrix(n, q_dim, 31);
+        let k = rand_matrix(n, kv_dim, 32);
+        let v = rand_matrix(n, kv_dim, 33);
+
+        let dense = causal_gqa_attention_cached(
+            q.view(),
+            k.view(),
+            v.view(),
+            n_q_heads,
+            n_kv_heads,
+            head_dim,
+            0,
+        );
+        let swa = causal_gqa_attention_swa_cached(
+            q.view(),
+            k.view(),
+            v.view(),
+            n_q_heads,
+            n_kv_heads,
+            head_dim,
+            0,
+            999, // window much bigger than n
+        );
+        for (a, b) in dense.iter().zip(swa.iter()) {
+            assert!((a - b).abs() < 1e-6, "swa(W>=n) vs dense: {a} {b}");
+        }
+    }
+
+    #[test]
+    fn swa_window_one_attends_to_self_only() {
+        // Window=1 means each Q row sees only its own absolute position
+        // in K. The softmax of one element is 1.0; the result for row p
+        // is simply V[p] for that head.
+        let n = 6;
+        let n_q_heads = 2;
+        let n_kv_heads = 1;
+        let head_dim = 4;
+        let q_dim = n_q_heads * head_dim;
+        let kv_dim = n_kv_heads * head_dim;
+
+        let q = rand_matrix(n, q_dim, 41);
+        let k = rand_matrix(n, kv_dim, 42);
+        let v = rand_matrix(n, kv_dim, 43);
+
+        let swa = causal_gqa_attention_swa_cached(
+            q.view(),
+            k.view(),
+            v.view(),
+            n_q_heads,
+            n_kv_heads,
+            head_dim,
+            0,
+            1,
+        );
+
+        // For each Q row i, head qh, the output should equal V row i
+        // for the corresponding KV head — modulo any non-causal
+        // softmax fallback. Compare against the V row directly.
+        for i in 0..n {
+            for qh in 0..n_q_heads {
+                let kv_off = (qh / 2) * head_dim; // group=2 so kvh=0 for both
+                let q_off = qh * head_dim;
+                for d in 0..head_dim {
+                    let got = swa[[i, q_off + d]];
+                    let want = v[[i, kv_off + d]];
+                    assert!(
+                        (got - want).abs() < 1e-5,
+                        "swa(W=1) row {i} head {qh} dim {d}: got {got} want {want}",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn swa_window_below_p_truly_clips_old_keys() {
+        // Build a sequence where K row 0 has a wildly different value
+        // than the rest. With W = 3 and Q at p = 5, the kernel must
+        // not see K row 0; varying K row 0 must NOT change the output.
+        let n = 6;
+        let n_q_heads = 1;
+        let n_kv_heads = 1;
+        let head_dim = 4;
+        let q_dim = n_q_heads * head_dim;
+        let kv_dim = n_kv_heads * head_dim;
+
+        let q = rand_matrix(n, q_dim, 51);
+        let mut k = rand_matrix(n, kv_dim, 52);
+        let v = rand_matrix(n, kv_dim, 53);
+
+        // Run with original K row 0.
+        let out_a = causal_gqa_attention_swa_cached(
+            q.view(),
+            k.view(),
+            v.view(),
+            n_q_heads,
+            n_kv_heads,
+            head_dim,
+            0,
+            3, // window
+        );
+
+        // Mutate K row 0 dramatically.
+        for d in 0..kv_dim {
+            k[[0, d]] = 1e6;
+        }
+        let out_b = causal_gqa_attention_swa_cached(
+            q.view(),
+            k.view(),
+            v.view(),
+            n_q_heads,
+            n_kv_heads,
+            head_dim,
+            0,
+            3,
+        );
+
+        // Row 0 must differ (K row 0 is in-window for itself when
+        // p=0). Rows 3, 4, 5 must NOT change (they don't see K row 0
+        // at window=3: row 3 attends to [1,2,3]; row 4 to [2,3,4];
+        // row 5 to [3,4,5]).
+        let row3_unchanged = (0..q_dim).all(|d| (out_a[[3, d]] - out_b[[3, d]]).abs() < 1e-5);
+        let row5_unchanged = (0..q_dim).all(|d| (out_a[[5, d]] - out_b[[5, d]]).abs() < 1e-5);
+        assert!(row3_unchanged, "swa window=3 leaked K[0] into row 3");
+        assert!(row5_unchanged, "swa window=3 leaked K[0] into row 5");
+    }
+
+    #[test]
+    fn swa_decode_step_with_offset_attends_to_window_only() {
+        // Decode shape: n_q = 1 at absolute position p = 5, full K, V
+        // span = 6, window = 3. The single Q row must attend to K rows
+        // [3, 4, 5] only. Compare against a full prefill with the same
+        // SWA mask and take row 5: must match.
+        let total = 6;
+        let n_q_heads = 2;
+        let n_kv_heads = 1;
+        let head_dim = 4;
+        let q_dim = n_q_heads * head_dim;
+        let kv_dim = n_kv_heads * head_dim;
+        let window = 3;
+
+        let q_full = rand_matrix(total, q_dim, 61);
+        let k_full = rand_matrix(total, kv_dim, 62);
+        let v_full = rand_matrix(total, kv_dim, 63);
+
+        let full = causal_gqa_attention_swa_cached(
+            q_full.view(),
+            k_full.view(),
+            v_full.view(),
+            n_q_heads,
+            n_kv_heads,
+            head_dim,
+            0,
+            window,
+        );
+        let last_pos = total - 1;
+        let full_last = full.row(last_pos).to_owned();
+
+        let q_decode = q_full
+            .slice(ndarray::s![last_pos..last_pos + 1, ..])
+            .to_owned();
+        let decode = causal_gqa_attention_swa_cached(
+            q_decode.view(),
+            k_full.view(),
+            v_full.view(),
+            n_q_heads,
+            n_kv_heads,
+            head_dim,
+            last_pos,
+            window,
+        );
+
+        for (a, b) in full_last.iter().zip(decode.row(0).iter()) {
+            assert!(
+                (a - b).abs() < 1e-5,
+                "swa decode replay: full row {last_pos} {a} vs decode {b}",
             );
         }
     }

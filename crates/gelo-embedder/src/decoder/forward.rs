@@ -6,9 +6,9 @@ use gelo_protocol::{TrustedExecutor, WeightHandle, WeightKind};
 
 use super::attention::{
     causal_gqa_attention, causal_gqa_attention_cached, causal_gqa_attention_permuted,
-    causal_gqa_attention_with_offload,
+    causal_gqa_attention_swa_cached, causal_gqa_attention_with_offload,
 };
-use super::config::DecoderConfig;
+use super::config::{AttentionClass, DecoderConfig};
 use super::kv_cache::KvCache;
 use super::rms_norm::rms_norm;
 use super::rope::RopeTables;
@@ -269,18 +269,39 @@ fn decoder_block_cached(
     kv_cache.append(layer_idx as usize, k_new.view(), v_new.view())?;
     let (k_cached, v_cached) = kv_cache.view(layer_idx as usize)?;
 
-    // Asymmetric causal attention over the cached prefix.
-    let ctx = profile::time("tee:attn_cached", || {
-        causal_gqa_attention_cached(
-            q_new.view(),
-            k_cached,
-            v_cached,
-            cfg.num_attention_heads,
-            cfg.num_key_value_heads,
-            cfg.head_dim_value(),
-            q_pos_offset,
-        )
-    });
+    // Per-layer hybrid attention dispatch. The class falls back to
+    // `Global` for `attention_classes = None`, preserving the
+    // Qwen3 / Llama behaviour byte-for-byte.
+    let ctx = match cfg.effective_attention_class(layer_idx as usize) {
+        AttentionClass::Local { window } => profile::time("tee:attn_swa_cached", || {
+            causal_gqa_attention_swa_cached(
+                q_new.view(),
+                k_cached,
+                v_cached,
+                cfg.num_attention_heads,
+                cfg.num_key_value_heads,
+                cfg.head_dim_value(),
+                q_pos_offset,
+                window,
+            )
+        }),
+        AttentionClass::Global => profile::time("tee:attn_cached", || {
+            // v1 keeps global attention in-TEE under the locked design
+            // decision (see docs/plans/path-1-gelo-gemma.md M1.3). The
+            // OutAttnMult / permuted / fused-permuted paths land at
+            // M1.10; until then the in-TEE cached path is the
+            // correctness-first default at all context lengths.
+            causal_gqa_attention_cached(
+                q_new.view(),
+                k_cached,
+                v_cached,
+                cfg.num_attention_heads,
+                cfg.num_key_value_heads,
+                cfg.head_dim_value(),
+                q_pos_offset,
+            )
+        }),
+    };
 
     // Output projection — fresh mask per the per-offload protocol.
     let attn_out = if offload {
