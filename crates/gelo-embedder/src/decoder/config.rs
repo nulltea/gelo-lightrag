@@ -156,13 +156,24 @@ pub struct DecoderConfig {
     #[serde(default)]
     pub partial_rope: Option<f32>,
 
-    /// K = V tying in global layers (Gemma 4 K-equals-V trick). When
-    /// `true`, the model materialises K and V as the same tensor in
-    /// global layers and the protocol samples one mask / one
-    /// permutation for both. Default `false` preserves Qwen3 / Llama
-    /// behaviour. Wired by M1.4; M1.1 only stores it.
+    /// K = V tying in global layers (some Gemma 3 variants ship with
+    /// this; real Gemma 4 E2B/E4B configs set `attention_k_eq_v: false`
+    /// so it does not engage there). When `true`, the model
+    /// materialises K and V as the same tensor in global layers and
+    /// the protocol samples one mask / one permutation for both.
+    /// Default `false` preserves Qwen3 / Llama and matches Gemma 4.
+    /// Wired by M1.4; M1.1 only stores it.
     #[serde(default)]
     pub kv_shared_in_global: bool,
+
+    /// Final-logit softcap. When `Some(c)`, the LM-head output is
+    /// passed through `tanh(x / c) * c` before sampling — bounds the
+    /// logit range and stabilises temperature sampling. Real Gemma 4
+    /// uses `c = 30.0`. `None` (default) preserves the existing
+    /// Qwen3 / Llama path byte-for-byte. Applied in
+    /// `decoder::generation::compute_logits`.
+    #[serde(default)]
+    pub final_logit_softcapping: Option<f32>,
 }
 
 const fn default_perm_attention() -> bool {
@@ -338,6 +349,7 @@ mod tests {
             attention_classes: None,
             partial_rope: None,
             kv_shared_in_global: false,
+            final_logit_softcapping: None,
         }
     }
 

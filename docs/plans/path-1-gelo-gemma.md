@@ -28,7 +28,8 @@
 | 2026-05-18 | M1.3 hybrid attention dispatch landed (commit `43f4c7c`): `causal_gqa_attention_swa_cached(window, q_pos_offset)` band-mask kernel; `decoder_block_cached` consults `effective_attention_class(li)` to pick SWA vs dense-causal. Tight-window divergence + max-window-equals-all-global + decode-replay invariants green. |
 | 2026-05-18 | M1.5 p-RoPE landed (commit `2655edd`): `RopeTables::apply_partial_at(rotated_dim)` rotates first `rotated_dim` (even-snap floor) of each head, identity-pass-through on the rest. `decoder_block_cached` routes Global+`partial_rope=Some` to partial rotation, Local-or-None to full rotation. Divergence test against full rotation green. |
 | 2026-05-18 | M1.4 K=V tying landed (commit `66bba90`): `LayerKvCache` becomes a Separate/Shared enum; `KvCache::new_with_sharing(shared: &[bool])` halves global-layer cache memory; `decoder_block_cached` skips the V matmul when `kv_shared_in_global` + layer is Global. Parity (wk==wv → identical output) + memory (75% of all-separate at 4-layer 2:1) tests green. |
-| 2026-05-18 | M1.10a + M1.6 + M1.8 scaffolding landed (commit `dc9074d`): `GpuOffloadEngine::fused_attention_batched` default-impl composition (no kernel yet); `gemma4_e2e.rs` + `gemma4_hf_parity.rs` `#[ignore]`-gated integration tests with documented un-ignore prerequisites. **Session boundary** — remaining work (M1.10 kernel, M1.6/M1.7 wall-clock numbers, M1.8 HF parity, M1.9 attack-resistance) requires real Gemma 4 weights + GPU hardware + Python `transformers` access. See plan §7.2 for the cubek/burn-cubecl decision matrix. |
+| 2026-05-18 | M1.10a + M1.6 + M1.8 scaffolding landed (commit `dc9074d`): `GpuOffloadEngine::fused_attention_batched` default-impl composition (no kernel yet); `gemma4_e2e.rs` + `gemma4_hf_parity.rs` `#[ignore]`-gated integration tests with documented un-ignore prerequisites. |
+| 2026-05-18 | **Gemma 4 weight source + architecture audit.** Fetched real `google/gemma-4-E2B` and `-E4B` config.json from HuggingFace (public/non-gated; safetensors bf16 at ~4 GB / ~8 GB). Confirmed `google/gemma-4-*` is the canonical v1 source — GGUF detour dropped per user decision. The audit revealed several architectural inaccuracies in M1.0–M1.5: E2B intermediate_size was 8192 (real: 6144); E4B was 16384 (real: 10240); E4B num_key_value_heads was 1 (real: 2); max_position was 32768 (real: 131072); hidden_activation was `silu` (real: `gelu_pytorch_tanh`, i.e. GeGLU); M1.4 implemented within-layer K=V tying but real Gemma 4 has `attention_k_eq_v: false` and uses cross-layer KV sharing via `num_kv_shared_layers: 20` (E2B) / 18 (E4B); per-class head_dim differs (local 256 / global 512); per-class rope_theta differs (10_000 local / 1_000_000 global); final_logit_softcapping = 30.0 was missing. **Phase 1 fixes landed** (commit `<TBD>`): all numeric constants corrected, `DecoderConfig::final_logit_softcapping` added + wired through `compute_logits`, `Gemma4Variant` now exposes the Phase 1.5 metadata (global_head_dim, rope_theta_global, num_kv_shared_layers, ple_dim) for the follow-up workstream. **Real-weight inference still blocked on Phase 1.5** (~3-4 weeks): per-class head_dim refactor, per-class RoPE, cross-layer KV sharing, GeGLU dispatch, AltUp. See plan §8 (new) for Phase 1.5 milestone list. |
 
 (Update this table at every weekly sync.)
 
@@ -656,7 +657,162 @@ Briefly, for completeness — full discussion in
 
 ---
 
-## 8. References
+## 8. Phase 1.5 — Real Gemma 4 architecture extensions
+
+Surfaced by the 2026-05-18 config audit. None of these were anticipated
+in the original M1.0–M1.5 plan; they are gating items between
+"correct synthetic test surface" and "matches HF reference on real
+Gemma 4 weights". Roughly ordered by dependency / effort.
+
+### 8.1 — GeGLU activation dispatch
+
+**Scope.** Real Gemma 4 uses `gelu_pytorch_tanh` (approximate GELU
+via tanh, the same activation Gemma 1/2/3 use). Our `decoder::swiglu`
+module is SiLU-only.
+
+**Files.** `decoder/swiglu.rs` (rename → `glu.rs` or keep, add a
+GeGLU branch keyed on `cfg.hidden_act`). `decoder/forward.rs`
+unchanged dispatch shape.
+
+**Effort.** ~1-2 days. Pure activation function swap on a known
+shape. Test: synthetic-decoder divergence between `silu` and
+`gelu_pytorch_tanh` for the same weights.
+
+### 8.2 — Per-class head_dim (local 256 / global 512)
+
+**Scope.** Real Gemma 4 global layers have `global_head_dim: 512`,
+twice the local-layer `head_dim: 256`. This changes the Q/K/V
+projection matrix shape per layer class: local layer `wq` is
+`(hidden, n_q_heads · 256)`, global layer `wq` is `(hidden, n_q_heads
+· 512)`. The cache shape, RoPE table shape, and attention kernel
+input shape all become per-layer-class.
+
+**Files.** `decoder/config.rs` — extend `DecoderConfig::head_dim` to
+per-class. `decoder/weights.rs` — `DecoderLayerWeights` likely needs
+a per-layer-class head_dim field (or we trust the safetensors
+loader to populate the right shape per layer based on
+`attention_classes[li]`). `decoder/forward.rs` + `attention.rs` —
+all `cfg.head_dim_value()` call sites become `cfg.head_dim_for(li)`.
+`decoder/rope.rs` — two `RopeTables` (one per head_dim) or a single
+table sized for `max(local, global)` with per-call slicing.
+
+**Effort.** ~1-2 weeks. Largest single Phase 1.5 item. Touches every
+layer-shape assumption in the code.
+
+**Risk.** Moderate. The KvCache and RoPE refactors are
+straightforward; the attention kernels may need per-class
+codepaths if head_dim varies the inner-loop unroll.
+
+### 8.3 — Per-class rope_theta (local 10K / global 1M)
+
+**Scope.** Real Gemma 4 global layers use `rope_theta = 1_000_000`
+(rope_type `proportional`) vs local layers' `rope_theta = 10_000`
+(rope_type `default`). Two precomputed cos/sin tables per model.
+
+**Files.** `decoder/rope.rs` — host both tables in a wrapper, expose
+`RopeTables::for_layer_class(class)` accessor. `decoder/config.rs` —
+extend with `rope_theta_local` + `rope_theta_global` fields.
+`decoder_block_cached` selects the right table at the `apply_at` call.
+
+**Effort.** ~2-3 days. Independent of §8.2 head_dim refactor;
+either order works.
+
+### 8.4 — Cross-layer KV sharing (`num_kv_shared_layers`)
+
+**Scope.** 20 of 35 E2B layers (18 of 42 E4B) REUSE an earlier
+layer's K and V cache instead of computing their own K/V
+projections. This is structurally different from the within-layer
+K=V tying that M1.4 implemented (and that real Gemma 4 has off).
+
+**The actual rule** (per HF transformers Gemma4 implementation):
+shared layers reference the most recent SAME-class layer's K, V.
+A sliding-attention layer at index `i` that's marked "shared"
+reads K, V from the most recent prior sliding-attention layer; same
+for full-attention. The model is trained with this constraint
+baked in — there are simply no K, V projection weights for the
+shared layers' QKV slot.
+
+**Files.** `decoder/kv_cache.rs` — `LayerKvCache` gains a `Reference`
+variant pointing to a producer-layer index. `KvCache::append(li, …)`
+becomes a no-op for shared layers; `view(li)` resolves to the
+producer's view. `decoder/forward.rs::decoder_block_cached` — when
+the layer is shared, skip the K/V matmul entirely (the weights
+literally don't exist in safetensors) and read the previous
+producer's K, V from the cache.
+
+**Memory savings.** Halves the global-layer KV cache footprint AND
+saves the K/V projection matmul per shared layer. Compounds with
+the GQA savings already in the protocol.
+
+**Effort.** ~1-2 weeks. The producer-layer resolution at construction
+time is the conceptually tricky part; the storage refactor is similar
+to the M1.4 Separate/Shared enum.
+
+**Honest note about M1.4.** The within-layer K=V optimisation in
+M1.4 is forward-compatible with Gemma 3 variants that set
+`attention_k_eq_v: true`, but does not engage on real Gemma 4. Kept
+in the code as dormant infrastructure; tests still validate it.
+
+### 8.5 — `use_double_wide_mlp` semantics
+
+**Scope.** Real Gemma 4 sets `use_double_wide_mlp: true`. Exact
+semantics need HF transformers source code verification — likely
+either the intermediate_size is reported as half the actual gate/up
+width, OR a different MLP variant is used.
+
+**Files.** `decoder/swiglu.rs` once GeGLU lands (§8.1). May not
+require any code change if intermediate_size is already accounted
+for in the doubled count; otherwise extend the FFN shape.
+
+**Effort.** ~1-2 days (mostly research).
+
+### 8.6 — AltUp (alternating updates) residual stream
+
+**Scope.** Gemma 3n architecture introduced "AltUp" — an alternating
+residual stream variant where intermediate hidden states from a
+subset of layers participate in the residual differently. Likely
+inherited by Gemma 4.
+
+**Files.** Probably extends `decoder_block_cached` with a residual-
+write predicate based on layer index; may need additional weight
+tensors (`altup_correction_*`).
+
+**Effort.** ~1 week. Specifics need HF transformers source check
+before estimate is firm.
+
+### 8.7 — Gemma 4 safetensors loader extensions
+
+**Scope.** Once §8.1–§8.6 land, the loader extension is small:
+
+- Detect Gemma 4 variant from `model_type: "gemma4"` in config.json
+  AND `text_config.*` for nested architecture fields
+- Map per-layer `attention_classes` from `layer_types: ["sliding_attention", …, "full_attention", …]`
+- Extract `model.embed_tokens_per_layer.weight` → `PleTable`
+- Extract per-layer PLE input projections (key name TBD —
+  `model.layers.N.input_per_layer_projection.weight` or similar)
+- Skip K/V projection tensors for layers marked as shared per §8.4
+- Apply the correct head_dim per layer for shape validation per §8.2
+
+**Effort.** ~1 week.
+
+### Phase 1.5 critical path
+
+```
+§8.1 GeGLU (1-2d) ─┐
+                   ├─→ §8.7 loader (1w) → flip M1.6/M1.8 #[ignore]
+§8.2 head_dim (2w) ┤
+§8.3 rope (3d)     ┤
+§8.4 KV share (2w) ┘
+§8.5/§8.6 (independent, post-flip refinement)
+```
+
+**Realistic total: 4-5 weeks** from the start of Phase 1.5 to the
+moment a successful greedy `generate()` runs against
+`google/gemma-4-E2B` real weights.
+
+---
+
+## 9. References
 
 - [`private-inference-comparison-framework.md`](private-inference-comparison-framework.md)
   (shared)

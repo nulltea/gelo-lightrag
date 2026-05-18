@@ -59,6 +59,7 @@ fn tiny_decoder_config() -> DecoderConfig {
         attention_classes: None,
         partial_rope: None,
         kv_shared_in_global: false,
+        final_logit_softcapping: None,
     }
 }
 

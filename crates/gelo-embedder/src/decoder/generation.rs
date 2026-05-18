@@ -96,7 +96,16 @@ fn argmax(logits: ArrayView1<'_, f32>) -> u32 {
 /// than the dispatch overhead would amortise, so v1 keeps it on CPU.
 /// M1.1 will route this through a `WeightKind::LmHead` offload when
 /// the loader provides one.
-fn compute_logits(weights: &DecoderWeights, h_last: ArrayView1<'_, f32>) -> ndarray::Array1<f32> {
+///
+/// Applies final-logit softcap (`tanh(x / c) * c`) when
+/// `cfg.final_logit_softcapping` is `Some(c)` — Gemma 4 uses
+/// `c = 30.0`. Without softcap (None), behaviour is byte-for-byte
+/// the same as before.
+fn compute_logits(
+    cfg: &DecoderConfig,
+    weights: &DecoderWeights,
+    h_last: ArrayView1<'_, f32>,
+) -> ndarray::Array1<f32> {
     let vocab = weights.token_embedding.nrows();
     let mut logits = ndarray::Array1::<f32>::zeros(vocab);
     for v in 0..vocab {
@@ -107,6 +116,12 @@ fn compute_logits(weights: &DecoderWeights, h_last: ArrayView1<'_, f32>) -> ndar
             .map(|(a, b)| a * b)
             .sum();
         logits[v] = dot;
+    }
+    if let Some(cap) = cfg.final_logit_softcapping {
+        let inv = 1.0_f32 / cap;
+        for x in logits.iter_mut() {
+            *x = (*x * inv).tanh() * cap;
+        }
     }
     logits
 }
@@ -165,7 +180,7 @@ pub fn generate(
     let mut tokens = Vec::with_capacity(gen_cfg.max_tokens);
     let mut stopped_on_eos = false;
     for _ in 0..gen_cfg.max_tokens {
-        let logits = compute_logits(weights, h_last.view());
+        let logits = compute_logits(cfg, weights, h_last.view());
         let next_token = sample(logits.view(), &gen_cfg.sampler)?;
         tokens.push(next_token);
         if gen_cfg.eos_token_ids.contains(&next_token) {
@@ -204,5 +219,31 @@ mod tests {
     fn argmax_with_single_element() {
         let logits = Array1::from(vec![42.0_f32]);
         assert_eq!(argmax(logits.view()), 0);
+    }
+
+    /// Direct test of the softcap math (`tanh(x / c) * c`) without
+    /// building a full model. Bounds verification: tanh ∈ (−1, 1)
+    /// implies `|tanh(x/c) · c| < c` strictly.
+    #[test]
+    fn softcap_bounds_logits_to_cap() {
+        // We can't construct a DecoderConfig in this scope cleanly,
+        // so just verify the math itself. The same expression lives
+        // inline in compute_logits.
+        let cap = 30.0_f32;
+        let inputs: Vec<f32> = vec![-1000.0, -50.0, -1.0, 0.0, 1.0, 50.0, 1000.0];
+        for x in inputs {
+            let y = (x / cap).tanh() * cap;
+            // tanh saturates to ±1 in f32 at large magnitudes, so the
+            // bound is `<= cap` (not strict).
+            assert!(y.abs() <= cap, "softcap output {y} exceeds ±{cap}");
+            // At x = 0 → tanh(0) = 0 → y = 0 (identity at zero).
+            if x == 0.0 {
+                assert_eq!(y, 0.0);
+            }
+            // For |x| ≪ cap the function is approximately identity.
+            if x.abs() <= 1.0 {
+                assert!((y - x).abs() < 0.01, "softcap not near-identity at small x");
+            }
+        }
     }
 }

@@ -11,17 +11,36 @@
 //! once the M1.6 worker has a benchmark harness wired into
 //! `evals/run-eval.py` (M0.2) they'll re-use this loader.
 //!
-//! **Blockers (un-ignore prerequisites):**
-//!  - Real Gemma 4 E2B weights published on HuggingFace under
-//!    `<TODO model_id>`. Plan §6 "open decisions" still has the
-//!    PLE fp16/int8 question; pin the model SHA in the loader once
-//!    the M1.1-loader real-weight path lands.
-//!  - GPU access (Vulkan or wgpu CPU backend) — the CPU `RayonCpuEngine`
-//!    works for correctness; wall-clock numbers require Vulkan.
-//!  - PLE table loading: the M1.1 safetensors loader does not yet
-//!    extract `embed_tokens_per_layer.weight` and per-layer PLE
-//!    projections. That's the remaining concrete code item before
-//!    this test can flip `#[ignore]` off.
+//! **Blockers (un-ignore prerequisites)**, updated 2026-05-18 after
+//! verifying the real `google/gemma-4-E2B` config:
+//!
+//! 1. **Phase 1.5 architectural gaps** — Gemma4Variant constants are
+//!    now accurate, but real-weight inference requires structural
+//!    changes our current `DecoderConfig` can't express:
+//!    - Per-class head_dim (256 local, 512 global) — touches every
+//!      Q/K/V projection shape
+//!    - Per-class rope_theta (10_000 local, 1_000_000 global) — two
+//!      RoPE tables per model
+//!    - Cross-layer KV sharing (`num_kv_shared_layers`: 20 / 18) —
+//!      20 of 35 (E2B) or 18 of 42 (E4B) layers reuse an earlier
+//!      layer's KV cache instead of computing their own
+//!    - GeGLU activation (`gelu_pytorch_tanh`) dispatch in
+//!      `decoder::swiglu` — currently only SwiGLU implemented
+//!    - `use_double_wide_mlp` semantics — needs HF transformers
+//!      source check
+//!    - AltUp residual stream variant (Gemma 3n architecture detail)
+//!    Each item is ~few days to ~2 weeks; total ~3-4 weeks for Phase 1.5.
+//!
+//! 2. **Weight-key mapping for PLE + per-layer projections** —
+//!    `DecoderWeights::from_safetensors` doesn't yet recognise
+//!    `model.embed_tokens_per_layer.weight` or the per-layer PLE
+//!    projection tensors. Small extension (~1 day) once Phase 1.5
+//!    structural changes are in.
+//!
+//! 3. **PLE table dequant scale** — int8 PLE comes with a fp16 scale
+//!    per the GGUF reference but the safetensors layout may differ;
+//!    the M1.2 `PleTable::from_int8_rows` API supports a single
+//!    per-table scale, which may need per-channel extension.
 //!
 //! Downloads multiple GB on first run; gated behind `#[ignore]`.
 
@@ -35,10 +54,10 @@ use gelo_embedder::decoder::rope::RopeTables;
 use gelo_embedder::decoder::weights::DecoderWeights;
 use gelo_protocol::{PlaintextExecutor, RayonCpuEngine};
 
-const MODEL: &str = "google/gemma-4-e2b";
+const MODEL: &str = "google/gemma-4-E2B";
 
 #[test]
-#[ignore = "M1.6 scaffolding — gated on (a) M1.1 PLE-aware loader and (b) real HF model id"]
+#[ignore = "M1.6 scaffolding — gated on Phase 1.5 architectural extensions (per-class head_dim, cross-layer KV sharing, GeGLU dispatch, AltUp) + PLE-aware safetensors loader"]
 fn gemma4_e2b_greedy_generates_to_completion() -> Result<()> {
     // Build the variant config and load weights from HF. The current
     // `DecoderWeights::from_safetensors` covers the standard

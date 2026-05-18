@@ -187,6 +187,7 @@ fn decoder_cfg() -> DecoderConfig {
         attention_classes: None,
         partial_rope: None,
         kv_shared_in_global: false,
+        final_logit_softcapping: None,
     }
 }
 
