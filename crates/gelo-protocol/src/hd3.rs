@@ -83,6 +83,20 @@ pub use crate::rng::MaskSeed;
 /// amortises spawn cost.
 const FWHT_RAYON_WORK_THRESHOLD: usize = 65_536;
 
+/// When `h * 8 <= n`, `fwht_rows_inplace` fuses three radix-2 stages
+/// (at distances `h`, `2h`, `4h`) into one radix-8 pass. The fused
+/// butterfly takes 8 rows, runs three levels of add/sub in registers,
+/// and writes 8 rows back — cutting memory traffic 3× vs the unfused
+/// path. See `butterfly_oct_*` for the SIMD kernels.
+///
+/// Choice of radix-8: AVX-512 has 32 ZMM registers, so 8 input vectors
+/// (16 floats each) + 8 intermediates fit comfortably. Radix-16 would
+/// spill on AVX-512 and force per-stage stores anyway.
+///
+/// Tail handling: when `h * 8 > n` for the current `h`, fall back to
+/// radix-2 for the remaining 1–2 stages.
+const FWHT_RADIX8_FACTOR: usize = 8;
+
 /// HD₃ Hadamard-cascade mask. Stores three ±1 diagonal vectors of
 /// length `n` (power of two); the explicit mask matrix is never
 /// materialised. See module docs for the math.
@@ -157,6 +171,12 @@ impl Hd3Mask {
 
     /// Apply the mask: `U = A · H`. `hidden` must have shape `(n, d)`
     /// where `n == self.n()` (power of two). Output has shape `(n, d)`.
+    ///
+    /// Allocates a fresh `(n, d)` output buffer. For hot-path use the
+    /// caller should prefer [`Self::apply_in_place`], which operates
+    /// on a caller-supplied buffer and avoids the ~32 MB allocation +
+    /// 32 MB hidden→buf copy per call at long-context shapes (see the
+    /// `stacked_scratch` reuse path in [`crate::sim`]).
     pub fn apply(&self, hidden: ArrayView2<'_, f32>) -> Array2<f32> {
         assert_eq!(
             hidden.nrows(),
@@ -170,20 +190,41 @@ impl Hd3Mask {
         if d > 0 {
             buf.assign(&hidden);
         }
+        self.apply_in_place(&mut buf);
+        buf
+    }
+
+    /// Apply the mask in place: `buf ← A · buf`. The caller-supplied
+    /// buffer must already contain the operand and have shape `(n, *)`
+    /// where `n == self.n()` (power of two). Saves the allocation and
+    /// hidden→buf copy that the allocating [`Self::apply`] pays per
+    /// call — at our long-context shape (s_pad=4096, d=2048) that's
+    /// ~32 MB of memory traffic eliminated per call.
+    pub fn apply_in_place(&self, buf: &mut Array2<f32>) {
+        assert_eq!(
+            buf.nrows(),
+            self.n,
+            "Hd3Mask::apply_in_place: buf has {} rows, expected {}",
+            buf.nrows(),
+            self.n
+        );
         // A · x = D₃ · H · D₂ · H · D₁ · H · x.
         // Apply right-to-left: H first, then D₁, then H, then D₂, then H, then D₃.
-        fwht_rows_inplace(&mut buf);
-        apply_diag_inplace(&mut buf, &self.d1);
-        fwht_rows_inplace(&mut buf);
-        apply_diag_inplace(&mut buf, &self.d2);
-        fwht_rows_inplace(&mut buf);
-        apply_diag_inplace(&mut buf, &self.d3);
-        scale_inplace(&mut buf, self.inv_norm);
-        buf
+        fwht_rows_inplace(buf);
+        apply_diag_inplace(buf, &self.d1);
+        fwht_rows_inplace(buf);
+        apply_diag_inplace(buf, &self.d2);
+        fwht_rows_inplace(buf);
+        apply_diag_inplace(buf, &self.d3);
+        scale_inplace(buf, self.inv_norm);
     }
 
     /// Remove the mask: `H·W = Aᵀ · (U·W)`. `masked_output` must have
     /// shape `(n, p)` where `n == self.n()`. Output has shape `(n, p)`.
+    ///
+    /// As with [`Self::apply`], allocates a fresh output buffer. Hot
+    /// paths that already own the engine output should prefer
+    /// [`Self::unapply_in_place`] on that buffer directly.
     pub fn unapply(&self, masked_output: ArrayView2<'_, f32>) -> Array2<f32> {
         assert_eq!(
             masked_output.nrows(),
@@ -197,17 +238,31 @@ impl Hd3Mask {
         if p > 0 {
             buf.assign(&masked_output);
         }
+        self.unapply_in_place(&mut buf);
+        buf
+    }
+
+    /// Remove the mask in place: `buf ← Aᵀ · buf`. Same shape contract
+    /// as [`Self::unapply`]. Avoids the per-call allocation + copy by
+    /// mutating the engine's output buffer directly.
+    pub fn unapply_in_place(&self, buf: &mut Array2<f32>) {
+        assert_eq!(
+            buf.nrows(),
+            self.n,
+            "Hd3Mask::unapply_in_place: buf has {} rows, expected {}",
+            buf.nrows(),
+            self.n
+        );
         // Aᵀ = (D₃·H·D₂·H·D₁·H)ᵀ = Hᵀ·D₁ᵀ·Hᵀ·D₂ᵀ·Hᵀ·D₃ᵀ
         //    = H·D₁·H·D₂·H·D₃   (since H = Hᵀ and Dᵢ = Dᵢᵀ).
         // Apply right-to-left: D₃ first, then H, then D₂, then H, then D₁, then H.
-        apply_diag_inplace(&mut buf, &self.d3);
-        fwht_rows_inplace(&mut buf);
-        apply_diag_inplace(&mut buf, &self.d2);
-        fwht_rows_inplace(&mut buf);
-        apply_diag_inplace(&mut buf, &self.d1);
-        fwht_rows_inplace(&mut buf);
-        scale_inplace(&mut buf, self.inv_norm);
-        buf
+        apply_diag_inplace(buf, &self.d3);
+        fwht_rows_inplace(buf);
+        apply_diag_inplace(buf, &self.d2);
+        fwht_rows_inplace(buf);
+        apply_diag_inplace(buf, &self.d1);
+        fwht_rows_inplace(buf);
+        scale_inplace(buf, self.inv_norm);
     }
 }
 
@@ -254,6 +309,32 @@ fn fwht_rows_inplace(m: &mut Array2<f32>) {
 
     let mut h = 1;
     while h < n {
+        // Prefer radix-8 (3 stages fused per pass) when the remaining
+        // log-levels and the row count both allow it. This cuts memory
+        // traffic 3× vs three separate radix-2 stages — the dominant
+        // cost at our s_pad ≥ 2048 shapes.
+        if h.checked_mul(FWHT_RADIX8_FACTOR).is_some_and(|next| next <= n) {
+            let chunk_size = 8 * h * d;
+            // SAFETY (per chunk): each radix-8 group processes 8 rows
+            // at positions (j, j+h, ..., j+7h) within the chunk; all 8
+            // are disjoint slices of length `d` separated by `h·d`.
+            // Across groups (different `j`), the row-index sets are
+            // pairwise disjoint. Across chunks, `par_chunks_mut`
+            // guarantees disjointness.
+            if use_rayon {
+                slice.par_chunks_mut(chunk_size).for_each(|chunk| {
+                    process_stage_chunk_radix8(chunk, h, d, use_avx512, use_avx2);
+                });
+            } else {
+                for chunk in slice.chunks_mut(chunk_size) {
+                    process_stage_chunk_radix8(chunk, h, d, use_avx512, use_avx2);
+                }
+            }
+            h *= FWHT_RADIX8_FACTOR;
+            continue;
+        }
+        // Tail: 1–2 remaining log-levels at this `h`. Fall back to the
+        // original radix-2 path.
         let chunk_size = 2 * h * d;
         // SAFETY of inner butterfly calls: each butterfly's two
         // mutable slices (r0, r1) are disjoint (`r1` starts at offset
@@ -289,6 +370,322 @@ fn process_stage_chunk(chunk: &mut [f32], h: usize, d: usize, use_avx512: bool, 
         let r0 = &mut lo[r0_off..r0_off + d];
         let r1 = &mut hi[..d];
         butterfly_pair(r0, r1, use_avx512, use_avx2);
+    }
+}
+
+/// Process one rayon chunk = `8·h` rows worth of buffer for a radix-8
+/// fused stage. For each `j in 0..h`, takes the 8 rows at positions
+/// `(j, j+h, j+2h, …, j+7h)` and runs three levels of butterflies
+/// (at distances `h`, `2h`, `4h`) in-register, writing back 8 rows.
+///
+/// Output ordering matches three sequential radix-2 stages at
+/// `h`, `2h`, `4h`: see `radix8_matches_radix2` test for parity.
+#[inline]
+fn process_stage_chunk_radix8(
+    chunk: &mut [f32],
+    h: usize,
+    d: usize,
+    use_avx512: bool,
+    use_avx2: bool,
+) {
+    let chunk_ptr = chunk.as_mut_ptr();
+    let chunk_len = chunk.len();
+    for j in 0..h {
+        // Compute the 8 row offsets in the chunk.
+        let off = [
+            j * d,
+            (j + h) * d,
+            (j + 2 * h) * d,
+            (j + 3 * h) * d,
+            (j + 4 * h) * d,
+            (j + 5 * h) * d,
+            (j + 6 * h) * d,
+            (j + 7 * h) * d,
+        ];
+        // Skip incomplete groups at the tail of an under-sized chunk
+        // (only relevant if the caller passes a partial chunk; with
+        // `chunks_mut(8·h·d)` the last chunk is always full when
+        // `n` is a power of two and divisible by `8·h`).
+        if off[7] + d > chunk_len {
+            break;
+        }
+        // SAFETY: the 8 offsets are pairwise disjoint (j + i·h for
+        // i = 0..8 are distinct since h > 0) and each row spans
+        // `[off[i], off[i] + d)` which is contained in the chunk by
+        // the bound check above. `chunk_ptr` is unique to this rayon
+        // chunk so no aliasing with other workers.
+        unsafe {
+            let rows: [*mut f32; 8] = [
+                chunk_ptr.add(off[0]),
+                chunk_ptr.add(off[1]),
+                chunk_ptr.add(off[2]),
+                chunk_ptr.add(off[3]),
+                chunk_ptr.add(off[4]),
+                chunk_ptr.add(off[5]),
+                chunk_ptr.add(off[6]),
+                chunk_ptr.add(off[7]),
+            ];
+            butterfly_oct(rows, d, use_avx512, use_avx2);
+        }
+    }
+}
+
+/// Three radix-2 butterfly stages fused over 8 rows. Output ordering
+/// matches three sequential radix-2 passes at `h`, `2h`, `4h`:
+///
+/// ```text
+/// y0 = x0+x1+x2+x3 + x4+x5+x6+x7
+/// y1 = x0-x1+x2-x3 + x4-x5+x6-x7
+/// y2 = (x0+x1)-(x2+x3) + (x4+x5)-(x6+x7)
+/// y3 = (x0-x1)-(x2-x3) + (x4-x5)-(x6-x7)
+/// y4 = x0+x1+x2+x3 - (x4+x5+x6+x7)
+/// y5 = (x0-x1+x2-x3) - (x4-x5+x6-x7)
+/// y6 = ((x0+x1)-(x2+x3)) - ((x4+x5)-(x6+x7))
+/// y7 = ((x0-x1)-(x2-x3)) - ((x4-x5)-(x6-x7))
+/// ```
+///
+/// SAFETY: caller must pass 8 disjoint, valid-for-`d`-f32-writes row
+/// pointers. See `process_stage_chunk_radix8` for the disjointness
+/// argument.
+#[inline]
+unsafe fn butterfly_oct(rows: [*mut f32; 8], d: usize, use_avx512: bool, use_avx2: bool) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if use_avx512 {
+            // SAFETY: caller checked `is_x86_feature_detected!("avx512f")`.
+            unsafe {
+                butterfly_oct_avx512(rows, d);
+            }
+            return;
+        }
+        if use_avx2 {
+            // SAFETY: caller checked `is_x86_feature_detected!("avx2")`.
+            unsafe {
+                butterfly_oct_avx2(rows, d);
+            }
+            return;
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = use_avx512;
+        let _ = use_avx2;
+    }
+    // SAFETY: forwarded from caller.
+    unsafe {
+        butterfly_oct_scalar(rows, d);
+    }
+}
+
+/// Scalar fallback for `butterfly_oct`. LLVM may auto-vectorise, but
+/// AVX-2/512 paths above are explicit for predictability.
+#[inline]
+unsafe fn butterfly_oct_scalar(rows: [*mut f32; 8], d: usize) {
+    for k in 0..d {
+        // SAFETY: `rows[i]` is valid for `d` writes (caller invariant);
+        // `k < d` so each `add(k)` stays in-bounds.
+        unsafe {
+            let x0 = *rows[0].add(k);
+            let x1 = *rows[1].add(k);
+            let x2 = *rows[2].add(k);
+            let x3 = *rows[3].add(k);
+            let x4 = *rows[4].add(k);
+            let x5 = *rows[5].add(k);
+            let x6 = *rows[6].add(k);
+            let x7 = *rows[7].add(k);
+            // Stage 1: butterfly pairs (0,1), (2,3), (4,5), (6,7)
+            let s01 = x0 + x1;
+            let d01 = x0 - x1;
+            let s23 = x2 + x3;
+            let d23 = x2 - x3;
+            let s45 = x4 + x5;
+            let d45 = x4 - x5;
+            let s67 = x6 + x7;
+            let d67 = x6 - x7;
+            // Stage 2: butterflies (0,2), (1,3), (4,6), (5,7) over Stage-1 outputs
+            let p0 = s01 + s23;
+            let p2 = s01 - s23;
+            let p1 = d01 + d23;
+            let p3 = d01 - d23;
+            let p4 = s45 + s67;
+            let p6 = s45 - s67;
+            let p5 = d45 + d67;
+            let p7 = d45 - d67;
+            // Stage 3: butterflies (0,4), (1,5), (2,6), (3,7) over Stage-2 outputs
+            *rows[0].add(k) = p0 + p4;
+            *rows[4].add(k) = p0 - p4;
+            *rows[1].add(k) = p1 + p5;
+            *rows[5].add(k) = p1 - p5;
+            *rows[2].add(k) = p2 + p6;
+            *rows[6].add(k) = p2 - p6;
+            *rows[3].add(k) = p3 + p7;
+            *rows[7].add(k) = p3 - p7;
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn butterfly_oct_avx512(rows: [*mut f32; 8], d: usize) {
+    use std::arch::x86_64::*;
+    let mut k = 0;
+    while k + 16 <= d {
+        // SAFETY: bounds checked by `k + 16 <= d`; each row valid for d writes.
+        unsafe {
+            let v0 = _mm512_loadu_ps(rows[0].add(k));
+            let v1 = _mm512_loadu_ps(rows[1].add(k));
+            let v2 = _mm512_loadu_ps(rows[2].add(k));
+            let v3 = _mm512_loadu_ps(rows[3].add(k));
+            let v4 = _mm512_loadu_ps(rows[4].add(k));
+            let v5 = _mm512_loadu_ps(rows[5].add(k));
+            let v6 = _mm512_loadu_ps(rows[6].add(k));
+            let v7 = _mm512_loadu_ps(rows[7].add(k));
+            // Stage 1
+            let s01 = _mm512_add_ps(v0, v1);
+            let d01 = _mm512_sub_ps(v0, v1);
+            let s23 = _mm512_add_ps(v2, v3);
+            let d23 = _mm512_sub_ps(v2, v3);
+            let s45 = _mm512_add_ps(v4, v5);
+            let d45 = _mm512_sub_ps(v4, v5);
+            let s67 = _mm512_add_ps(v6, v7);
+            let d67 = _mm512_sub_ps(v6, v7);
+            // Stage 2
+            let p0 = _mm512_add_ps(s01, s23);
+            let p2 = _mm512_sub_ps(s01, s23);
+            let p1 = _mm512_add_ps(d01, d23);
+            let p3 = _mm512_sub_ps(d01, d23);
+            let p4 = _mm512_add_ps(s45, s67);
+            let p6 = _mm512_sub_ps(s45, s67);
+            let p5 = _mm512_add_ps(d45, d67);
+            let p7 = _mm512_sub_ps(d45, d67);
+            // Stage 3
+            let q0 = _mm512_add_ps(p0, p4);
+            let q4 = _mm512_sub_ps(p0, p4);
+            let q1 = _mm512_add_ps(p1, p5);
+            let q5 = _mm512_sub_ps(p1, p5);
+            let q2 = _mm512_add_ps(p2, p6);
+            let q6 = _mm512_sub_ps(p2, p6);
+            let q3 = _mm512_add_ps(p3, p7);
+            let q7 = _mm512_sub_ps(p3, p7);
+            _mm512_storeu_ps(rows[0].add(k), q0);
+            _mm512_storeu_ps(rows[1].add(k), q1);
+            _mm512_storeu_ps(rows[2].add(k), q2);
+            _mm512_storeu_ps(rows[3].add(k), q3);
+            _mm512_storeu_ps(rows[4].add(k), q4);
+            _mm512_storeu_ps(rows[5].add(k), q5);
+            _mm512_storeu_ps(rows[6].add(k), q6);
+            _mm512_storeu_ps(rows[7].add(k), q7);
+        }
+        k += 16;
+    }
+    // Scalar tail for d % 16.
+    while k < d {
+        // SAFETY: k < d, all rows valid for d writes.
+        unsafe {
+            butterfly_oct_one_scalar_lane(rows, k);
+        }
+        k += 1;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn butterfly_oct_avx2(rows: [*mut f32; 8], d: usize) {
+    use std::arch::x86_64::*;
+    let mut k = 0;
+    while k + 8 <= d {
+        // SAFETY: bounds checked.
+        unsafe {
+            let v0 = _mm256_loadu_ps(rows[0].add(k));
+            let v1 = _mm256_loadu_ps(rows[1].add(k));
+            let v2 = _mm256_loadu_ps(rows[2].add(k));
+            let v3 = _mm256_loadu_ps(rows[3].add(k));
+            let v4 = _mm256_loadu_ps(rows[4].add(k));
+            let v5 = _mm256_loadu_ps(rows[5].add(k));
+            let v6 = _mm256_loadu_ps(rows[6].add(k));
+            let v7 = _mm256_loadu_ps(rows[7].add(k));
+            let s01 = _mm256_add_ps(v0, v1);
+            let d01 = _mm256_sub_ps(v0, v1);
+            let s23 = _mm256_add_ps(v2, v3);
+            let d23 = _mm256_sub_ps(v2, v3);
+            let s45 = _mm256_add_ps(v4, v5);
+            let d45 = _mm256_sub_ps(v4, v5);
+            let s67 = _mm256_add_ps(v6, v7);
+            let d67 = _mm256_sub_ps(v6, v7);
+            let p0 = _mm256_add_ps(s01, s23);
+            let p2 = _mm256_sub_ps(s01, s23);
+            let p1 = _mm256_add_ps(d01, d23);
+            let p3 = _mm256_sub_ps(d01, d23);
+            let p4 = _mm256_add_ps(s45, s67);
+            let p6 = _mm256_sub_ps(s45, s67);
+            let p5 = _mm256_add_ps(d45, d67);
+            let p7 = _mm256_sub_ps(d45, d67);
+            let q0 = _mm256_add_ps(p0, p4);
+            let q4 = _mm256_sub_ps(p0, p4);
+            let q1 = _mm256_add_ps(p1, p5);
+            let q5 = _mm256_sub_ps(p1, p5);
+            let q2 = _mm256_add_ps(p2, p6);
+            let q6 = _mm256_sub_ps(p2, p6);
+            let q3 = _mm256_add_ps(p3, p7);
+            let q7 = _mm256_sub_ps(p3, p7);
+            _mm256_storeu_ps(rows[0].add(k), q0);
+            _mm256_storeu_ps(rows[1].add(k), q1);
+            _mm256_storeu_ps(rows[2].add(k), q2);
+            _mm256_storeu_ps(rows[3].add(k), q3);
+            _mm256_storeu_ps(rows[4].add(k), q4);
+            _mm256_storeu_ps(rows[5].add(k), q5);
+            _mm256_storeu_ps(rows[6].add(k), q6);
+            _mm256_storeu_ps(rows[7].add(k), q7);
+        }
+        k += 8;
+    }
+    while k < d {
+        unsafe {
+            butterfly_oct_one_scalar_lane(rows, k);
+        }
+        k += 1;
+    }
+}
+
+/// Single-lane scalar octet butterfly used by the SIMD tails of
+/// `butterfly_oct_avx512` / `butterfly_oct_avx2`. Inlined to match the
+/// load/compute/store pattern of the scalar fallback.
+#[inline]
+unsafe fn butterfly_oct_one_scalar_lane(rows: [*mut f32; 8], k: usize) {
+    // SAFETY: caller guarantees k < d and rows valid for d writes.
+    unsafe {
+        let x0 = *rows[0].add(k);
+        let x1 = *rows[1].add(k);
+        let x2 = *rows[2].add(k);
+        let x3 = *rows[3].add(k);
+        let x4 = *rows[4].add(k);
+        let x5 = *rows[5].add(k);
+        let x6 = *rows[6].add(k);
+        let x7 = *rows[7].add(k);
+        let s01 = x0 + x1;
+        let d01 = x0 - x1;
+        let s23 = x2 + x3;
+        let d23 = x2 - x3;
+        let s45 = x4 + x5;
+        let d45 = x4 - x5;
+        let s67 = x6 + x7;
+        let d67 = x6 - x7;
+        let p0 = s01 + s23;
+        let p2 = s01 - s23;
+        let p1 = d01 + d23;
+        let p3 = d01 - d23;
+        let p4 = s45 + s67;
+        let p6 = s45 - s67;
+        let p5 = d45 + d67;
+        let p7 = d45 - d67;
+        *rows[0].add(k) = p0 + p4;
+        *rows[4].add(k) = p0 - p4;
+        *rows[1].add(k) = p1 + p5;
+        *rows[5].add(k) = p1 - p5;
+        *rows[2].add(k) = p2 + p6;
+        *rows[6].add(k) = p2 - p6;
+        *rows[3].add(k) = p3 + p7;
+        *rows[7].add(k) = p3 - p7;
     }
 }
 
@@ -601,6 +998,56 @@ mod tests {
     fn hd3_rejects_non_pow2() {
         let mut rng = ChaCha20Rng::from_seed([0u8; 32]);
         let _ = Hd3Mask::fresh(2056, &mut rng);
+    }
+
+    /// Direct comparison of `fwht_rows_inplace` (radix-8 dispatch path)
+    /// against an explicit Walsh-Hadamard reference `H[i,j] =
+    /// (-1)^popcount(i & j)`. This pins the radix-8 output ordering
+    /// — orthogonality + round-trip tests alone allow any consistent
+    /// orthogonal transform, so they wouldn't catch a wrong-but-self-
+    /// consistent radix-8.
+    ///
+    /// Covers all shape regimes:
+    /// - n=2, 4: radix-2 only (no radix-8 stage fires).
+    /// - n=8, 64, 512: radix-8 only (no radix-2 tail).
+    /// - n=16, 32: radix-8 + 1–2 radix-2 tail stages.
+    /// - n=128, 256: radix-8 + radix-2 mixed.
+    #[test]
+    fn radix8_matches_walsh_reference() {
+        for &n in &[2usize, 4, 8, 16, 32, 64, 128, 256, 512] {
+            for &d in &[1usize, 7, 16, 17, 32] {
+                let mut rng = ChaCha20Rng::from_seed([0u8; 32]);
+                let m = sample_normal(&mut rng, n, d);
+                let mut buf = m.clone();
+                fwht_rows_inplace(&mut buf);
+                // Reference: H @ M, computed column-wise from the
+                // explicit Walsh-Hadamard matrix in natural order.
+                let mut expected = Array2::<f32>::zeros((n, d));
+                for i in 0..n {
+                    for j in 0..n {
+                        let sign: f32 = if (i & j).count_ones() % 2 == 0 { 1.0 } else { -1.0 };
+                        if sign != 0.0 {
+                            for c in 0..d {
+                                expected[[i, c]] += sign * m[[j, c]];
+                            }
+                        }
+                    }
+                }
+                let err = max_abs(&buf, &expected);
+                // FWHT accumulation depth = log₂(n). Plus a few ULPs
+                // for SIMD reordering.
+                let tol = 16.0 * (n as f32).log2().max(1.0) * f32::EPSILON
+                    * expected
+                        .iter()
+                        .map(|v| v.abs())
+                        .fold(0.0_f32, f32::max)
+                        .max(1.0);
+                assert!(
+                    err <= tol,
+                    "fwht radix-8 vs Walsh reference at (n={n}, d={d}): err {err:.3e} > tol {tol:.3e}"
+                );
+            }
+        }
     }
 
     /// Round-trip stays accurate to ~1e-4 relative at the realistic
