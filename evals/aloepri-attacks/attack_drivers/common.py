@@ -292,7 +292,13 @@ def stack_prompt_observations(
         n = min(op_np.shape[0], ids.shape[0])
         if n == 0:
             continue
-        Xs.append(op_np[:n])
+        sliced = op_np[:n]
+        if sliced.ndim > 2:
+            # 3-D / 4-D snapshots (e.g. Qcur_normed: (n_tokens, n_head, d_h))
+            # flatten everything past axis 0 into a single feature axis so
+            # the ridge attacker sees one row per token.
+            sliced = sliced.reshape(sliced.shape[0], -1)
+        Xs.append(sliced)
         ys.append(ids[:n])
         lengths.append(n)
     if not Xs:

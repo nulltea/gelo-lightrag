@@ -214,6 +214,18 @@ def rewrite_gguf(
     alg2_beta: int = 8,
     alg2_gamma: float = 1e3,
     alg2_qk_scale_range: tuple[float, float] = (0.95, 1.05),
+    # When True: bake real R̂_qk intra-head transform into W_q/W_k output
+    # axis AND replace 1D γ_q/γ_k with 2D Γ = M_qᵀ · Diag(γ) · M_q.
+    # Requires the patched llama.cpp kernel (aloepri_qk_norm_matrix
+    # branch) — see docs/research/aloepri-qk-norm-matrix-gamma-threat-model.md.
+    # Forces qk_scale_range to (1.0, 1.0) so M_q stays orthogonal.
+    alg2_qk_norm_matrix: bool = False,
+    # When True (in combination with alg2_qk_norm_matrix): use ±1
+    # Walsh-Hadamard for Ĥ_qk instead of identity. Keeps M_q
+    # orthogonal (since ±1 diag is involutive). Adds per-pair sign
+    # flips to the obfuscation; M_q stays equal to M_k (because
+    # H = H⁻¹ for ±1 diag), so Q/K cancel cleanly in attention.
+    alg2_h_hadamard_signs: bool = False,
 ) -> dict:
     log.info("opening %s (mode=%s pi=%s)", in_path, mode, apply_pi)
     r = gguf.GGUFReader(str(in_path))
@@ -340,13 +352,25 @@ def rewrite_gguf(
         head_dim_a = int(r.fields["qwen3.attention.key_length"].contents())
         num_groups_a = n_q_heads // n_kv_heads
         rope_base = float(r.fields["qwen3.rope.freq_base"].contents())
-        log.info(
-            "alg2: head-shuffle only (Qwen3 QK-norm blocks intra-head). "
-            "n_q=%d n_kv=%d head_dim=%d groups=%d",
-            n_q_heads, n_kv_heads, head_dim_a, num_groups_a,
-        )
-        # Per-layer keys — intra-head q_matrix/k_matrix are forced to identity;
-        # only tau_kv/tau_group provide obfuscation.
+        if alg2_qk_norm_matrix:
+            # M_q must be orthogonal for the matrix-Γ kernel algebra to be
+            # exact. Either force Ĥ_qk = I (scale_range=(1.0,1.0)) or use
+            # ±1 Walsh-Hadamard (involutive, still orthogonal).
+            # See docs/research/aloepri-qk-norm-matrix-gamma-threat-model.md.
+            if not alg2_h_hadamard_signs:
+                alg2_qk_scale_range = (1.0, 1.0)
+            log.info(
+                "alg2: full intra-head + matrix-Γ QK-norm. "
+                "n_q=%d n_kv=%d head_dim=%d groups=%d  Ĥ=%s",
+                n_q_heads, n_kv_heads, head_dim_a, num_groups_a,
+                "Walsh-Hadamard ±1" if alg2_h_hadamard_signs else "I",
+            )
+        else:
+            log.info(
+                "alg2: head-shuffle only (Qwen3 QK-norm blocks intra-head). "
+                "n_q=%d n_kv=%d head_dim=%d groups=%d",
+                n_q_heads, n_kv_heads, head_dim_a, num_groups_a,
+            )
         for il in range(n_layer):
             full_keys = alg2.build_layer_keys(
                 head_dim=head_dim_a,
@@ -357,15 +381,20 @@ def rewrite_gguf(
                 beta=alg2_beta,
                 gamma=alg2_gamma,
                 rope_base=rope_base,
+                h_hadamard_signs=alg2_h_hadamard_signs,
             )
-            keys = alg2.LayerAlg2Keys(
-                q_matrix=np.eye(head_dim_a, dtype=np.float32),
-                k_matrix=np.eye(head_dim_a, dtype=np.float32),
-                tau_kv=full_keys.tau_kv,
-                inv_tau_kv=full_keys.inv_tau_kv,
-                tau_group=full_keys.tau_group,
-                inv_tau_group=full_keys.inv_tau_group,
-            )
+            if alg2_qk_norm_matrix:
+                keys = full_keys
+            else:
+                # Legacy: head-shuffle only; intra-head q/k_matrix → I.
+                keys = alg2.LayerAlg2Keys(
+                    q_matrix=np.eye(head_dim_a, dtype=np.float32),
+                    k_matrix=np.eye(head_dim_a, dtype=np.float32),
+                    tau_kv=full_keys.tau_kv,
+                    inv_tau_kv=full_keys.inv_tau_kv,
+                    tau_group=full_keys.tau_group,
+                    inv_tau_group=full_keys.inv_tau_group,
+                )
             alg2_per_layer[il] = keys
             q_head_order = alg2._query_head_order(
                 n_q_heads, n_kv_heads, num_groups_a, keys.tau_kv, keys.tau_group
@@ -424,6 +453,7 @@ def rewrite_gguf(
     if apply_alg2:
         writer.add_uint32("aloepri.alg2_beta", int(alg2_beta))
         writer.add_float32("aloepri.alg2_gamma", float(alg2_gamma))
+        writer.add_bool("aloepri.qk_norm_matrix", bool(alg2_qk_norm_matrix))
     if mode == "keymat":
         writer.add_float32("aloepri.kappa_e", float(kappa_e))
         writer.add_float32("aloepri.kappa", float(kappa))
@@ -436,6 +466,30 @@ def rewrite_gguf(
         name = t.name
         arr = arrays[name]
         cls = classify(name)
+
+        # Matrix-Γ form: intercept attn_{q,k}_norm.weight BEFORE the cls
+        # dispatch so we replace the 1D γ tensor with the 2D Γ = MᵀDM.
+        # Otherwise `cls == "unchanged"` writes the 1D tensor and continues.
+        if (
+            alg2_qk_norm_matrix
+            and apply_alg2
+            and name.startswith("blk.")
+        ):
+            stripped = stripped_tensor_name(name)
+            if stripped in ("attn_q_norm.weight", "attn_k_norm.weight"):
+                layer_idx = int(name.split(".", 2)[1])
+                keys = alg2_per_layer.get(layer_idx)
+                assert keys is not None, f"missing alg2 keys for layer {layer_idx}"
+                gamma = arr.astype(np.float64)
+                assert gamma.ndim == 1 and gamma.shape[0] == head_dim_a, \
+                    f"unexpected {stripped} shape {gamma.shape}"
+                M = (keys.q_matrix if stripped == "attn_q_norm.weight"
+                     else keys.k_matrix).astype(np.float64)
+                gamma_matrix = (M.T @ np.diag(gamma) @ M).astype(np.float32)
+                writer.add_tensor(name, gamma_matrix,
+                                  raw_dtype=gguf.GGMLQuantizationType.F32)
+                n_changed += 1
+                continue
 
         if cls == "unchanged":
             out_arr = arr.astype(np.float32) if arr.ndim <= 1 else arr.astype(np.float32)
@@ -483,13 +537,21 @@ def rewrite_gguf(
                 ):
                     q_feat = alg2_q_feature_orders[layer_idx]
                     kv_feat = alg2_kv_feature_orders[layer_idx]
-                    # Qwen3: head-shuffle only. q_matrix/k_matrix are identity
-                    # so we pass None for dense_transform — apply just the
-                    # feature_order permutation on axis 0 (Q/K/V) or axis 1 (O).
+                    # Intra-head dense transform: block-diag M repeated per head.
+                    # When alg2_qk_norm_matrix=False, keys.q_matrix = I — the
+                    # dense_transform reduces to identity, so passing it is a
+                    # no-op equivalent to passing None.
+                    q_dense = alg2._block_diag_repeat(keys.q_matrix, n_q_heads) \
+                        if alg2_qk_norm_matrix else None
+                    k_dense = alg2._block_diag_repeat(keys.k_matrix, n_kv_heads) \
+                        if alg2_qk_norm_matrix else None
+                    # V doesn't get an intra-head transform under matrix-Γ
+                    # either: that's a paper-distinct M_v and we don't deploy
+                    # it. Keep V's dense_transform None.
                     if stripped == "attn_q.weight":
-                        out_arr = alg2.apply_qkv_output_transform(out_arr, None, q_feat)
+                        out_arr = alg2.apply_qkv_output_transform(out_arr, q_dense, q_feat)
                     elif stripped == "attn_k.weight":
-                        out_arr = alg2.apply_qkv_output_transform(out_arr, None, kv_feat)
+                        out_arr = alg2.apply_qkv_output_transform(out_arr, k_dense, kv_feat)
                     elif stripped == "attn_v.weight":
                         out_arr = alg2.apply_qkv_output_transform(out_arr, None, kv_feat)
                     elif stripped == "attn_output.weight":
@@ -596,6 +658,16 @@ def main(argv: list[str] | None = None) -> int:
                         help="Ĥ_qk per-block scale lower bound (reference default 0.95).")
     parser.add_argument("--alg2-qk-scale-max", type=float, default=1.05,
                         help="Ĥ_qk per-block scale upper bound (reference default 1.05).")
+    parser.add_argument("--alg2-qk-norm-matrix", action="store_true",
+                        help="Bake R̂_qk into W_q/W_k output axis AND replace 1D γ_q/γ_k "
+                             "with 2D Γ = MᵀDM (paper Algorithm 2 intra-head on Qwen3). "
+                             "Requires the patched llama.cpp kernel branch that detects "
+                             "aloepri.qk_norm_matrix metadata. Forces scale_range to "
+                             "(1.0, 1.0). See docs/research/aloepri-qk-norm-matrix-gamma-threat-model.md.")
+    parser.add_argument("--alg2-h-hadamard-signs", action="store_true",
+                        help="Use ±1 Walsh-Hadamard Ĥ_qk instead of identity. Combine "
+                             "with --alg2-qk-norm-matrix: keeps M_q orthogonal (H is "
+                             "involutive), adds per-pair sign flips to the obfuscation.")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
 
@@ -610,7 +682,9 @@ def main(argv: list[str] | None = None) -> int:
                        noise_seed=args.noise_seed,
                        apply_alg2=args.alg2, alg2_seed=args.alg2_seed,
                        alg2_beta=args.alg2_beta, alg2_gamma=args.alg2_gamma,
-                       alg2_qk_scale_range=(args.alg2_qk_scale_min, args.alg2_qk_scale_max))
+                       alg2_qk_scale_range=(args.alg2_qk_scale_min, args.alg2_qk_scale_max),
+                       alg2_qk_norm_matrix=args.alg2_qk_norm_matrix,
+                       alg2_h_hadamard_signs=args.alg2_h_hadamard_signs)
     log.info("done: %s", info)
     return 0
 
