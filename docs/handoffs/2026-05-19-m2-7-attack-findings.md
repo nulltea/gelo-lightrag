@@ -155,13 +155,15 @@ broken.
   mean 15.4 words. First 65 = original hand-curated; rest = PIQA
   goal+solution pairs filtered to 6–25 words.
 
-**Captures (new, ~160 MB total — not committed):**
+**Captures (new, ~160 MB total — gitignored, kept locally):**
 - `evals/aloepri-attacks/snapshots/m2_7-plain-512/`
 - `evals/aloepri-attacks/snapshots/m2_7-hidden-512/`
   Both contain `hidden.safetensors` + `hidden.meta.json` (attn_norm-0
   only — 512 prompts × ~14 tok mean × 2048 (plain) or 2304 (obf) dims).
+  Regenerable from the patched llama.cpp + the corpus + the §05 GGUF;
+  cheap (~30 s per condition).
 
-**Results JSONs (new — small, worth committing):**
+**Results JSONs (new — committed in `fd531c4`):**
 - `evals/aloepri-attacks/results/m2_7-ima-paper-like-sweep-plain.json`
   (epochs=4)
 - `evals/aloepri-attacks/results/m2_7-ima-paper-like-sweep-plain-e8.json`
@@ -208,28 +210,29 @@ needed before the fix; the harness will collect it after.
 
 ## Working-tree state at handoff
 
+All changes committed on `path-2-aloepri-gemma`. Four commits land
+the M2.7 work:
+
 ```
- M Cargo.toml                                         # untouched this session
- M docs/prototype/aloepri-llm.html                    # §08 updated
-?? docs/plans/handoff-aloepri-quantisation-and-alg2-gaps.md
-?? docs/prototype/aloepri-attack-harness-findings.md
-?? docs/prototype/aloepri-attack-harness-followups.md
-?? evals/                                             # full M2.7 harness + captures
-?? docs/handoffs/2026-05-19-m2-7-attack-findings.md   # this doc
+4919b55  docs(README): document M2.7 submodule + docker build flow
+3ccfed0  path-2: pin vendor/llama.cpp at nulltea fork (M2.7 commit baked in)
+f1e7088  path-2: vendor/llama.cpp as submodule + M2.7 patch on top
+fd531c4  path-2: M2.7 — AloePri attack-resistance harness against §05 obfuscated GGUF
 ```
 
-Plus uncommitted changes in `vendor/llama.cpp/common/{common.h, common.cpp, debug.h, debug.cpp, arg.cpp}` (M2.7 tensor-dump patch).
+Working tree is clean. Branch is **not** pushed to remote.
 
-**Recommended commit split for next session:**
-1. **vendor/llama.cpp tensor-dump patch** — 5 files, ~80 lines, the
-   M2.7 capture hook.
-2. **evals/aloepri-attacks/ harness + result JSONs + corpus + §08
-   doc** — everything else.
-
-**Don't commit** the large capture safetensors
-(`evals/aloepri-attacks/snapshots/m2_7-{plain,hidden,plain-512,hidden-512,tokens}/`
-+ `qwen3-1.7b-*/`). Add a `snapshots/` entry to `.gitignore`. Result
-JSONs are small and worth committing as ground truth.
+**What lives where now:**
+- `vendor/llama.cpp` is a git submodule pinned at commit `49680b131`
+  on `github.com/nulltea/llama.cpp` branch `m2_7-tensor-dump`
+  (= upstream `ggml-org` master + the M2.7 tensor-dump commit).
+  Fresh clones get patched source via `git submodule update --init`.
+- `evals/aloepri-attacks/snapshots/` is gitignored — none of the
+  multi-GB capture safetensors are in the repo. Result JSONs in
+  `evals/aloepri-attacks/results/` are the version-controlled
+  summaries (committed).
+- `Cargo.toml` has `evals/aloepri-attacks` added as a workspace
+  member (single-line addition, committed in `fd531c4`).
 
 ## Boundaries the session was operating under (still apply)
 
