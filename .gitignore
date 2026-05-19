@@ -6,3 +6,13 @@ crates/*/.fastembed_cache/
 # AOCL-BLIS source + install (built by scripts/install-aocl-blis.sh)
 vendor/aocl-blis/
 vendor/aocl-install/
+# Path-2 AloePri vendored deps + build artifacts
+# vendor/llama.cpp is a git submodule pinned at upstream master.
+# The M2.7 tensor-dump hook is a patch at
+# evals/aloepri-attacks/m2_7/patches/, applied via apply-patches.sh.
+vendor/aloepri-py/
+# Python virtualenvs (one per pip-installed path)
+python/*/.venv/
+python/*/__pycache__/
+**/__pycache__/
+*.pyc

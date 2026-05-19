@@ -28,6 +28,7 @@
       <a href="reranking.html">Reranking · GELO</a>
       <a href="gelo-llm.html">Generation · GELO</a>
       <a href="graphrag.html">GraphRAG · Compass</a>
+      <a href="aloepri-llm.html">Generation · AloePri</a>
     </div>
   </nav>
 
@@ -530,8 +531,21 @@
         </ul>
         <span class="arrow">read more</span>
       </a>
-      <a class="path-card" href="#hardware">
+      <a class="path-card" href="aloepri-llm.html">
         <div class="num">§G</div>
+        <h3>Generation · AloePri</h3>
+        <p class="tagline"><em>Forward-looking.</em> Second private-inference path for the generative LLM step, complementary to the GELO TEE-GPU stack. The Qwen3 1.7B weights are rewritten once offline into an obfuscated GGUF (covariant obfuscation, arXiv 2603.01499); stock <code>llama-server</code> hosts it without a fork; the trusted client wrapper holds only a secret token permutation τ and the tokenizer. Prompts cross the wire as an integer-array of obfuscated IDs — the server never reads any plaintext. Trade vs GELO: no TEE required, in exchange for static obfuscation (TTRSR ≤ 15% empirical, not information-theoretic per-batch).</p>
+        <ul>
+          <li>demonstrator: Qwen3 1.7B Q8_0 plaintext → fp32 obfuscated GGUF (8.6 GB)</li>
+          <li><code>obfuscate_qwen3_gguf</code> · offline weight rewriter (Algorithm 1 keymat · §5.2.5 norm fusion · Π · α<sub>e</sub>/α<sub>h</sub> noise · inter-head shuffle)</li>
+          <li><code>AloePriClient</code> · trusted-side τ-map over native <code>/completion</code> int-array endpoint</li>
+          <li>Qwen3 QK-norm blocks the paper's intra-head Algorithm 2 transforms — inter-head shuffle only deployed; ISA defense partial (see §08 of the doc)</li>
+          <li>Gemma 4 deferred: 5 residual norm sites per block push κ-compounding past comfortable accuracy bounds</li>
+        </ul>
+        <span class="arrow">read more</span>
+      </a>
+      <a class="path-card" href="#hardware">
+        <div class="num">§H</div>
         <h3>Hardware</h3>
         <p class="tagline">AMD EPYC SEV-SNP for the TEE, commodity Vulkan GPU via VFIO passthrough for offload. No confidential-compute GPU needed — GELO masks make the GPU information-theoretically blind regardless.</p>
         <ul>
@@ -606,6 +620,7 @@
         <li><a href="storage.html">Storage · CAPRISE-at-rest</a> — production storage path · two-party HKDF</li>
         <li><a href="storage-remoterag.html">Storage · RemoteRAG</a> — alternative explored, not pursued</li>
         <li><a href="graphrag.html">GraphRAG · Compass</a> — shipped · Variant A · Ring-ORAM + XorMM under SEV-SNP · M0–M8.1 · benched</li>
+        <li><a href="aloepri-llm.html">Generation · AloePri</a> — forward-looking · obfuscated Gemma 4 served via unmodified vLLM · no TEE in the loop</li>
         <li><a href="caprise-two-party-kdf.md">CAPRISE two-party KDF spec</a> — Option 3 design + delivery</li>
       </ul>
     </div>

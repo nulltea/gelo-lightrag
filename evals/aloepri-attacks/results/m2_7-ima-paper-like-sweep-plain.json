@@ -1,0 +1,72 @@
+{
+  "format": "aloepri_m2_7_ima_paper_like_sweep_v1",
+  "captures_dir": "evals/aloepri-attacks/snapshots/m2_7-plain-512",
+  "model_id": "Qwen/Qwen3-1.7B",
+  "epochs": 4,
+  "batch_size": 8,
+  "lr": 0.0003,
+  "inverter_hidden": 256,
+  "seed": 20260518,
+  "sweep": [
+    {
+      "n_prompts": 64,
+      "top1": 0.013333333656191826,
+      "top10": 0.057777777314186096,
+      "n_train_rows": 679,
+      "n_test_rows": 225,
+      "final_train_loss": 11.528315544128418,
+      "wall_s": 0.91,
+      "risk_level": "low"
+    },
+    {
+      "n_prompts": 128,
+      "top1": 0.09765625,
+      "top10": 0.25390625,
+      "n_train_rows": 1610,
+      "n_test_rows": 512,
+      "final_train_loss": 5.391624927520752,
+      "wall_s": 0.57,
+      "risk_level": "low"
+    },
+    {
+      "n_prompts": 192,
+      "top1": 0.0911458358168602,
+      "top10": 0.2825520932674408,
+      "n_train_rows": 2614,
+      "n_test_rows": 768,
+      "final_train_loss": 3.920367479324341,
+      "wall_s": 0.87,
+      "risk_level": "low"
+    },
+    {
+      "n_prompts": 256,
+      "top1": 0.09785647690296173,
+      "top10": 0.3224603831768036,
+      "n_train_rows": 3430,
+      "n_test_rows": 1073,
+      "final_train_loss": 3.494213581085205,
+      "wall_s": 1.01,
+      "risk_level": "low"
+    },
+    {
+      "n_prompts": 384,
+      "top1": 0.2534722089767456,
+      "top10": 0.4583333432674408,
+      "n_train_rows": 5314,
+      "n_test_rows": 1728,
+      "final_train_loss": 2.7970130443573,
+      "wall_s": 1.53,
+      "risk_level": "medium"
+    },
+    {
+      "n_prompts": 512,
+      "top1": 0.28917196393013,
+      "top10": 0.5082802772521973,
+      "n_train_rows": 7108,
+      "n_test_rows": 2355,
+      "final_train_loss": 2.4515867233276367,
+      "wall_s": 2.13,
+      "risk_level": "medium"
+    }
+  ]
+}

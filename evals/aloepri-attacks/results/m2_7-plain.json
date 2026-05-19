@@ -1,0 +1,157 @@
+{
+  "format": "aloepri_m2_7_hidden_state_v1",
+  "captures_dir": "evals/aloepri-attacks/snapshots/m2_7-plain",
+  "model_id": "Qwen/Qwen3-1.7B",
+  "attacks": {
+    "nn": {
+      "attack": "nn",
+      "condition": "m2_7_hidden",
+      "model_id": "Qwen/Qwen3-1.7B (obfuscated, keymat-h128-pi-noise-alg2-fp32)",
+      "n_prompts": 64,
+      "n_train": 0,
+      "n_test": 904,
+      "ttrsr_top1": 1.0,
+      "ttrsr_top10": 1.0,
+      "risk_level": "high",
+      "primary_metric_name": "token_top1_recovery_rate",
+      "extra": {
+        "layer": 0,
+        "kind": "attn_norm",
+        "strip_shield": false,
+        "matching_strategy": "cosine_topk_no_train"
+      }
+    },
+    "ima": {
+      "attack": "ima",
+      "condition": "m2_7_hidden",
+      "model_id": "Qwen/Qwen3-1.7B (obfuscated, keymat-h128-pi-noise-alg2-fp32)",
+      "n_prompts": 64,
+      "n_train": 632,
+      "n_test": 137,
+      "ttrsr_top1": 0.9635036587715149,
+      "ttrsr_top10": 1.0,
+      "risk_level": "high",
+      "primary_metric_name": "token_top1_recovery_rate",
+      "extra": {
+        "layer": 0,
+        "kind": "attn_norm",
+        "best_ridge_alpha": 1.0,
+        "ridge_alpha_val_scan": [
+          {
+            "ridge_alpha": 0.0001,
+            "val_top1": 0.385185182094574
+          },
+          {
+            "ridge_alpha": 0.01,
+            "val_top1": 0.9555555582046509
+          },
+          {
+            "ridge_alpha": 1.0,
+            "val_top1": 0.9629629850387573
+          }
+        ],
+        "strip_shield": false,
+        "candidate_pool_size": 2255,
+        "embedding_cosine_similarity": 0.6813411712646484
+      }
+    },
+    "ima_paper_like": {
+      "attack": "ima_paper_like",
+      "condition": "m2_7_hidden",
+      "model_id": "Qwen/Qwen3-1.7B (obfuscated, keymat-h128-pi-noise-alg2-fp32)",
+      "n_prompts": 64,
+      "n_train": 679,
+      "n_test": 225,
+      "ttrsr_top1": 0.004444444552063942,
+      "ttrsr_top10": 0.013333333656191826,
+      "risk_level": "low",
+      "primary_metric_name": "token_top1_recovery_rate",
+      "extra": {
+        "layer": 0,
+        "kind": "attn_norm",
+        "strip_shield": false,
+        "inverter_hidden": 256,
+        "n_layers": 2,
+        "n_heads": 8,
+        "epochs": 2,
+        "batch_size": 8,
+        "lr": 0.0003,
+        "final_train_loss": 30.349990844726562,
+        "n_train_prompts": 48,
+        "n_test_prompts": 16,
+        "candidate_pool_size": 2224,
+        "embedding_cosine_similarity": 0.005219798535108566
+      }
+    },
+    "isa_hidden_state": {
+      "attack": "isa",
+      "condition": "m2_7_hidden",
+      "model_id": "Qwen/Qwen3-1.7B (obfuscated, keymat-h128-pi-noise-alg2-fp32)",
+      "n_prompts": 64,
+      "n_train": 256,
+      "n_test": 64,
+      "ttrsr_top1": 0.171875,
+      "ttrsr_top10": 0.375,
+      "risk_level": "medium",
+      "primary_metric_name": "token_top1_recovery_rate",
+      "extra": {
+        "layer": 23,
+        "kind": "attn_norm",
+        "best_ridge_alpha": 1.0,
+        "ridge_alpha_val_scan": [
+          {
+            "ridge_alpha": 0.0001,
+            "val_top1": 0.03125
+          },
+          {
+            "ridge_alpha": 0.01,
+            "val_top1": 0.078125
+          },
+          {
+            "ridge_alpha": 1.0,
+            "val_top1": 0.28125
+          }
+        ],
+        "strip_shield": false,
+        "candidate_pool_size": 2147,
+        "embedding_cosine_similarity": 0.2083752155303955,
+        "observable_type": "hidden_state"
+      }
+    },
+    "isa_attn_score": {
+      "attack": "isa",
+      "condition": "m2_7_attn",
+      "model_id": "Qwen/Qwen3-1.7B (obfuscated, keymat-h128-pi-noise-alg2-fp32)",
+      "n_prompts": 64,
+      "n_train": 256,
+      "n_test": 64,
+      "ttrsr_top1": 0.109375,
+      "ttrsr_top10": 0.296875,
+      "risk_level": "medium",
+      "primary_metric_name": "token_top1_recovery_rate",
+      "extra": {
+        "layer": 23,
+        "kind": "kq",
+        "best_ridge_alpha": 1.0,
+        "ridge_alpha_val_scan": [
+          {
+            "ridge_alpha": 0.0001,
+            "val_top1": 0.046875
+          },
+          {
+            "ridge_alpha": 0.01,
+            "val_top1": 0.15625
+          },
+          {
+            "ridge_alpha": 1.0,
+            "val_top1": 0.203125
+          }
+        ],
+        "strip_shield": true,
+        "candidate_pool_size": 2147,
+        "embedding_cosine_similarity": 0.10417714715003967,
+        "observable_type": "hidden_state"
+      }
+    }
+  }
+}

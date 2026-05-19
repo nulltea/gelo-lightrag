@@ -1,0 +1,26 @@
+[project]
+name = "aloepri-attacks"
+version = "0.1.0"
+description = "AloePri empirical attack drivers against GELO PCIe-side snapshots (Phase 2 of docs/prototype/aloepri-attack-harness.md)"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26",
+    "torch>=2.2",
+    "safetensors>=0.4",
+    "transformers>=4.40",
+    "tokenizers>=0.20",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7", "pytest-xdist>=3"]
+
+# The AloePri attack primitives live in the vendored copy at
+# `vendor/aloepri-py/`. Python harness modules add that path to
+# sys.path at import time — see `snapshots_loader.py` and
+# `attack_drivers/common.py`. This pyproject.toml exists so an
+# operator can `pip install -e .` from this directory to get the
+# common dependency set; it does **not** package the vendored code.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

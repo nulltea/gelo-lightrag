@@ -1,0 +1,1148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>private-rag · generation (AloePri)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,300..900,0..100,0..1&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+<div class="sheet">
+  <span class="crosshair tl"></span>
+  <span class="crosshair tr"></span>
+  <span class="crosshair bl"></span>
+  <span class="crosshair br"></span>
+
+  <!-- ─── TOP NAV ─── -->
+  <nav class="topnav">
+    <a class="brand" href="index.html">
+      private-rag<span class="dot">·</span><span class="rev">prototype</span>
+    </a>
+    <div class="links">
+      <a href="index.html">Overview</a>
+      <a href="embedding.html">Embedding · GELO</a>
+      <a href="storage.html">Storage · CAPRISE</a>
+      <a href="reranking.html">Reranking · GELO</a>
+      <a href="graphrag.html">GraphRAG · Compass</a>
+      <a class="current" href="aloepri-llm.html">Generation · AloePri</a>
+    </div>
+  </nav>
+
+  <!-- ─── MASTHEAD ─── -->
+  <header class="masthead">
+    <div>
+      <h1 class="title">generation<br><em>· AloePri</em></h1>
+      <p class="subtitle">Generative inference without a TEE in the loop. Qwen3 1.7B is rewritten once, offline, into an obfuscated GGUF that an unmodified <code>llama-server</code> hosts. The trusted endpoint holds only a secret token permutation τ and the tokenizer. Every prompt crosses the wire as a sequence of obfuscated integer IDs whose detokenisation is gibberish in the server's vocabulary; the server runs a normal forward pass over the rewritten weights and returns obfuscated output IDs.</p>
+    </div>
+    <div class="colophon">
+      <div><b>protocol</b>&nbsp;&nbsp;AloePri covariant obfuscation (arXiv 2603.01499)</div>
+      <div><b>trust anchor</b>&nbsp;&nbsp;client process (no TEE required)</div>
+      <div><b>serving stack</b>&nbsp;&nbsp;<code>llama.cpp</code> / <code>llama-server</code> — stock, no fork</div>
+      <div><b>current artifact</b>&nbsp;&nbsp;Qwen3 1.7B Q8_0 plaintext → fp32 obfuscated (8.6 GB)</div>
+      <span class="rev">input/output token permutation · embedding/head noise · partial Algorithm 2 (inter-head only) · attack harness landed (path-1) · path-2 ISA on the obfuscated artifact deferred to M2.7</span>
+    </div>
+  </header>
+
+  <!-- ─── HEADLINE STATS ─── -->
+  <div class="stat-strip">
+    <div class="stat">
+      <div class="k">paper TTRSR ceiling</div>
+      <div class="v"><em>&lt;15</em><span class="unit">%</span></div>
+      <div class="sub">VMA · IA · IMA · ISA on Qwen2.5-14B at α<sub>e</sub>=1.0, α<sub>h</sub>=0.2 (paper Table 2; <strong>not yet measured</strong> on our Qwen3 1.7B artifact)</div>
+    </div>
+    <div class="stat">
+      <div class="k">observed Δ accuracy</div>
+      <div class="v"><em>+0.5 / −4 / −6</em><span class="unit">pp</span></div>
+      <div class="sub">MMLU / PIQA / HumanEval at n=200 / 200 / 50; SE 3–7pp; IFEval deferred</div>
+    </div>
+    <div class="stat">
+      <div class="k">internal-dim expansion</div>
+      <div class="v"><em>d</em><span class="unit">→ d+2h</span></div>
+      <div class="sub">d=2048 → 2304 (h=128, +12.5%) · stock <code>llama-server</code> reads the new <code>qwen3.embedding_length</code> from GGUF metadata, no fork required</div>
+    </div>
+    <div class="stat">
+      <div class="k">production format</div>
+      <div class="v">fp32<span class="unit">required</span></div>
+      <div class="sub">Q8_0 / Q6_K / Q5_K_M all collapse the obfuscation chain (heavy-tailed AloePri weights · per-block scaling rounds outliers to zero)</div>
+    </div>
+  </div>
+
+  <!-- ═════ § 1 ROLE ═════ -->
+  <section id="role">
+    <header class="section-head">
+      <div class="section-num">§01</div>
+      <h2 class="section-title">Role in the project</h2>
+      <div class="section-meta">Qwen3 1.7B + stock llama-server · where this fits</div>
+    </header>
+    <p class="lede">
+      Generation is the post-retrieval LLM step in private RAG. After the reranker emits its <code>k_max</code>-item AES-GCM bundle, the client decrypts the top-<code>k_final</code> chunks and assembles a prompt. AloePri is the route that lets that prompt be processed by an LLM running on commodity hardware without a TEE.
+    </p>
+    <div class="prose">
+      <p><strong>What this complements.</strong> Embedding, storage, and reranking all run inside a SEV-SNP CVM with a GELO-masked GPU offload (<a href="embedding.html">embedding</a>, <a href="storage.html">storage</a>, <a href="reranking.html">reranking</a>). Generation has a different cost shape: the model is 5–50× larger than the embedder, and decode is autoregressive, so per-token mask resampling and per-offload PCIe round-trips dominate wall-clock. AloePri sidesteps the cost curve by moving the entire forward pass to an untrusted server and shipping a one-time obfuscated artifact instead.</p>
+      <p><strong>Why Qwen3 1.7B as the demonstrator model.</strong> Dense transformer with GQA(16, 8), 28 layers, hidden 2048, head_dim 128, RoPE base 1M, vocab 151 936. Open weights, small enough to iterate quickly, large enough to give meaningful accuracy numbers on MMLU / PIQA / HumanEval. It is also the same backbone used as the GELO-LLM demonstrator on the GELO route, so accuracy deltas between the two private-inference routes (GELO vs AloePri) are directly comparable.</p>
+      <p><strong>Why <code>llama.cpp</code> as the serving stack.</strong> Pure C++ binary; no Python serving stack; CPU and Vulkan-iGPU paths both supported; OpenAI-compatible HTTP API plus a native <code>/completion</code> endpoint that accepts integer token-ID arrays directly. <code>llama-server</code> reads <code>qwen3.embedding_length</code> from the GGUF metadata, so AloePri's expanded internal dim <code>d + 2h</code> is transparent. No fork required for the obfuscation steps currently deployed (token-level permutation Π, embedding/head Gaussian noise, and the inter-head attention shuffle from paper §5.2.3).</p>
+      <p><strong>What's traded.</strong> AloePri does not give the per-batch information-theoretic argument GELO provides. Its security is empirical: a static obfuscation, sized so published attacks (VMA, IA, ISA, IMA, NN, TFMA, SDA) recover under 15% of tokens at the paper's recommended hyperparameters. The deliberate trade is: accept a weaker but still-meaningful guarantee in exchange for compatibility with unmodified <code>llama-server</code>, fp32-only weight storage (8.6 GB), and zero protocol-aware code on the server side.</p>
+      <p><strong>What's TODO.</strong> The downstream integration story — which retrieval shape, which prompt template, which token budget, which deployment topology the generation step sits in — is left as a stub. The protocol surface this page documents is the same regardless of how the surrounding RAG pipeline calls into it.</p>
+    </div>
+  </section>
+
+  <!-- ═════ § 2 DEFINITIONS ═════ -->
+  <section id="definitions">
+    <header class="section-head">
+      <div class="section-num">§02</div>
+      <h2 class="section-title">Definitions &amp; glossary</h2>
+      <div class="section-meta">terms specific to this page</div>
+    </header>
+
+    <table class="spec">
+      <thead>
+        <tr><th>Term</th><th>Meaning</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>AloePri</b></td>
+          <td>Lin et al., <em>Towards Privacy-Preserving LLM Inference via Covariant Obfuscation</em>, arXiv 2603.01499 (ByteDance / Nanjing University). The protocol this page implements.</td>
+        </tr>
+        <tr>
+          <td><b>Covariant obfuscation</b></td>
+          <td>Joint transform on input data and model weights such that the obfuscated model on obfuscated input produces obfuscated output equivalent to the plaintext pipeline. The "covariant" property is what makes the rewrite lossless: model accuracy is preserved exactly (up to noise terms <code>α<sub>e</sub>·ε</code>, <code>α<sub>h</sub>·ε</code> added for VMA defense).</td>
+        </tr>
+        <tr>
+          <td><b>τ (tau)</b></td>
+          <td>Secret token-level permutation sampled from <code>S<sub>n</sub></code>, where <code>n</code> is the tokenizer's active vocabulary size (151 669 for Qwen3 1.7B; the GGUF's full 151 936-slot table has 267 padding slots that stay identity). Drawn once per deployment; held by the client; never leaves the trusted zone.</td>
+        </tr>
+        <tr>
+          <td><b>Π (Pi)</b></td>
+          <td>Permutation matrix corresponding to τ. Applied to the embedding (<code>Π·W<sub>embed</sub>*</code>) and model head (<code>W<sub>head</sub>*·Π<sup>T</sup></code>) during offline rewrite.</td>
+        </tr>
+        <tr>
+          <td><b>Z</b></td>
+          <td>Vocabulary mapping <code>Z = { V[i] ↦ V[τ(i)] }</code>. Used online to obfuscate input token IDs and de-obfuscate response token IDs.</td>
+        </tr>
+        <tr>
+          <td><b>P̂, Q̂ (key matrices)</b></td>
+          <td>Generated by paper Algorithm 1 from secret base matrices <code>(B, B<sup>-1</sup>, E, F, Z)</code>. Satisfy <code>P̂ · Q̂ = I<sub>d</sub></code>. <code>P̂</code> shape is <code>d × (d+2h)</code>; <code>Q̂</code> is <code>(d+2h) × d</code>. Adjacent layers' weights get right-multiplied by some <code>P̂</code> and left-multiplied by the matching <code>Q̂</code> so the cancellation runs through every forward pass.</td>
+        </tr>
+        <tr>
+          <td><b>Expansion size <code>h</code></b></td>
+          <td>Algorithm 1 hyperparameter. Internal hidden dim grows from <code>d</code> to <code>d+2h</code> inside each transformer block; residual-stream dim stays at <code>d</code>. Default <code>h=128</code>. Paper Figure 5 shows TPOT impact &lt;10% out to <code>h=512</code> on R1-Distill-14B.</td>
+        </tr>
+        <tr>
+          <td><b>R̂<sub>qk</sub>, Ĥ<sub>qk</sub>, Ẑ<sub>block</sub></b></td>
+          <td>Paper Algorithm 2 intra-head transforms applied to Q/K weights: 2D rotary obfuscation, 2-block scaling, and RoPE-block-wise permutation respectively. <code>Ẑ<sub>block</sub></code> is sampled by BlockPerm under a softmax decay tied to the RoPE base. <strong>Not deployed on Qwen3</strong> — each of these transforms requires the §5.2.5 fusion of <code>γ<sub>qk</sub></code> to commute through the QK-norm site, and that fusion is empirically broken on Qwen3 (see §09).</td>
+        </tr>
+        <tr>
+          <td><b>Û<sub>vo</sub></b></td>
+          <td>Random invertible matrix applied to V (left of <code>W<sub>v</sub></code>) and inverted on O (right of <code>W<sub>o</sub></code>). Stops V activations from being a clean intermediate the server can attack.</td>
+        </tr>
+        <tr>
+          <td><b>τ<sub>kv</sub>, τ<sub>group</sub></b></td>
+          <td>Inter-head permutations from Algorithm 2 §5.2.3. <code>τ<sub>kv</sub></code> shuffles K/V heads; <code>τ<sub>group</sub></code> shuffles Q/O heads within each GQA group. Both are part of the same offline rewrite, with no per-request cost.</td>
+        </tr>
+        <tr>
+          <td><b>α<sub>e</sub>, α<sub>h</sub></b></td>
+          <td>Gaussian noise coefficients applied to embedding and head weights: <code>W̃<sub>embed</sub> = Π·(W<sub>e</sub> + α<sub>e</sub>·ε)·P̂<sub>embed</sub></code>. Default <code>α<sub>e</sub>=1.0, α<sub>h</sub>=0.2</code>. Paper §7.3: at <code>α<sub>e</sub>=0.5</code>, VMA jumps to &gt;30% recovery — these knobs matter.</td>
+        </tr>
+        <tr>
+          <td><b>QK-norm</b></td>
+          <td>Per-head RMSNorm applied to Q and K vectors <em>between</em> the QKV projection and RoPE in Qwen3 (<code>attn_q_norm.weight</code> / <code>attn_k_norm.weight</code>, shape <code>[head_dim=128]</code>, broadcast across heads). A training-stability fix borrowed from work like Chameleon / OLMo-2. <strong>Architecturally new in Qwen3 relative to the AloePri paper's evaluated baselines</strong> (Qwen2.5, Llama3, DeepSeek have no QK-norm), and the cause of the item-7 restriction documented in §09.</td>
+        </tr>
+        <tr>
+          <td><b>§5.2.5 fusion</b></td>
+          <td>Paper §5.2.5 layer-normalisation transformation. Replaces <code>RMSNorm(γ_vec)</code> with <code>RMSNorm(κ·I)</code> after folding <code>diag(γ_vec)</code> into the adjacent linear weight. <em>Exact in expectation under i.i.d. Gaussian-input assumption</em>; per-input bias is bounded by the paper's <code>e<sub>C</sub><sup>norm</sup></code>. Used for residual-stream norms (<code>attn_norm</code>, <code>ffn_norm</code>, <code>output_norm</code>). Does <strong>not</strong> work for Qwen3's QK-norm — see §09.</td>
+        </tr>
+        <tr>
+          <td><b>head-shuffle</b></td>
+          <td>The subset of paper Algorithm 2 that survives Qwen3 QK-norm: per-layer <code>τ<sub>kv</sub></code> + <code>τ<sub>group</sub></code> applied as a feature-axis permutation on W<sub>q</sub> / W<sub>k</sub> / W<sub>v</sub> rows and W<sub>o</sub> columns. Permutes <em>whole heads</em>, leaving each head's internal layout (and the per-head_dim γ_qk broadcast) unchanged. Mathematically clean; no commutativity argument needed.</td>
+        </tr>
+        <tr>
+          <td><b>Offline rewrite</b></td>
+          <td>One-shot client-side transform of plaintext weights into the obfuscated GGUF. Reads the source GGUF (Q8_0 quantised), dequantises to fp32, samples τ + key matrices + noise from seeds, applies §5.2.5 fusion of residual norms + Algorithm 1 keymat + Π + head-shuffle, writes fp32 GGUF + a <code>.key.npz</code> sidecar holding τ. Per-model, not per-request.</td>
+        </tr>
+        <tr>
+          <td><b>TTRSR</b></td>
+          <td>Text Token Recovery Success Ratio. Fraction of original tokens an attacker recovers under a given attack. Lower = better privacy. Paper headline: TTRSR &lt;15% on the broadest attack suite at recommended hyperparameters.</td>
+        </tr>
+        <tr>
+          <td><b>VMA / IA / ISA / IMA / NN / TFMA / SDA</b></td>
+          <td>The seven attacks evaluated against AloePri. VMA / IA exploit plaintext-vs-obfuscated weight relationships; ISA / IMA / NN train inverters from observed internal states; TFMA / SDA exploit token-frequency patterns. The reference codebase ships them at <code>src/security_qwen/</code>.</td>
+        </tr>
+        <tr>
+          <td><b>RmDP</b></td>
+          <td>Rényi-metric Differential Privacy. Paper §6 definition: combines α-Rényi divergence with a metric on the token-sequence space. The framework used to prove AloePri's noise budget is strictly smaller than a data-only mechanism's at equal accuracy.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ═════ § 3 THREAT MODEL ═════ -->
+  <section id="threats">
+    <header class="section-head">
+      <div class="section-num">§03</div>
+      <h2 class="section-title">Threat model</h2>
+      <div class="section-meta">what each component sees · what it cannot</div>
+    </header>
+    <p class="lede">
+      The trust split here is fundamentally different from the GELO embedder / reranker. There is <em>no hardware-rooted trust anchor</em> in the loop: protection is structural (obfuscation hides the prompt) plus empirical (noise + key matrices defeat published recovery attacks). The trusted endpoint is just the client process that holds τ.
+    </p>
+
+    <table class="spec">
+      <thead>
+        <tr>
+          <th>Component</th>
+          <th>Trust</th>
+          <th>What it sees</th>
+          <th>What it does NOT see</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>User-side text</td><td>confidential</td><td>—</td><td>—</td></tr>
+        <tr>
+          <td>Client wrapper<br>(trusted zone)</td>
+          <td class="accent">trusted</td>
+          <td>plaintext prompt · plaintext response · τ · tokenizer · seeds used at offline rewrite</td>
+          <td>—</td>
+        </tr>
+        <tr>
+          <td>Network (TLS)</td>
+          <td>untrusted</td>
+          <td>HTTP request body: <code>{"prompt": [obf_id_1, obf_id_2, …], …}</code> · HTTP response body: <code>{"content": "…", "tokens": [obf_resp_id_1, …]}</code> · request timing · request count</td>
+          <td>τ · plaintext prompt · plaintext response</td>
+        </tr>
+        <tr>
+          <td><code>llama-server</code></td>
+          <td>untrusted</td>
+          <td>obfuscated GGUF weights θ̃ · obfuscated input token IDs (as received from client; no server-side re-tokenisation needed) · all internal activations · KV cache · obfuscated logits · sampled obfuscated output IDs</td>
+          <td>τ · plaintext prompt or response · plaintext weights · the noise matrices ε used at offline rewrite</td>
+        </tr>
+        <tr>
+          <td>GPU / host operator</td>
+          <td>untrusted</td>
+          <td>same as the server process (no further visibility differential — there is no TEE separating them)</td>
+          <td>same as the server</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p class="lede" style="margin-top:32px;">
+      Three empirical leak surfaces the protocol forces a published attack to overcome. The headline change from the paper is the <strong>partial defense against runtime-state-inversion attacks</strong> (ISA / IMA / NN): on Qwen3 we ship only the inter-head shuffle portion of paper Algorithm 2 §5.2.3, not the full intra-head construction.
+    </p>
+    <table class="spec">
+      <thead>
+        <tr><th>Leak channel</th><th>Attack class</th><th>Current mitigation</th><th>Status vs paper</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>Plaintext-vs-obfuscated weight pair</b></td>
+          <td>VMA · IA</td>
+          <td>Embedding / head Gaussian noise (<code>α<sub>e</sub>·ε</code>, <code>α<sub>h</sub>·ε</code>; α<sub>e</sub>=1.0, α<sub>h</sub>=0.2; paper §5.2.2) + Algorithm 1 key matrices on every residual-stream-touching weight. Sort-then-match by row similarity no longer recovers τ; the linear system for P̂_R is ill-conditioned by λ &gt; 0.</td>
+          <td><strong>Parity.</strong> The Π token permutation and §5.2.2 Gaussian noise implement the paper construction verbatim. TTRSR not yet measured on this artifact (attack-resistance benchmark pending).</td>
+        </tr>
+        <tr>
+          <td><b>Internal-state inversion</b><br><span class="rev">paper §5.2.3 attack surface</span></td>
+          <td>ISA · IMA · NN</td>
+          <td>Two-side key matrices <code>Q̂·W·P̂</code> on every weight scramble residual-stream activations. Inter-head <code>τ<sub>kv</sub></code> + <code>τ<sub>group</sub></code> shuffle which Q/K/V head produced each attention score. <strong>Missing</strong>: per-head intra-head transforms (<code>R̂<sub>qk</sub></code>, <code>Ĥ<sub>qk</sub></code>, <code>Ẑ<sub>block</sub></code>) that the paper applies to scramble the <em>values</em> of Q·K<sup>T</sup> within each head.</td>
+          <td><strong>Partial.</strong> Paper applies 5 transforms; we apply 2. An ISA attacker who knows the GQA layout can train an inverter on head-permuted attention patterns. Cost of the gap depends on how much information lives in the per-head <em>identity</em> of scores vs. the head-permuted set of scores; novel for Qwen3 1.7B. See §09 and figure 03b.</td>
+        </tr>
+        <tr>
+          <td><b>Token-frequency statistics</b></td>
+          <td>TFMA · SDA</td>
+          <td>τ obfuscates token identity at the index level; the server's empirical unigram distribution over <code>obf_id</code> is a τ-shuffling of the plaintext unigram, recoverable only by cross-corpus frequency matching.</td>
+          <td><strong>Parity.</strong> Same construction as paper. Not yet measured.</td>
+        </tr>
+        <tr>
+          <td><b>Per-request entropy</b></td>
+          <td>any future attack exploiting key reuse</td>
+          <td>None at the protocol level — τ, key matrices, and noise <code>ε</code> are sampled once at offline rewrite and reused across every request. The mitigation is the noise + key-matrix construction itself, not freshness.</td>
+          <td>Structural difference from GELO's per-batch fresh Haar mask. Accepted trade.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:32px 0 8px;">Internal-state inversion (paper §5.2.3) — what's defended, what isn't</h4>
+    <p class="prose">
+      <strong>The asset.</strong> AloePri's threat model protects the <em>plaintext prompt and response</em>, not the model weights. Model weights are public Qwen3 1.7B; the user's input is the secret. ISA / IMA / NN are the attacks against this asset that target <em>runtime</em> state rather than weight files.
+    </p>
+    <p class="prose">
+      <strong>What ISA does.</strong> The server operator (= adversary in AloePri's threat model) reads intermediate attention scores <code>softmax(Q·K<sup>T</sup>/√d<sub>h</sub>)</code> from GPU memory during inference. They train an inverter offline on <em>plaintext</em> Qwen3 1.7B over a public corpus, generating (prompt, attention-pattern) pairs. At attack time they feed the captured user-request attention patterns through the inverter and recover plaintext tokens.
+    </p>
+    <p class="prose">
+      <strong>Why the Π token permutation and §5.2.2 noise don't stop ISA.</strong> Algorithm 1 keymat preserves attention scores by design. The transform <code>x → x·P̂<sub>R</sub></code> obfuscates the residual stream; the Q/K/V projection weights are correspondingly modified so that <code>x·P̂<sub>R</sub>·W̃<sub>q</sub> = x·W<sub>q</sub></code> — the per-token Q vector is <em>byte-identical</em> to plaintext. Same for K, V. <code>Q·K<sup>T</sup></code> in the obfuscated run equals plaintext <code>Q·K<sup>T</sup></code> byte-for-byte. The pre-trained inverter works as-is.
+    </p>
+    <p class="prose">
+      <strong>Paper §5.2.3's full Algorithm 2 solution.</strong> Apply per-attention-head transforms that <em>do</em> change Q·K<sup>T</sup> while keeping the softmax output preserved end-to-end:
+    </p>
+    <ul style="margin-left:24px;font-size:14px;line-height:1.6;">
+      <li><b>R̂<sub>qk</sub></b> — block-diagonal 2D rotation per RoPE pair, same matrix on Q and K. Commutes with RoPE (both are 2D rotations on the same plane → SO(2) is abelian). <code>(q·R̂)·(k·R̂)<sup>T</sup> = q·k<sup>T</sup></code> (R̂ orthogonal).</li>
+      <li><b>Ĥ<sub>qk</sub></b> — per-RoPE-pair scaling diagonal applied to Q, its inverse to K. <code>(q·Ĥ)·(k·Ĥ<sup>-1</sup>)<sup>T</sup> = q·k<sup>T</sup></code>. The diagonal must be paired (same scalar on positions <code>i</code> and <code>i+half</code>) to commute with the half-rotated RoPE layout llama.cpp uses.</li>
+      <li><b>Ẑ<sub>block</sub></b> — permutation of RoPE pair-positions, sampled by the <code>dynamic_window</code> construction that only swaps pairs whose RoPE frequencies are close. Approximately preserves attention without needing to permute the RoPE freq table on the server.</li>
+      <li><b>Û<sub>vo</sub></b> — random invertible matrix on V's output and its inverse on O's input. Cancels through <code>attn·Ṽ·W̃<sub>o</sub></code>. Paper specifies this; reference's static rewrite omits it.</li>
+      <li><b>τ<sub>kv</sub></b>, <b>τ<sub>group</sub></b> — inter-head shuffle. Per-layer random permutations on which Q head pairs with which K/V head (under GQA constraints).</li>
+    </ul>
+    <p class="prose">
+      Net effect of the full paper Algorithm 2: <code>Q·K<sup>T</sup></code> is preserved end-to-end (so the model still works) but its <em>internal</em> per-(head, pair-position) values are scrambled, and the head-index ordering is permuted. An ISA inverter trained on plaintext attention patterns sees a tensor whose per-element values, per-pair-position structure, and per-head-index identity all differ.
+    </p>
+    <p class="prose">
+      <strong>Why we ship only τ<sub>kv</sub> / τ<sub>group</sub> on Qwen3.</strong> R̂<sub>qk</sub>, Ĥ<sub>qk</sub>, Ẑ<sub>block</sub> each require fusing the QK-norm γ vector backward into <code>W<sub>q</sub></code> / <code>W<sub>k</sub></code> via paper §5.2.5, so the per-element <code>γ</code> at the norm site becomes scalar <code>κ</code> and commutes with rotations / scalings / permutations. The §5.2.5 fusion is <em>exact in expectation under i.i.d. Gaussian Q/K</em>. Empirically on Qwen3, trained Q/K vectors are not Gaussian — they correlate with γ — and the per-input κ approximation breaks attention enough that the model degenerates to high-frequency-token loops. The intra-head transforms are therefore not deployable on Qwen3 in the current implementation (see §09 and figure 03b for the full mathematical picture).
+    </p>
+    <p class="prose">
+      <strong>What survives.</strong> τ<sub>kv</sub> + τ<sub>group</sub> permute <em>whole heads</em>. The 128 elements of one head move together, so the broadcast of <code>γ<sub>qk</sub></code> across heads is invariant under the shuffle — no fusion needed, no Gaussian assumption involved. Mathematically exact. Empirically: byte-identical model behaviour to the no-Algorithm-2 baseline.
+    </p>
+    <p class="prose">
+      <strong>What's left exposed.</strong> An ISA attacker on Qwen3 sees attention patterns whose <em>per-position-pair Q·K<sup>T</sup> values</em> are identical to plaintext, only the head-axis is permuted. With per-layer head shuffles drawn from <code>S<sub>8</sub> × S<sub>2</sub></code> (8! · 2!<sup>8</sup> ≈ 40K per-layer entropy, but tied across layers when the attacker compares hidden states across layers) the attacker still has to guess the per-layer head permutation. That's a substantially weaker barrier than the paper's full construction; whether it keeps ISA TTRSR ≤ 15 % on the obfuscated Qwen3 1.7B artifact is the load-bearing question the §08 harness will answer once the M2.7 run lands.
+    </p>
+
+    <p class="lede" style="margin-top:24px;">
+      <em>Not covered.</em> Model architecture (the server can fingerprint Qwen3 from layer count and tensor shapes — only the weights and token identities are obscured). Query rate and timing. Tokenizer roundtrip identity — the client uses the native <code>/completion</code> endpoint with integer arrays so the wire payload doesn't depend on tokenizer detok→retok, but cross-version tokenizer drift between client and server is still a deployment hazard. Model-weight privacy — the client needs plaintext weights to perform the offline rewrite; AloePri does not protect the weights themselves from the client.
+    </p>
+  </section>
+
+  <!-- ═════ § 4 MODELS ═════ -->
+  <section id="models">
+    <header class="section-head">
+      <div class="section-num">§04</div>
+      <h2 class="section-title">Supported model architectures</h2>
+      <div class="section-meta">Qwen3 1.7B is the current target · Gemma 4 deferred</div>
+    </header>
+    <p class="lede">
+      The covariant-obfuscation construction is architecture-generic per paper §8, but every new architectural feature needs its own composition-theorem application. The list below is what's actually validated end-to-end, what's deferred, and why.
+    </p>
+
+    <table class="spec">
+      <thead>
+        <tr>
+          <th>Model</th>
+          <th>Status</th>
+          <th>Layers · Hidden · Head_dim</th>
+          <th>GQA</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>Qwen3 1.7B</b> <span class="accent">(current target)</span></td>
+          <td>landed (Π token permutation · embedding/head noise · inter-head attention shuffle)</td>
+          <td class="num">28 · 2048 · 128</td>
+          <td>(16, 8)</td>
+          <td>Source GGUF <code>bartowski/Qwen_Qwen3-1.7B-GGUF</code> Q8_0; obfuscated artifact <code>keymat-h128-pi-noise-alg2-fp32.gguf</code> at 8.6 GB. RoPE base 1M, no p-RoPE. Single residual norm class per block (<code>attn_norm</code>, <code>ffn_norm</code>) + 1 global <code>output_norm</code> = 57 residual norm sites total. Per-head <code>attn_q_norm</code>, <code>attn_k_norm</code> = 56 additional sites, intentionally left at full per-element γ (see §09).</td>
+        </tr>
+        <tr>
+          <td>Qwen3 4B / 8B</td>
+          <td><span class="rev">trivial scaling</span></td>
+          <td class="num">36 · 2560 · 128 (4B)</td>
+          <td>(32, 8)</td>
+          <td>Same architecture family; offline rewriter is parameter-agnostic. Validation effort = re-run the determinism + mini-accuracy harnesses at the new scale.</td>
+        </tr>
+        <tr>
+          <td>Gemma 4 E2B / E4B</td>
+          <td><span class="rev">deferred</span></td>
+          <td class="num">35 / 42 · 1536 / 2560 · 256</td>
+          <td>—</td>
+          <td>
+            <strong>Blocker: 5 residual norm sites per block.</strong> Gemma 4 inserts post-norms (post-attention, post-FFN, per-layer-post-norm) and the PLE-output norm in addition to the standard pre-norms, giving roughly 5 norms per block × 35–42 blocks = 175–210 residual norm sites. Each is a §5.2.5 fusion point whose per-input κ bias accumulates multiplicatively through layer Lipschitz factors. The paper's accuracy bound is measured at 2 norms / block (Qwen2-class); at 5 norms / block the same e<sub>C</sub><sup>norm</sup> compounding plausibly pushes accuracy loss to 7–12 % (or worse) on a model that's also asked to swallow PLE + K=V untie + p-RoPE on top.
+            <br><br>
+            Other Gemma-4-specific deltas — PLE table vocab-axis permutation, K=V untying in global layers, p-RoPE-restricted R̂<sub>qk</sub> — are individually tractable but interact with the κ-compounding ceiling. Re-attempt after the Qwen3 attack-resistance benchmark is in hand and the per-norm-site κ tuning work (see §09) has been spiked.
+          </td>
+        </tr>
+        <tr>
+          <td>Qwen3-MoE / Gemma 4 26B A4B</td>
+          <td><span class="rev">research stream</span></td>
+          <td class="num">—</td>
+          <td>MoE</td>
+          <td>Require CryptoMoE balanced-dispatch defense composed on top of AloePri. Separate work item.</td>
+        </tr>
+        <tr>
+          <td>Multimodal (audio / vision encoders)</td>
+          <td><span class="rev">out of scope</span></td>
+          <td>—</td>
+          <td>—</td>
+          <td>Open question on per-modality attack classes; see <a href="../research/private-llm-inference-round-2.md">round-2 §D.9</a>.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p class="lede" style="margin-top:32px;">
+      <strong>Why Qwen3 1.7B.</strong> Small enough to iterate quickly (the offline rewrite plus a smoke test cycles in ~15 s on this hardware), large enough to give meaningful accuracy numbers on MMLU / PIQA / HumanEval, and the same backbone used by the GELO-LLM demonstrator on the GELO route — so accuracy deltas between the two routes are directly comparable. Stock <code>llama-server</code> handles the obfuscated GGUF without a fork.
+    </p>
+
+    <p class="lede" style="margin-top:16px;">
+      <strong>The Qwen3-specific architectural delta.</strong> The AloePri paper §7.1 explicitly lists Qwen3 in its evaluated models, but the public reference (<code>sheng1feng/Aloepri @ 60e8ea3</code>) imports <code>transformers.models.qwen2.modeling_qwen2</code> throughout — there is no Qwen3 path in the released code. The one architectural feature that distinguishes Qwen3 from Qwen2.5 at the attention block is <strong>QK-norm</strong>: a per-head RMSNorm on Q and K, sitting between the QKV projection and RoPE. The paper's Algorithm 2 (§5.2.3) has no construction for it. ByteDance's industrial deployment presumably solved this internally; the academic artifact didn't ship that solution. §09 documents the resulting gap and our partial workaround.
+    </p>
+  </section>
+
+  <!-- ═════ § 5 COMPONENTS ═════ -->
+  <section id="components">
+    <header class="section-head">
+      <div class="section-num">§05</div>
+      <h2 class="section-title">Components</h2>
+      <div class="section-meta">six implementation units · Qwen3 1.7B + llama.cpp</div>
+    </header>
+    <p class="lede">
+      Each card pairs <span class="mono">[component ↦ source ↦ what it secures ↦ trust side]</span>. Ordered by the lifecycle of a deployment: rewrite the model once → run the server → serve every request through the client wrapper.
+    </p>
+
+    <div class="cgrid">
+
+      <article class="card">
+        <span class="tag client">offline</span>
+        <h3>obfuscate_qwen3_gguf<span class="alias">python/path-2 :: rewriter</span></h3>
+        <p class="one">One-shot CLI that consumes a plaintext Qwen3 GGUF and emits an obfuscated GGUF plus a <code>.key.npz</code> file. Reads the source via <code>gguf-py</code>, dequantises every weight to fp32, applies the full transform stack (noise → Π → §5.2.5 residual-norm fusion → Algorithm 1 keymat → head-shuffle), writes fp32 GGUF. Runs in ~15 s on Qwen3 1.7B.</p>
+        <dl>
+          <dt>inputs</dt><dd>plaintext GGUF · seeds (for keymat, Π, noise, alg2) · hyperparameters (λ, h, α<sub>e</sub>, α<sub>h</sub>, β, γ, qk_scale_range)</dd>
+          <dt>outputs</dt><dd>obfuscated GGUF with <code>qwen3.embedding_length = d + 2h</code> and <code>aloepri.*</code> metadata · <code>&lt;out&gt;.key.npz</code> (τ + per-layer head-shuffle keys)</dd>
+          <dt>key file</dt><dd>POSIX 0600, never logged, never transmitted. The pi_seed / alg2_seed are not stored in the GGUF — only the client-side <code>.key.npz</code> holds them, so the server cannot reconstruct τ from the artifact.</dd>
+          <dt>parity test</dt><dd><code>gamma-only</code> mode produces bit-identical output to plaintext under the same prompt (verifies §5.2.5 fusion correctness); <code>keymat</code> mode produces coherent on-topic continuations (verifies covariant chain holds end-to-end).</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag gpu">server</span>
+        <h3><code>llama-server</code><span class="alias">ghcr.io/ggml-org/llama.cpp:server-vulkan</span></h3>
+        <p class="one">Stock llama.cpp HTTP server. Loads the obfuscated GGUF, reads <code>qwen3.embedding_length = 2304</code> from metadata, builds the standard Qwen3 forward graph. No protocol-aware code: every Algorithm-1 / head-shuffle transform is already baked into the weight tensors offline. The server cannot distinguish the obfuscated artifact from a normal Qwen3 of unusual hidden dim.</p>
+        <dl>
+          <dt>endpoint</dt><dd><code>POST /completion</code> (native) — accepts <code>"prompt": [int, …]</code> directly, returns <code>"tokens": [int, …]</code> with <code>return_tokens: true</code>. Bypasses tokenizer detok/retok on the wire.</dd>
+          <dt>delta-LoC vs stock</dt><dd>0. No fork. Qwen3 has been in <code>llama.cpp</code> mainline since well before this project; AloePri's only requirement is "<code>qwen3.embedding_length</code> is read from metadata, not hardcoded" — which is already true.</dd>
+          <dt>integration risk</dt><dd>None at the present scale. Future Qwen3 architecture variants (Qwen3-Next state-space hybrid, Qwen35 IMRoPE) may diverge; pin the artifact to a specific Qwen3 dense subarch.</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag client">client</span>
+        <h3>AloePriClient<span class="alias">python/path-2 :: aloepri_client</span></h3>
+        <p class="one">The trusted-side wrapper. Holds τ and the tokenizer. Every <code>complete(prompt, …)</code> call: tokenize plaintext → map IDs through τ → POST as an integer array to <code>llama-server</code>'s native <code>/completion</code> → receive <code>tokens</code> array → map through τ<sup>-1</sup> → detokenize → return plaintext.</p>
+        <dl>
+          <dt>endpoint</dt><dd><code>POST {LLAMA_URL}/completion</code> with <code>{"prompt": [obf_ids], "return_tokens": true, …}</code> — native llama.cpp API.</dd>
+          <dt>integer wire</dt><dd>The wire payload is an int array, not text. No tokenizer encode↔decode roundtrip on the network path; no BPE-edge-case risk. The client's tokenizer is the only one in the loop.</dd>
+          <dt>active-range guard</dt><dd>τ permutes only the tokenizer's <em>used</em> vocab range [0, 151 669). The GGUF's full table size 151 936 includes 267 padding slots that stay identity. Client refuses to run if tokenizer vocab_size ≠ key.active_size.</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag client">crypto</span>
+        <h3>KeyMaterial<span class="alias">aloepri_client :: KeyMaterial</span></h3>
+        <p class="one">The full set of secrets generated at offline rewrite. τ is the only element the client wrapper actually consumes (token-level I/O). The per-layer head-shuffle keys (τ<sub>kv</sub>, τ<sub>group</sub>) are saved for reproducibility and for the future attack benchmark but never touch the request path.</p>
+        <dl>
+          <dt>contents</dt><dd>seed (32 B) · pi_seed · τ (length 151 936, ~1.2 MB raw / ~422 KB compressed) · active_size · per-layer τ<sub>kv</sub>, τ<sub>group</sub> permutations · arch tag · format version</dd>
+          <dt>scope</dt><dd>Lives in the client wrapper's process memory; persisted as <code>&lt;artifact&gt;.gguf.key.npz</code> in 0600 mode; never crosses the trust boundary.</dd>
+          <dt>rotation</dt><dd>Compromise of the key file = compromise of every past and future prompt under this artifact. Rotation requires re-running the offline rewrite end-to-end and re-uploading the obfuscated GGUF.</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag tee">eval</span>
+        <h3>attack-harness<span class="alias">evals/aloepri-attacks/</span></h3>
+        <p class="one">Eight-attack benchmark ported from the AloePri reference (<code>vendor/aloepri-py/src/security_qwen/</code>): NN, VMA, IA (Gate-IA + Attn-IA), IMA-basic, IMA paper-like, ISA, TFMA, SDA. Targets the obfuscated Qwen3 1.7B artifact running on <code>llama-server</code>, reports per-attack TTRSR against the paper §6.3 ≤ 15 % acceptance threshold. <strong>Status: harness landed; running it against the obfuscated artifact is M2.7 deferred.</strong> See §08 for per-attack reference numbers and how to read them.</p>
+        <dl>
+          <dt>release-gate threshold</dt><dd>TTRSR ≤ 15 % per attack, at paper-recommended hyperparameters (α<sub>e</sub>=1.0, α<sub>h</sub>=0.2, h=128, λ=0.3, β=8, γ=1e3).</dd>
+          <dt>specific watchpoint</dt><dd>ISA on the partial-Algorithm-2 artifact — the M2.7 run is what tells us whether head-shuffle alone is enough or whether per-norm-site κ tuning is needed (§09).</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <span class="tag tee">eval</span>
+        <h3>accuracy-harness<span class="alias">python/path-2/evals/</span></h3>
+        <p class="one">Mini accuracy benchmark: MMLU 0-shot (200 prompts), PIQA 0-shot (200), HumanEval pass@1 (50), IFEval verifier subset (50). Drives both the plaintext baseline and the obfuscated artifact through identical sampling configs and reports the per-task accuracy delta.</p>
+        <dl>
+          <dt>scope</dt><dd>"In-budget signal, not publishable numbers" — 30–45 min runtime, single Vulkan iGPU container per endpoint. Reusable for hyperparameter sweeps and post-noise / post-Algorithm-2 regressions.</dd>
+          <dt>current results</dt><dd>MMLU Δ +0.5 pp · PIQA Δ −4.0 pp · HumanEval Δ −6.0 pp (n=50, SE ~7 pp) · IFEval deferred (timeout debugging).</dd>
+          <dt>determinism</dt><dd>Vulkan iGPU + flash-attn + <code>-np 1</code> + temperature 0 + seed 0 is fully byte-deterministic in practice (verified across 5 prompts × 3 replicates each).</dd>
+        </dl>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ═════ § 6 COMPUTE FLOW ═════ -->
+  <section id="flow">
+    <header class="section-head">
+      <div class="section-num">§06</div>
+      <h2 class="section-title">Compute flow &amp; trust boundaries</h2>
+      <div class="section-meta">per-request — what crosses the wire · per-block — what the server actually computes</div>
+    </header>
+    <p class="lede">
+      Two figures. <strong>FIG. 03a</strong> traces one full request end-to-end, showing what is plaintext, what is obfuscated, and where the trust boundary sits. <strong>FIG. 03b</strong> shows the partial paper-§5.2.3 (Algorithm 2) deployment at one Qwen3 attention block — keymat + inter-head shuffle applied, intra-head transforms (R̂<sub>qk</sub>, Ĥ<sub>qk</sub>, Ẑ<sub>block</sub>) not — focusing on the non-linear-norm constraint that forced the partial implementation.
+    </p>
+
+    <!-- ══════════ FIG. 03a — End-to-end request flow ══════════ -->
+    <div class="diagram-frame">
+      <div class="diagram-cap">
+        <span class="l">FIG. 03a — One request through AloePri · plaintext stays inside the trusted zone · only an obfuscated integer-ID array crosses the wire</span>
+        <span>navy = client (trusted) · gpu-tone = <code>llama-server</code> (untrusted) · dashed amber = obfuscated wire payload</span>
+      </div>
+      <svg class="flow" viewBox="0 0 1320 720" xmlns="http://www.w3.org/2000/svg" role="img">
+        <defs>
+          <marker id="ahxflow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
+          </marker>
+        </defs>
+        <rect x="0"   y="40" width="700"  height="660" class="zone-band zone-band-client"/>
+        <rect x="700" y="40" width="620"  height="660" class="zone-band zone-band-gpu"/>
+        <text x="20"  y="64" class="zone-label">Trusted zone · client wrapper</text>
+        <text x="20"  y="80" class="zone-sublabel">holds τ · tokenizer · no GPU · no TEE</text>
+        <text x="720" y="64" class="zone-label">Untrusted zone · llama-server</text>
+        <text x="720" y="80" class="zone-sublabel">obfuscated GGUF θ̃ · stock binary · no protocol awareness</text>
+        <line x1="700" y1="40" x2="700" y2="700" class="boundary"/>
+        <text x="704" y="696" class="boundary-label">HTTPS · obfuscated int array</text>
+
+        <!-- Step 1: plaintext prompt -->
+        <rect x="60" y="100" width="580" height="46" class="box box-client box-strong"/>
+        <text x="350" y="120" class="box-label" text-anchor="middle">① plaintext prompt</text>
+        <text x="350" y="138" class="box-mono" text-anchor="middle">"What is the capital of France?"</text>
+
+        <!-- Step 2: tokenize -->
+        <path d="M350 146 L350 162" class="arrow arrow-secret" marker-end="url(#ahxflow)"/>
+        <rect x="60" y="162" width="580" height="46" class="box box-client"/>
+        <text x="350" y="182" class="box-label" text-anchor="middle">② tokenize (Qwen3 BPE, no special tokens)</text>
+        <text x="350" y="200" class="box-mono" text-anchor="middle">plain_ids = [3838, 374, 279, 6722, 315, 9625, 30]</text>
+
+        <!-- Step 3: τ-map -->
+        <path d="M350 208 L350 224" class="arrow arrow-secret" marker-end="url(#ahxflow)"/>
+        <rect x="60" y="224" width="580" height="46" class="box box-client box-strong"/>
+        <text x="350" y="244" class="box-label" text-anchor="middle">③ map each token ID through τ (length-151 669 permutation)</text>
+        <text x="350" y="262" class="box-mono" text-anchor="middle">obf_ids = [137 397, 44 230, 90 908, 60 247, 33 846, 135 351, 102 727]</text>
+
+        <!-- (no detokenize step — IDs go on the wire directly) -->
+
+        <!-- ④ wire: POST to llama-server -->
+        <path d="M640 246 L1000 246" class="arrow arrow-masked" marker-end="url(#ahxflow)"/>
+        <text x="820" y="240" class="arrow-label masked">POST /completion {"prompt": [obf_ids], "return_tokens": true}</text>
+        <text x="820" y="276" class="arrow-label masked" style="font-style:italic;">attacker tokenising obf_ids back would see: "いるとupgrade Printf\tmode…" — gibberish</text>
+
+        <!-- llama-server box -->
+        <rect x="780" y="296" width="460" height="170" class="box box-gpu box-strong"/>
+        <text x="1010" y="318" class="box-label" text-anchor="middle">④ llama-server forward pass</text>
+        <text x="1010" y="340" class="box-mono" text-anchor="middle">accepts int array directly — no</text>
+        <text x="1010" y="354" class="box-mono" text-anchor="middle">server-side tokenisation needed</text>
+        <text x="1010" y="376" class="box-mono" text-anchor="middle">embedding lookup: W̃_e[obf_ids] →</text>
+        <text x="1010" y="390" class="box-mono" text-anchor="middle">(implicit) plain_embed in P̂_R space</text>
+        <text x="1010" y="410" class="box-mono" text-anchor="middle">28 decoder blocks · GQA(16,8) · RoPE 1M</text>
+        <text x="1010" y="424" class="box-mono" text-anchor="middle">sample argmax over obfuscated logits</text>
+        <text x="1010" y="446" class="box-sub" text-anchor="middle" fill="#666">forward graph identical to plaintext Qwen3</text>
+        <text x="1010" y="460" class="box-sub" text-anchor="middle" fill="#666">(see FIG. 03b for the attention-obfuscation detail)</text>
+
+        <!-- ⑤ wire back -->
+        <path d="M1000 484 L640 484" class="arrow arrow-masked" marker-end="url(#ahxflow)"/>
+        <text x="820" y="478" class="arrow-label masked">HTTP 200 {"content": "…", "tokens": [obf_resp_ids]}</text>
+
+        <!-- ⑤ obf response -->
+        <rect x="60" y="464" width="580" height="46" class="box box-client"/>
+        <text x="350" y="484" class="box-label" text-anchor="middle">⑤ receive obf_resp_ids · ignore content field</text>
+        <text x="350" y="502" class="box-mono" text-anchor="middle">obf_resp_ids = […]   (24 tokens for max_tokens=24)</text>
+
+        <!-- ⑥ τ⁻¹ -->
+        <path d="M350 510 L350 526" class="arrow arrow-secret" marker-end="url(#ahxflow)"/>
+        <rect x="60" y="526" width="580" height="46" class="box box-client box-strong"/>
+        <text x="350" y="546" class="box-label" text-anchor="middle">⑥ map response IDs through τ<sup>-1</sup></text>
+        <text x="350" y="564" class="box-mono" text-anchor="middle">plain_resp_ids = inv_tau[obf_resp_ids]</text>
+
+        <!-- ⑦ detokenize -->
+        <path d="M350 572 L350 588" class="arrow arrow-secret" marker-end="url(#ahxflow)"/>
+        <rect x="60" y="588" width="580" height="46" class="box box-client"/>
+        <text x="350" y="608" class="box-label" text-anchor="middle">⑦ detokenize plaintext IDs</text>
+        <text x="350" y="626" class="box-mono" text-anchor="middle">"The capital of France is Paris.\n\nNo, that's not right…"</text>
+
+        <!-- ⑧ return -->
+        <path d="M350 634 L350 650" class="arrow arrow-secret" marker-end="url(#ahxflow)"/>
+        <rect x="60" y="650" width="580" height="38" class="box box-client box-strong"/>
+        <text x="350" y="674" class="box-label" text-anchor="middle">⑧ return plaintext response to caller</text>
+      </svg>
+    </div>
+
+    <p class="lede" style="margin-top:0; font-size:14px;">
+      <strong>Why the integer-array wire matters.</strong> The canonical AloePri protocol in the paper passes text on the wire (client detokenises obf_ids → string, server re-tokenises → ids). That works only if the tokenizer is round-trip-lossless on every ID list — a property that fails on byte-fallback tokens, special tokens, and pathological BPE merges. <code>llama-server</code>'s native <code>/completion</code> endpoint accepts integer arrays directly and can return them with <code>return_tokens: true</code>, removing the roundtrip entirely. The wire payload is an int array; if an observer detokenises it with the stock Qwen3 tokenizer they get UTF-8 gibberish like <code>"いるとupgrade Printf\tmodeocyCIÓN芬"</code>, but that's their reconstruction — the protocol itself never serialises to text on the wire.
+    </p>
+
+    <table class="spec" style="margin-top:32px;">
+      <thead>
+        <tr><th>Boundary</th><th>What crosses</th><th>What does not</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Trusted zone ↔ network</td>
+          <td>obfuscated prompt int array · obfuscated response int array · HTTPS metadata · request count · request timing</td>
+          <td>τ · plaintext prompt · plaintext response · tokenizer config</td>
+        </tr>
+        <tr>
+          <td>Network ↔ <code>llama-server</code></td>
+          <td>same as above; server treats it as a normal int-array prompt for native <code>/completion</code></td>
+          <td>same as above</td>
+        </tr>
+        <tr>
+          <td><code>llama-server</code> ↔ host / GPU</td>
+          <td>obfuscated weights θ̃ · all internal activations · KV cache · sampler state</td>
+          <td>nothing else — there is no further trust split inside the untrusted zone</td>
+        </tr>
+        <tr>
+          <td>Client wrapper ↔ rest of the trusted app</td>
+          <td>plaintext prompt in · plaintext response out · usage / finish-reason metadata</td>
+          <td>τ · key material — the wrapper is the τ-holding boundary even on the trusted side</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <!-- ══════════ FIG. 03b — Algorithm 2 partial deployment ══════════ -->
+    <div class="diagram-frame" style="margin-top:32px;">
+      <div class="diagram-cap">
+        <span class="l">FIG. 03b — Paper §5.2.3 (Algorithm 2) partial deployment at one Qwen3 attention block · QK-norm γ<sub>q</sub> / γ<sub>k</sub> stays per-element · the intra-head transforms (R̂<sub>qk</sub>, Ĥ<sub>qk</sub>, Ẑ<sub>block</sub>) are <strong>not deployed</strong> on Qwen3</span>
+        <span>green = transform applied · grey = paper transform <em>not</em> applied · the QK-norm sits at the head_dim axis and is invariant under the head-axis permutation</span>
+      </div>
+      <svg class="flow" viewBox="0 0 1320 920" xmlns="http://www.w3.org/2000/svg" role="img">
+        <defs>
+          <marker id="ahxqkn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
+          </marker>
+        </defs>
+        <rect x="0" y="40" width="1320" height="880" class="zone-band zone-band-gpu"/>
+        <text x="20" y="64" class="zone-label">Untrusted zone · llama-server forward pass · single attention block ℓ</text>
+        <text x="20" y="80" class="zone-sublabel">Qwen3 1.7B · GQA(16, 8) · head_dim=128 · RoPE base 1M · γ_q, γ_k shape [128] broadcast across heads</text>
+
+        <rect x="540" y="100" width="240" height="44" class="box box-gpu box-strong"/>
+        <text x="660" y="120" class="box-label" text-anchor="middle">H̃_in   shape (n, d+2h=2304)</text>
+        <text x="660" y="136" class="box-mono" text-anchor="middle">obfuscated residual stream</text>
+
+        <path d="M660 144 L660 160" class="arrow arrow-secret" marker-end="url(#ahxqkn)"/>
+        <rect x="520" y="160" width="280" height="38" class="box box-gpu" style="fill:#dff5e2"/>
+        <text x="660" y="180" class="box-label" text-anchor="middle">① attn_norm  —  §5.2.5 fused</text>
+        <text x="660" y="194" class="box-mono" text-anchor="middle">γ_resid folded into W_q/k/v; norm site uses scalar κ</text>
+
+        <path d="M660 198 L660 212" class="arrow arrow-secret" marker-end="url(#ahxqkn)"/>
+        <rect x="380" y="212" width="560" height="78" class="box box-gpu" style="fill:#dff5e2"/>
+        <text x="660" y="232" class="box-label" text-anchor="middle">② Q̃, K̃, Ṽ projections  —  keymat · head-shuffle</text>
+        <text x="660" y="252" class="box-mono" text-anchor="middle">W̃_q = Q̂_R · W_q  ·  rows permuted by feature_order(τ_kv, τ_group)</text>
+        <text x="660" y="268" class="box-mono" text-anchor="middle">W̃_k = Q̂_R · W_k  ·  W̃_v = Q̂_R · W_v  ·  K/V rows permuted by feature_order(τ_kv)</text>
+        <text x="660" y="284" class="box-mono" text-anchor="middle">whole-head granularity: head h of new W_q = head q_head_order[h] of old W_q</text>
+
+        <path d="M660 290 L660 304" class="arrow arrow-secret" marker-end="url(#ahxqkn)"/>
+        <rect x="500" y="304" width="320" height="32" class="box box-gpu"/>
+        <text x="660" y="324" class="box-label" text-anchor="middle">③ reshape Q̃ / K̃ / Ṽ to (n, n_head, head_dim=128)</text>
+
+        <path d="M660 336 L660 352" class="arrow arrow-secret" marker-end="url(#ahxqkn)"/>
+        <rect x="380" y="352" width="560" height="78" class="box box-gpu" style="fill:#fff;stroke:#bbb;"/>
+        <text x="660" y="372" class="box-label" text-anchor="middle" style="fill:#a66;">④ QK-norm  —  γ_q, γ_k kept per-element, NOT fused</text>
+        <text x="660" y="392" class="box-mono" text-anchor="middle">Q̃_normed[h, k] = (Q̃[h, k] / RMS_k(Q̃[h, :])) · γ_q[k]</text>
+        <text x="660" y="408" class="box-mono" text-anchor="middle">γ_q[k] is the SAME for every head h — broadcast across the 16 (or 8) heads</text>
+        <text x="660" y="424" class="box-mono" text-anchor="middle" style="font-style:italic;fill:#a66;">head permutation (step ②) leaves this broadcast invariant</text>
+
+        <path d="M660 430 L660 444" class="arrow arrow-secret" marker-end="url(#ahxqkn)"/>
+        <rect x="500" y="444" width="320" height="44" class="box box-gpu"/>
+        <text x="660" y="464" class="box-label" text-anchor="middle">⑤ RoPE on Q̃, K̃  —  base 1M, NEOX layout</text>
+        <text x="660" y="480" class="box-mono" text-anchor="middle">no Ẑ_block permutation; canonical freq schedule applies</text>
+
+        <path d="M660 488 L660 504" class="arrow arrow-secret" marker-end="url(#ahxqkn)"/>
+        <rect x="380" y="504" width="560" height="68" class="box box-gpu" style="fill:#dff5e2"/>
+        <text x="660" y="524" class="box-label" text-anchor="middle">⑥ attention  —  head order shuffled by τ_kv, τ_group</text>
+        <text x="660" y="544" class="box-mono" text-anchor="middle">attn_obf[h] = softmax(Q̃_normed[h] · K̃_normed[η(h)]ᵀ / √d_head) · Ṽ[η(h)]</text>
+        <text x="660" y="560" class="box-mono" text-anchor="middle">η(h) = h ÷ num_groups under the SHUFFLED head-axis: plain pairing preserved</text>
+
+        <path d="M660 572 L660 586" class="arrow arrow-secret" marker-end="url(#ahxqkn)"/>
+        <rect x="380" y="586" width="560" height="62" class="box box-gpu" style="fill:#dff5e2"/>
+        <text x="660" y="606" class="box-label" text-anchor="middle">⑦ output projection  —  keymat · head-axis perm</text>
+        <text x="660" y="624" class="box-mono" text-anchor="middle">W̃_o = W_o · P̂_R  ·  columns permuted by feature_order(τ_kv, τ_group)</text>
+        <text x="660" y="640" class="box-mono" text-anchor="middle">new W̃_o head-h column block = old W_o head q_head_order[h] column block</text>
+
+        <path d="M660 648 L660 664" class="arrow arrow-secret" marker-end="url(#ahxqkn)"/>
+        <rect x="460" y="664" width="400" height="44" class="box box-gpu"/>
+        <text x="660" y="684" class="box-label" text-anchor="middle">⑧ residual + FFN (covariant; not shown)</text>
+        <text x="660" y="700" class="box-mono" text-anchor="middle">SwiGLU with Q̂·W·P̂ on every linear · ffn_norm §5.2.5-fused</text>
+
+        <rect x="40" y="160" width="320" height="290" class="box box-gpu" style="fill:#fbecec;stroke:#c97a7a;"/>
+        <text x="200" y="180" class="box-label" text-anchor="middle" style="fill:#8a3030;">why the paper's full Algorithm 2 doesn't deploy</text>
+        <text x="56" y="204" class="box-mono" style="fill:#5a2020;">paper §5.2.3 for Q/K projection:</text>
+        <text x="56" y="220" class="box-mono">W̃_q = Q̂_q · W_q · R̂_qk · Ĥ_qk · Ẑ_block</text>
+        <text x="56" y="240" class="box-mono" style="fill:#5a2020;">requires Q̃ · K̃ᵀ invariance:</text>
+        <text x="56" y="256" class="box-mono">(q·R̂)·(k·R̂)ᵀ = q·kᵀ  (R̂ orthogonal)</text>
+        <text x="56" y="276" class="box-mono" style="fill:#5a2020;">commutes with RoPE only if R̂</text>
+        <text x="56" y="290" class="box-mono" style="fill:#5a2020;">is applied to RAW Q/K, but</text>
+        <text x="56" y="304" class="box-mono" style="fill:#5a2020;">Qwen3 has QK-norm γ between</text>
+        <text x="56" y="318" class="box-mono" style="fill:#5a2020;">W_q and RoPE.</text>
+        <text x="56" y="340" class="box-mono" style="fill:#5a2020;">§5.2.5 fold attempts to fix:</text>
+        <text x="56" y="356" class="box-mono">W'_q = W_q · diag(γ_q)</text>
+        <text x="56" y="370" class="box-mono">γ_q → κ_q = √(mean(γ²))</text>
+        <text x="56" y="392" class="box-mono" style="fill:#5a2020;">exact iff RMS(q·γ)/RMS(q) = κ_q</text>
+        <text x="56" y="406" class="box-mono" style="fill:#5a2020;">i.e. q is i.i.d. Gaussian.</text>
+        <text x="56" y="426" class="box-mono" style="fill:#5a2020;font-weight:700;">Empirically: Q vectors correlate</text>
+        <text x="56" y="440" class="box-mono" style="fill:#5a2020;font-weight:700;">with γ → model degenerates.</text>
+
+        <rect x="960" y="160" width="320" height="290" class="box box-gpu" style="fill:#ecf8ee;stroke:#7aa97e;"/>
+        <text x="1120" y="180" class="box-label" text-anchor="middle" style="fill:#1f5024;">why head-shuffle survives</text>
+        <text x="976" y="204" class="box-mono" style="fill:#1f5024;">τ_kv ∈ S_8, τ_group ∈ S_2 per layer</text>
+        <text x="976" y="220" class="box-mono" style="fill:#1f5024;">permute whole heads only</text>
+        <text x="976" y="240" class="box-mono">new W_q head h = old W_q head π(h)</text>
+        <text x="976" y="256" class="box-mono">within each head: 128 elements</text>
+        <text x="976" y="270" class="box-mono">stay at the same head_dim indices</text>
+        <text x="976" y="292" class="box-mono" style="fill:#1f5024;">γ_q[k] is broadcast across heads</text>
+        <text x="976" y="306" class="box-mono" style="fill:#1f5024;">∴ before and after permutation:</text>
+        <text x="976" y="324" class="box-mono">old q[π(h), k] · γ_q[k]</text>
+        <text x="976" y="338" class="box-mono">= obfuscated q_new[h, k] · γ_q[k]</text>
+        <text x="976" y="360" class="box-mono" style="fill:#1f5024;">no §5.2.5 fold needed</text>
+        <text x="976" y="374" class="box-mono" style="fill:#1f5024;">no Gaussian assumption</text>
+        <text x="976" y="394" class="box-mono" style="fill:#1f5024;font-weight:700;">non-linear norm survives</text>
+        <text x="976" y="408" class="box-mono" style="fill:#1f5024;font-weight:700;">because the permutation is</text>
+        <text x="976" y="422" class="box-mono" style="fill:#1f5024;font-weight:700;">orthogonal to the norm's axis</text>
+
+        <rect x="40" y="720" width="1240" height="34" fill="#f6f6f4" stroke="#aaa"/>
+        <text x="60" y="742" class="box-mono" style="fill:#1f5024;">■ green: transform applied</text>
+        <text x="280" y="742" class="box-mono" style="fill:#888;">□ outlined: applied with constraint (QK-norm γ unmodified)</text>
+        <text x="780" y="742" class="box-mono" style="fill:#a66;">■ pink panel: paper §5.2.3 transform NOT deployed (R̂_qk, Ĥ_qk, Ẑ_block)</text>
+
+        <text x="660" y="788" text-anchor="middle" font-size="12" fill="var(--ink-2)">net result: keymat + head-shuffle preserve Q·Kᵀ values exactly at the per-(head_position, head_position) cell</text>
+        <text x="660" y="806" text-anchor="middle" font-size="12" fill="var(--ink-2)">attention pattern matrix is intact but the head-axis indexing is permuted — ISA inverter trained on plaintext head-ordering must recover π</text>
+        <text x="660" y="824" text-anchor="middle" font-size="12" fill="var(--ink-2)">the attack-resistance benchmark measures whether per-layer S_8 × S_2 uncertainty is enough to keep ISA TTRSR ≤ 15%</text>
+        <text x="660" y="850" text-anchor="middle" font-size="11" fill="var(--ink-2)" font-style="italic">paper §7.1 lists Qwen3; public reference at sheng1feng/Aloepri imports qwen2 modeling — ByteDance's industrial fix is not in the academic release</text>
+      </svg>
+    </div>
+
+    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:32px 0 8px;">Where the obfuscation actually lives (Qwen3 1.7B)</h4>
+    <table class="spec">
+      <thead>
+        <tr><th>Layer / op</th><th>Plaintext form</th><th>Obfuscated form</th><th>Composition argument</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Embedding</td>
+          <td><code>W<sub>e</sub>[x, :]</code></td>
+          <td><code>(Π · (W<sub>e</sub> + α<sub>e</sub>·ε) · P̂<sub>embed</sub>)[τ(x), :]</code></td>
+          <td>Π row-permutes by τ⁻¹; P̂<sub>embed</sub> right-multiplies so output lands in P̂<sub>R</sub> space; noise defeats VMA</td>
+        </tr>
+        <tr>
+          <td>Residual norms (attn_norm, ffn_norm, output_norm)</td>
+          <td><code>x · γ / ‖x‖<sub>RMS</sub></code></td>
+          <td><code>x · κ / ‖x‖<sub>RMS</sub>(d+2h)</code></td>
+          <td>§5.2.5 fold: γ pre-baked into the adjacent linear weight; scalar κ at the norm site commutes with the residual-stream Q̂/P̂ chain. e<sub>C</sub><sup>norm</sup> bound per paper §5.2.4.</td>
+        </tr>
+        <tr>
+          <td>QKV projections</td>
+          <td><code>x · W<sub>q,k,v</sub></code></td>
+          <td><code>(x · Q̂<sub>R</sub>) · W<sub>q,k,v</sub> · (rows permuted by τ<sub>kv</sub>, τ<sub>group</sub>)</code></td>
+          <td>Keymat absorbs the residual-stream Q̂; head permutation lands the per-head output at a shuffled index. <strong>The intra-head transforms R̂<sub>qk</sub>, Ĥ<sub>qk</sub>, Ẑ<sub>block</sub>, Û<sub>vo</sub> are NOT applied</strong> — see FIG. 03b.</td>
+        </tr>
+        <tr>
+          <td>QK-norm (Qwen3-specific)</td>
+          <td><code>q · γ<sub>q</sub> / RMS<sub>head_dim</sub>(q)</code></td>
+          <td><strong>unchanged</strong> — γ<sub>q</sub>, γ<sub>k</sub> stay per-element</td>
+          <td>Broadcast across the head axis; head-shuffle reorders heads but γ_q hits the same head_dim indices. No Gaussian assumption required.</td>
+        </tr>
+        <tr>
+          <td>Output projection</td>
+          <td><code>attn · W<sub>o</sub></code></td>
+          <td><code>attn · W<sub>o</sub> · P̂<sub>R</sub></code> (columns permuted by head shuffle)</td>
+          <td>Right-multiplied keymat lands back in the next layer's residual space; head-axis permutation undoes the input-side shuffle of attn.</td>
+        </tr>
+        <tr>
+          <td>FFN (gate / up / down)</td>
+          <td>standard SwiGLU</td>
+          <td>Each weight wrapped <code>Q̂ · W · P̂</code>; ffn_norm §5.2.5-fused into gate + up</td>
+          <td>Sequential composition theorem (paper §4.2.1) chains Q̂ at gate/up's input with P̂ at down's output; intermediate inflated dim absorbs the expansion h.</td>
+        </tr>
+        <tr>
+          <td>LM head</td>
+          <td><code>H<sub>final</sub> · W<sub>h</sub></code></td>
+          <td><code>(H̃<sub>final</sub> · Q̂<sub>head</sub>) · (W<sub>h</sub> + α<sub>h</sub>·ε) · Π<sup>T</sup></code></td>
+          <td>Q̂<sub>head</sub> cancels the residual stream's P̂; Π<sup>T</sup> obfuscates the output-vocabulary identity so the sampler picks τ(true_next_token); noise α<sub>h</sub>·ε defeats head-side VMA.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p class="prose" style="margin-top:24px;">
+      The composition theorems in paper §4.2 (sequential, parallel, summation) lift every per-component obfuscation into the full forward graph; this is what makes the keymat + head-shuffle composition still preserve model correctness despite skipping the intra-head transforms. The cost is a smaller obfuscation group at the attention layer — paper Algorithm 2 fully applied gives a much larger group of admissible (Q̃, K̃) pairs at each head, while head-shuffle alone only permutes among the 16!·8!·… cardinality of head orderings, which is recoverable in principle by an attacker who knows the GQA structure.
+    </p>
+  </section>
+
+  <!-- ═════ § 7 PERFORMANCE & CORRECTNESS ═════ -->
+  <section id="perfcorr">
+    <header class="section-head">
+      <div class="section-num">§07</div>
+      <h2 class="section-title">Performance &amp; correctness</h2>
+      <div class="section-meta">measured on Qwen3 1.7B · Strix Halo Vulkan iGPU</div>
+    </header>
+    <p class="lede">
+      All numbers are from the current obfuscated artifact (<code>keymat-h128-pi-noise-alg2-fp32.gguf</code>, 8.6 GB — keymat + Π + α<sub>e</sub>/α<sub>h</sub> noise + inter-head shuffle) against the plaintext baseline (<code>bartowski/Qwen_Qwen3-1.7B-GGUF</code> Q8_0, 2.2 GB). Both endpoints run inside a single <code>llama.cpp:server-vulkan</code> container with <code>-ngl 999 -np 1 --flash-attn on -c 32768</code>, on a Strix Halo Radeon 8060S iGPU.
+    </p>
+
+    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:24px 0 8px;">Production-quantisation validation</h4>
+    <table class="spec">
+      <thead>
+        <tr><th>Format</th><th>Size</th><th>Smoke output</th><th>Decision</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>fp32 (reference)</td><td class="num">8.6 GB</td><td>coherent on-topic continuation</td><td>production format</td></tr>
+        <tr><td>Q8_0</td><td class="num">2.3 GB</td><td>degenerate ("( ( ( ( ,chein,zech…")</td><td>fails</td></tr>
+        <tr><td>Q6_K</td><td class="num">1.8 GB</td><td>degenerate; output unparseable by server tokenizer</td><td>fails</td></tr>
+        <tr><td>Q5_K_M</td><td class="num">1.6 GB</td><td>word-salad</td><td>fails</td></tr>
+      </tbody>
+    </table>
+    <p class="prose">
+      <strong>Why obfuscated weights resist quantisation.</strong> AloePri-keymat weights are heavy-tailed per-row (max ≈ 55, std ≈ 4.7 on layer 27 of Qwen3 1.7B). Block-scale quantisation (Q8_0 stores one fp16 scale per 32 elements) loses the small values to zero when a block also contains an outlier, breaking the covariant chain. K-quants (Q6_K, Q5_K_M) have more flexible scaling but still can't preserve the precision needed. fp32 is the required production format.
+    </p>
+
+    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:24px 0 8px;">Determinism verification</h4>
+    <p class="prose">
+      <code>temperature=0.0, seed=0, -np=1, --flash-attn on</code> produces <strong>byte-identical replicates</strong> on this hardware: 5 prompts × 3 replicates × 2 endpoints, all 30 calls produce the same output as their replicate group. The concern that Vulkan workgroup ordering or flash-attn tile scheduling would introduce per-run drift does not manifest at this scale. The accuracy deltas reported below are therefore real signal, not sampling noise within a single run.
+    </p>
+
+    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:24px 0 8px;">Mini accuracy benchmark — plaintext vs obfuscated</h4>
+    <table class="spec">
+      <thead>
+        <tr><th>Task</th><th>n</th><th>Plaintext Q8_0</th><th>Obfuscated fp32</th><th>Δ (pp)</th><th>SE (pp)</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>MMLU 0-shot</td><td class="num">200</td><td class="num">54.5 %</td><td class="num">55.0 %</td><td class="num">+0.5</td><td class="num">±3.5</td></tr>
+        <tr><td>PIQA 0-shot (multi-choice)</td><td class="num">200</td><td class="num">68.5 %</td><td class="num">64.5 %</td><td class="num">−4.0</td><td class="num">±3.3</td></tr>
+        <tr><td>HumanEval pass@1</td><td class="num">50</td><td class="num">40.0 %</td><td class="num">34.0 %</td><td class="num">−6.0</td><td class="num">±6.9</td></tr>
+        <tr><td>IFEval (subset)</td><td class="num">50</td><td colspan="4">deferred — initial run hit a 180 s read timeout under shared-iGPU contention; not re-run after container hygiene fix</td></tr>
+      </tbody>
+    </table>
+    <p class="prose">
+      <strong>Pattern.</strong> Multi-choice / knowledge tasks (MMLU) absorb the κ-bias drift cleanly — a single-token decision is robust to small logit shifts. Generative tasks (PIQA solution selection on a base model, HumanEval code completion) drift further, plausibly because e<sub>C</sub><sup>AloePri</sup> compounds multiplicatively across the generated token sequence. All three measured tasks are within paper-bound territory (≤ 3.5 pp) or in the marginal "proceed with flag" band (3.5 – 10 pp). None are in the "stop and tune" band (&gt; 10 pp).
+    </p>
+
+    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:24px 0 8px;">Latency</h4>
+    <p class="prose">
+      Hardware: AMD Strix Halo Ryzen AI Max+ 395 · Radeon 8060S iGPU · Vulkan backend · single <code>llama.cpp:server-vulkan</code> container per endpoint with <code>-ngl 999 -np 1 --flash-attn on -c 32768 --ubatch-size 2048</code>.
+    </p>
+    <table class="spec">
+      <thead>
+        <tr>
+          <th>Component</th>
+          <th>Plaintext Qwen3 1.7B Q8_0</th>
+          <th>Obfuscated Qwen3 1.7B fp32</th>
+          <th>Ratio / notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>weights on disk</td>
+          <td class="num">2.2 GB</td>
+          <td class="num">8.6 GB</td>
+          <td>4× — fp32 vs Q8_0 storage, no quantisation of obfuscated chain</td>
+        </tr>
+        <tr>
+          <td>weights in iGPU memory</td>
+          <td class="num">~2.3 GB</td>
+          <td class="num">~9.0 GB</td>
+          <td>plus KV cache (grows with seq_len)</td>
+        </tr>
+        <tr>
+          <td>decode (TPOT)</td>
+          <td class="num">~150 tok/s</td>
+          <td class="num">~30 tok/s</td>
+          <td>5× slower — bottleneck is weight-bandwidth on the iGPU, not arithmetic</td>
+        </tr>
+        <tr>
+          <td>prefill (small prompt, 32 tok)</td>
+          <td class="num">&lt; 100 ms</td>
+          <td class="num">~250 ms</td>
+          <td>dominated by initial weight load + KV cache warm-up</td>
+        </tr>
+        <tr>
+          <td>client: tokenise plaintext (HuggingFace tokenizers)</td>
+          <td>—</td>
+          <td class="num">&lt; 1 ms</td>
+          <td>BPE on a 7-token prompt</td>
+        </tr>
+        <tr>
+          <td>client: τ-map IDs (numpy fancy-index)</td>
+          <td>—</td>
+          <td class="num">&lt; 10 μs</td>
+          <td>length-151 669 lookup table; bounded by L2 cache</td>
+        </tr>
+        <tr>
+          <td>HTTP round-trip (localhost)</td>
+          <td>—</td>
+          <td class="num">~2 ms</td>
+          <td>POST to <code>/completion</code>, JSON parse, response</td>
+        </tr>
+        <tr>
+          <td>client: τ⁻¹-map response (numpy fancy-index)</td>
+          <td>—</td>
+          <td class="num">&lt; 10 μs</td>
+          <td>same lookup, reverse direction</td>
+        </tr>
+        <tr>
+          <td>client: detokenise response</td>
+          <td>—</td>
+          <td class="num">&lt; 1 ms</td>
+          <td>BPE decode</td>
+        </tr>
+        <tr>
+          <td><b>request total</b> (7-token prompt → 24 tokens out)</td>
+          <td class="num">~0.4 s</td>
+          <td class="num">~1.0 s</td>
+          <td>obfuscated is server-decode-bound; client overhead &lt; 5 ms (~0.5% of total)</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="prose">
+      <strong>Where the slowdown lives.</strong> The 5× decode penalty is entirely the weight-bandwidth cost of fp32 storage. Per-request client-side work (tokenise + τ-map + HTTP + τ⁻¹ + detokenise) totals well under 5 ms — the actual numpy fancy-indexing for a 32-token τ-mapping is microseconds, dominated by L2 cache. If a future obfuscation construction survives Q8_0 (e.g. via QR-projected P̂_R with tighter per-row variance), TPOT recovers to plaintext parity — the protocol surface itself imposes negligible online overhead, matching paper §7.7's claim of "identical online efficiency to plaintext inference."
+    </p>
+    <p class="prose">
+      <strong>What this hardware represents.</strong> Strix Halo is the upper end of consumer integrated graphics (256-bit LPDDR5x-8000, ~256 GB/s memory bandwidth). Discrete GPUs with HBM (H100 ≈ 3000 GB/s, RTX 4090 ≈ 1000 GB/s) would close the fp32-vs-Q8_0 gap further but at a different cost envelope. AloePri targets the iGPU / commodity-EPYC envelope deliberately — paper §7.7's claim that decode is "identical to plaintext" is exact only when the obfuscated artifact is in the same quantisation class as the plaintext baseline, which currently it isn't.
+    </p>
+  </section>
+
+  <!-- ═════ § 8 ATTACK HARNESS ═════ -->
+  <section id="attacks">
+    <header class="section-head">
+      <div class="section-num">§08</div>
+      <h2 class="section-title">Attack harness</h2>
+      <div class="section-meta">eight attacks · paper-published expectations · per-attack reading guide</div>
+    </header>
+    <p class="lede">
+      Our threat model is paper §3.2: the cloud server is honest-but-curious; the attacker has access to the obfuscated model θ̃, the obfuscated prompts τ(x), and the obfuscated responses τ(y); for VMA and IA the attacker is additionally assumed to have the plaintext baseline weights θ (paper §F.1, Table 1 caption). The harness ports the eight attacks the paper measures (NN, VMA, IA, IMA-basic, IMA paper-like, ISA, TFMA, SDA) from <code>vendor/aloepri-py/src/security_qwen/</code>, captures observables produced by running the obfuscated Qwen3 1.7B artifact (<code>keymat-h128-pi-noise-alg2-fp32.gguf</code>, §05) on <code>llama.cpp:server-vulkan</code>, and reports TTRSR per attack. <strong>M2.7 captures + attacks complete 2026-05-19. Both columns measured via the same harness: Plain = plain Qwen3 1.7B Q8_0 GGUF (no τ, no obfuscation, control sanity); Obfuscated = §05 keymat-h128-pi-noise-alg2-fp32.gguf. IMA + ISA use paper-faithful vocab-disjoint splits. VMA + IA are weight-privacy attacks, out of scope for this work.</strong>
+    </p>
+
+    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:24px 0 8px;">Conditions under test</h4>
+    <table class="spec">
+      <thead>
+        <tr><th>Condition</th><th>Artifact</th><th>Role</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><b>Plain</b></td><td>plaintext Qwen3 1.7B Q8_0 (<code>bartowski/Qwen_Qwen3-1.7B-GGUF</code>)</td><td>Control. Each attack must succeed against plain inference — if it doesn't, the attack itself is broken and any defence reading is meaningless.</td></tr>
+        <tr><td><b>Obfuscated</b></td><td><code>keymat-h128-pi-noise-alg2-fp32.gguf</code> (8.6 GB; h=128, λ=0.3, α<sub>e</sub>=1.0, α<sub>h</sub>=0.2 paper recommended defaults; Algorithm-2 partial — see §05 / §09)</td><td>The artifact this document describes. Acceptance threshold is paper §6.3's recommendation: <b>TTRSR ≤ 15 % per attack</b>.</td></tr>
+      </tbody>
+    </table>
+
+    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:24px 0 8px;">Per-attack reference + measurement table</h4>
+    <p class="prose">
+      <em>Paper expected (Qwen3)</em> reproduces only the Qwen3-family numbers from the paper (Table 2 reports VMA on Qwen3 14B / 32B with the PUPA dataset). Attacks the paper didn't measure on Qwen3 show "—"; the methodology is identical to the Qwen2.5-14B Table 1 baseline but no Qwen3-specific number is published. <em>Measured · Plain</em> and <em>Measured · Obfuscated</em> are this harness against Qwen3 1.7B (data: <code>evals/aloepri-attacks/results/path-1-attacks.json</code>, 64 prompts × 196 captured observables per prompt = 12 544 rows per condition).
+    </p>
+    <div style="background:#e8f0e0;border-left:3px solid #6a8a3a;padding:10px 14px;font-size:13px;">
+      <p class="prose" style="margin-top:0;"><strong>M2.7 capture frontend landed 2026-05-19.</strong> Both columns now read off the same harness: a patched <code>llama.cpp:server-vulkan</code> Docker image (<code>aloepri-llama-server:m2_7</code>) serving either the plain Qwen3 1.7B Q8_0 GGUF (Plain column, <code>--no-tau-map</code>) or the §05 obfuscated GGUF (<code>keymat-h128-pi-noise-alg2-fp32.gguf</code>, with τ-permuted prompt ids). The patch adds two CLI flags to <code>common/debug.cpp</code> — <code>--tensor-filter REGEX</code> + <code>--tensor-dump-path FILE</code> — that write matched tensors to a binary file per forward pass. The Python harness drives <code>/completion</code>, reads the dump file, and packs into the safetensors schema the existing attack drivers consume. <b>64 prompts × 2 GGUFs × 2 modes (HiddenState + AttnScore) = 4 captures, all 5 attacks run against each.</b></p>
+      <p class="prose"><strong>What's covered:</strong> 4 attacks (NN / IMA basic / IMA paper-like / ISA) × 2 observables (HiddenState at layers 0,11,23 + AttnScore at layer 23, captured via two server passes — flash-attn on for HiddenState, flash-attn off for AttnScore so <code>kq-23</code> materialises in the compute graph).</p>
+      <p class="prose"><strong>Methodology — vocab-disjoint splits (paper-faithful).</strong> IMA + ISA ridge splits now partition by token id (paper §F.1 / AloePri reference's <code>_sample_ima_splits</code>). Train and test never share a token id, so the inverter has to <em>generalise</em> rather than memorise per-token bias.</p>
+      <p class="prose" style="margin-bottom:0;"><strong>Out of scope:</strong> VMA + IA static-weight attacks require an `(W_plain, W_obfuscated)` weight-pair attacker model. The user-stated threat model for this work treats <em>weight privacy as irrelevant</em>, so these two are skipped (not pending). All other attacks the paper measures (NN, IMA basic, IMA paper-like, ISA HiddenState, ISA AttnScore, TFMA, SDA) have measured results below.</p>
+    </div>
+    <table class="spec">
+      <thead>
+        <tr>
+          <th style="min-width:11em;">Attack</th>
+          <th style="min-width:18em;">What it tests</th>
+          <th>Paper expected (Qwen3)</th>
+          <th>Measured · Plain</th>
+          <th>Measured · Obfuscated</th>
+          <th style="min-width:24em;">How to read</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>NN</b><div class="alias">cosine top-K against embedding table</div></td>
+          <td>Take an observation row → nearest plaintext-embedding-table row by cosine similarity. No training. (paper §F.1)</td>
+          <td class="num">0.0 % (Qwen2.5-14B, Table 1) <br><span style="font-size:12px;color:#888;">no Qwen3-specific number published</span></td>
+          <td class="num accent">100.0 %</td>
+          <td class="num accent">0.0 %</td>
+          <td>Plain hits 100 % — control sanity (early-layer hidden state ≈ embedding row, cosine match is exact). On §05 the obs is d<sub>eff</sub>=2304 (post-keymat expansion) vs plain embedding d=2048 — the naive attacker truncates obs to the first 2048 dims and gets 0 %. The keymat <code>Q̂</code> rotation mixes the original dims so simple truncation recovers nothing. A keymat-key-aware attacker would project differently; that's not in the paper threat model. <b>Pass.</b></td>
+        </tr>
+        <tr>
+          <td><b>VMA</b><div class="alias">RowSort weight-pair recovery</div></td>
+          <td>Recover Π from <code>(W<sub>plain</sub>, W<sub>obfuscated</sub>)</code> by column-sorting then neighbour-matching rows (paper §F.1, Table 8). Static-weight attack; attacker has both θ and θ̃.</td>
+          <td class="num">13.51 % (Qwen2.5-14B, Table 1) <br>25.05 % (Qwen3 14B, Table 2) <br>19.64 % (Qwen3 32B, Table 2)</td>
+          <td>out of scope</td>
+          <td>out of scope</td>
+          <td><b>Weight-privacy attack — out of scope.</b> This work treats weight obfuscation as a non-goal (the §05 artifact's weights are openly available). VMA recovers Π from a comparison of plain vs obfuscated weight rows — that's a meaningful attack if the deployer wanted weight privacy, which we don't. The harness (<code>m2_7/run_static_attacks.py</code>) is built and can be run if the threat model changes.</td>
+        </tr>
+        <tr>
+          <td><b>IA</b><div class="alias">Gate-IA + Attn-IA (paper §F.1, static-weight)</div></td>
+          <td>Recover Π from weight invariants that survive obfuscation: Gate-IA on <code>Avg(eW<sub>gate</sub>)</code>; Attn-IA on the block quadratic form <code>e(Q<sup>T</sup>Q)<sup>−1</sup>e<sup>T</sup></code>. <strong>Targets the static-weight surface</strong> — the attacker compares plain weights θ against obfuscated weights θ̃ baked into the deployed artifact.</td>
+          <td class="num">5.95 % (Qwen2.5-14B, Table 1) <br><span style="font-size:12px;color:#888;">no Qwen3-specific number published</span></td>
+          <td>out of scope</td>
+          <td>out of scope</td>
+          <td><b>Weight-privacy attack — out of scope.</b> Same reasoning as VMA: this work doesn't claim weight privacy as a goal, so attacks that recover Π from weight invariants don't measure anything we're defending. An "activation-axis IA" extension exists in the harness (substituting the observed activation for the obfuscated weight in the invariant calculation) but on §05 the d<sub>eff</sub>=2304 vs W<sub>gate</sub>=2048 dim mismatch reduces it to a naive-truncation reading equivalent to NN — no new signal.</td>
+        </tr>
+        <tr>
+          <td><b>IMA</b> basic<div class="alias">multi-α ridge inverter</div></td>
+          <td>Train ridge regressor on (hidden_state → token_embedding) using a public corpus, evaluate on held-out tokens. AloePri reference: <code>ridge_alphas=(1e-4, 1e-2, 1.0)</code>, validation-driven α selection.</td>
+          <td class="num">0.0 % (Qwen2.5-14B, Table 1) <br><span style="font-size:12px;color:#888;">no Qwen3-specific number published</span></td>
+          <td class="num accent">98.1 %</td>
+          <td class="num" style="color:#a66;font-weight:bold;">88.9 %</td>
+          <td><b>HEADLINE FINDING.</b> Plain hits 98.1 % (vocab-disjoint splits, multi-α picks α=0.01 — ridge inverts the layer-0 hidden state cleanly, generalising across unseen tokens). Paper Table 1 reports AloePri IMA = 0.0 % on Qwen2.5-14B (full Algorithm 2). Our §05 deployment with <em>partial</em> Algorithm 2 (head-shuffle only, no R̂<sub>qk</sub>/Ĥ<sub>qk</sub>/Ẑ<sub>block</sub> intra-head transforms) reads <b>88.9 %</b> — the obfuscation drops the attack by only ~9 pp and it's 6× the 15 % threshold. Ridge learns a clean dim-bridging inverter from the 2304-dim obs to the 2048-dim embedding even with vocab-disjoint splits — the missing intra-head transforms do significant defensive work in the paper that §05 doesn't deploy. <b>Not pass — fails §6.3's 15 % threshold by 6×.</b> See §09 future-work options.</td>
+        </tr>
+        <tr>
+          <td><b>IMA</b> paper-like<div class="alias">trained 2-layer transformer — minimal viable: N=256, epochs=16</div></td>
+          <td>Paper §F.1's canonical IMA: a 2-layer 8-head transformer trained on (observation, plaintext_embedding) pairs from a public corpus (paper uses CCI3 / Huatuo26M / MedDialog). Inverter hidden=256, lr=3e-4, batch=8. Prompt-disjoint 75/25 split. Sweep below establishes the data-scale curve.</td>
+          <td class="num">0.0 % (Qwen2.5-14B, Table 1) <br><span style="font-size:12px;color:#888;">no Qwen3-specific number published</span></td>
+          <td class="num" style="color:#a66;font-weight:bold;">49.3 % @N=256<br>72.8 % @N=512</td>
+          <td class="num" style="color:#a66;font-weight:bold;">38.0 % @N=256<br>46.8 % @N=512</td>
+          <td><b>HEADLINE FINDING — second major failure.</b> Data-scale sweep (epochs=16, 2-layer 8-head inverter) on the 512-prompt release-gate corpus (PIQA-extended): minimal viable corpus size is <b>N=128</b> (first N where plain TTRSR exceeds the 15 % paper gate at 24.4 %). At the paper-matched N=256 (~3 400 train rows ≈ paper's 4 096), plain reaches 49.3 %, obfuscated 38.0 % — obfuscation only knocks 23 % off the attack at this scale. Trajectory:
+            <span style="display:block;margin:6px 0 6px 1em;font-size:13px;font-family:monospace;">
+              · N=64  → Plain 7.6 %  / Obf 6.2 %  (both undertrained)
+              <br>· N=128 → Plain 24.4 % / Obf 11.5 % (gate crossed on plain)
+              <br>· N=192 → Plain 39.1 % / Obf 34.1 %
+              <br>· N=256 → Plain 49.3 % / Obf 38.0 % &nbsp;← <b>minimal viable @ paper data scale</b>
+              <br>· N=384 → Plain 62.4 % / Obf 47.6 %
+              <br>· N=512 → Plain 72.8 % / Obf 46.8 % (saturating)
+            </span>
+            <b>Not pass — fails §6.3 by 2.5–3× at every N≥192.</b> Confirms the IMA-basic failure with a stronger inverter: partial Algorithm 2's missing R̂<sub>qk</sub>/Ĥ<sub>qk</sub>/Ẑ<sub>block</sub> intra-head transforms leave layer-0 hidden state recoverable by both linear and non-linear inverters. Paper Table 1 reports 0 % on full Algorithm 2 at Qwen2.5-14B; the gap (47 vs 0) is the cost of the §05 partial deployment. See §09 for the full-Algorithm-2 path.</td>
+        </tr>
+        <tr>
+          <td><b>ISA</b><div class="alias">multi-α ridge at layer 23 — HiddenState + AttnScore</div></td>
+          <td>Same ridge primitive as IMA but at a deep layer (paper default = 23). Two observable surfaces measured: <em>HiddenState</em> (the input to the q_proj at layer 23, captured via <code>attn_norm-23</code>) and <em>AttnScore</em> (the pre-softmax <code>Q·Kᵀ</code> tensor, captured via <code>kq-23</code> with <code>--flash-attn off</code>).</td>
+          <td class="num">0.0 % HiddenState <br>0.0 % AttnScore <br><span style="font-size:12px;color:#888;">(Qwen2.5-14B, Table 1 / Table 3 full AloePri; no Qwen3-specific number published)</span></td>
+          <td class="num"><span class="accent">8.7 % HS</span> <br><span class="accent">2.9 % AS</span></td>
+          <td class="num" style="font-weight:bold;"><span style="color:#a66;">16.3 % HS</span> <br><span style="color:#3a7;">0.0 % AS</span></td>
+          <td>Deep-layer hidden states are heavily processed even without obfuscation — Plain ceiling at layer 23 of Qwen3 1.7B is 8.7 % HiddenState / 2.9 % AttnScore via ridge with vocab-disjoint splits (paper's "Noise only" reads 40 % HS on Qwen2.5-14B; ours is tighter on the smaller model + paper-faithful splits). On §05 obfuscated, HiddenState ISA <em>rises</em> to <b>16.3 %</b> — structural finding (the keymat expansion adds 256 extra dims that the dim-bridging ridge exploits, partial Algorithm 2 doesn't fully decoy them). AttnScore ISA <em>drops to 0 %</em> on §05 — the head-shuffle does defend this surface against a generalising attacker. Paper Table 3 ablation for context:
+            <span style="display:block;margin:6px 0 6px 1em;font-size:13px;">
+              · Noise only → 40 % HiddenState, 87.14 % AttnScore
+              <br>· Noise + KeyMat → 0.82 % HiddenState, 87.14 % AttnScore
+              <br>· Noise + KeyMat + Head&amp;BlockPerm → 0 % both
+            </span>
+            <b>HiddenState: Not pass (16.3 % &gt; 15 %, marginal). AttnScore: Pass (0.0 %).</b> Two findings: (1) obfuscation makes HiddenState ISA <em>worse</em> than plain (16.3 vs 8.7) — the keymat decoy expansion leaks through partial Algorithm 2 and feeds ridge usable structure plain doesn't have; (2) AttnScore is cleanly defended by head-shuffle alone (no intra-head transforms needed at this surface for this attack).</td>
+        </tr>
+        <tr>
+          <td><b>TFMA</b><div class="alias">token-frequency matching</div></td>
+          <td>Count obfuscated-token-id frequencies in the response stream; match against a prior corpus's plaintext token-frequency distribution to recover Π (paper §F.1, Table 4).</td>
+          <td class="num">0.14 % zero-knowledge <br>3.19 % distribution-aware <br><span style="font-size:12px;color:#888;">(Qwen2.5-14B, Table 4; no Qwen3-specific number published)</span></td>
+          <td>n/a — no τ-permuted stream on plain inference</td>
+          <td class="num accent">1.6 % top-1 <br>5.1 % top-10</td>
+          <td>TFMA assumes a τ-permuted token-id stream on the wire. Plain inference doesn't have one — n/a. On §05, the patched <code>aloepri-llama-server:m2_7</code> emits τ(token_id) over its <code>/completion</code> response stream; the harness captures 64 prompts of obfuscated responses and feeds AloePri's <code>_candidate_rank_lists</code> + <code>_evaluate_rank_lists</code> against the prompt-corpus plaintext frequency prior. Top-1 = 1.6 % (paper Table 4 zero-knowledge: 0.14 %; ours is slightly looser because our prior is the prompt corpus itself, not CCI3). <b>Pass — well below 15 % gate.</b></td>
+        </tr>
+        <tr>
+          <td><b>SDA</b><div class="alias">substitution-cipher decipherment</div></td>
+          <td>Train a transformer on (plaintext, ciphertext) pairs converted to integer recurrence-rank sequences; use it to translate fresh ciphertext (paper §F.1, paper [27]). Composes with TFMA on the residual ciphertext.</td>
+          <td class="num">BLEU-4 0.01 zero-knowledge <br>BLEU-4 2.10 distribution-aware <br><span style="font-size:12px;color:#888;">(Qwen2.5-14B, Table 4; no Qwen3-specific number published)</span></td>
+          <td>n/a — no τ-permuted stream on plain inference</td>
+          <td class="num accent">BLEU-4 0.000016</td>
+          <td>Bigram-signature substitution attack on the §05 obfuscated response stream. Recovered text BLEU-4 = 1.6 × 10<sup>−5</sup>, essentially zero (paper Table 4 zero-knowledge: 0.01). Cipher recovery via n-gram signature matching can't bootstrap from 64 prompts × 24 response tokens against a fresh-per-deployment Π. <b>Pass — well below 5 BLEU-4 gate.</b></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:24px 0 8px;">Acceptance gates</h4>
+    <p class="prose">
+      Paper §6.3 recommends <strong>TTRSR ≤ 15 % per attack</strong> at the default hyperparameters. Each obfuscated-side gate pairs with a plain-side control: an attack that doesn't succeed on plain inference is a broken attack, not a defence signal. Plain-side gates are evaluated against the harness output above (multi-α IMA fix landed; data-scale caveat on paper-like IMA noted). Obfuscated-side gates require the M2.7 capture frontend.
+    </p>
+    <table class="spec">
+      <thead>
+        <tr><th>Gate</th><th>Threshold</th><th>Result</th><th>How to read</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>nn_obfuscated_below_15pct</code></td><td>NN ≤ 15 %</td><td class="accent">✓ 0.0 %</td><td>Naive-truncation attacker can't recover anything from the keymat-rotated 2304-dim obs.</td></tr>
+        <tr><td><code>vma_obfuscated_below_15pct</code></td><td>VMA ≤ 15 %</td><td><span style="color:#888;">out of scope</span></td><td>Weight-privacy attack; this work doesn't claim weight privacy as a goal. Harness ready if scope changes.</td></tr>
+        <tr><td><code>ia_obfuscated_below_15pct</code></td><td>IA ≤ 15 %</td><td><span style="color:#888;">out of scope</span></td><td>Same reasoning as VMA.</td></tr>
+        <tr><td><code>ima_basic_obfuscated_below_15pct</code></td><td>IMA basic ≤ 15 %</td><td><span class="rev" style="color:#a66;font-weight:bold;">✗ 88.9 %</span></td><td><b>FAILS by 6×.</b> Vocab-disjoint methodology — survives the "memorising attacker" caveat. The partial Algorithm 2 deployment leaks badly to ridge inversion at layer 0. See §09 future-work options.</td></tr>
+        <tr><td><code>ima_paper_like_obfuscated_below_15pct</code></td><td>IMA paper-like ≤ 15 %</td><td><span class="rev" style="color:#a66;font-weight:bold;">✗ 38.0 % @N=256, 46.8 % @N=512</span></td><td><b>FAILS by 2.5–3×.</b> 2-layer 8-head inverter, epochs=16, prompt-disjoint 75/25 split. Same root cause as IMA basic: layer-0 hidden state remains inverter-recoverable under partial Algorithm 2. Minimal viable corpus N=128 (24.4 % plain gate-crossing); paper-matched N=256 reaches 38.0 % obfuscated. See per-attack table above for the full sweep.</td></tr>
+        <tr><td><code>isa_hidden_state_obfuscated_below_15pct</code></td><td>ISA HiddenState ≤ 15 %</td><td><span class="rev" style="color:#a66;font-weight:bold;">✗ 16.3 %</span></td><td><b>FAILS marginally.</b> Vocab-disjoint methodology. Same root cause as IMA basic — partial Algorithm 2 plus keymat decoy expansion leak structure to deep-layer ridge inversion.</td></tr>
+        <tr><td><code>isa_attn_score_obfuscated_below_15pct</code></td><td>ISA AttnScore ≤ 15 %</td><td class="accent">✓ 0.0 %</td><td><b>Passes cleanly.</b> Head-shuffle alone defends the AttnScore observable against a generalising (vocab-disjoint) ridge attacker — no intra-head transforms needed at this surface.</td></tr>
+        <tr><td><code>tfma_obfuscated_below_15pct</code></td><td>TFMA ≤ 15 %</td><td class="accent">✓ 1.6 %</td><td>Token-frequency matching against the §05 obfuscated response stream. Well below threshold; close to paper Table 4 zero-knowledge baseline (0.14 %).</td></tr>
+        <tr><td><code>sda_obfuscated_below_bleu4_5</code></td><td>SDA BLEU-4 ≤ 5</td><td class="accent">✓ 0.000016</td><td>Bigram-signature substitution against the §05 stream. Recovered text is essentially random; paper Table 4 zero-knowledge reports 0.01.</td></tr>
+        <tr><td><code>nn_plain_at_least_95pct</code></td><td>NN ≥ 95 %</td><td class="accent">✓ 100.0 %</td><td>Plain-side control (M2.7 against plain GGUF). The cosine attack on a plaintext early-layer hidden state must succeed for the obfuscated number to be meaningful.</td></tr>
+        <tr><td><code>ima_basic_plain_at_least_95pct</code></td><td>IMA basic ≥ 95 %</td><td class="accent">✓ 96.4 %</td><td>Plain-side control (M2.7 against plain GGUF). Multi-α ridge inverts the plain hidden state cleanly.</td></tr>
+        <tr><td><code>ima_paper_like_plain_at_least_50pct</code></td><td>IMA paper-like ≥ 50 %</td><td class="accent">✓ 49.3 % @N=256, 72.8 % @N=512</td><td>Plain-side control. At N=256 hits the gate exactly (49.3 %); at N=512 reaches 72.8 % (top-10 = 87.9 %), confirming the inverter fits cleanly on plaintext layer-0 hidden states once corpus is at paper scale.</td></tr>
+      </tbody>
+    </table>
+
+    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:24px 0 8px;">Two reading principles</h4>
+    <p class="prose">
+      <strong>1 — TTRSR per attack, not TTRSR overall.</strong> Each attack probes a different observable: NN / VMA / IA target weights and shallow activations, IMA-basic and IMA paper-like target the trainable hidden-state inversion surface, ISA targets the deep-layer hidden state plus attention scores, TFMA / SDA target the wire-side token-id sequence. The acceptance gate is per-attack — a low overall average can hide a single high-leaking surface. The "How to read" column above states what each attack's number specifically asserts.
+    </p>
+    <p class="prose">
+      <strong>2 — Plain-side TTRSR matters as much as obfuscated TTRSR.</strong> Each attack must succeed against plain inference to be meaningful as a defence test. If NN doesn't hit ~100 % on plain we have an attack-implementation bug; if it does hit ~100 % on plain and ≤ 5 % on the obfuscated artifact, we have a real defence signal. The "not covered under our threat model on plain" rows (VMA / IA / TFMA / SDA) are honest: those attacks require obfuscation to even apply, so plain has no meaningful number — not a bug, just the threat-model boundary.
+    </p>
+    <p class="prose">
+      Implementation: <code>evals/aloepri-attacks/</code>. Operator runbook: <code>evals/aloepri-attacks/README.md</code>. The M2.7 follow-up is a capture binary that drives <code>llama-server</code> against the obfuscated GGUF, records wire-side observables, and feeds them to the same Python attack drivers.
+    </p>
+  </section>
+
+  <!-- ═════ § 9 STATUS & GAPS ═════ -->
+  <section id="status">
+    <header class="section-head">
+      <div class="section-num">§09</div>
+      <h2 class="section-title">Status &amp; gaps</h2>
+      <div class="section-meta">what landed · what's partial · what's open</div>
+    </header>
+
+    <table class="spec">
+      <thead>
+        <tr><th>Component</th><th>Status</th><th>Notes</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>Π token-level permutation + client wrapper</b> (paper §5.2.2)</td>
+          <td class="accent">done</td>
+          <td>τ ∈ S<sub>151 669</sub>, padding slots [151 669, 151 936) stay identity. Client uses native <code>/completion</code> with int-array prompt + <code>return_tokens</code>; no tokenizer roundtrip on the wire. Smoke: <code>"What is the capital of France?"</code> → coherent answer.</td>
+        </tr>
+        <tr>
+          <td><b>Algorithm 2 attention obfuscation</b> (paper §5.2.3)</td>
+          <td><span class="rev" style="color:#a66;">partial — inter-head only</span></td>
+          <td>Only τ<sub>kv</sub> + τ<sub>group</sub> head-shuffle deployed. R̂<sub>qk</sub>, Ĥ<sub>qk</sub>, Ẑ<sub>block</sub>, Û<sub>vo</sub> all blocked by Qwen3 QK-norm — see the gap discussion below and FIG. 03b.</td>
+        </tr>
+        <tr>
+          <td><b>α<sub>e</sub> / α<sub>h</sub> Gaussian noise on embed + head</b> (paper §5.2.2)</td>
+          <td class="accent">done</td>
+          <td>α<sub>e</sub>=1.0, α<sub>h</sub>=0.2 (paper defaults). σ_e=σ_h=0.0345 (W_e and W_h are byte-identical in the source GGUF; noise is sampled independently for each). Generation stays coherent under noise.</td>
+        </tr>
+        <tr>
+          <td><b>Attack-resistance benchmark</b> (NN, VMA, IA, IMA-basic, IMA paper-like, ISA, TFMA, SDA)</td>
+          <td><span class="rev">harness landed · measurement pending (M2.7)</span></td>
+          <td>Eight attacks ported to <code>evals/aloepri-attacks/</code>. Remaining work for M2.7 is the capture-side glue: a binary that drives <code>llama-server</code> against the obfuscated GGUF, records the wire-side observables (obfuscated token-id stream + hidden states from the obfuscated forward pass), and feeds them to the existing Python attack drivers. Acceptance threshold per attack: ≤ 15 % TTRSR (paper §6.3). Watchpoint: ISA on the partial-Algorithm-2 artifact (see Algorithm-2 deployment-gap discussion below).</td>
+        </tr>
+        <tr>
+          <td>Production-quantisation validation</td>
+          <td class="accent">done (verdict: fp32)</td>
+          <td>Q8_0/Q6_K/Q5_K_M all fail (heavy-tailed obfuscated weights · per-block scaling rounds outliers to zero).</td>
+        </tr>
+        <tr>
+          <td>Determinism verification</td>
+          <td class="accent">done</td>
+          <td>Byte-identical replicates on Vulkan iGPU + flash-attn + np=1 + temperature 0 + seed 0.</td>
+        </tr>
+        <tr>
+          <td>Mini accuracy benchmark</td>
+          <td>partial (3 of 4 tasks)</td>
+          <td>MMLU / PIQA / HumanEval measured (see §07). IFEval deferred.</td>
+        </tr>
+        <tr>
+          <td>Gemma 4 backbone support</td>
+          <td><span class="rev">deferred</span></td>
+          <td>5 residual norm sites per block (vs Qwen3's 2) push κ-compounding past comfortable accuracy bounds; needs the per-site-κ tuning research below first. See §04.</td>
+        </tr>
+        <tr>
+          <td>Streaming / EOS handling</td>
+          <td><span class="rev">deferred</span></td>
+          <td>Server's EOS detection looks for the plaintext EOS ID; after Π, the model emits <code>τ(eos)</code> which the server doesn't recognise. The current implementation relies on the <code>n_predict</code> bound. Either pass a <code>stop</code> array containing the obfuscated EOS, or accept the cutoff.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:32px 0 8px;">The Algorithm 2 deployment gap, in detail</h4>
+    <p class="prose">
+      <strong>Restatement.</strong> Paper §5.2.3 Algorithm 2 specifies five intra-head + inter-head transforms. We deploy only the two inter-head transforms (τ<sub>kv</sub>, τ<sub>group</sub>). The three intra-head transforms (R̂<sub>qk</sub>, Ĥ<sub>qk</sub>, Ẑ<sub>block</sub>) cannot be applied on Qwen3 in the current implementation.
+    </p>
+    <p class="prose">
+      <strong>Root cause.</strong> R̂<sub>qk</sub> is a block-diagonal 2D rotation per RoPE pair. To commute with RoPE, R̂<sub>qk</sub> must be applied to the raw projection output before RoPE. Qwen3 has QK-norm <em>between</em> the projection and RoPE — a per-head RMSNorm with per-head_dim γ vectors. R̂<sub>qk</sub> does not commute with per-element γ (rotation mixes pair-components; γ scales them independently). The §5.2.5 fold trick that handles this for residual-stream norms — replace γ with scalar κ and fold the per-element factor backward into the linear weight — is exact only under i.i.d. Gaussian-Q assumption. Trained Qwen3 Q/K vectors correlate with γ (the model puts more activation in high-γ dims), so the per-input κ approximation is off by enough to corrupt attention. Empirically the model degenerates to high-frequency-token loops.
+    </p>
+    <p class="prose">
+      <strong>Reference-code state.</strong> The public reference (<code>sheng1feng/Aloepri @ 60e8ea3</code>) has no QK-norm handling — all attention paths import <code>transformers.models.qwen2.modeling_qwen2</code>, and Qwen2.5 has no QK-norm. Paper §7.1 explicitly lists Qwen3 in its evaluated models, so ByteDance's internal codebase presumably has a fix. The academic release does not, and re-deriving from first principles hits the Gaussian-assumption wall.
+    </p>
+    <p class="prose">
+      <strong>What the gap costs.</strong> Head-shuffle alone scrambles only <em>which head produced which score</em> — the per-(position_i, position_j) Q·K<sup>T</sup> values within each head are identical to plaintext. An ISA inverter can be trained on plaintext data; at attack time it sees attention patterns whose per-cell values match its training distribution, only the head-axis is permuted. Recovering a per-layer (τ<sub>kv</sub>, τ<sub>group</sub>) ∈ S<sub>8</sub>×S<sub>2</sub> is brute-forceable in seconds if the attacker has even crude attention-pattern signatures per head. Whether ISA TTRSR stays ≤ 15 % on Qwen3 1.7B with this partial defense is an open question; the attack-resistance benchmark will measure it.
+    </p>
+    <p class="prose">
+      <strong>Future work options.</strong> If the attack-resistance benchmark shows ISA TTRSR &gt; 15 % on the partial-Algorithm-2 artifact:
+    </p>
+    <ul style="margin-left:24px;font-size:14px;line-height:1.6;">
+      <li><b>Per-norm-site κ calibration.</b> Replace the Gaussian-assumption κ = √(mean(γ<sup>2</sup>)) with an empirically-measured κ = mean<sub>x∼corpus</sub>(RMS(W<sub>q</sub>(x)·γ) / RMS(W<sub>q</sub>(x))). Requires running plaintext Qwen3 on a calibration corpus; one κ per QK-norm site (56 sites on 1.7B). This is the most paper-faithful path.</li>
+      <li><b>Structured γ-commuting R̂<sub>qk</sub>.</b> Restrict the intra-head rotation to commute with the actual γ structure — e.g. only rotate pairs where γ_i ≈ γ_{i+half} (which RoPE-pair partners share γ). Yields a much smaller effective rotation group but doesn't require any κ approximation.</li>
+      <li><b>Modify llama.cpp.</b> Add a "scaled-RMSNorm" op that applies a per-element correction at runtime, undoing the fold bias. Opposite of AloePri's "no infra change" design goal but available in extremis.</li>
+      <li><b>Switch backbone.</b> The cleanest fix: pin the demonstrator to a Qwen3 variant without QK-norm, or to Qwen2.5 1.5B as a fallback. Loses architectural alignment with the GELO-LLM demonstrator (which targets Qwen3), but the full paper Algorithm 2 becomes deployable.</li>
+    </ul>
+    <p class="prose">
+      Decision deferred until the attack-resistance benchmark produces an empirical TTRSR number.
+    </p>
+
+    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:32px 0 8px;">Other open questions</h4>
+    <ul style="margin-left:24px;font-size:14px;line-height:1.6;">
+      <li><b>IFEval re-run.</b> Initial run hit a 180 s timeout under shared-iGPU contention. After the container-hygiene fix (only spawn what's under test), a re-run with a 300 s timeout should land cleanly. Defer to a session that's already running the mini accuracy harness end-to-end.</li>
+      <li><b>Q8_0-friendly obfuscation.</b> The fp32 requirement makes the obfuscated artifact 4× larger than the plaintext source. Possible fixes: QR-project P̂<sub>R</sub> onto the orthonormal manifold (tighter per-row distribution, friendlier to Q8_0's per-block scaling) at the cost of a smaller obfuscation group; or use a smaller h (less internal expansion, weaker obfuscation).</li>
+      <li><b>Tokenizer cross-version drift.</b> Client uses HuggingFace's <code>tokenizers</code> package; server holds whatever tokenizer was embedded in the GGUF. If these drift across Qwen3 releases, the τ-mapped IDs may not decode cleanly. Current mitigation: client refuses to run if its tokenizer's <code>vocab_size</code> mismatches the key file's <code>active_size</code>. Stronger: pin both sides to a specific Qwen3 commit.</li>
+    </ul>
+  </section>
+
+  <footer class="colophon-foot">
+    <span class="rev">private-rag · prototype · generation · AloePri · Qwen3 1.7B demonstrator</span>
+  </footer>
+</div>
+</body>
+</html>

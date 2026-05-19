@@ -1,0 +1,102 @@
+[
+  {
+    "prompt": "What is the capital of France?",
+    "plain_runs": [
+      " Also, what is the capital of Italy? And what is the capital of Germany? Additionally, what is the capital of Spain? And what is the capital of",
+      " Also, what is the capital of Italy? And what is the capital of Germany? Additionally, what is the capital of Spain? And what is the capital of",
+      " Also, what is the capital of Italy? And what is the capital of Germany? Additionally, what is the capital of Spain? And what is the capital of"
+    ],
+    "keymat_runs": [
+      " Also, what is the largest city in the United States? What is the capital of Japan? What is the capital of Canada? What is the capital of Australia",
+      " Also, what is the largest city in the United States? What is the capital of Japan? What is the capital of Canada? What is the capital of Australia",
+      " Also, what is the largest city in the United States? What is the capital of Japan? What is the capital of Canada? What is the capital of Australia"
+    ],
+    "plain_min_lcp_chars": 143,
+    "keymat_min_lcp_chars": 147,
+    "plain_mean_len": 143.0,
+    "keymat_mean_len": 147.0,
+    "plain_class": "fully-deterministic",
+    "keymat_class": "fully-deterministic",
+    "cross_lcp_chars": 19
+  },
+  {
+    "prompt": "Write a haiku about autumn.",
+    "plain_runs": [
+      " The haiku must have three lines, with the first line having 5 syllables, the second line 7 syllables, and the third line 5",
+      " The haiku must have three lines, with the first line having 5 syllables, the second line 7 syllables, and the third line 5",
+      " The haiku must have three lines, with the first line having 5 syllables, the second line 7 syllables, and the third line 5"
+    ],
+    "keymat_runs": [
+      " |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | ",
+      " |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | ",
+      " |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | "
+    ],
+    "plain_min_lcp_chars": 123,
+    "keymat_min_lcp_chars": 48,
+    "plain_mean_len": 123.0,
+    "keymat_mean_len": 48.0,
+    "plain_class": "fully-deterministic",
+    "keymat_class": "fully-deterministic",
+    "cross_lcp_chars": 1
+  },
+  {
+    "prompt": "def fibonacci(n):",
+    "plain_runs": [
+      "\n    if n <= 0:\n        return 0\n    elif n == 1:\n        return 1\n    else:\n        return fibonacci(n",
+      "\n    if n <= 0:\n        return 0\n    elif n == 1:\n        return 1\n    else:\n        return fibonacci(n",
+      "\n    if n <= 0:\n        return 0\n    elif n == 1:\n        return 1\n    else:\n        return fibonacci(n"
+    ],
+    "keymat_runs": [
+      "\n    a, b = 0, 1\n    for _ in range(n):\n        print(a, end=' ')\n        a, b = b",
+      "\n    a, b = 0, 1\n    for _ in range(n):\n        print(a, end=' ')\n        a, b = b",
+      "\n    a, b = 0, 1\n    for _ in range(n):\n        print(a, end=' ')\n        a, b = b"
+    ],
+    "plain_min_lcp_chars": 103,
+    "keymat_min_lcp_chars": 82,
+    "plain_mean_len": 103.0,
+    "keymat_mean_len": 82.0,
+    "plain_class": "fully-deterministic",
+    "keymat_class": "fully-deterministic",
+    "cross_lcp_chars": 5
+  },
+  {
+    "prompt": "Translate to French: Hello, how are you?",
+    "plain_runs": [
+      " I'm sorry for the inconvenience. I'm a student at the University of California, Los Angeles. I'm currently working on a project that involves a lot of",
+      " I'm sorry for the inconvenience. I'm a student at the University of California, Los Angeles. I'm currently working on a project that involves a lot of",
+      " I'm sorry for the inconvenience. I'm a student at the University of California, Los Angeles. I'm currently working on a project that involves a lot of"
+    ],
+    "keymat_runs": [
+      " I'm fine, thank you. I'm a student at the University of Toronto. I'm studying English and I'm taking a course in computer science. I",
+      " I'm fine, thank you. I'm a student at the University of Toronto. I'm studying English and I'm taking a course in computer science. I",
+      " I'm fine, thank you. I'm a student at the University of Toronto. I'm studying English and I'm taking a course in computer science. I"
+    ],
+    "plain_min_lcp_chars": 151,
+    "keymat_min_lcp_chars": 133,
+    "plain_mean_len": 151.0,
+    "keymat_mean_len": 133.0,
+    "plain_class": "fully-deterministic",
+    "keymat_class": "fully-deterministic",
+    "cross_lcp_chars": 5
+  },
+  {
+    "prompt": "Once upon a time in a faraway land,",
+    "plain_runs": [
+      " there was a young girl named Lila who loved to explore and discover new things. One day, while wandering through the forest, she stumbled upon a mysterious cave",
+      " there was a young girl named Lila who loved to explore and discover new things. One day, while wandering through the forest, she stumbled upon a mysterious cave",
+      " there was a young girl named Lila who loved to explore and discover new things. One day, while wandering through the forest, she stumbled upon a mysterious cave"
+    ],
+    "keymat_runs": [
+      " there was a young girl named Lila who loved to play with her toys. One day, she discovered a magical box that could make her toys come to life",
+      " there was a young girl named Lila who loved to play with her toys. One day, she discovered a magical box that could make her toys come to life",
+      " there was a young girl named Lila who loved to play with her toys. One day, she discovered a magical box that could make her toys come to life"
+    ],
+    "plain_min_lcp_chars": 161,
+    "keymat_min_lcp_chars": 143,
+    "plain_mean_len": 161.0,
+    "keymat_mean_len": 143.0,
+    "plain_class": "fully-deterministic",
+    "keymat_class": "fully-deterministic",
+    "cross_lcp_chars": 48
+  }
+]

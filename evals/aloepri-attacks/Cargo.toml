@@ -1,0 +1,34 @@
+[package]
+name = "aloepri-attack-snapshot-runner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The Rust half of the AloePri attack-resistance harness:
+# * `lib.rs` ships the safetensors snapshot-export contract (§2.2 of
+#   `docs/prototype/aloepri-attack-harness.md`) and the
+#   `CapturingPlaintextExecutor` adapter that lets the C0 plaintext
+#   control reuse the same snapshot machinery as C1/C2.
+# * `bin/capture_snapshots.rs` is the CLI that loads Qwen3-1.7B,
+#   runs each condition over the prompt corpus, and writes
+#   `<condition>.safetensors` + `<condition>.meta.json` to disk.
+#
+# Lives outside `crates/` so the gelo-protocol / gelo-embedder
+# crate APIs stay untouched per the Phase 2 handoff §5 rule.
+
+[dependencies]
+anyhow.workspace = true
+clap = { version = "4", features = ["derive"] }
+gelo-embedder = { path = "../../crates/gelo-embedder" }
+gelo-gpu-wgpu = { path = "../../crates/gelo-gpu-wgpu" }
+gelo-protocol = { path = "../../crates/gelo-protocol" }
+hf-hub.workspace = true
+ndarray.workspace = true
+rayon.workspace = true
+safetensors.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+
+[[bin]]
+name = "capture_snapshots"
+path = "src/bin/capture_snapshots.rs"

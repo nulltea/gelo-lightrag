@@ -1,0 +1,8 @@
+__pycache__/
+
+# Captured PCIe-side / wire-side observables. Often multi-GB
+# (qwen3-1.7b-rg64 c2_default = 6 GB). Result JSONs in results/
+# are the small, version-controllable summaries; snapshots/ is
+# the raw artifact those summaries are derived from.
+snapshots/
+
