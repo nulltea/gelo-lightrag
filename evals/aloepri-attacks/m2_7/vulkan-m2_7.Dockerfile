@@ -1,19 +1,15 @@
 # M2.7 patched Vulkan server build.
 #
 # Builds llama.cpp with the tensor-dump hook (HiddenState +
-# AttnScore eval-callback wired into the server) applied on top
-# of upstream master. Tag the produced image as
+# AttnScore eval-callback wired into the server). The patched
+# source comes from the `vendor/llama.cpp` submodule, which is
+# pinned at github.com/nulltea/llama.cpp branch m2_7-tensor-dump
+# (= upstream master + one commit). Tag the produced image as
 # `aloepri-llama-server:m2_7` so it doesn't collide with the
 # persistent `llama-swap` image.
 #
 # Prerequisites (one-time):
 #   git submodule update --init --recursive vendor/llama.cpp
-#   bash evals/aloepri-attacks/m2_7/apply-patches.sh
-#
-# (The submodule is pinned at the clean upstream commit; the
-# tensor-dump patch lives at evals/aloepri-attacks/m2_7/patches/
-# and is applied to the working tree only. Re-run --revert before
-# updating the submodule pin.)
 #
 # Build:
 #   docker build \

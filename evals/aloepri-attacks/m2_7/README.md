@@ -101,36 +101,34 @@ one prompt and prints the record).
 ### 3. Hidden-state attacks (NN, IMA, ISA) — patched `llama-server` + file-dump
 
 **Build the patched server image first** (one-time, ~15 min, ~5 GB
-Docker storage). The patch lives at
-`evals/aloepri-attacks/m2_7/patches/0001-M2.7-tensor-dump-hook-for-llama-server.patch`
-and is applied to the `vendor/llama.cpp` submodule working tree
-before `docker build`:
+Docker storage). `vendor/llama.cpp` is a submodule pinned at a
+commit on `github.com/nulltea/llama.cpp` (branch
+`m2_7-tensor-dump`) — that commit is upstream master plus the
+M2.7 tensor-dump hook (`--tensor-filter REGEX` + `--tensor-dump-path
+FILE`). Nothing to apply manually:
 
 ```
-# One-time: initialise the submodule
+# One-time: initialise the submodule (clones the fork + checks out
+# the pinned commit with the patch already in the source tree)
 git submodule update --init --recursive vendor/llama.cpp
 
-# Apply the M2.7 patch onto the submodule's working tree
-bash evals/aloepri-attacks/m2_7/apply-patches.sh
-
-# Build the image (Dockerfile copies the patched source)
+# Build the image
 docker build \
     -f evals/aloepri-attacks/m2_7/vulkan-m2_7.Dockerfile \
     -t aloepri-llama-server:m2_7 \
     vendor/llama.cpp
-
-# Revert when done — useful before pulling a newer submodule pin
-bash evals/aloepri-attacks/m2_7/apply-patches.sh --revert
 ```
 
-`apply-patches.sh` supports `apply` (default), `--check`
-(dry-run), and `--revert` modes. The submodule pointer in the
-parent repo stays at the clean upstream commit; the patch only
-modifies the working tree.
-
-The patch adds `--tensor-filter REGEX` + `--tensor-dump-path FILE`
-flags that write captured tensors to a binary file per forward
-pass.
+To rebase the patch on a newer upstream:
+```
+cd vendor/llama.cpp
+git fetch upstream         # add upstream if missing:
+                            # git remote add upstream https://github.com/ggml-org/llama.cpp.git
+git rebase upstream/master  # resolve conflicts in common/{arg,common,debug}.{cpp,h}
+git push origin m2_7-tensor-dump --force-with-lease
+cd ../..
+git add vendor/llama.cpp && git commit -m "bump llama.cpp pin"
+```
 
 **Operational notes (verified during smoke 2026-05-19):**
 
@@ -212,15 +210,13 @@ python3 evals/aloepri-attacks/m2_7/run_hidden_state_attacks.py \
     --include-attn-score
 ```
 
-### Patch on top of `vendor/llama.cpp` submodule (Option B file-dump)
+### Patch in `vendor/llama.cpp` submodule (Option B file-dump)
 
-`vendor/llama.cpp` is a git submodule pinned at upstream master.
-The M2.7 hook lives as a single patch at
-`patches/0001-M2.7-tensor-dump-hook-for-llama-server.patch`
-(`git format-patch` output, replays cleanly via `git apply` or
-`apply-patches.sh`). Bumping the submodule pin: `--revert` first,
-update the pin, then `apply-patches.sh` again — refresh the patch
-file if there's a conflict.
+`vendor/llama.cpp` is a git submodule on
+`github.com/nulltea/llama.cpp` branch `m2_7-tensor-dump`, which
+is upstream master plus one commit (the M2.7 hook). Fresh clones
+get the patched source automatically via `git submodule update
+--init`. Rebase the fork branch on upstream when bumping.
 
 
 | File | Diff |
