@@ -1,0 +1,580 @@
+{
+  "format": "aloepri_attack_results_v1",
+  "model_id": "Qwen/Qwen3-1.7B",
+  "shield_k": 8,
+  "shield_energy_scale": 4.0,
+  "per_forward_mask": true,
+  "captured_at": "2026-05-19T05:28:10.969476+00:00",
+  "conditions": {
+    "c0_plain": {
+      "nn": {
+        "attack": "nn",
+        "condition": "c0_plain",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 64,
+        "n_train": 0,
+        "n_test": 904,
+        "ttrsr_top1": 1.0,
+        "ttrsr_top10": 1.0,
+        "risk_level": "high",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "layer": 0,
+          "kind": "q_proj",
+          "strip_shield": true,
+          "matching_strategy": "cosine_topk_no_train"
+        }
+      },
+      "vma": {
+        "attack": "vma",
+        "condition": "c0_plain",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 64,
+        "n_train": 0,
+        "n_test": 0,
+        "ttrsr_top1": null,
+        "ttrsr_top10": null,
+        "risk_level": "not_applicable",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "note": "AloePri's VMA recovers \u03a0 from (W_plain, W_obfuscated) weight pairs. GELO does not obfuscate weights (openweight threat model). The closest meaningful attack on GELO observables is NN \u2014 see attack_drivers.run_nn (AloePri Table 1 reports AloePri NN = 0.0% and VMA = 13.51%; the GELO analog is NN, not VMA).",
+          "phase": "phase0_template_only"
+        }
+      },
+      "ia": {
+        "attack": "ia",
+        "condition": "c0_plain",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 64,
+        "n_train": 0,
+        "n_test": 4096,
+        "ttrsr_top1": 0.98583984375,
+        "ttrsr_top10": null,
+        "risk_level": "high",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "layer": 0,
+          "vocab_eval_size": 4096,
+          "gate_ia_static_top1": 0.849853515625,
+          "attn_ia_static_top1": 0.98583984375,
+          "gate_ia_activation_top1": 0.0,
+          "attn_ia_activation_top1": 0.0099557526409626,
+          "note": "IA targets static-weight obfuscation. GELO does not obfuscate weights, so the static-weight invariant match is trivially the identity (TTRSR=100% mechanically). The meaningful GELO question is `extra.{gate,attn}_ia_activation_top1` \u2014 can the attacker recover \u03a0 from masked activations? Under per-batch Haar mask this should be \u226a 1%.",
+          "phase": "implemented"
+        }
+      },
+      "ima": {
+        "attack": "ima",
+        "condition": "c0_plain",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 64,
+        "n_train": 632,
+        "n_test": 137,
+        "ttrsr_top1": 0.9635036587715149,
+        "ttrsr_top10": 1.0,
+        "risk_level": "high",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "layer": 0,
+          "kind": "q_proj",
+          "best_ridge_alpha": 0.01,
+          "ridge_alpha_val_scan": [
+            {
+              "ridge_alpha": 0.0001,
+              "val_top1": 0.385185182094574
+            },
+            {
+              "ridge_alpha": 0.01,
+              "val_top1": 0.9629629850387573
+            },
+            {
+              "ridge_alpha": 1.0,
+              "val_top1": 0.9629629850387573
+            }
+          ],
+          "strip_shield": true,
+          "candidate_pool_size": 2255,
+          "embedding_cosine_similarity": 0.6770321726799011
+        }
+      },
+      "ima_paper_like": {
+        "attack": "ima_paper_like",
+        "condition": "c0_plain",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 64,
+        "n_train": 679,
+        "n_test": 225,
+        "ttrsr_top1": 0.004444444552063942,
+        "ttrsr_top10": 0.013333333656191826,
+        "risk_level": "low",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "layer": 0,
+          "kind": "q_proj",
+          "strip_shield": true,
+          "inverter_hidden": 256,
+          "n_layers": 2,
+          "n_heads": 8,
+          "epochs": 2,
+          "batch_size": 8,
+          "lr": 0.0003,
+          "final_train_loss": 30.33003807067871,
+          "n_train_prompts": 48,
+          "n_test_prompts": 16,
+          "candidate_pool_size": 2224,
+          "embedding_cosine_similarity": 0.005214155185967684
+        }
+      },
+      "isa": {
+        "attack": "isa",
+        "condition": "c0_plain",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 64,
+        "n_train": 256,
+        "n_test": 64,
+        "ttrsr_top1": 0.1875,
+        "ttrsr_top10": 0.421875,
+        "risk_level": "medium",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "layer": 23,
+          "kind": "q_proj",
+          "best_ridge_alpha": 1.0,
+          "ridge_alpha_val_scan": [
+            {
+              "ridge_alpha": 0.0001,
+              "val_top1": 0.03125
+            },
+            {
+              "ridge_alpha": 0.01,
+              "val_top1": 0.078125
+            },
+            {
+              "ridge_alpha": 1.0,
+              "val_top1": 0.28125
+            }
+          ],
+          "strip_shield": true,
+          "candidate_pool_size": 2147,
+          "embedding_cosine_similarity": 0.20864178240299225,
+          "observable_type": "hidden_state"
+        }
+      },
+      "tfma": {
+        "attack": "tfma",
+        "condition": "c0_plain",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 64,
+        "n_train": 0,
+        "n_test": 0,
+        "ttrsr_top1": null,
+        "ttrsr_top10": null,
+        "risk_level": "not_applicable",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "note": "Token-frequency leak does not apply to GELO under the openweight threat model \u2014 token ids are TEE-internal and never cross PCIe. See docs/research/aloepri-vs-gelo.md \u00a73 table row #1.",
+          "phase": "phase0_template_only"
+        }
+      },
+      "sda": {
+        "attack": "sda",
+        "condition": "c0_plain",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 64,
+        "n_train": 0,
+        "n_test": 0,
+        "ttrsr_top1": null,
+        "ttrsr_top10": null,
+        "risk_level": "not_applicable",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "note": "Substitution decipherment operates on an obfuscated token-id sequence \u2014 GELO's threat model has no such sequence visible to the PCIe attacker (token ids never cross the trust boundary). See docs/research/aloepri-vs-gelo.md \u00a73 table row #1.",
+          "phase": "phase0_template_only"
+        }
+      }
+    },
+    "c1_mask_only": {
+      "nn": {
+        "attack": "nn",
+        "condition": "c1_mask_only",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 64,
+        "n_train": 0,
+        "n_test": 904,
+        "ttrsr_top1": 0.06415928900241852,
+        "ttrsr_top10": 0.17256636917591095,
+        "risk_level": "low",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "layer": 0,
+          "kind": "q_proj",
+          "strip_shield": true,
+          "matching_strategy": "cosine_topk_no_train"
+        }
+      },
+      "vma": {
+        "attack": "vma",
+        "condition": "c1_mask_only",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 64,
+        "n_train": 0,
+        "n_test": 0,
+        "ttrsr_top1": null,
+        "ttrsr_top10": null,
+        "risk_level": "not_applicable",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "note": "AloePri's VMA recovers \u03a0 from (W_plain, W_obfuscated) weight pairs. GELO does not obfuscate weights (openweight threat model). The closest meaningful attack on GELO observables is NN \u2014 see attack_drivers.run_nn (AloePri Table 1 reports AloePri NN = 0.0% and VMA = 13.51%; the GELO analog is NN, not VMA).",
+          "phase": "phase0_template_only"
+        }
+      },
+      "ia": {
+        "attack": "ia",
+        "condition": "c1_mask_only",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 64,
+        "n_train": 0,
+        "n_test": 4096,
+        "ttrsr_top1": 0.98583984375,
+        "ttrsr_top10": null,
+        "risk_level": "high",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "layer": 0,
+          "vocab_eval_size": 4096,
+          "gate_ia_static_top1": 0.849853515625,
+          "attn_ia_static_top1": 0.98583984375,
+          "gate_ia_activation_top1": 0.0,
+          "attn_ia_activation_top1": 0.008849557489156723,
+          "note": "IA targets static-weight obfuscation. GELO does not obfuscate weights, so the static-weight invariant match is trivially the identity (TTRSR=100% mechanically). The meaningful GELO question is `extra.{gate,attn}_ia_activation_top1` \u2014 can the attacker recover \u03a0 from masked activations? Under per-batch Haar mask this should be \u226a 1%.",
+          "phase": "implemented"
+        }
+      },
+      "ima": {
+        "attack": "ima",
+        "condition": "c1_mask_only",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 64,
+        "n_train": 632,
+        "n_test": 137,
+        "ttrsr_top1": 0.007299270015209913,
+        "ttrsr_top10": 0.07299269735813141,
+        "risk_level": "low",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "layer": 0,
+          "kind": "q_proj",
+          "best_ridge_alpha": 0.0001,
+          "ridge_alpha_val_scan": [
+            {
+              "ridge_alpha": 0.0001,
+              "val_top1": 0.02222222276031971
+            },
+            {
+              "ridge_alpha": 0.01,
+              "val_top1": 0.02222222276031971
+            },
+            {
+              "ridge_alpha": 1.0,
+              "val_top1": 0.02222222276031971
+            }
+          ],
+          "strip_shield": true,
+          "candidate_pool_size": 2255,
+          "embedding_cosine_similarity": 0.00909340288490057
+        }
+      },
+      "ima_paper_like": {
+        "attack": "ima_paper_like",
+        "condition": "c1_mask_only",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 64,
+        "n_train": 679,
+        "n_test": 225,
+        "ttrsr_top1": 0.004444444552063942,
+        "ttrsr_top10": 0.013333333656191826,
+        "risk_level": "low",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "layer": 0,
+          "kind": "q_proj",
+          "strip_shield": true,
+          "inverter_hidden": 256,
+          "n_layers": 2,
+          "n_heads": 8,
+          "epochs": 2,
+          "batch_size": 8,
+          "lr": 0.0003,
+          "final_train_loss": 60.203704833984375,
+          "n_train_prompts": 48,
+          "n_test_prompts": 16,
+          "candidate_pool_size": 2224,
+          "embedding_cosine_similarity": 0.0015888179186731577
+        }
+      },
+      "isa": {
+        "attack": "isa",
+        "condition": "c1_mask_only",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 64,
+        "n_train": 256,
+        "n_test": 64,
+        "ttrsr_top1": 0.0,
+        "ttrsr_top10": 0.078125,
+        "risk_level": "low",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "layer": 23,
+          "kind": "q_proj",
+          "best_ridge_alpha": 0.0001,
+          "ridge_alpha_val_scan": [
+            {
+              "ridge_alpha": 0.0001,
+              "val_top1": 0.015625
+            },
+            {
+              "ridge_alpha": 0.01,
+              "val_top1": 0.0
+            },
+            {
+              "ridge_alpha": 1.0,
+              "val_top1": 0.0
+            }
+          ],
+          "strip_shield": true,
+          "candidate_pool_size": 2147,
+          "embedding_cosine_similarity": 0.003387986682355404,
+          "observable_type": "hidden_state"
+        }
+      },
+      "tfma": {
+        "attack": "tfma",
+        "condition": "c1_mask_only",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 64,
+        "n_train": 0,
+        "n_test": 0,
+        "ttrsr_top1": null,
+        "ttrsr_top10": null,
+        "risk_level": "not_applicable",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "note": "Token-frequency leak does not apply to GELO under the openweight threat model \u2014 token ids are TEE-internal and never cross PCIe. See docs/research/aloepri-vs-gelo.md \u00a73 table row #1.",
+          "phase": "phase0_template_only"
+        }
+      },
+      "sda": {
+        "attack": "sda",
+        "condition": "c1_mask_only",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 64,
+        "n_train": 0,
+        "n_test": 0,
+        "ttrsr_top1": null,
+        "ttrsr_top10": null,
+        "risk_level": "not_applicable",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "note": "Substitution decipherment operates on an obfuscated token-id sequence \u2014 GELO's threat model has no such sequence visible to the PCIe attacker (token ids never cross the trust boundary). See docs/research/aloepri-vs-gelo.md \u00a73 table row #1.",
+          "phase": "phase0_template_only"
+        }
+      }
+    },
+    "c2_default": {
+      "nn": {
+        "attack": "nn",
+        "condition": "c2_default",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 64,
+        "n_train": 0,
+        "n_test": 904,
+        "ttrsr_top1": 0.04535398259758949,
+        "ttrsr_top10": 0.11172566562891006,
+        "risk_level": "low",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "layer": 0,
+          "kind": "q_proj",
+          "strip_shield": true,
+          "matching_strategy": "cosine_topk_no_train"
+        }
+      },
+      "vma": {
+        "attack": "vma",
+        "condition": "c2_default",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 64,
+        "n_train": 0,
+        "n_test": 0,
+        "ttrsr_top1": null,
+        "ttrsr_top10": null,
+        "risk_level": "not_applicable",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "note": "AloePri's VMA recovers \u03a0 from (W_plain, W_obfuscated) weight pairs. GELO does not obfuscate weights (openweight threat model). The closest meaningful attack on GELO observables is NN \u2014 see attack_drivers.run_nn (AloePri Table 1 reports AloePri NN = 0.0% and VMA = 13.51%; the GELO analog is NN, not VMA).",
+          "phase": "phase0_template_only"
+        }
+      },
+      "ia": {
+        "attack": "ia",
+        "condition": "c2_default",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 64,
+        "n_train": 0,
+        "n_test": 4096,
+        "ttrsr_top1": 0.98583984375,
+        "ttrsr_top10": null,
+        "risk_level": "high",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "layer": 0,
+          "vocab_eval_size": 4096,
+          "gate_ia_static_top1": 0.849853515625,
+          "attn_ia_static_top1": 0.98583984375,
+          "gate_ia_activation_top1": 0.0,
+          "attn_ia_activation_top1": 0.0099557526409626,
+          "note": "IA targets static-weight obfuscation. GELO does not obfuscate weights, so the static-weight invariant match is trivially the identity (TTRSR=100% mechanically). The meaningful GELO question is `extra.{gate,attn}_ia_activation_top1` \u2014 can the attacker recover \u03a0 from masked activations? Under per-batch Haar mask this should be \u226a 1%.",
+          "phase": "implemented"
+        }
+      },
+      "ima": {
+        "attack": "ima",
+        "condition": "c2_default",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 64,
+        "n_train": 632,
+        "n_test": 137,
+        "ttrsr_top1": 0.014598540030419827,
+        "ttrsr_top10": 0.08029197156429291,
+        "risk_level": "low",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "layer": 0,
+          "kind": "q_proj",
+          "best_ridge_alpha": 0.0001,
+          "ridge_alpha_val_scan": [
+            {
+              "ridge_alpha": 0.0001,
+              "val_top1": 0.014814814552664757
+            },
+            {
+              "ridge_alpha": 0.01,
+              "val_top1": 0.007407407276332378
+            },
+            {
+              "ridge_alpha": 1.0,
+              "val_top1": 0.007407407276332378
+            }
+          ],
+          "strip_shield": true,
+          "candidate_pool_size": 2255,
+          "embedding_cosine_similarity": 0.0022671143524348736
+        }
+      },
+      "ima_paper_like": {
+        "attack": "ima_paper_like",
+        "condition": "c2_default",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 64,
+        "n_train": 679,
+        "n_test": 225,
+        "ttrsr_top1": 0.0,
+        "ttrsr_top10": 0.02222222276031971,
+        "risk_level": "low",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "layer": 0,
+          "kind": "q_proj",
+          "strip_shield": true,
+          "inverter_hidden": 256,
+          "n_layers": 2,
+          "n_heads": 8,
+          "epochs": 2,
+          "batch_size": 8,
+          "lr": 0.0003,
+          "final_train_loss": 83.1568832397461,
+          "n_train_prompts": 48,
+          "n_test_prompts": 16,
+          "candidate_pool_size": 2224,
+          "embedding_cosine_similarity": 0.0008585324976593256
+        }
+      },
+      "isa": {
+        "attack": "isa",
+        "condition": "c2_default",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 64,
+        "n_train": 256,
+        "n_test": 64,
+        "ttrsr_top1": 0.0,
+        "ttrsr_top10": 0.03125,
+        "risk_level": "low",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "layer": 23,
+          "kind": "q_proj",
+          "best_ridge_alpha": 0.0001,
+          "ridge_alpha_val_scan": [
+            {
+              "ridge_alpha": 0.0001,
+              "val_top1": 0.015625
+            },
+            {
+              "ridge_alpha": 0.01,
+              "val_top1": 0.015625
+            },
+            {
+              "ridge_alpha": 1.0,
+              "val_top1": 0.015625
+            }
+          ],
+          "strip_shield": true,
+          "candidate_pool_size": 2147,
+          "embedding_cosine_similarity": -0.008763684891164303,
+          "observable_type": "hidden_state"
+        }
+      },
+      "tfma": {
+        "attack": "tfma",
+        "condition": "c2_default",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 64,
+        "n_train": 0,
+        "n_test": 0,
+        "ttrsr_top1": null,
+        "ttrsr_top10": null,
+        "risk_level": "not_applicable",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "note": "Token-frequency leak does not apply to GELO under the openweight threat model \u2014 token ids are TEE-internal and never cross PCIe. See docs/research/aloepri-vs-gelo.md \u00a73 table row #1.",
+          "phase": "phase0_template_only"
+        }
+      },
+      "sda": {
+        "attack": "sda",
+        "condition": "c2_default",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 64,
+        "n_train": 0,
+        "n_test": 0,
+        "ttrsr_top1": null,
+        "ttrsr_top10": null,
+        "risk_level": "not_applicable",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "note": "Substitution decipherment operates on an obfuscated token-id sequence \u2014 GELO's threat model has no such sequence visible to the PCIe attacker (token ids never cross the trust boundary). See docs/research/aloepri-vs-gelo.md \u00a73 table row #1.",
+          "phase": "phase0_template_only"
+        }
+      }
+    }
+  },
+  "acceptance_gate": {
+    "ima_c2_below_10pct": true,
+    "isa_c2_below_10pct": true,
+    "ima_paper_like_c2_below_10pct": true,
+    "c0_ima_at_least_95pct": true,
+    "c0_ima_paper_like_at_least_50pct": false,
+    "c0_nn_at_least_50pct": true,
+    "per_offload_at_most_per_forward_plus_shield_on_isa": true
+  }
+}

@@ -1,0 +1,345 @@
+{
+  "format": "aloepri_attack_results_v1",
+  "model_id": "Qwen/Qwen3-1.7B",
+  "shield_k": 8,
+  "shield_energy_scale": 4.0,
+  "per_forward_mask": true,
+  "captured_at": "2026-05-19T04:26:04.470029+00:00",
+  "conditions": {
+    "c0_plain": {
+      "vma": {
+        "attack": "vma",
+        "condition": "c0_plain",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 8,
+        "n_train": 0,
+        "n_test": 87,
+        "ttrsr_top1": 1.0,
+        "ttrsr_top10": 1.0,
+        "risk_level": "high",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "layer": 0,
+          "kind": "q_proj",
+          "strip_shield": true,
+          "matching_strategy": "cosine_topk_no_train"
+        }
+      },
+      "ima": {
+        "attack": "ima",
+        "condition": "c0_plain",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 8,
+        "n_train": 69,
+        "n_test": 18,
+        "ttrsr_top1": 0.2777777910232544,
+        "ttrsr_top10": 0.6666666865348816,
+        "risk_level": "medium",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "layer": 0,
+          "kind": "q_proj",
+          "ridge_alpha": 1.0,
+          "strip_shield": true,
+          "candidate_pool_size": 2063,
+          "embedding_cosine_similarity": 0.49029260873794556
+        }
+      },
+      "isa": {
+        "attack": "isa",
+        "condition": "c0_plain",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 8,
+        "n_train": 69,
+        "n_test": 18,
+        "ttrsr_top1": 0.2222222238779068,
+        "ttrsr_top10": 0.3333333432674408,
+        "risk_level": "medium",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "layer": 23,
+          "kind": "q_proj",
+          "ridge_alpha": 1.0,
+          "strip_shield": true,
+          "candidate_pool_size": 2064,
+          "embedding_cosine_similarity": 0.2134791910648346,
+          "observable_type": "hidden_state"
+        }
+      },
+      "tfma": {
+        "attack": "tfma",
+        "condition": "c0_plain",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 8,
+        "n_train": 0,
+        "n_test": 0,
+        "ttrsr_top1": null,
+        "ttrsr_top10": null,
+        "risk_level": "not_applicable",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "note": "Token-frequency leak does not apply to GELO under the openweight threat model \u2014 token ids are TEE-internal and never cross PCIe. See docs/research/aloepri-vs-gelo.md \u00a73 table row #1.",
+          "phase": "phase0_template_only"
+        }
+      },
+      "sda": {
+        "attack": "sda",
+        "condition": "c0_plain",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 8,
+        "n_train": 0,
+        "n_test": 0,
+        "ttrsr_top1": null,
+        "ttrsr_top10": null,
+        "risk_level": "not_applicable",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "note": "Substitution decipherment operates on an obfuscated token-id sequence \u2014 GELO's threat model has no such sequence visible to the PCIe attacker (token ids never cross the trust boundary). See docs/research/aloepri-vs-gelo.md \u00a73 table row #1.",
+          "phase": "phase0_template_only"
+        }
+      },
+      "ia": {
+        "attack": "ia",
+        "condition": "c0_plain",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 8,
+        "n_train": 0,
+        "n_test": 0,
+        "ttrsr_top1": null,
+        "ttrsr_top10": null,
+        "risk_level": "not_applicable",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "note": "Weight-invariant attack is a static-weight obfuscation probe. GELO does not obfuscate weights (openweight threat model) and AloePri's IA is itself only a phase-0 template (~30 lines, no attack body). See docs/research/aloepri-vs-gelo.md \u00a73 row #10.",
+          "phase": "phase0_template_only"
+        }
+      }
+    },
+    "c1_mask_only": {
+      "vma": {
+        "attack": "vma",
+        "condition": "c1_mask_only",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 8,
+        "n_train": 0,
+        "n_test": 87,
+        "ttrsr_top1": 0.08045977354049683,
+        "ttrsr_top10": 0.2068965584039688,
+        "risk_level": "low",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "layer": 0,
+          "kind": "q_proj",
+          "strip_shield": true,
+          "matching_strategy": "cosine_topk_no_train"
+        }
+      },
+      "ima": {
+        "attack": "ima",
+        "condition": "c1_mask_only",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 8,
+        "n_train": 69,
+        "n_test": 18,
+        "ttrsr_top1": 0.0,
+        "ttrsr_top10": 0.1666666716337204,
+        "risk_level": "low",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "layer": 0,
+          "kind": "q_proj",
+          "ridge_alpha": 1.0,
+          "strip_shield": true,
+          "candidate_pool_size": 2063,
+          "embedding_cosine_similarity": 0.026844047009944916
+        }
+      },
+      "isa": {
+        "attack": "isa",
+        "condition": "c1_mask_only",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 8,
+        "n_train": 69,
+        "n_test": 18,
+        "ttrsr_top1": 0.0,
+        "ttrsr_top10": 0.0,
+        "risk_level": "low",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "layer": 23,
+          "kind": "q_proj",
+          "ridge_alpha": 1.0,
+          "strip_shield": true,
+          "candidate_pool_size": 2064,
+          "embedding_cosine_similarity": -0.05236975848674774,
+          "observable_type": "hidden_state"
+        }
+      },
+      "tfma": {
+        "attack": "tfma",
+        "condition": "c1_mask_only",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 8,
+        "n_train": 0,
+        "n_test": 0,
+        "ttrsr_top1": null,
+        "ttrsr_top10": null,
+        "risk_level": "not_applicable",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "note": "Token-frequency leak does not apply to GELO under the openweight threat model \u2014 token ids are TEE-internal and never cross PCIe. See docs/research/aloepri-vs-gelo.md \u00a73 table row #1.",
+          "phase": "phase0_template_only"
+        }
+      },
+      "sda": {
+        "attack": "sda",
+        "condition": "c1_mask_only",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 8,
+        "n_train": 0,
+        "n_test": 0,
+        "ttrsr_top1": null,
+        "ttrsr_top10": null,
+        "risk_level": "not_applicable",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "note": "Substitution decipherment operates on an obfuscated token-id sequence \u2014 GELO's threat model has no such sequence visible to the PCIe attacker (token ids never cross the trust boundary). See docs/research/aloepri-vs-gelo.md \u00a73 table row #1.",
+          "phase": "phase0_template_only"
+        }
+      },
+      "ia": {
+        "attack": "ia",
+        "condition": "c1_mask_only",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 8,
+        "n_train": 0,
+        "n_test": 0,
+        "ttrsr_top1": null,
+        "ttrsr_top10": null,
+        "risk_level": "not_applicable",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "note": "Weight-invariant attack is a static-weight obfuscation probe. GELO does not obfuscate weights (openweight threat model) and AloePri's IA is itself only a phase-0 template (~30 lines, no attack body). See docs/research/aloepri-vs-gelo.md \u00a73 row #10.",
+          "phase": "phase0_template_only"
+        }
+      }
+    },
+    "c2_default": {
+      "vma": {
+        "attack": "vma",
+        "condition": "c2_default",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 8,
+        "n_train": 0,
+        "n_test": 87,
+        "ttrsr_top1": 0.1034482792019844,
+        "ttrsr_top10": 0.18390804529190063,
+        "risk_level": "medium",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "layer": 0,
+          "kind": "q_proj",
+          "strip_shield": true,
+          "matching_strategy": "cosine_topk_no_train"
+        }
+      },
+      "ima": {
+        "attack": "ima",
+        "condition": "c2_default",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 8,
+        "n_train": 69,
+        "n_test": 18,
+        "ttrsr_top1": 0.0,
+        "ttrsr_top10": 0.1111111119389534,
+        "risk_level": "low",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "layer": 0,
+          "kind": "q_proj",
+          "ridge_alpha": 1.0,
+          "strip_shield": true,
+          "candidate_pool_size": 2063,
+          "embedding_cosine_similarity": -0.02572278492152691
+        }
+      },
+      "isa": {
+        "attack": "isa",
+        "condition": "c2_default",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 8,
+        "n_train": 69,
+        "n_test": 18,
+        "ttrsr_top1": 0.0,
+        "ttrsr_top10": 0.1666666716337204,
+        "risk_level": "low",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "layer": 23,
+          "kind": "q_proj",
+          "ridge_alpha": 1.0,
+          "strip_shield": true,
+          "candidate_pool_size": 2064,
+          "embedding_cosine_similarity": -0.019609326496720314,
+          "observable_type": "hidden_state"
+        }
+      },
+      "tfma": {
+        "attack": "tfma",
+        "condition": "c2_default",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 8,
+        "n_train": 0,
+        "n_test": 0,
+        "ttrsr_top1": null,
+        "ttrsr_top10": null,
+        "risk_level": "not_applicable",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "note": "Token-frequency leak does not apply to GELO under the openweight threat model \u2014 token ids are TEE-internal and never cross PCIe. See docs/research/aloepri-vs-gelo.md \u00a73 table row #1.",
+          "phase": "phase0_template_only"
+        }
+      },
+      "sda": {
+        "attack": "sda",
+        "condition": "c2_default",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 8,
+        "n_train": 0,
+        "n_test": 0,
+        "ttrsr_top1": null,
+        "ttrsr_top10": null,
+        "risk_level": "not_applicable",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "note": "Substitution decipherment operates on an obfuscated token-id sequence \u2014 GELO's threat model has no such sequence visible to the PCIe attacker (token ids never cross the trust boundary). See docs/research/aloepri-vs-gelo.md \u00a73 table row #1.",
+          "phase": "phase0_template_only"
+        }
+      },
+      "ia": {
+        "attack": "ia",
+        "condition": "c2_default",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "n_prompts": 8,
+        "n_train": 0,
+        "n_test": 0,
+        "ttrsr_top1": null,
+        "ttrsr_top10": null,
+        "risk_level": "not_applicable",
+        "primary_metric_name": "token_top1_recovery_rate",
+        "extra": {
+          "note": "Weight-invariant attack is a static-weight obfuscation probe. GELO does not obfuscate weights (openweight threat model) and AloePri's IA is itself only a phase-0 template (~30 lines, no attack body). See docs/research/aloepri-vs-gelo.md \u00a73 row #10.",
+          "phase": "phase0_template_only"
+        }
+      }
+    }
+  },
+  "acceptance_gate": {
+    "ima_c2_below_10pct": true,
+    "isa_c2_below_10pct": true,
+    "c0_ima_at_least_95pct": false,
+    "c0_isa_at_least_50pct": false,
+    "c0_vma_at_least_50pct": true,
+    "c1_strictly_higher_than_c2_on_isa": false
+  }
+}

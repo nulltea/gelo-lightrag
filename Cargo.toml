@@ -19,6 +19,10 @@ members = [
     "crates/light-kg-store",
     "crates/lightrag-private",
     "crates/graphrag-bench",
+    # AloePri attack-resistance harness (Phase 2). Lives under evals/
+    # so the GELO protocol crates stay untouched per the handoff
+    # rule in docs/prototype/aloepri-attack-harness.md §5.
+    "evals/aloepri-attacks",
 ]
 resolver = "2"
 

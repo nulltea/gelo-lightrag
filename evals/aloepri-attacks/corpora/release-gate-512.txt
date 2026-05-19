@@ -1,0 +1,512 @@
+The quick brown fox jumps over the lazy dog by the riverbank.
+Privacy-preserving inference matters for sensitive medical records.
+What is the capital of France and which river runs through it?
+Encryption alone does not prevent traffic-analysis side channels.
+Large language models can hallucinate plausible-sounding factual errors.
+Open weights make protocol-level defences load-bearing for security.
+Token-frequency analysis remains a problem for static obfuscation schemes.
+Hardware attestation binds software identity to a measured boot chain.
+The mitochondrion is widely regarded as the powerhouse of the cell.
+Photosynthesis converts sunlight into chemical energy stored as glucose.
+A neural network learns by adjusting weights through gradient descent.
+Quantum entanglement appears to violate classical locality assumptions.
+The library was closed on Sunday so we walked through the park instead.
+Coffee beans are roasted at temperatures between two hundred and two hundred forty Celsius.
+A binary search assumes the input array is already sorted ascending.
+Memoization caches the result of pure function calls to avoid recomputation.
+The treaty was signed in eighteen hundred fifteen after the Napoleonic wars.
+Machine translation has improved dramatically since the transformer architecture appeared.
+Mount Everest stands eight thousand eight hundred forty-eight meters above sea level.
+The musician practiced the violin for three hours every morning before breakfast.
+Robust statistical tests should not assume normally distributed data without verification.
+A garden full of tulips and daffodils greeted us when we arrived at the cottage.
+Cryptographic hash functions must be preimage resistant and collision resistant.
+The chef prepared a seven-course tasting menu featuring locally sourced ingredients.
+Distributed consensus protocols sacrifice availability or consistency under partition.
+Solar panels convert photons into electrical current through the photovoltaic effect.
+Reading an old leather-bound book carried the smell of paper and time.
+The compiler optimizes loop iteration order to improve cache locality on modern CPUs.
+A wooden bridge crossed the stream where children threw stones into the water.
+The conference attracted researchers from over thirty countries this year.
+Memory safety violations often manifest as use-after-free or buffer overflows.
+The bakery on the corner sells fresh croissants every Saturday morning at six.
+A symphony orchestra typically consists of strings, woodwinds, brass, and percussion sections.
+Adversarial examples can fool image classifiers with imperceptible pixel changes.
+The ancient ruins were partially submerged after the dam was completed in nineteen sixty.
+Differential privacy adds calibrated noise to query results to bound information leakage.
+A skilled cabinetmaker measures twice and cuts once to avoid wasting timber.
+The ferry departed precisely at noon despite the heavy fog over the harbor.
+Hyperparameter tuning sweeps over learning rate, batch size, and weight decay schedules.
+Glass blowers shape molten glass on the end of a hollow metal rod by spinning.
+The treaty obligations bind successor states under standard international legal practice.
+Forward error correction adds redundancy so that lost packets can be reconstructed.
+A quiet meadow surrounded by birch trees opened up beyond the forest path.
+The submarine descended slowly through the thermocline toward the ocean floor.
+Vector databases use approximate nearest neighbor search to scale similarity queries.
+A skilled blacksmith hammers heated iron into agricultural tools and ornamental hinges.
+The town's annual festival has run continuously since the early nineteenth century.
+Privacy budgets in differential privacy compose subadditively across queries.
+The mountaineer reached the summit just before the storm rolled in from the west.
+A well-designed cache hierarchy balances bandwidth, latency, and silicon area tradeoffs.
+The botanist catalogued forty species of fern during a single summer in Borneo.
+Pipelining instruction execution exposes dependencies that branch predictors must speculate around.
+Wooden ships were caulked with tar and oakum to keep the hull watertight.
+Garbage collectors trade pause time for throughput depending on the generational policy.
+The watchmaker's apprentice spent two years learning how to adjust the balance wheel.
+Federated learning trains a shared model without centralizing the raw training data.
+A herd of deer crossed the clearing at dawn while the photographer waited silently.
+Convex optimization guarantees a global optimum when both objective and feasible set are convex.
+The journalist interviewed survivors of the earthquake for a three-part documentary series.
+Side-channel attacks recover secrets by measuring power, timing, or acoustic emissions.
+A lighthouse keeper maintained the lamp through three generations of his family.
+Reinforcement learning agents balance exploration and exploitation as they collect rewards.
+The bookshop tucked between two cafes specialized in rare nineteenth-century novels.
+Homomorphic encryption permits computation on ciphertexts without first decrypting them.
+The river flooded the lower fields every spring, leaving rich silt behind.
+When boiling butter, when it's ready, you can Pour it into a jar.
+To permanently attach metal legs to a chair, you can Weld the metal together to get it to stay firmly in place.
+How do you indent something? leave a space before starting the writing.
+How do you shake something? move it up and down and side to side quickly.
+Clean tires Pour water, scrape off caked on dirt. Use a steel wool to clean out crevices and narrow spaces.
+How do you taste something? place it in your mouth to taste.
+How do you stab something? stick a sharp object through it.
+How to quickly soften butter for baking? Place the stick of butter inside a freezer bag and beat it with a wooden rolling pin.
+How do you turn on an ipad screen? press the lock button.
+How to season raw chicken. Put seasoning into bowl, then place raw chicken in the bowl and coat with seasoning.
+Pin can fit through a grater.
+How to tie pieces of paper together. Thread ribbon through the holes and tie in a bow.
+How do you get leg muscles? work out your legs.
+To make a tomato sauce taste more like a pizza sauce, mix a little bit of sugar into the sauce to sweeten it.
+How do you draw with chalk? use the chalk like a pen on pavement.
+Convert unused paint to solid waste. Pour cat litter into paint can.
+How to check your Facebook feed Log in to Facebook. Click on the bell shaped button at the top right of your Facebook home window.
+How do I make chocolate pasta? add cocoa powder to the flour.
+How do you flood a room? fill it with water.
+What is the best way to make a black tiger shirt? You need a black shirt, rubber bands,and a bleach pen.
+How can I get oil stains out of my driveway? Douse each stain with a couple cans of soda.
+Soothe a painful sunburn. Wait until brewed tea bag is cool, then apply on burn.
+To french manicure your nails, you can Paint a thin strip across the top.
+How do you save a picture you took on your iphone? take the picture, and it stores to your albums automatically.
+What can I use for fuel in an alcohol stove? Use acetone.
+To crush the petals of a flower, you can Use a mortar and pestle.
+To attach sections of copper heating pipe together, you can Use epoxy to hold the sections of pipe in place.
+Shovel can break a camera. camera.
+To get cash for old, unused drinking bottles, take the bottles to a grocery store with a recycling center.
+How do you calculate your gas mileage? Divide your mileage on one tank of gas by the capacity of your tank in gallons.
+How can I grow tomatoes without a garden? Plant in empty five gallon buckets.
+How to prevent pain while cutting your nails? Cutting nails doesn't cause pain as nails don't have sensation.
+How to shower correctly Open the curtain, get in, take the soap and spread it across your body, then rinse off and dry.
+How to avoid danger? do not engage in risky behaviors.
+One seeks to decorate their fire place. One could put a decorative mantle in.
+To prevent eye infections, replace your mascara with a new tube every three months.
+How do you cut gnocchi without a knife? Press the edge of a spoon down into the dough to cut it.
+One wants their fence to be made out of wood. One could use old pallets.
+Make use of post-its before you throw them away. Run them between the keys on your keyboard to collect crumbs and fluff.
+To communicate with somebody in a language you don't understand, learn the first one hundred most common words.
+How can I cut the handles of metal cutlery? Use a hand saw to cut the handles.
+How to use a capped pen? remove cap, put tip of pen to paper, and move across paper.
+Two forks stir alcohol in a shot glass quickly.
+Vine can be melted to make it more chewy.
+Stop car from overheating. Turn on heater to pull heat away from engine.
+What materials do you need to make a pokeball? Fleece, felt, matching threads, stuffing, sewing needle and scissors.
+What can I do to store documents externally and privately. Upload the documents onto a flash drive.
+Make my seams nearly invisible. A clear nylon thread will make seems nearly invisible.
+How do you wear a bracelet? put it on around your wrist.
+How do you deny something? say no.
+Prevent air bubbles in cheese cake. Pound the pan on counter top a few times before baking.
+To be able to hear the television better, increase the volume of the television speakers to an appropriate level.
+What kind of dye is needed to make slime? Food dye is recommended.
+How do you make the first braid? You will do a braid from the first left upper side down to the bottom right side.
+How can I make my margarita more sour? Add a few drops of lemon or lime juice and stir with a spoon.
+How do I get rid of a bug infestation in my vegetable garden? Use a strong fertilizer until the bugs are gone.
+How can I make chocolate ice cream? Combine all ingredients in a bowl. Mix them together and then place in a freezer to chill.
+How do you pop your ears? yawn.
+What liquid can be used to help clean cartridge-based video games? Isopropyl alcohol.
+Making the forms Cut 10 centimeters of card stock and wrap it around a pencil then wrap that in tape.
+To make pancakes without making a mess. Put pancake mix into an empty ketchup bottle to help make more efficient pancakes in a cleaner kitchen.
+To determine if someone has romantic feelings for you, observe if their body language seems really open and excited to you.
+Prevent bread from getting soggy in cooler. Wrap sandwiches in foil.
+To prevent sticking in juice-soaked gummy bears Stir the container twice a day.
+Coffee filter can alleviate puffy eyes.
+How do you get oil off of tortillas? After frying them, lay them on a few layers of paper towels to absorb the excess.
+Cleaning your house binds Clean your house blinds by using the upholstery attachment on your vacuum.
+Credit card can measure gaps between rafters.
+To easily get through a large crowd of people, focus on a point in the distance as you walk.
+How do you turn off an alarm in the alarm app on iphone? click the switch next to the alarm until it is grey.
+What is a good tool to use for determining how long an item should be in a project? A tape measure.
+Fight depression with entertainment. Watching a familiar movie increases comfort levels.
+How do I complete a word search Look at the words to be found, then skim along the puzzle until you find it.
+Pick can mine in the dark using a flashlight.
+How can I keep snow from sticking to a snow shovel? Apply a thin coat of car wax to the shovel head.
+To make Christmas feel more magical, leave a couple of bite marks in the cookies that your children leave for Santa.
+To determine the exact weight of a quantity of flour, you can Place the flour on a kitchen scale to weigh it.
+To strengthen latex while setting in a mold, you can Place paper towels on the back of the latex.
+How do you open a gift without ripping the paper? Hold gift over boiling water to let the steam release the tape adhesive.
+What should I use in order to make sure the measurements are accurate? You should use a tape measure or ruler.
+How do you consume gum? chew on it until it loses its flavor then spit it out.
+To move files from one location to another on your computer Drag the files to a different location.
+Screws can secure mold to clay.
+How can I apply eyeshadow without a brush? Use a cotton swab to apply shadow.
+Sock can be a cheap mitten when nothing else is available.
+How do you tip a waiter with cash? leave however much cash you'd like on the table you were sitting at.
+To remove permanent marker from wood furniture or walls, apply toothpaste and then wipe it off with hot water.
+To make a home made cough remedy, mix a small amount of whiskey, mints, lemon juice and black pepper together.
+Needle can hold strings on a mop if they fall off.
+How do you climb into an attic? pull the step ladder down.
+How to dry a towel quickly without a dryer? Hang the towel over a hanger outside in a windy area and allow it to dry.
+Make floating votive candles. Cut small candle holders from pool noodle.
+How to make a leather jacket appear worn? Apply a small amount of rubbing alcohol on the jacket and rub it in.
+To make a protective space around your garden, put chicken wire around the space as fencing.
+How to puree strawberries. Combine strawberries and sugar in a food processor and blend until smooth. Pour into empty baby food jars.
+To secure free end of paracord when tying knots Use a half hitch knot to secure the free end.
+What to bake tomatoes in a well-greased muffin tin.
+To mix flour and salt together for a crust, you can Place them in a bowl and mix together with a fork.
+Add extra storage for kitchen tools. Store tools in empty baby wipe container.
+How do you put a nail in wood? stand the nail with the sharp end pointed down and hammer it into the wood.
+How to keep pasta perfect don't rinse it after draining.
+How can I identify keys quickly on a key ring? Paint each key head a different color with nail polish.
+How do you see the solution to a problem you entered on the calculator on iphone? press the = button.
+Frying up some french fries Heat some oil to 300F, dump in french fries and cook for 3-5 mins, stirring occasionally.
+To secure the ends of braided plastic bags, Trim the ends with scissors and sew them together with a needle and thread.
+How do you put out a candle? Cut off the oxygen by covering the flame.
+To thin out chocolate layer for Twix Cake. Add water and coffee to the melted chocolate.
+How to take off your makeup with conditioner wet your face with warm water and massage the conditioner onto your skin.
+Double the amount of juice extracted from lemons. Microwave lemons for 15 seconds.
+Penny can purchase a grater with enough of them.
+Ladders can be placed on the floor to help hang paintings.
+How do you measure a teaspoon of cherry syrup? Grab a teaspoon and pour Cherry syrup into the spoon until it reaches the top.
+How to decorate car canopy planters. Fill the rest of the planter with soil and plant drought-resistant plants.
+Crossing out patterns on placemat make it nicer.
+Remove frost from car window. Spray window with alcohol, then wipe away.
+To prepare yeast. In a medium bowl combine the yeast, sugar, and water and let sit until foamy (takes about 5-10 minutes).
+How do you put a pillow on a bed? place it at the head of the bed.
+To cream together butter and white sugar for the love cookies Mix together in a large bowl using a whisk until light and fluffy.
+Tack can be used for crossing out words.
+How to make mushroom amatriciana Make Pasta Amatriciana with penne, cooking 2 minced garlic cloves and 8 ounces sliced cremini mushrooms with the onions.
+Computer sets my alarm My Car breaks down constantly.
+How do you block the light of a flashlight? Cover the lens with your hand.
+Make a bath to hydrate skin. Place two bags of jasmine tea in bath water.
+How to keep bacteria from forming in flower vases add a bit of bleach to the water.
+How to more easily fold thick pieces of leather. Score the back side of the leather piece.
+To clean off rust from a metal table that was resistant to vinegar. Use a stiff metal bristle brush.
+How do you put slipper on? put your foot inside of them until they fit like a shoe.
+To open a salt packet. Tear the packet open near the top.
+To build a compost bin fill the bin with alternating layers of dirt and dead leaves.
+To make a blanket from t-shirts. Cut t-shirts into rectangles and stitch the rectangles together.
+To protect a metal surface without changing the way it looks Spray a few coats of automotive clear coat on the area.
+Cardboard can be fixed with duct tape.
+To prevent onions from making you cry when they are cut, freeze the onions for twenty minutes before cutting.
+To remove the bark from a stick of wood, you can Use a small knife.
+Spit can wet food while you're eating.
+Prevent doll hair for hardening. Soften doll hair with fabric softener, then rinse.
+To have a fun workout. Do an activity that you enjoy doing as your workout.
+How to Take Action to Reduce Global Warming Eat fewer domestic animal products.
+Get wine out carpet use club soda.
+To prevent dough from sticking to your hands, you can Apply flour to your hands.
+To prepare onions to be cooked for another dish, you can Finely chop them into small pieces to spread out the flavor.
+How to bake banana bread. Place dough in the oven for 30 minutes.
+The best ratio for homemade dog food is 5 meat: 5 vegetable: 1 rice.
+How do you stop an argument? stop replying to the person you're arguing with.
+Why do doctors get paid high? They do important work in the context of our society.
+How can I darken wood? Using a soft cloth rub with linseed oil.
+How do I freeze the bananas when making banana ice cream? Freeze the bananas in the ice cream maker following your specific maker's instructions.
+Keep shine on leather shoes. Polish exterior of shoes with hairspray.
+To prevent chance of a oil boilover and subsequent fire during deep frying a turkey The turkey MUST be completely defrozen.
+Old shirt can clean oil spill.
+Digita moviel editor marks up old black and white movie for viewing.
+How can I set no bake nanaimo bars? Place in refrigerator for at least an hour.
+To remove rough edges from a board once you've cut it, you can Use sand paper on the rough edges until they're perfectly smooth.
+Jug can hold over a gallon of cold spring water to serve.
+Make recyclable gift bag. Shape newspaper into open square and attach string on top for handle.
+Paper towel apply balm to finger.
+To make finish soak into wood, you can Buff it with beeswax.
+Prevent liquid layer on peanut butter. Store peanut butter upside down so the oil gets mixed evenly.
+How to make a wheel out of plywood Use a jig saw to cut your plywood into a circle to make a wheel.
+How to frost cake. Scoop frosting with a rubber spatula and spread evenly over the top of the cake.
+How do I get my white underwear extra white? Wash them with bleach in a separate all white load.
+One wishes to have a multi-functioned belt. One could make a parachute cord belt.
+Sewing machine can craft a new agora sweater for clothing.
+Forgot your device recharger? Recharge Your Phone From the Hotel Room TV.
+Hang kitchen knives against the wall. Install a magnet bar on kitchen wall to hold knives.
+What should you use to loosen a rusted bolt? A heat gun could cause it to expand and loosen.
+Prevent car door from hitting garage wall. Cut a pool noodle in half and mount on wall.
+Treat poison ivy. Rub with mouth wash.
+To keep the sun out of your house, close the blinds to prevent light from coming into the windows.
+How do I mix together the ingredients for baked pears? Mix your baked pears ingredients in a high walled baking dish.
+Paper towel can be used to mop up water.
+To increase a person's typing speed, they should practice typing new words quickly.
+Teaspoon can gouge out eyeballs from a face.
+Chop sticks can be used as drumsticks.
+How do you major in something in college? take classes having to do with that major.
+How to lock a tape measure. after extending the tape to the desired length, press the front locking tab down until it locks into place.
+Stay awake while driving. Keep a yellow cloth in car to stare at during traffic stops.
+How do you open a book? flip over the cover, to reveal pages.
+Clothing covers up breasts in a pool.
+What materials do you need to make flash cotton? Sulfuric acid,Potassium nitrate, baking soda and cotton balls.
+How do I get involved in community sports look for posters in your church or library.
+Cleaning a tent Spot clean the tent's dirtiest areas first with tent cleaner solution. Then submerge the tent in soapy water. Rinse and dry.
+Hydrate. Drink a lot of fluids.
+Fingers can be hit on someone's flesh to make music.
+Make a gift card holder. Decorate an old cassette case.
+How to cross a crosswalk Press the button, then wait until it turns white then walk.
+Make a secure password for smartphone. Use accented letters for extra security.
+What makes something a carnivore? they eat only meat.
+Ski pole can be thrown like a spear.
+To find new music when you are bored of your usual bands, try looking at some playlists on Spotify.
+How to use extra caramelized onions in omelets and sandwiches; on chicken, steak and pork; in pastas and stews.
+How to kill weeds that come up through the cracks in walkways. Sprinkle weeds with borax.
+Should I store my bullets with my gun? No, it is safer to store the bullets in a different location.
+To easily store and identify bed sheet sets, put the folded sheets inside of the pillow case.
+What can I use to unlock a door Use your key and turn it to the right.
+When cutting into something that produces dust Do it in a well ventilated area.
+To check the done-ness of a piece of meat on the grill, insert a meat thermometer probe into the center of the meat.
+How to burn your name into wood. Take a pirography pen and write your name the way you like.
+Sock can hold some jello that's unfrozen.
+To protect your eyes when using a power saw, you can Wear safety goggles to keep out dust.
+How to Ripen Peaches Get a paper bag. Add your fruit to the bag. Let the peaches ripen. Check the peaches.
+To strip the insulation from a cord, You can use a wire stripper to remove the outer casing.
+Remove gloss from furniture. Rub furniture with steel wool.
+To remove the seeds of a jalapeno without damaging the pepper, use a potato peeler's end to core the jalapeno.
+Prevent spiders from living in garage. Leave out peppermint candy canes.
+How to keep pizza crust crispy try placing the cheese on before the sauce.
+To prevent the fats from escaping a homemade burger patty, do not over work the patty, which causes the fat to stick to your hands.
+To combine cornstarch, oil, and baking soda, you can Place the ingredients in a bowl and use a rubber spatula to combine.
+Hide candy from kids. Use old frozen vegetable bag.
+What color paint should be used in a steampunk project? A copper metallic paint is perfect for steampunk projects.
+How to hide a book in a book shelf? Place the book behind the books in the shelf.
+How do you make a u-turn? turn the car to where it will go in the opposite direction of where you wer going.
+Infusing Oil with Orange Choose a type of oil. Grate the peel. Heat the oil and the zest. Remove pan from heat.
+How can I unscrew a screw without a screwdriver? Use a butter knife for larger screws.
+To get a dog to go to the bathroom outside more. Reward the dog with dog treats every time he is good and goes outside.
+Floss can cut frozen pudding to make treats.
+Dish can be filled with water hose.
+To clean out an old plastic trash bin, take it outside and hose it down with water.
+How can I cut leather with a nice smooth edge? Use a razor blade.
+Make fresh orange juice. Squeeze the juice from many oranges into a pitcher, making sure to remove any seeds.
+Food processor can be broken with a rake.
+To request a forgotten password. Click on forgot my password link and provide the requested information.
+How do I eat an apple quarter? Put the apple quarter in a blender, blend it, put the puree in your mouth and swallow it.
+What materials are needed for fluffy slime? Liquid glue,shaving cream, eye wash, baking soda and food coloring.
+To attach two pieces of wood together, you can Use gorilla glue and hold the wood in clamps while it dries.
+How should I store vitamin C face oil? Vitamin C face oil should be stored in a cool, dark place.
+Do I need to chill the cookie dough Yes, chili the cookie dough for 30 minutes in the fridge.
+How to make rosemary-lemon mashed potatoes Make Italian Cheese Mash; top with 2 teaspoons minced rosemary mixed with the grated zest of 1 lemon.
+How do you stop a dog from biting? put a muzzle on him.
+Oven can be sat on top of like a couch by a persson.
+Cages to store dogs in your house.
+How do you cook beef stew? place beef and all other ingredients into a crock pot at medium heat for five hours.
+Create aluminum curtain. Tie together multiple soda tabs.
+Make an outdoor fort. Use a hula hoop to hang a bed sheet from tree.
+Rock can go up my sleeve.
+How to naturally trim your dogs nails Take your dog on walks often on concrete and that will trim down their nails.
+To remove the protective cover from a wire, you can Use a wire stripper.
+Hide your valuables while at the beach. wrap everything in a clean diaper, roll it up so that it looks used.
+To make Oreo cookies look like a spider, make four pretzel stick pieces stick out of either side.
+To hide device wires in homemade nightstand. Use a pipe to hold up the table and run the wires down through it.
+Flour can be combined with water to make tortillas.
+Make a model of rubber tire tread. Spray paint bubble wrap to make rubber tire tread model.
+Book is heavier than the coffee filter.
+Where can I buy plants You can buy some plants at the florist.
+How to replace buttermilk use milk with a little bit of lemon juice.
+How to smooth top of metal tiki holder. Use a dremel tool to smooth any bumps away from the top of the metal tiki holder.
+Drawer to store cheesecloth keep nice.
+To cut through pieces of styrofoam The easiest way to cut through styrofoam is use a drimmel tool.
+How to do you stop a door hinge from squeaking? Spray some can lubricant on the hinge.
+How do you clean your eyes? flush them out with cold water.
+How do you juice fruit? squeeze all the juice out of them.
+Prevent fleas in house. Place liquid soap in bowl of water under light source to attract and drown fleas.
+To prevent corrosion on a starter motor Wipe the motor down with an oily rag.
+Pliers can make a hand bleed blood.
+How can I keep sodas cool at a picnic? Pack a cooler with ice to put the sodas into for the outdoors.
+How to eat for health Choose fibrous proteins instead of fatty ones.
+Microscope can see cells that are huge.
+To make an easy pie seasoning, mix nutmeg, cinnamon and sugar,.
+Sneak alcohol bottle into event. Hollow out french bread to hide bottle.
+To cut the sides of a plank to the right size, you can Use a miller.
+How long can you store egg-less cookie dough before it goes bad? Store it in the freezer for up to 3 months.
+Gun can be used to shoot down a bird that is flying naked in the sky.
+To affix a USB port to power wires, you can Solder the wires to the appropriate contacts on the inner side of the USB port.
+To bring eggs back to cool temperature after pasteurizing transfer the eggs to a cool water bath.
+To open a rusty recipe box Spray some silicone spray onto the rusted hinges, and let sit for 30 minutes.
+How to make a portable lantern Paint the inside of a jar with non-toxic glow-in-the-dark paint.
+10 How do I apply mascara look upwards and rub the mascara wand against your lashes to transfer color.
+Inflate a boucy castle. With the children off the castle, hook up the air pump and turn it on until the castle has inflated.
+Unclog stuffy noise. Keep an onion near bed.
+How to make DIY sandbox. Buy a small plastic kids swimming pool and pour sand half way full.
+Remove dandruff from your hair Instead of shampoo, use apple juice on your hair the next time you shower.
+How to practice well Identify your weaknesses and target them with drills.
+How do you jingle keys? shake them to where they make a jingle noise.
+Recover from a hangover. Eat honey with crackers.
+How do you clean a potato? Rinse them off under cold water in the sink, gently brushing the dirt off with a small brush.
+How to prepare wood chips for smoking. Soak wood chips in water for 30 minutes, and then place the drained chips on the hot coals.
+To join cardboard together Use a stapler.
+Make a rice heating pad. Cut bed sheet into a pouch, fill with dry rice and sew.
+How do you recite something? speak it out loud.
+How do you reference something? use an example from that thing.
+Wooden chair leg can make a hammer.
+Seal paper to cardboard. Use decoupage glue on top and bottom of paper.
+To prevent a potato from drying out while baking it, wrap the potato in foil and poke holes into it before wrapping it.
+How do you pay for food at a drive thru? give your payment to the person at the first window.
+How long should I make a magic wand? A magic wand should be about 32 centimeters in length.
+To add a smoky flavor to homemade barbecue sauce. Add caramelized onions to the sauce.
+Add extra grip to remove jar. Place silicone hot pad over lid.
+Tenderize raw meat. Place a ripe banana peel at bottom of roasting pans.
+Comfortable sheets can be used for bedding for young children that are exhausted.
+To mix pepper and juniper berries together, you can Run them through a coffee grinder.
+To create a hole in wood for rebar to fit through, you can Use a large drill bit to premake the hole.
+How do I clean my winter gloves? If they're fabric, wash in the washer with other winter gear on gentle with cold water.
+How long should I workout each day The best amount of time to workout and not overdo anything is 20 minutes.
+How do I make an omelet Place 2 eggs in a cup, add some salt and veggies, beat with a fork and cook it.
+Catch drips from messy ice cream. Stick coffee filter through ice cream stick.
+How can I zest a lemon? Use the fine setting on a cheese grater.
+How to remove a switch trigger from a power tool use a hacksaw to cut the trigger off the switch body.
+How to clean your asphalt Pour the solution over the asphalt. Then use the hard-bristled brush to rigorously scrub the asphalt.
+How do you get on an airplane? give the flight attendant your ticket, and make your way up the ramp into the plane.
+How can I prevent acne? Use a fresh pillowcase every night.
+How do you use a walker? push it in front of you and lean on it with each step you take.
+To emphasize your anger or excitement during an online conversation, type your response in all capital letters.
+To highlight text in orange without an orange highlighter, highlight the text in yellow, then highlight the text in red.
+How do you cut wire down into smaller pieces? Use wire snips, put the wire between the blades, then squeeze shut.
+How to keep dark fabrics darl For dark colors like navy blue or plum, add 1 cup table salt to the rinse cycle.
+Jug can make be used as a musical instrument.
+How do you win a Pokemon Battle? Defeat the opponents Pokemon before losing yours.
+How to have shorter hair cut it.
+How do you log into your netflix app? open the netflix app, put in your information, then click log in.
+To save time when watching a long lecture or video on YouTube, speed the playback of the video up two twice the speed.
+To cross cut pieces of wood to a specific size, you can Use a hand held circular saw to cleanly separate the wood.
+To unscrew a stuck light bulb, loosen it up with oil first then twist it off.
+How do you prevent rust on bike chain? Use candle wax as chain lube.
+How to add washer fluid to your car? Open your hood find the washer fluid reservoir. Remove the cap and fill to the line.
+Reduce chances of blisters from high heels. Line inside of high heels with baby powder.
+How to make a bad decision? choose blindly what you should do without thinking about it.
+To lower the bitterness of eggplant, you can Sprinkle the eggplant with salt and let it sit for 10 to 15 minutes.
+To allow your chickens to have space to run, build a covered chicken run to provide them both space and safety.
+To protect your skin from sun damage, apply sun screen prior to exposing your skin to the sun.
+How can I display flowers in my home without a vase? Use an empty wine bottle.
+Soak white mugs. Soak mugs in container with warm water and 2 tbsp of hydrogen peroxide for 10 minutes.
+How do you burp a baby? place it in your arms facing behind you and pat it's back.
+How do you clean chalk outside? use a firehose to wet where the chalk is, and it will dissolve.
+Clean the pool Empty the pool and wipe down the liner with a soapy rag.
+How do you keep spiders out of your bed? Avoid eating in bed. Wash your sheets regularly and avoid putting items under your bed.
+Pants can be used as a flag.
+To make an easy pattern for the bodice part of a sleeveless dress. Cut the sleeves off a t-shirt that fits well and use that.
+How do you rinse off? take a shower.
+Remove snag from rug. Cut fray with scissors, then apply fabric glue.
+How do you prevent your sandwich from being stolen? Using your green color permanent marker, add some mold to the sandwich bag.
+How do you reference something? think of a memory that happened elsewhere and mention it.
+Television Can hold stone On top of it.
+To create an easy stylus for your smartphone, use the end of your smartphone's earbuds.
+To seal the edges of homemade ravioli. Crimp the edges together with a fork.
+How do you put out a fire? throw dirt and water onto the fire to put it out.
+How do you use a stylus on a phone? use it like a pen on the screen.
+How do you scan an item at self checkout? run the barcode on the red dot.
+How to measure doorway opening for cedar door. Use a tape measure to measure length, width and height of the doorway.
+To spruce up your yard in hardly any effort, sprinkle flower seeds around the grass.
+To make boxes easier to carry cut out inverted triangles one third of the way down.
+How to best knit using paper? Paper is not a good material to use for knitting as it tends to tear off easily.
+To hit the rest button on an electronic device, use a fine tip of a pen.
+When do I sand the car grille? Sand the part of the car grille you want to dip before you dip said part.
+How do you navigate a car? drive it.
+Shoes can be cut by pliers.
+How do I get my bedroom to smell better? Do the sheet laundry more, keep it clean, and use deodorizer plug ins.
+To store freshly made whipped cream for the pumpkin pie bread for later use you can make dollops on a wax paper and freeze.
+To have a shopping list that is easily view able without paper, take a picture of a shopping list that you write out.
+How to plump up lashes The translucent powder helps grip the mascara in between coats, leaving you with fuller lashes.
+To speed up the process of cooking food in restaurants, have as much of the food prepped ahead of time as possible.
+To make it easier to draw an eye, you can Use a pencil so that you can erase your mistakes.
+To sanitize a cooking surface, spray the surface with a cleaning chemical and scrub thoroughly.
+Board is used to being held by hands.
+How do you get ash off of your skin? put some cream on.
+Install hanging containers. Glue the top of mason jars under kitchen cabinets, twist jar off for access to contents.
+To make caramel, you can Place water and sugar on the stove and cook it until the sugar starts to burn.
+What's the best material for a DIY walking stick? A discarded tree branch.
+How to clean a curling iron. Rub steel wool over the barrel of the iron.
+Paper cup can be worn as a hat.
+How do you get a pet to take their medication Coat the medication in peanut butter before feeding it to them.
+What would you need to build a place for bees? You would need outdoor hinges, plexiglass, douglas panels, and stainless steel screws.
+Prevent shoe laces from unraveling. Coat each end with clear nail polish.
+To preheat the oven, turn the knob on the oven dashboard until the line is next to the desired temperature.
+To make gravy, you can Add flour to the juices from cooking meat.
+Sandpaper can be used to scrub paint off.
+How do you clean your cuticles? use a pick to push them back against the skin of your finger.
+To make a thin milkshake. To make a thin milkshake, add more milk.
+Prevent grass from growing through a sand pit. Use a small tent to hold the sand.
+Make hair for a dummy. Cut yarn to length and attach by sewing or glue to dummy's head.
+To cure bad breath. Stick a cucumber to the roof of your mouth.
+Provide a self-contained description. Use your inspiration and provide a self-description.
+To get games to play on your Raspberry Pi arcade machine. Download the games from various sites.
+How can I get blackheads off my face? Cover them with Elmers glue, allow the glue to dry and peel them off with the glue.
+Glasses burn paper when sun is shone through.
+How to get a Tinkerbell template for a pumpkin. Go to Google search, look for any Tinkerbell template. Click on FIle then print.
+To make cookie crumbs, you can Place cookies in a glass bowl and use a wooden spoon to crush them.
+To make a wooden table water resistant for a short time, coat the wood in bees wax before it is covered with water.
+How to play hockey in Mars? One can't play hockey in there due to lack of gravity.
+To make the Christmas tree earrings sparkle Shake a glitter stick for a minute, then apply the glitter using the roller on the stick.
+To protect your home from home invasions, get a dog to bark when an intruder arrives.
+Get rid of a hickey. Wet spoon, put in freezer for 20 minutes, then lay over hickey.
+To remove oil stains on a driveway, soak the spots with lukewarm cola and then spray them down.
+One wants to remove rust from a metal object. One should acquire saline.
+What kind of power can a person use when they want to be off the grid? Solar power.
+How do you make cinnamon sugar? In a bowl, sprinkle one unit of cinnamon over four units of sugar and stir together with a spoon.
+To remove an eyelash from your eye, Twist a little toilet paper and try to latch on to it and pull it out.
+A coffee mug can be used to drink soup.
+Remove a hickey from neck. Freeze a spoon for 20 minutes, then put on hickey spot.
+How do you keep proper posture? keep your back straight.
+Deep fried pickles slice pickles, roll in flour and fry.
+To remove skin from tomatoes for cooking the pizza Blanch the tomato in boiling water followed by an ice bath to loosen the skin.
+What kind of container to pickle cucumbers in. Use a mason jar.
+Condition mind to eat less. Use smaller plates during diet.
+To keep socks easy to find in your dresser, put them inside of a clean mesh bag used for the laundry.
+Roller pushed into the center of tofu.
+To get plastic to easily make a finger stylus out of. Cut off the handle from a water jug.
+Remove water rings on wood place a towel over them, and press with a warm iron for 10 seconds.
+To remove rust and tarnish from old metal fixtures, use brasso and a paintbrush.
+Earring back can carve words into iced cake.
+To remove the old strings from a guitar. Unwind the strings using the tuning pegs, and unwrap them to take them off.
+Keep small screws organized. Keep in a cupcake tray.
+To blow your nose properly with good manners, use tissue paper or and handkerchief and cover the nose, apply firmly to nose, and blow.
+How can I create more distance from a water hose. Pressure (and thus distance) can be achieved by using a PVC reducer adapter.
+Avoid motion sickness on a boat. Suck on a lemon.
+Determine if something is brass or gold. Brass will vibrate like a bell when hit. Gold will not.
+What sort of iron is needed to complete the solar alarm? A soldering iron.
+To deal with a hot climate you are not accustomed to, you can Make sure to drink as much water as possible.
+Listen to someone in a loud environment. Lean in with right ear.
+Make a folder and pencil holder. Use an old wire dish rack.
+How do you lock your iphone screen? press the lock button on the right side of the phone.
+To measure a specific distance on a piece of wood, you can Use a square to measure the needed distance on the wood.
+How to keep your pipes from freezing in the winter open any cabinet doors covering plumbing in the kitchen and bathroom.
+Make a baby video monitor. Secure an old phone to corner of crib.
+To keep a worm farm moist what should you do? Pour one liter of water over the entirety of the soil.
+How do you give a surprise party? plan a party the person doesn't know about and then suprise them when they get there.
+Where can I see parrots Your nearest pet store should have some to see.
+How do you edit something? change it.
+Block out street lamps when sleeping. Use blackout curtains.
+What can I use to stuff a sock monkey? You can use the filling from an old pillow.
+To remove permanent marker from wood use rubbing alcohol.
+Roll of wrapping paper wraps a dog's poop to throw away.
+Bed can be used as a trampoline.
+How do you get a bachelors degree? go back to college after you get your associates.
+Drawing outline Use a pattern and draw an outline with a pencil onto your board blank.
+How do I get drunk drink any type of alcohol.
+How do you tell twins apart? call them by their names.
+Remove cobwebs from walls. Use a Swiffer stick.
+Brick can break up stick figurines.
+Stove top Is tasty stuffing mix.
+How to upvote a comment on Reddit. Find the comment you wish to upvote. Click the upward arrow to the left of the comment.
+To harvest the honey out of a honeycomb tray, place the tray into a centrifuge device and run until all the honey has dripped out.
+How do you put play dough away? put it back in its original container.
+Nail clipper can cut a thread off a pillow.
+Dirt off floor Vacuum the floor.
+How do you use clothes to look shorter? Wear a top that is different in color than your bottom.
+How do you put toppings on a pizza? place them over the cheese.
+Stay asleep without distractions. Point digital clock away from you.
+How do you cook an artichoke? On the stove in a pot.
+To make a grilled cheese extra gooey, put two slices instead of one.
+Tweezers are used to pluck eyebrows if you have no hair on your scalp.
+How do I flatten the cookie dough balls ? Using a fork, press balls making a crisscross pattern, flattening each ball to a 1/2-inch thickness.
+Quickly chop herbs roll over herbs like parsley and cilantro with a pizza wheel for quick and safe slicing.
+How do you deep fry coke? Add the coke to the batter you are deep frying and add to oil.
+In order to grind coffee beans, pour a serving of bean into a coffee grinder, turn on and grind until it's powdery.
+Tissues can be used to clean up soda.
+To save money on products at the store, look for a generic store brand version of products.
+Remove lipstick stain from shirt. Blot lipstick with balled up soft bread crust.
