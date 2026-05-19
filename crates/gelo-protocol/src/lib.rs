@@ -32,7 +32,7 @@ pub mod substrate;
 pub use attention::PermAttnConfig;
 pub use mask::{
     GeloMask, MaskSeed, ensure_blis_single_thread, mask_backend_description,
-    set_blis_num_threads,
+    set_blis_num_threads, tee_matmul,
 };
 pub use ple::PleTable;
 pub use shield::ShieldConfig;

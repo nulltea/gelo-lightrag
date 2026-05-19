@@ -2,6 +2,7 @@ use anyhow::Result;
 use ndarray::{Array1, Array2, ArrayView2};
 
 use gelo_protocol::profile;
+use gelo_protocol::tee_matmul;
 use gelo_protocol::{TrustedExecutor, WeightHandle, WeightKind};
 
 use super::attention::{
@@ -269,9 +270,13 @@ fn decoder_block_cached(
         }
     } else {
         profile::time("tee:qkv_direct", || {
-            let q = h_norm.dot(&layer.wq);
-            let k = h_norm.dot(&layer.wk);
-            let v = if kv_shared { k.clone() } else { h_norm.dot(&layer.wv) };
+            let q = tee_matmul(h_norm.view(), layer.wq.view());
+            let k = tee_matmul(h_norm.view(), layer.wk.view());
+            let v = if kv_shared {
+                k.clone()
+            } else {
+                tee_matmul(h_norm.view(), layer.wv.view())
+            };
             (q, k, v)
         })
     };
@@ -396,7 +401,7 @@ fn decoder_block_cached(
     let attn_out = if offload {
         exec.offload_linear(WeightHandle::new(layer_idx, WeightKind::O), ctx.view())?
     } else {
-        profile::time("tee:o_direct", || ctx.dot(&layer.wo))
+        profile::time("tee:o_direct", || tee_matmul(ctx.view(), layer.wo.view()))
     };
     let h1 = profile::time("tee:residual", || &hidden + &attn_out);
 
@@ -417,7 +422,10 @@ fn decoder_block_cached(
         (g, u)
     } else {
         profile::time("tee:swiglu_proj_direct", || {
-            (h1_norm.dot(&layer.w_gate), h1_norm.dot(&layer.w_up))
+            (
+                tee_matmul(h1_norm.view(), layer.w_gate.view()),
+                tee_matmul(h1_norm.view(), layer.w_up.view()),
+            )
         })
     };
 
@@ -429,7 +437,9 @@ fn decoder_block_cached(
             activated.view(),
         )?
     } else {
-        profile::time("tee:swiglu_down_direct", || activated.dot(&layer.w_down))
+        profile::time("tee:swiglu_down_direct", || {
+            tee_matmul(activated.view(), layer.w_down.view())
+        })
     };
     Ok(profile::time("tee:residual", || &h1 + &ffn_out))
 }
@@ -455,9 +465,9 @@ fn decoder_block(
     } else {
         profile::time("tee:qkv_direct", || {
             (
-                h_norm.dot(&layer.wq),
-                h_norm.dot(&layer.wk),
-                h_norm.dot(&layer.wv),
+                tee_matmul(h_norm.view(), layer.wq.view()),
+                tee_matmul(h_norm.view(), layer.wk.view()),
+                tee_matmul(h_norm.view(), layer.wv.view()),
             )
         })
     };
@@ -537,7 +547,7 @@ fn decoder_block(
     let attn_out = if offload {
         exec.offload_linear(WeightHandle::new(layer_idx, WeightKind::O), ctx.view())?
     } else {
-        profile::time("tee:o_direct", || ctx.dot(&layer.wo))
+        profile::time("tee:o_direct", || tee_matmul(ctx.view(), layer.wo.view()))
     };
     let h1 = profile::time("tee:residual", || &hidden + &attn_out);
 
@@ -560,7 +570,10 @@ fn decoder_block(
         (g, u)
     } else {
         profile::time("tee:swiglu_proj_direct", || {
-            (h1_norm.dot(&layer.w_gate), h1_norm.dot(&layer.w_up))
+            (
+                tee_matmul(h1_norm.view(), layer.w_gate.view()),
+                tee_matmul(h1_norm.view(), layer.w_up.view()),
+            )
         })
     };
 
@@ -572,7 +585,9 @@ fn decoder_block(
             activated.view(),
         )?
     } else {
-        profile::time("tee:swiglu_down_direct", || activated.dot(&layer.w_down))
+        profile::time("tee:swiglu_down_direct", || {
+            tee_matmul(activated.view(), layer.w_down.view())
+        })
     };
     Ok(profile::time("tee:residual", || &h1 + &ffn_out))
 }

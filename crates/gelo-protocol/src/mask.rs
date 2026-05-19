@@ -178,6 +178,110 @@ pub fn set_blis_num_threads(n: i64) {
 #[cfg(not(feature = "blas"))]
 pub fn set_blis_num_threads(_n: i64) {}
 
+/// Shape threshold (rows of `a`) above which `tee_matmul` switches
+/// from ndarray's `.dot()` (matrixmultiply single-thread) to the
+/// BLIS-backed `matmul_blis`. Matches the parallelisation threshold
+/// used by `causal_gqa_attention_cached` so both shape-aware code
+/// paths agree on what counts as "long enough to multi-thread."
+const TEE_BLIS_THRESHOLD_ROWS: usize = 64;
+
+/// General `C = A · B` matmul with shape-aware dispatch.
+///
+/// At `a.nrows() >= TEE_BLIS_THRESHOLD_ROWS` (prefill regime) we route
+/// through BLIS so the call benefits from `GELO_BLIS_THREADS`. At
+/// smaller shapes (decode `n_q = 1`, embedder shapes) we fall back
+/// to `ndarray::dot()` which uses matrixmultiply single-thread —
+/// avoiding the BLIS per-call thread-barrier overhead that regresses
+/// small matmuls.
+///
+/// Also falls back to `.dot()` if either operand is non-standard
+/// layout (cblas requires row-major contiguous; ndarray's `.dot()`
+/// tolerates arbitrary strides). The decoder weight tensors are
+/// loaded standard-layout in `decoder::weights::read2_t`, so this
+/// fallback is just defensive against future callers.
+///
+/// Use this from the `tee:*_direct` paths in `decoder/forward.rs` so
+/// the in-TEE plain matmul also benefits from BLIS-mt at long-n
+/// shapes, just like `mask::apply` / `mask::unapply` already do.
+///
+/// **Known gap (2026-05-19):** at decode shape `m=1`, the fallback
+/// `.dot()` path is ~10× slower than the same matmul on the GPU
+/// engine: matrixmultiply hits only ~1 GFLOP/s at the GEMV corner
+/// case (vs ~125 GFLOP/s nominal). BLIS at `m=1` isn't a clean
+/// alternative either — its per-call thread overhead at multi-thread
+/// settings dominates the actual GEMM. So Qwen3-decoder layer-skip
+/// (paper §3.2 sensitive-layer exclusion) currently regresses
+/// decode TPOT by ~234 ms/step at n=2048, even though it saves ~1 s
+/// of prefill. Fixing this needs either a hand-rolled AVX-512 GEMV
+/// for `m=1` or a per-call BLIS thread-count override. Documented
+/// as a future optimisation surface in
+/// `memory/tee_direct_m1_gemv_slowness.md` and the round-3 perf doc.
+pub fn tee_matmul(a: ArrayView2<'_, f32>, b: ArrayView2<'_, f32>) -> Array2<f32> {
+    #[cfg(feature = "blas")]
+    {
+        if a.nrows() >= TEE_BLIS_THRESHOLD_ROWS
+            && a.is_standard_layout()
+            && b.is_standard_layout()
+        {
+            return matmul_blis(a, b);
+        }
+    }
+    a.dot(&b)
+}
+
+/// BLIS-backed general matmul `C = A · B`. Both operands assumed
+/// row-major contiguous (true for `ndarray::Array2` standard layout
+/// and any `.view()` of an unsliced array). The function mirrors
+/// `sgemm_blis` but takes general (non-square) inputs.
+///
+/// Public so the `tee_matmul` dispatch helper can pick it up.
+/// Callers should prefer `tee_matmul` which handles the shape
+/// threshold; call this directly only when you know the shape
+/// warrants BLIS.
+#[cfg(feature = "blas")]
+pub fn matmul_blis(a: ArrayView2<'_, f32>, b: ArrayView2<'_, f32>) -> Array2<f32> {
+    blis_init_single_thread();
+    use cblas_sys::{cblas_sgemm, CBLAS_LAYOUT, CBLAS_TRANSPOSE};
+    let m = a.nrows();
+    let k = a.ncols();
+    let n = b.ncols();
+    debug_assert_eq!(
+        b.nrows(),
+        k,
+        "matmul_blis: a.ncols() = {} must equal b.nrows() = {}",
+        k,
+        b.nrows()
+    );
+    let a_slice = a.to_slice().expect("matmul_blis: a must be row-major contiguous");
+    let b_slice = b.to_slice().expect("matmul_blis: b must be row-major contiguous");
+    let mut c = Array2::<f32>::zeros((m, n));
+    {
+        let c_slice = c.as_slice_mut().expect("fresh Array2 is contiguous");
+        // SAFETY: cblas_sgemm reads (m × k) from `a_slice`, (k × n) from
+        // `b_slice`, and writes (m × n) into `c_slice`; all three are
+        // row-major slice views with the right lengths.
+        unsafe {
+            cblas_sgemm(
+                CBLAS_LAYOUT::CblasRowMajor,
+                CBLAS_TRANSPOSE::CblasNoTrans,
+                CBLAS_TRANSPOSE::CblasNoTrans,
+                m as i32,
+                n as i32,
+                k as i32,
+                1.0,
+                a_slice.as_ptr(),
+                k as i32,
+                b_slice.as_ptr(),
+                n as i32,
+                0.0,
+                c_slice.as_mut_ptr(),
+                n as i32,
+            );
+        }
+    }
+    c
+}
+
 /// BLIS-backed `C = α · op(A) · B` for the GELO mask apply/unapply.
 ///
 /// Called only with `α = 1.0, β = 0.0`. `a` is the (n × n) mask matrix
@@ -599,4 +703,43 @@ mod tests {
     }
 
     use rand::SeedableRng;
+
+    /// `tee_matmul` must agree with `ndarray::dot` to within f32 noise
+    /// at both small shapes (where it falls back to `.dot()` directly)
+    /// and large shapes (where it routes through BLIS).
+    #[test]
+    fn tee_matmul_parity_with_ndarray_dot() {
+        use rand_distr::{Distribution, StandardNormal};
+        let normal = StandardNormal;
+        for &(m, k, n) in &[
+            (16usize, 16, 16),       // small: ndarray.dot path
+            (32, 64, 32),            // small: ndarray.dot path
+            (128, 256, 128),         // crosses TEE_BLIS_THRESHOLD_ROWS (64)
+            (2048, 2048, 1024),      // long-context apply shape (Q/K/V style)
+            (2048, 2048, 6144),      // long-context apply shape (gate/up style)
+            (2048, 6144, 2048),      // long-context FfnDown shape
+        ] {
+            let mut rng = rand_chacha::ChaCha20Rng::from_seed([42u8; 32]);
+            let a = Array2::<f32>::from_shape_fn((m, k), |_| normal.sample(&mut rng));
+            let b = Array2::<f32>::from_shape_fn((k, n), |_| normal.sample(&mut rng));
+
+            let via_ndarray = a.dot(&b);
+            let via_tee = tee_matmul(a.view(), b.view());
+
+            assert_eq!(via_ndarray.dim(), via_tee.dim());
+
+            // Max abs error tolerance: scales with k (accumulation depth)
+            // and the operand RMS (~1.0 for standard normal). 2 * k * 1e-7
+            // is the f32 epsilon-times-depth bound; we give 3× headroom.
+            let tol = 6.0 * (k as f32) * f32::EPSILON;
+            let mut max_abs = 0.0f32;
+            for (x, y) in via_ndarray.iter().zip(via_tee.iter()) {
+                max_abs = max_abs.max((x - y).abs());
+            }
+            assert!(
+                max_abs <= tol,
+                "tee_matmul vs ndarray.dot mismatch at (m={m}, k={k}, n={n}): max abs = {max_abs:.3e}, tol = {tol:.3e}"
+            );
+        }
+    }
 }
