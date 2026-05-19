@@ -125,7 +125,7 @@
       past ~4k tokens — the SCX-style per-position encoding (Yuan et al.,
       SIGCOMM 2025) is the candidate primitive; security analysis under the
       openweight + per-batch-fresh-A assumption is the gating spike before
-      adoption. Both items are §09.
+      adoption. Both items are §10.
     </p>
   </section>
 
@@ -279,7 +279,7 @@
         </tr>
         <tr>
           <td><b>KV-cache content leak</b></td>
-          <td>The KV cache for both local and global layers lives entirely in encrypted CVM DRAM, indexed by <code>(layer_idx, head_idx, position)</code>. The GPU never touches KV bytes — attention's <code>Q · Kᵀ</code> and <code>P · V</code> for in-TEE local layers run on CPU under AOCL-BLIS; for global layers the per-step <code>Q</code> goes out under mask, but <code>K</code> and <code>V</code> are pulled from cache, masked freshly, and never persisted GPU-side. Decode-phase π handling — fresh π each step versus session-persistent π — is the decision point that gates SCX-style encoded-KV adoption; see §09.</td>
+          <td>The KV cache for both local and global layers lives entirely in encrypted CVM DRAM, indexed by <code>(layer_idx, head_idx, position)</code>. The GPU never touches KV bytes — attention's <code>Q · Kᵀ</code> and <code>P · V</code> for in-TEE local layers run on CPU under AOCL-BLIS; for global layers the per-step <code>Q</code> goes out under mask, but <code>K</code> and <code>V</code> are pulled from cache, masked freshly, and never persisted GPU-side. Decode-phase π handling — fresh π each step versus session-persistent π — is the decision point that gates SCX-style encoded-KV adoption; see §10.</td>
         </tr>
         <tr>
           <td><b>Per-token TLS timing</b></td>
@@ -345,14 +345,14 @@
           <td><code>n_q = 1</code>, <code>n_kv = n_cache</code> (growing)</td>
           <td>dispatch overhead · KV-cache bandwidth · linear projections</td>
           <td>in-TEE causal SWA · trivially small · <em>Gemma local layers only</em></td>
-          <td><strong>in-TEE always.</strong> Per-step attention math is microseconds-scale at <code>n_q = 1</code>; the auto-switch threshold doesn't engage on decode. KV-cache <em>bandwidth</em> (orthogonal axis) is what SCX in §09 optimises.</td>
+          <td><strong>in-TEE always.</strong> Per-step attention math is microseconds-scale at <code>n_q = 1</code>; the auto-switch threshold doesn't engage on decode. KV-cache <em>bandwidth</em> (orthogonal axis) is what SCX in §10 optimises.</td>
           <td>one fresh Haar <code>A</code> per decode step (per-token)</td>
         </tr>
       </tbody>
     </table>
 
     <p class="prose" style="margin-top:24px;">
-      <strong>Why prefill and decode want different attention paths.</strong> Prefill at <code>n = 4k</code> materialises a <code>(heads, n, n)</code> score tensor of ~1 GB per layer that the 3-dispatch permuted-attention path forces through device memory three times — bandwidth-bound to ~3.2 GB/layer × 28 layers ≈ 90 GB on the integrated-GPU dev box (~1.8 s pure traffic per prefill). The FlashAttention-style fused permuted kernel (M1.10) drops that to ~130 MB/layer and lands the workload within ~2× of unprotected baseline. Decode at <code>n_q = 1</code> never materialises a square score tensor — per-step attention compute is microseconds and stays in-TEE; the bottleneck instead is the KV-cache bandwidth read at every decode step, addressed by the SCX-class encoded-KV primitive (§09) rather than by any attention-dispatch change.
+      <strong>Why prefill and decode want different attention paths.</strong> Prefill at <code>n = 4k</code> materialises a <code>(heads, n, n)</code> score tensor of ~1 GB per layer that the 3-dispatch permuted-attention path forces through device memory three times — bandwidth-bound to ~3.2 GB/layer × 28 layers ≈ 90 GB on the integrated-GPU dev box (~1.8 s pure traffic per prefill). The FlashAttention-style fused permuted kernel (M1.10) drops that to ~130 MB/layer and lands the workload within ~2× of unprotected baseline. Decode at <code>n_q = 1</code> never materialises a square score tensor — per-step attention compute is microseconds and stays in-TEE; the bottleneck instead is the KV-cache bandwidth read at every decode step, addressed by the SCX-class encoded-KV primitive (§10) rather than by any attention-dispatch change.
     </p>
 
     <p class="prose" style="margin-top:16px;">
@@ -588,7 +588,7 @@
           <dt>file</dt><dd><code>decoder/kv_cache.rs</code></dd>
           <dt>Qwen3 (v1)</dt><dd>all-Separate · 28 layers · 8 KV heads · 128 head_dim · ~58 MB at <code>n_cache=4k</code></dd>
           <dt>Gemma 4 <em>(scaffold)</em></dt><dd><code>new_with_sharing</code> halves global-layer memory when K=V tying engages</dd>
-          <dt>π handling</dt><dd>per-step decision (§09) — fresh π per step requires KV-cache-encoded primitive (SCX-class); session-persistent π trades one weaker decode-step argument for in-place cache reuse</dd>
+          <dt>π handling</dt><dd>per-step decision (§10) — fresh π per step requires KV-cache-encoded primitive (SCX-class); session-persistent π trades one weaker decode-step argument for in-place cache reuse</dd>
         </dl>
       </article>
 
@@ -897,7 +897,7 @@
         <rect x="960" y="422" width="340" height="50" class="box box-gpu" style="stroke-dasharray:4 3; opacity:0.55;"/>
         <text x="976" y="440" class="box-label" style="opacity:0.75;">GPU idle for attention this step</text>
         <text x="976" y="456" class="box-mono" style="opacity:0.75;">no offload — attention stays in-TEE</text>
-        <text x="976" y="468" class="box-mono" style="opacity:0.75;">SCX (§09) would amortise cache-read bandwidth</text>
+        <text x="976" y="468" class="box-mono" style="opacity:0.75;">SCX (§10) would amortise cache-read bandwidth</text>
 
         <!-- ⑦ O proj (masked) -->
         <path d="M450 472 L450 484" class="arrow arrow-secret" marker-end="url(#ahqwdc)"/>
@@ -1147,7 +1147,7 @@
     <div class="diagram-frame">
       <div class="diagram-cap">
         <span class="l">FIG. 03b — Gemma 4 decode · one step · <code>n_q = 1</code> · <code>n_kv = n_cache</code> · same block topology · attention reads from CVM-resident KV cache   ·   <b style="color:#b73228">rev 2 · 2026-05-18 · 4 GPU GEMMs per block</b></span>
-        <span>same legend · one fresh Haar A per decode step · π handling decided at §09</span>
+        <span>same legend · one fresh Haar A per decode step · π handling decided at §10</span>
       </div>
       <svg class="flow" viewBox="0 0 1320 960" xmlns="http://www.w3.org/2000/svg" role="img">
         <defs>
@@ -1220,7 +1220,7 @@
         <rect x="960" y="422" width="340" height="60" class="box box-gpu" style="stroke-dasharray:4 3; opacity:0.55;"/>
         <text x="976" y="440" class="box-label" style="opacity:0.75;">GPU idle for attention this step</text>
         <text x="976" y="456" class="box-mono" style="opacity:0.75;">no offload — attention stays in-TEE</text>
-        <text x="976" y="472" class="box-mono" style="opacity:0.75;">SCX (§09) is a cache-bandwidth lever, not an attn dispatch</text>
+        <text x="976" y="472" class="box-mono" style="opacity:0.75;">SCX (§10) is a cache-bandwidth lever, not an attn dispatch</text>
 
         <!-- ⑥ O proj (masked) -->
         <path d="M450 482 L450 496" class="arrow arrow-secret" marker-end="url(#ahllmd)"/>
@@ -1354,11 +1354,12 @@
     </p>
     <ul>
       <li><strong>Prefill</strong> is one forward pass — one Haar QR, then the same <code>A</code> rides every masked offload in the block stack. Same cost amortisation as the embedder.</li>
-      <li><strong>Each decode step</strong> is one forward pass — one fresh Haar QR per token. At <code>d_hidden = 2048</code> (Qwen3-1.7B), the per-step QR is small enough to not dominate; at <code>d_hidden = 2560</code> (Gemma 4 E4B once Phase 1.5 lands), HKDF-derived mask material (§09 lever) can amortise it across steps for free if the security analysis confirms equivalence.</li>
-      <li><strong>π in permuted attention</strong> is the open decode-phase decision: fresh π per step requires SCX-style encoded-KV (§09); session-persistent π enables in-place cache reuse but trades one weaker decode-step argument. Documented in §09, gated on the security spike when the bench harness lands.</li>
+      <li><strong>Each decode step</strong> is one forward pass — one fresh Haar QR per token. At <code>d_hidden = 2048</code> (Qwen3-1.7B), the per-step QR is small enough to not dominate; at <code>d_hidden = 2560</code> (Gemma 4 E4B once Phase 1.5 lands), HKDF-derived mask material (§10 lever) can amortise it across steps for free if the security analysis confirms equivalence.</li>
+      <li><strong>π in permuted attention</strong> is the open decode-phase decision: fresh π per step requires SCX-style encoded-KV (§10); session-persistent π enables in-place cache reuse but trades one weaker decode-step argument. Documented in §10, gated on the security spike when the bench harness lands.</li>
     </ul>
     <p class="prose"><strong>Why per-forward + shield remains the right default.</strong> Per-offload Haar sampling would cost ~96–140 QRs per forward at Gemma 4 shapes; at <code>d = 2560</code> each QR is ~20–30 ms, so per-offload mask sampling alone would dominate every other cost in the system. Per-forward + shield is the paper's §3.2 + §4.2 trade and what the executor ships by default — see <a href="reranking.html">reranking</a> §05 for the per-cadence breakdown that motivates it.</p>
   </section>
+
 
   <!-- ═════ § 8 PERFORMANCE & CORRECTNESS ═════ -->
   <section id="perf">
@@ -1454,7 +1455,7 @@
     <h4 style="margin-top:24px;">Open protocol gaps surfaced by the v1 measurement</h4>
     <ul style="padding-left:20px; line-height:1.55;">
       <li><strong>U-Verify cost regime above ~1 B parameters.</strong> <code>gpu_full_stack</code> is 150× slower than <code>gpu_gelo</code> because each offloaded matmul fires <em>k</em> Freivalds-style GEMVs against the full TEE-side weight bytes — and at Qwen3-1.7B (~13 GB f32 working copy), the per-probe TEE GEMM dominates everything. <em>k = 8</em> production probes would scale linearly worse. The protocol needs a sublinear-in-weight-size integrity primitive (randomised-block Freivalds, batched verification across decode steps, or checkpoint-only attestation). Not a v1 demonstrator blocker; not safe to ship integrity production at this scale until resolved.</li>
-      <li><strong>Decode KV-cache bandwidth at long context.</strong> The current bench is <code>n_cache = 12</code> (4 prompt + 8 decode), well within in-TEE bandwidth. The v2 measurement at <code>n_cache ≥ 4k</code> will surface whether KV-cache bandwidth dominates per-step decode — the gating signal for SCX-style encoded-KV adoption (§09).</li>
+      <li><strong>Decode KV-cache bandwidth at long context.</strong> The current bench is <code>n_cache = 12</code> (4 prompt + 8 decode), well within in-TEE bandwidth. The v2 measurement at <code>n_cache ≥ 4k</code> will surface whether KV-cache bandwidth dominates per-step decode — the gating signal for SCX-style encoded-KV adoption (§10).</li>
       <li><strong>OutAttnMult at decode shapes (<code>n_q = 1</code>).</strong> Forcing OutAttnMult on at every <code>n</code> (as this bench does to exercise the path) is not the production setting — the auto-switch threshold <code>n ≥ hidden_size = 2048</code> would keep every decode-step linear in-TEE. Production decode TPOT would be lower than the +33 % measured here.</li>
     </ul>
 
@@ -1470,10 +1471,255 @@
     </p>
   </section>
 
-  <!-- ═════ § 9 STATUS & GAPS ═════ -->
-  <section id="status">
+  <!-- ═════ § 9 OPTIMIZATIONS ═════ -->
+  <section id="optimizations">
     <header class="section-head">
       <div class="section-num">§09</div>
+      <h2 class="section-title">Optimizations</h2>
+      <div class="section-meta">mask-family alternatives · long-context measurement · trade-offs</div>
+    </header>
+    <p class="lede">
+      The §08 measurement runs a 4-token prompt — short enough that the
+      per-forward Haar QR sample is cheap and the mask GEMM is a small
+      slice of the budget. Production prefill at <code>n ≥ 2k</code>
+      flips that picture: the QR alone takes seconds. <strong>HD₃</strong>
+      swaps the Haar <code>A</code> slot for the QuIP# / QuaRot cascade
+      <code>A = D₃·H·D₂·H·D₁·H</code> and retires the QR bucket entirely.
+      Two unrelated wins also landed: AOCL-BLIS multi-thread Haar mask
+      GEMM (5.04 ×) and a radix-8 in-place FWHT for HD₃ (3.25 × on the
+      apply path).
+    </p>
+
+    <h4 style="margin-top:24px;">HD₃ — the construction</h4>
+    <p class="prose">
+      <code>H</code> is the unscaled Walsh-Hadamard matrix at side
+      <code>s</code>, defined recursively by <code>H_{2s} = H_s ⊗ H_2</code>
+      — hence the power-of-two requirement on <code>s</code>. Each
+      <code>D_i ∈ {-1, +1}^s</code> is an independent diagonal of
+      fresh sign bits drawn at the start of every forward pass
+      (<code>3·s</code> bits, sub-microsecond). The cascade is exactly
+      orthogonal; the mask is never materialised — applying it is
+      three in-place FWHTs interleaved with three sign-flips,
+      <code>O(s · log s)</code> per column. Kernel:
+      <code>crates/gelo-protocol/src/hd3.rs</code> — radix-8 AVX-512
+      fused butterflies (3 stages per pass), AVX-2 + scalar fallbacks,
+      rayon-parallel butterflies within each stage.
+    </p>
+
+    <h4 style="margin-top:24px;">Cost vs Haar</h4>
+    <table class="spec" style="margin-top:8px;">
+      <thead>
+        <tr><th>op</th><th>Haar</th><th>HD₃</th><th>factor</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>sample (per forward)</td>
+          <td><code>O(s³)</code> Householder QR</td>
+          <td><code>O(s)</code> sign-bit draws</td>
+          <td class="num">s²</td>
+        </tr>
+        <tr>
+          <td>apply / unapply (per offload)</td>
+          <td><code>O(s²·d)</code> dense GEMM</td>
+          <td><code>O(s·d·log s)</code> FWHT</td>
+          <td class="num">s / log s</td>
+        </tr>
+        <tr>
+          <td>mask storage</td>
+          <td><code>O(s²)</code></td>
+          <td><code>O(s)</code></td>
+          <td class="num">s</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h4 style="margin-top:24px;">Context-sweep measurement — Qwen3-1.7B, AOCL-BLIS threads=16</h4>
+    <p class="prose">
+      Three prompt lengths span small / medium / long context. All three
+      are non-pow2 for HD₃ (the stacked-with-shield row count
+      <code>n + 8</code> never sits on a pow2 boundary), so the executor
+      always pads to <code>s_pad = next_pow2(n + 8)</code> before the
+      FWHT and ships the padded rows through the GPU matmul too. Greedy
+      prefill, 4 decode tokens, 1 warmup;
+      <code>crates/gelo-gpu-wgpu/tests/qwen3_long_context_bench.rs</code>.
+    </p>
+
+    <table class="spec" style="margin-top:12px;">
+      <thead>
+        <tr>
+          <th>n (HD₃ s_pad)</th>
+          <th>plain TTFT</th>
+          <th>Haar TTFT</th>
+          <th>HD₃ TTFT</th>
+          <th>HD₃ vs Haar</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>512 <em>(1 024)</em></td>
+          <td class="num">1 214</td>
+          <td class="num">2 089</td>
+          <td class="num">2 984</td>
+          <td><span class="accent" style="color:#b73228;">+43 %</span></td>
+        </tr>
+        <tr>
+          <td>2 048 <em>(4 096)</em></td>
+          <td class="num">7 006</td>
+          <td class="num">14 646</td>
+          <td class="num">15 089</td>
+          <td class="num">+3 % <em>(tied)</em></td>
+        </tr>
+        <tr>
+          <td>4 096 <em>(8 192)</em></td>
+          <td class="num">16 422</td>
+          <td class="num">81 175</td>
+          <td class="num">36 864</td>
+          <td><span class="accent" style="color:#1e7050;">−55 %</span></td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="prose" style="margin-top:6px; font-size:13px;">TTFT in ms.</p>
+
+    <h4 style="margin-top:24px;">Where the time goes</h4>
+    <p class="prose">
+      Bucket breakdown of the masked rows only — TEE attention and
+      TEE-side small ops (RMSNorm, RoPE, QK-norm, SwiGLU) are within a
+      few percent across cells and don't drive the comparison.
+      <strong>Mask GEMM</strong> aggregates apply + unapply + shield
+      stack/strip; <strong>engine matmul</strong> aggregates the single
+      and batched GPU dispatches.
+    </p>
+    <table class="spec" style="margin-top:8px; font-size:13px;">
+      <thead>
+        <tr>
+          <th>bucket</th>
+          <th>n = 512</th>
+          <th>n = 2 048</th>
+          <th>n = 4 096</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Haar · sample (QR)</td>
+          <td class="num">37</td>
+          <td class="num">3 136</td>
+          <td class="num"><span class="accent" style="color:#b73228;">38 931</span></td>
+        </tr>
+        <tr>
+          <td>Haar · mask GEMM</td>
+          <td class="num">644</td>
+          <td class="num">5 184</td>
+          <td class="num">18 333</td>
+        </tr>
+        <tr>
+          <td>Haar · engine matmul</td>
+          <td class="num">1 040</td>
+          <td class="num">3 766</td>
+          <td class="num">12 782</td>
+        </tr>
+        <tr style="border-top:1px solid #ddd;">
+          <td>HD₃ · sample (sign bits)</td>
+          <td class="num">0</td>
+          <td class="num">0</td>
+          <td class="num">0</td>
+        </tr>
+        <tr>
+          <td>HD₃ · FWHT (mask)</td>
+          <td class="num">1 233</td>
+          <td class="num">5 128</td>
+          <td class="num">13 201</td>
+        </tr>
+        <tr>
+          <td>HD₃ · engine matmul</td>
+          <td class="num">1 415</td>
+          <td class="num">7 385</td>
+          <td class="num">14 564</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="prose" style="margin-top:12px;">
+      The decisive lever is the <strong>sample</strong> row. At
+      n = 4 096 the per-forward Haar QR alone takes 38.9 s — 48 % of
+      Haar's TTFT — and HD₃ removes it. HD₃'s combined mask GEMM
+      (13.2 s) and engine matmul (14.6 s) at the same n are actually
+      <em>comparable</em> to Haar's (18.3 s / 12.8 s); the asymptotic
+      apply-side savings get partially returned to the engine because
+      HD₃ pads the operand to <code>s_pad = 8 192</code> while Haar
+      stays at <code>s = 4 104</code>. At short context (n = 512) the
+      QR is cheap and the dense Haar GEMM thread-scales well; HD₃'s
+      pow2 pad doubles its rows and HD₃ ends up <strong>+43 %</strong>
+      slower than Haar.
+    </p>
+
+    <h4 style="margin-top:24px;">Trade-offs</h4>
+    <ol style="padding-left:20px; line-height:1.55;">
+      <li><strong>Mix / unmix kernels are less parallel than Haar's GEMM.</strong>
+        AOCL-BLIS scales the dense Haar mask <strong>5.04 ×</strong>
+        at <code>threads = 16</code> vs <code>threads = 1</code> on
+        the s = 2 056 mask GEMM. The FWHT cascade chains
+        <code>log₂ s</code> stages with a serial barrier between
+        them; rayon parallelises butterflies within each stage but
+        coarse-grained core scaling is well below a tuned GEMM. Pick
+        the mask family by context length — HD₃ loses at short n.</li>
+      <li><strong>Pow2 pad on the stacked-with-shield operand.</strong>
+        FWHT requires pow2 <code>s</code>. When
+        <code>n + k_shield</code> isn't pow2 the executor zero-pads
+        to <code>s_pad = next_pow2(n + k_shield)</code> for the FWHT
+        and ships the padded rows through the GPU matmul.
+        <code>s_pad / (n + k_shield)</code> sets the engine-side
+        penalty; at n = 4 096 it's 2 × but the Haar QR still
+        dwarfs it. Callers that can align
+        <code>n = next_pow2(n_target) − k_shield</code> get the HD₃
+        win at every shape.</li>
+      <li><strong>Threat model parity vs Haar is unvalidated.</strong>
+        HD₃'s orbit is a discrete <code>2^{3·s}</code>-element set;
+        structurally different from the continuous Haar measure that
+        GELO's §3.2 / §4.3 BSS-hardness arguments are written
+        against. QuIP#'s incoherence proof (Tseng et al., ICML '24)
+        covers the cascade for quantisation, not BSS-hardness in
+        our threat model. HD₃ ships <strong>opt-in only</strong>
+        via <code>InProcessTrustedExecutor::with_hd3_mask()</code>;
+        the executor default stays Haar until the AloePri + GELO
+        §4.3 attack drivers show parity at the bench's shapes.
+        Harness in <code>evals/aloepri-attacks/</code>; gate
+        documented in §10.</li>
+    </ol>
+
+    <h4 style="margin-top:24px;">Other measured optimisations since the short-prompt baseline</h4>
+    <p class="prose">
+      Two protocol-side changes landed between the §08 short-prompt
+      measurement (2026-05-18) and this long-context sweep
+      (2026-05-19), independent of HD₃ itself.
+    </p>
+    <ul style="padding-left:20px; line-height:1.55;">
+      <li><strong>AOCL-BLIS multi-thread Haar mask GEMM.</strong>
+        The <code>blas</code> feature is now default-on in
+        <code>gelo-protocol</code>; the bench pins
+        <code>GELO_BLIS_THREADS = 16</code> (the embedder default
+        stays single-thread). Haar mask GEMM at
+        <code>s = 2 056, d = 2 048</code> measures
+        <strong>5.04 ×</strong> faster than threads=1 — at
+        threads=1 the Haar TTFT at n = 2 048 measures ~40 s instead
+        of 14.6 s. HD₃ doesn't route through BLIS, so this is a
+        Haar-only win.</li>
+      <li><strong>HD₃ radix-8 FWHT + in-place apply on cached scratch.</strong>
+        Radix-8 fuses three radix-2 butterfly stages per pass (3 ×
+        less memory traffic);
+        <code>Hd3Mask::apply_in_place</code> mutates the cached
+        shield-stack scratch rather than allocating a fresh 32 MB
+        output per call. Measured at n = 2 048 vs the initial HD₃
+        landing: mask-apply 26.8 → 8.25 ms/call (matches the
+        memory-traffic prediction); mask-unapply 29.9 → 16.6
+        ms/call (1.8 × — the unapply still allocates, a follow-up
+        opportunity). Net HD₃ TTFT at n = 2 048:
+        <strong>23.30 → 14.55 s</strong> (−38 %).</li>
+    </ul>
+  </section>
+
+  <!-- ═════ § 10 STATUS & GAPS ═════ -->
+  <section id="status">
+    <header class="section-head">
+      <div class="section-num">§10</div>
       <h2 class="section-title">Status &amp; gaps</h2>
       <div class="section-meta">what's landed · what's next · what's deferred</div>
     </header>
@@ -1579,7 +1825,7 @@
 
     <h4 style="margin-top:32px;">Open decisions</h4>
     <ul>
-      <li><strong>Decode-phase π</strong> (gates SCX adoption, not v1): persistent across a generation session, or per-step refresh? Per-step requires SCX-class encoded-KV; persistent requires a fresh security argument against ARROWMATCH / Hidden-No-More extensions to autoregressive settings. v1 doesn't use permuted attention at decode (auto-switch keeps it in-TEE), so this is purely a §09 follow-up.</li>
+      <li><strong>Decode-phase π</strong> (gates SCX adoption, not v1): persistent across a generation session, or per-step refresh? Per-step requires SCX-class encoded-KV; persistent requires a fresh security argument against ARROWMATCH / Hidden-No-More extensions to autoregressive settings. v1 doesn't use permuted attention at decode (auto-switch keeps it in-TEE), so this is purely a §10 follow-up.</li>
       <li><strong>Streaming vs batched emission:</strong> deployment-level choice. Streaming exposes per-token timing; batched hides timing but loses TPOT to the user. Both will be wired; default streaming.</li>
       <li><strong>PLE table dtype</strong> (Phase 1.5 only): int8 vs fp16. int8 saves ~700 MB at small quality loss; fp16 is bit-exact. Default int8 unless accuracy validation flags a benchmark moving by &gt; 0.5 pp.</li>
     </ul>
