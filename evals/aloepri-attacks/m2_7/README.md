@@ -101,18 +101,36 @@ one prompt and prints the record).
 ### 3. Hidden-state attacks (NN, IMA, ISA) — patched `llama-server` + file-dump
 
 **Build the patched server image first** (one-time, ~15 min, ~5 GB
-Docker storage):
+Docker storage). The patch lives at
+`evals/aloepri-attacks/m2_7/patches/0001-M2.7-tensor-dump-hook-for-llama-server.patch`
+and is applied to the `vendor/llama.cpp` submodule working tree
+before `docker build`:
 
 ```
+# One-time: initialise the submodule
+git submodule update --init --recursive vendor/llama.cpp
+
+# Apply the M2.7 patch onto the submodule's working tree
+bash evals/aloepri-attacks/m2_7/apply-patches.sh
+
+# Build the image (Dockerfile copies the patched source)
 docker build \
     -f evals/aloepri-attacks/m2_7/vulkan-m2_7.Dockerfile \
     -t aloepri-llama-server:m2_7 \
     vendor/llama.cpp
+
+# Revert when done — useful before pulling a newer submodule pin
+bash evals/aloepri-attacks/m2_7/apply-patches.sh --revert
 ```
 
-The patch (Option B, see "Patch landed in vendor/llama.cpp" below)
-adds `--tensor-filter REGEX` + `--tensor-dump-path FILE` flags that
-write captured tensors to a binary file per forward pass.
+`apply-patches.sh` supports `apply` (default), `--check`
+(dry-run), and `--revert` modes. The submodule pointer in the
+parent repo stays at the clean upstream commit; the patch only
+modifies the working tree.
+
+The patch adds `--tensor-filter REGEX` + `--tensor-dump-path FILE`
+flags that write captured tensors to a binary file per forward
+pass.
 
 **Operational notes (verified during smoke 2026-05-19):**
 
@@ -194,7 +212,16 @@ python3 evals/aloepri-attacks/m2_7/run_hidden_state_attacks.py \
     --include-attn-score
 ```
 
-### Patch landed in `vendor/llama.cpp` (Option B file-dump)
+### Patch on top of `vendor/llama.cpp` submodule (Option B file-dump)
+
+`vendor/llama.cpp` is a git submodule pinned at upstream master.
+The M2.7 hook lives as a single patch at
+`patches/0001-M2.7-tensor-dump-hook-for-llama-server.patch`
+(`git format-patch` output, replays cleanly via `git apply` or
+`apply-patches.sh`). Bumping the submodule pin: `--revert` first,
+update the pin, then `apply-patches.sh` again — refresh the patch
+file if there's a conflict.
+
 
 | File | Diff |
 |---|---|
