@@ -105,7 +105,17 @@ fn blis_init_single_thread() {
     }
     PINNED.with(|p| {
         if !p.get() {
-            set_blis_num_threads(1);
+            // `GELO_BLIS_THREADS=N` overrides the single-thread auto-pin.
+            // At long-n shapes (e.g. n=2048 prefill) each mask GEMM is
+            // multi-TFLOP, so multi-thread BLIS amortises its per-call
+            // thread-barrier overhead. At small shapes the default
+            // (1 thread) is still right.
+            let n_threads: i64 = std::env::var("GELO_BLIS_THREADS")
+                .ok()
+                .and_then(|s| s.parse::<i64>().ok())
+                .filter(|&n| n >= 1)
+                .unwrap_or(1);
+            set_blis_num_threads(n_threads);
             p.set(true);
         }
     });
@@ -122,6 +132,27 @@ fn blis_init_single_thread() {
 pub fn ensure_blis_single_thread() {
     #[cfg(feature = "blas")]
     blis_init_single_thread();
+}
+
+/// Human-readable description of the mask GEMM backend that will be
+/// used at runtime. Useful for bench preambles and bug reports — at
+/// long-n shapes the BLIS-vs-matrixmultiply difference is 5× and silent
+/// fallback to matrixmultiply was the root cause of an earlier mis-run
+/// where `GELO_BLIS_THREADS` looked like it had no effect.
+pub fn mask_backend_description() -> String {
+    #[cfg(feature = "blas")]
+    {
+        let n_threads: i64 = std::env::var("GELO_BLIS_THREADS")
+            .ok()
+            .and_then(|s| s.parse::<i64>().ok())
+            .filter(|&n| n >= 1)
+            .unwrap_or(1);
+        format!("AOCL-BLIS (cblas_sgemm), threads={n_threads}")
+    }
+    #[cfg(not(feature = "blas"))]
+    {
+        "matrixmultiply (single-thread, pure-Rust; build with default `blas` feature for ~5× faster long-n)".to_string()
+    }
 }
 
 /// Override BLIS's thread count for the mask SGEMMs. The default

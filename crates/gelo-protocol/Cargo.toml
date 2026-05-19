@@ -5,13 +5,24 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-default = []
+# `blas` is default-on as of 2026-05-19: at long-n shapes (n=2048
+# prefill on Qwen3-1.7B) BLIS-mt with `GELO_BLIS_THREADS=16` is 5×
+# faster than matrixmultiply (sweep: docs/research/private-llm-inference-round-3.md §A
+# step 1). Even at threads=1 BLIS is 1.83× faster than matrixmultiply
+# at the same shape, so the embedder regime is not hurt. AOCL-BLIS
+# must be installed first via `scripts/install-aocl-blis.sh`; without
+# it the build fails at link time (loud failure, not silent
+# fallback). To force the pure-Rust matrixmultiply path (e.g. for a
+# crate consumer without AOCL), build with
+# `--no-default-features`.
+default = ["blas"]
 # `blas` calls into BLIS for the mask apply/unapply CPU GEMMs (via a
 # direct cblas_sgemm dispatch in `mask::apply` / `mask::unapply`).
-# Pulls in `blas-src + blis-src` to build BLIS from source.
-# At stacked_n ≈ 400 and d ∈ {1024, 3072} this is ~2× faster than the
-# matrixmultiply default on AMD Zen with thread-local single-thread
-# pinning (see `mask::ensure_blis_single_thread`).
+# Pulls in `blas-src + blis-src + cblas-sys`. AOCL-BLIS is the linked
+# binary (`vendor/aocl-install/lib/libblis-mt.so.5`); the
+# blis-src crate's `system` feature tells Cargo to use the
+# pre-installed shared library rather than rebuilding BLIS from
+# source.
 blas = ["dep:blas-src", "dep:blis-src", "dep:cblas-sys"]
 
 # Layered on top of `blas`: also routes every `ndarray::dot()` in the
@@ -35,3 +46,6 @@ thiserror.workspace = true
 blas-src = { workspace = true, optional = true }
 blis-src = { workspace = true, optional = true }
 cblas-sys = { version = "0.1", optional = true }
+
+[dev-dependencies]
+half.workspace = true

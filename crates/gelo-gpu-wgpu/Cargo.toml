@@ -4,6 +4,15 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Default-on (since 2026-05-19): BLIS-mt at n=2048 prefill is 5×
+# faster than matrixmultiply, and equal/better at smaller shapes
+# with threads=1 (the default). Pass through to gelo-protocol's
+# blas feature, which links AOCL-BLIS via blis-src `system`. To
+# force pure-Rust matrixmultiply, build with --no-default-features.
+default = ["blas"]
+blas = ["gelo-protocol/blas"]
+
 [dependencies]
 anyhow.workspace = true
 burn-backend.workspace = true
@@ -16,7 +25,7 @@ cubecl-core.workspace = true
 cubecl-runtime.workspace = true
 cubecl-std.workspace = true
 cubecl-wgpu.workspace = true
-gelo-protocol = { path = "../gelo-protocol" }
+gelo-protocol = { path = "../gelo-protocol", default-features = false }
 half.workspace = true
 ndarray.workspace = true
 wgpu.workspace = true
