@@ -1,4 +1,4 @@
-"""run_all.py — three-condition AloePri attack runner.
+"""run_all.py — AloePri attack runner across the GELO condition matrix.
 
 Usage:
 
@@ -7,9 +7,9 @@ Usage:
         --output results/path-1-attacks.json \
         --model-id Qwen/Qwen3-1.7B
 
-Reads `c0_plain`, `c1_mask_only`, `c2_default` from `--snapshot-root`,
-runs all six attack drivers against each, and writes one combined
-results JSON with shape:
+Reads `c0_plain`, `c1_mask_only`, `c2_default`, and (optionally)
+`c3_hd3` from `--snapshot-root`, runs all attack drivers against
+each, and writes one combined results JSON with shape:
 
 ```
 {
@@ -20,21 +20,17 @@ results JSON with shape:
   "per_forward_mask": true,
   "captured_at": "...",
   "conditions": {
-    "c0_plain": {
-      "vma":  { ... AttackResult ... },
-      "ima":  { ... },
-      "isa":  { ... },
-      "tfma": { ... },
-      "sda":  { ... },
-      "ia":   { ... }
-    },
+    "c0_plain":     { "vma": { ... }, "ima": { ... }, ... },
     "c1_mask_only": { ... },
-    "c2_default": { ... }
+    "c2_default":   { ... },
+    "c3_hd3":       { ... }     # only when the snapshot is present
   },
   "acceptance_gate": {
-    "ima_c2_below_10pct": <bool>,
-    "isa_c2_below_10pct": <bool>,
-    "c0_ima_at_least_95pct": <bool>,
+    "ima_c2_below_10pct":             <bool>,
+    "isa_c2_below_10pct":             <bool>,
+    "c0_ima_at_least_95pct":          <bool>,
+    "ima_c3_within_haar_band":        <bool>,   # round-3 B.3 gate
+    "isa_c3_within_haar_band":        <bool>,   # round-3 B.3 gate
     ...
   }
 }
@@ -60,10 +56,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from snapshots_loader import open_three_conditions  # type: ignore  # noqa: E402
 
 from attack_drivers import (  # type: ignore  # noqa: E402
+    run_anchor_ica,
+    run_gram_error,
     run_ia,
     run_ima,
     run_ima_paper_like,
     run_isa,
+    run_jade,
+    run_jd,
     run_nn,
     run_sda,
     run_tfma,
@@ -71,9 +71,14 @@ from attack_drivers import (  # type: ignore  # noqa: E402
 )
 
 
-# Attack list — order matters for the report. NN replaces the old
-# (mis-labeled) VMA as the meaningful activation-axis attack; the
-# real VMA stays as a stub documenting threat-model inapplicability.
+# Attack list — order matters for the report.
+#
+# Six AloePri drivers (NN / VMA / IA / IMA / ima_paper_like / ISA /
+# TFMA / SDA) carry the original AloePri-family acceptance metrics.
+# Four §4.3 drivers (anchor_ica / jade / jd / gram_error) extend
+# the matrix to the GELO-specific BSS-hardness tests that AloePri
+# doesn't reach — required for the round-3 B.3 attack-defence gate
+# (HD₃ vs Haar parity).
 ATTACKS = [
     ("nn", run_nn),
     ("vma", run_vma),
@@ -83,6 +88,13 @@ ATTACKS = [
     ("isa", run_isa),
     ("tfma", run_tfma),
     ("sda", run_sda),
+    # §4.3 — GELO threat-model-specific drivers. Each needs paired
+    # plaintext snapshots (`plain_snaps` kwarg) to evaluate
+    # recovery; supplied below from the c0_plain condition.
+    ("anchor_ica", run_anchor_ica),
+    ("jade", run_jade),
+    ("jd", run_jd),
+    ("gram_error", run_gram_error),
 ]
 
 
@@ -135,6 +147,7 @@ def main() -> None:
     embed_table = run_ima.load_qwen3_embedding_table(args.model_id)
 
     per_condition: dict[str, dict[str, Any]] = {}
+    plain_snaps = conditions.get("c0_plain")
     for cond_slug, snaps in conditions.items():
         per_attack: dict[str, Any] = {}
         for name, mod in ATTACKS:
@@ -158,6 +171,13 @@ def main() -> None:
             elif name == "ia":
                 kwargs["embed_table"] = embed_table
                 kwargs["layer"] = args.ima_layer
+            # §4.3 drivers need the paired plaintext snapshot set so
+            # they can compute cosine-recovery / Gram-error metrics
+            # against ground-truth H. plain_snaps is None when the
+            # snapshot dir lacks a c0_plain set; the drivers fall
+            # back to a `not_applicable`-style placeholder result.
+            elif name in {"anchor_ica", "jade", "jd", "gram_error"}:
+                kwargs["plain_snaps"] = plain_snaps
             # vma / tfma / sda take no kwargs — they emit
             # not_applicable rows by design.
             try:
@@ -166,7 +186,24 @@ def main() -> None:
                 print(f"    !! {name} failed: {exc!r}")
                 import traceback
                 traceback.print_exc()
-                result = mod.run(snaps)
+                # Manufacture a failure row instead of re-invoking the
+                # driver — the retry without kwargs crashes for drivers
+                # with required keyword-only args (run_ima needs
+                # `embed_table`). The original AttackResult contract
+                # lets us emit a failure row directly.
+                from attack_drivers.common import AttackResult  # type: ignore
+                result = AttackResult(
+                    attack=name,
+                    condition=snaps.condition,
+                    model_id=snaps.model_id,
+                    n_prompts=snaps.n_prompts(),
+                    n_train=0,
+                    n_test=0,
+                    ttrsr_top1=None,
+                    ttrsr_top10=None,
+                    risk_level="unknown",
+                    extra={"error": repr(exc), "phase": "driver_raised"},
+                )
             per_attack[name] = result.to_dict()
             print(
                 f"    {name}: ttrsr_top1={result.ttrsr_top1!r} "
@@ -232,6 +269,54 @@ def main() -> None:
             and _top1("c1_mask_only", "isa") <= _top1("c2_default", "isa")  # type: ignore[operator]
         ),
     }
+
+    # B.3 — HD₃ attack-defence parity check. Only fires when the C3
+    # snapshot is present (the harness loader skips C3 if its
+    # safetensors file isn't there, so older 3-condition runs stay
+    # green). The band ±0.05 matches the round-3 doc tolerance:
+    # HD₃'s discrete `2^{3·s}` orbit is structurally different from
+    # the continuous Haar measure, but parity-with-Haar at the
+    # bench's load-bearing attacks (IMA / ISA / NN) is what unlocks
+    # the executor default-flip.
+    if "c3_hd3" in per_condition:
+        def _within_band(attack: str, band: float = 0.05) -> bool | None:
+            c2 = _top1("c2_default", attack)
+            c3 = _top1("c3_hd3", attack)
+            if c2 is None or c3 is None:
+                return None
+            return abs(c3 - c2) <= band
+
+        # AloePri-family parity bands
+        acceptance["ima_c3_within_haar_band"] = _within_band("ima")
+        acceptance["isa_c3_within_haar_band"] = _within_band("isa")
+        acceptance["nn_c3_within_haar_band"] = _within_band("nn")
+        acceptance["ima_paper_like_c3_within_haar_band"] = _within_band("ima_paper_like")
+        # Absolute thresholds on C3 — mirrors the C2 < 10% claim so
+        # HD₃ must individually defend, not just parity-match Haar.
+        acceptance["ima_c3_below_10pct"] = (
+            _top1("c3_hd3", "ima") is not None
+            and _top1("c3_hd3", "ima") < 0.10  # type: ignore[operator]
+        )
+        acceptance["isa_c3_below_10pct"] = (
+            _top1("c3_hd3", "isa") is not None
+            and _top1("c3_hd3", "isa") < 0.10  # type: ignore[operator]
+        )
+        # §4.3-family parity bands. anchor_ica / jade / jd use
+        # cosine-recovery (±0.05 cosine); gram_error uses a Frobenius
+        # error band of ±20 % (paper §4.3.4 tolerance) — wider because
+        # the metric scale itself is wider.
+        acceptance["anchor_ica_c3_within_haar_band"] = _within_band("anchor_ica")
+        acceptance["jade_c3_within_haar_band"] = _within_band("jade")
+        acceptance["jd_c3_within_haar_band"] = _within_band("jd")
+
+        def _within_relative_band(attack: str, rel_band: float = 0.20) -> bool | None:
+            c2 = _top1("c2_default", attack)
+            c3 = _top1("c3_hd3", attack)
+            if c2 is None or c3 is None or c2 == 0:
+                return None
+            return abs(c3 - c2) / abs(c2) <= rel_band
+
+        acceptance["gram_error_c3_within_haar_band"] = _within_relative_band("gram_error")
 
     # Pull the shield/mask config off one of the loaded sets — they
     # agree on the model_id but not on the per-condition shield

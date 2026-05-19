@@ -221,18 +221,30 @@ def open_three_conditions(
     c0_basename: str = "c0_plain",
     c1_basename: str = "c1_mask_only",
     c2_basename: str = "c2_default",
+    c3_basename: str = "c3_hd3",
 ) -> dict[str, SnapshotSet]:
-    """Open the three-condition matrix as a dict slug → SnapshotSet.
+    """Open the condition matrix as a dict slug → SnapshotSet.
+
+    Loads c0_plain / c1_mask_only / c2_default unconditionally, and
+    c3_hd3 if a matching `c3_basename.safetensors` is present in
+    `root` (B.3 gate extension — adds the HD₃ mask family as a
+    fourth control condition without breaking older 3-condition
+    snapshot directories).
 
     Used by `run_all.py` and by the per-attack drivers when they need
     paired observations across conditions (e.g. VMA's source attribution
-    runs all three).
+    runs all conditions).
     """
-    return {
+    conds: dict[str, SnapshotSet] = {
         "c0_plain": SnapshotSet.open(c0_basename, root=root),
         "c1_mask_only": SnapshotSet.open(c1_basename, root=root),
         "c2_default": SnapshotSet.open(c2_basename, root=root),
     }
+    # C3 is optional — older snapshot dirs predate the HD₃ extension.
+    c3_safetensors = Path(root) / f"{c3_basename}.safetensors"
+    if c3_safetensors.exists():
+        conds["c3_hd3"] = SnapshotSet.open(c3_basename, root=root)
+    return conds
 
 
 def synthetic_set_for_tests(tmp_path: Path) -> SnapshotSet:
