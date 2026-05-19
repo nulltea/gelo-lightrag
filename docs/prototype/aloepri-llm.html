@@ -132,7 +132,7 @@
         </tr>
         <tr>
           <td><b>R̂<sub>qk</sub>, Ĥ<sub>qk</sub>, Ẑ<sub>block</sub></b></td>
-          <td>Paper Algorithm 2 intra-head transforms applied to Q/K weights: 2D rotary obfuscation, 2-block scaling, and RoPE-block-wise permutation respectively. <code>Ẑ<sub>block</sub></code> is sampled by BlockPerm under a softmax decay tied to the RoPE base. <strong>Not deployed on Qwen3</strong> — each of these transforms requires the §5.2.5 fusion of <code>γ<sub>qk</sub></code> to commute through the QK-norm site, and that fusion is empirically broken on Qwen3 (see §09).</td>
+          <td>Paper Algorithm 2 intra-head transforms applied to Q/K weights: 2D rotary obfuscation, 2-block scaling, and RoPE-block-wise permutation respectively. <strong>Deployed on Qwen3 since 2026-05-19 via the matrix-Γ kernel extension</strong> — instead of folding γ<sub>qk</sub> backward via §5.2.5 (which the §05 deployment couldn't because Qwen3 trained Q/K is non-Gaussian), we replace the per-element γ<sub>qk</sub> tensor with a per-layer 2D Γ = M<sub>q</sub><sup>T</sup>·Diag(γ<sub>qk</sub>)·M<sub>q</sub> and let the kernel apply it via <code>ggml_mul_mat</code> at the q_norm site. Storage cost +42 MB / fp32 model; compute cost &lt;1 % at decode. R̂<sub>qk</sub> is the RoPE-aware rotation per NEOX pair; Ĥ<sub>qk</sub> is ±1 Walsh-Hadamard (paired across the NEOX halves so the rotation block-form is preserved); Ẑ<sub>block</sub> is a β-wide locality-preserving permutation within RoPE-frequency bands. See §08 / §09 for measured impact.</td>
         </tr>
         <tr>
           <td><b>Û<sub>vo</sub></b></td>
@@ -244,8 +244,8 @@
         <tr>
           <td><b>Internal-state inversion</b><br><span class="rev">paper §5.2.3 attack surface</span></td>
           <td>ISA · IMA · NN</td>
-          <td>Two-side key matrices <code>Q̂·W·P̂</code> on every weight scramble residual-stream activations. Inter-head <code>τ<sub>kv</sub></code> + <code>τ<sub>group</sub></code> shuffle which Q/K/V head produced each attention score. <strong>Missing</strong>: per-head intra-head transforms (<code>R̂<sub>qk</sub></code>, <code>Ĥ<sub>qk</sub></code>, <code>Ẑ<sub>block</sub></code>) that the paper applies to scramble the <em>values</em> of Q·K<sup>T</sup> within each head.</td>
-          <td><strong>Partial.</strong> Paper applies 5 transforms; we apply 2. An ISA attacker who knows the GQA layout can train an inverter on head-permuted attention patterns. Cost of the gap depends on how much information lives in the per-head <em>identity</em> of scores vs. the head-permuted set of scores; novel for Qwen3 1.7B. See §09 and figure 03b.</td>
+          <td>Two-side key matrices <code>Q̂·W·P̂</code> on every weight scramble residual-stream activations. Inter-head <code>τ<sub>kv</sub></code> + <code>τ<sub>group</sub></code> shuffle which Q/K/V head produced each attention score. <strong>Intra-head transforms</strong> (<code>R̂<sub>qk</sub></code>, <code>Ĥ<sub>qk</sub></code>, <code>Ẑ<sub>block</sub></code>) <strong>deployed since 2026-05-19</strong> via the matrix-Γ kernel extension (M<sup>T</sup>·Diag(γ<sub>qk</sub>)·M replaces 1D γ<sub>qk</sub> at the q_norm site). Scrambles per-head_dim coordinate identity of Q/K within each head.</td>
+          <td><strong>Closer to paper-full after the 2026-05-19 ramp.</strong> Paper applies 5 attention-side transforms; we now apply 4 (R̂<sub>qk</sub>, Ĥ<sub>qk</sub>±1, Ẑ<sub>block</sub>, Π<sub>head</sub>). The fifth, distinct Ẑ<sub>block_η</sub> on the K side, is not deployed — alg2.py uses the same Z for both Q and K (with repaired M<sub>k</sub> construction so M<sub>q</sub>·M<sub>k</sub><sup>T</sup> = I holds). ISA HS at <code>attn_norm-23</code> now passes the 15 % gate. IMA-L0-activation (path-2-specific attack at <code>attn_norm-0</code>) does not move under Algorithm 2 because that surface is pre-W<sub>q</sub>. See §08 ledger.</td>
         </tr>
         <tr>
           <td><b>Token-frequency statistics</b></td>
@@ -264,35 +264,19 @@
 
     <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:32px 0 8px;">Internal-state inversion (paper §5.2.3) — what's defended, what isn't</h4>
     <p class="prose">
-      <strong>The asset.</strong> AloePri's threat model protects the <em>plaintext prompt and response</em>, not the model weights. Model weights are public Qwen3 1.7B; the user's input is the secret. ISA / IMA / NN are the attacks against this asset that target <em>runtime</em> state rather than weight files.
+      <strong>What ISA / IMA threaten.</strong> A server operator reads intermediate hidden states or attention scores from GPU memory during inference, then runs them through an inverter trained on plaintext Qwen3 1.7B to recover the user's tokens. Algorithm 1 keymat alone preserves Q, K, V byte-for-byte (by design, so the model still works) — so a pre-trained inverter applies unchanged. Algorithm 2 closes that gap.
     </p>
     <p class="prose">
-      <strong>What ISA does.</strong> The server operator (= adversary in AloePri's threat model) reads intermediate attention scores <code>softmax(Q·K<sup>T</sup>/√d<sub>h</sub>)</code> from GPU memory during inference. They train an inverter offline on <em>plaintext</em> Qwen3 1.7B over a public corpus, generating (prompt, attention-pattern) pairs. At attack time they feed the captured user-request attention patterns through the inverter and recover plaintext tokens.
+      <strong>Algorithm 2's five intra-head + inter-head transforms.</strong> R̂<sub>qk</sub> (RoPE-aware 2D rotation per pair), Ĥ<sub>qk</sub> (per-pair scaling diagonal, paired across NEOX halves), Ẑ<sub>block</sub> (RoPE-pair permutation), Û<sub>vo</sub> (V/O random invertible — paper-specified, reference omits), plus the inter-head shuffles τ<sub>kv</sub> + τ<sub>group</sub>. All are chosen so <code>Q·K<sup>T</sup></code> end-to-end equals plaintext (model still works) but <em>internal</em> per-(head, pair-position) values are scrambled.
     </p>
     <p class="prose">
-      <strong>Why the Π token permutation and §5.2.2 noise don't stop ISA.</strong> Algorithm 1 keymat preserves attention scores by design. The transform <code>x → x·P̂<sub>R</sub></code> obfuscates the residual stream; the Q/K/V projection weights are correspondingly modified so that <code>x·P̂<sub>R</sub>·W̃<sub>q</sub> = x·W<sub>q</sub></code> — the per-token Q vector is <em>byte-identical</em> to plaintext. Same for K, V. <code>Q·K<sup>T</sup></code> in the obfuscated run equals plaintext <code>Q·K<sup>T</sup></code> byte-for-byte. The pre-trained inverter works as-is.
+      <strong>The Qwen3-specific gap.</strong> The intra-head transforms all need to commute with the per-element γ at Qwen3's QK-norm site (which sits <em>between</em> W<sub>q</sub>/W<sub>k</sub> and RoPE — Qwen2.5 / Llama-3 / DeepSeek don't have this norm). Paper §5.2.5's fold-γ-into-the-adjacent-linear-weight trick is exact only under i.i.d.-Gaussian-Q assumption; trained Qwen3 Q/K vectors correlate with γ and the per-input κ approximation breaks attention. <strong>§05 (2026-05-18) therefore deployed only τ<sub>kv</sub> + τ<sub>group</sub></strong>, leaving R̂<sub>qk</sub> / Ĥ<sub>qk</sub> / Ẑ<sub>block</sub> dormant.
     </p>
     <p class="prose">
-      <strong>Paper §5.2.3's full Algorithm 2 solution.</strong> Apply per-attention-head transforms that <em>do</em> change Q·K<sup>T</sup> while keeping the softmax output preserved end-to-end:
+      <strong>Our fix (2026-05-19): matrix-Γ kernel extension.</strong> Patched <code>llama.cpp</code>: at the QK-norm site, consume a 2D tensor <code>Γ = M<sup>T</sup>·Diag(γ<sub>qk</sub>)·M</code> in place of the 1D <code>γ<sub>qk</sub></code>. Algebraically <code>(Q / RMS(Q)) · Γ = Q<sub>plain_normed</sub> · M</code> when M is orthogonal (exact to fp32 noise). Obfuscator bakes M into <code>W<sub>q</sub></code> / <code>W<sub>k</sub></code> output axis; kernel detects the 2D form via the <code>aloepri.qk_norm_matrix</code> metadata flag. No protocol change. Deploys R̂<sub>qk</sub> + Ẑ<sub>block</sub> + ±1 Ĥ<sub>qk</sub> on top of §05's head shuffles. Measured: ISA HiddenState at <code>attn_norm-23</code> drops 16.3 % → 11.5 % (passes §6.3 gate). See §08.
     </p>
-    <ul style="margin-left:24px;font-size:14px;line-height:1.6;">
-      <li><b>R̂<sub>qk</sub></b> — block-diagonal 2D rotation per RoPE pair, same matrix on Q and K. Commutes with RoPE (both are 2D rotations on the same plane → SO(2) is abelian). <code>(q·R̂)·(k·R̂)<sup>T</sup> = q·k<sup>T</sup></code> (R̂ orthogonal).</li>
-      <li><b>Ĥ<sub>qk</sub></b> — per-RoPE-pair scaling diagonal applied to Q, its inverse to K. <code>(q·Ĥ)·(k·Ĥ<sup>-1</sup>)<sup>T</sup> = q·k<sup>T</sup></code>. The diagonal must be paired (same scalar on positions <code>i</code> and <code>i+half</code>) to commute with the half-rotated RoPE layout llama.cpp uses.</li>
-      <li><b>Ẑ<sub>block</sub></b> — permutation of RoPE pair-positions, sampled by the <code>dynamic_window</code> construction that only swaps pairs whose RoPE frequencies are close. Approximately preserves attention without needing to permute the RoPE freq table on the server.</li>
-      <li><b>Û<sub>vo</sub></b> — random invertible matrix on V's output and its inverse on O's input. Cancels through <code>attn·Ṽ·W̃<sub>o</sub></code>. Paper specifies this; reference's static rewrite omits it.</li>
-      <li><b>τ<sub>kv</sub></b>, <b>τ<sub>group</sub></b> — inter-head shuffle. Per-layer random permutations on which Q head pairs with which K/V head (under GQA constraints).</li>
-    </ul>
-    <p class="prose">
-      Net effect of the full paper Algorithm 2: <code>Q·K<sup>T</sup></code> is preserved end-to-end (so the model still works) but its <em>internal</em> per-(head, pair-position) values are scrambled, and the head-index ordering is permuted. An ISA inverter trained on plaintext attention patterns sees a tensor whose per-element values, per-pair-position structure, and per-head-index identity all differ.
-    </p>
-    <p class="prose">
-      <strong>Why we ship only τ<sub>kv</sub> / τ<sub>group</sub> on Qwen3.</strong> R̂<sub>qk</sub>, Ĥ<sub>qk</sub>, Ẑ<sub>block</sub> each require fusing the QK-norm γ vector backward into <code>W<sub>q</sub></code> / <code>W<sub>k</sub></code> via paper §5.2.5, so the per-element <code>γ</code> at the norm site becomes scalar <code>κ</code> and commutes with rotations / scalings / permutations. The §5.2.5 fusion is <em>exact in expectation under i.i.d. Gaussian Q/K</em>. Empirically on Qwen3, trained Q/K vectors are not Gaussian — they correlate with γ — and the per-input κ approximation breaks attention enough that the model degenerates to high-frequency-token loops. The intra-head transforms are therefore not deployable on Qwen3 in the current implementation (see §09 and figure 03b for the full mathematical picture).
-    </p>
-    <p class="prose">
-      <strong>What survives.</strong> τ<sub>kv</sub> + τ<sub>group</sub> permute <em>whole heads</em>. The 128 elements of one head move together, so the broadcast of <code>γ<sub>qk</sub></code> across heads is invariant under the shuffle — no fusion needed, no Gaussian assumption involved. Mathematically exact. Empirically: byte-identical model behaviour to the no-Algorithm-2 baseline.
-    </p>
-    <p class="prose">
-      <strong>What's left exposed.</strong> An ISA attacker on Qwen3 sees attention patterns whose <em>per-position-pair Q·K<sup>T</sup> values</em> are identical to plaintext, only the head-axis is permuted. With per-layer head shuffles drawn from <code>S<sub>8</sub> × S<sub>2</sub></code> (8! · 2!<sup>8</sup> ≈ 40K per-layer entropy, but tied across layers when the attacker compares hidden states across layers) the attacker still has to guess the per-layer head permutation. That's a substantially weaker barrier than the paper's full construction; whether it keeps ISA TTRSR ≤ 15 % on the obfuscated Qwen3 1.7B artifact is the load-bearing question the §08 harness will answer once the M2.7 run lands.
+    <p class="prose" style="background:#fdf3e8;border-left:3px solid #c88a2a;padding:8px 12px;font-size:13px;">
+      <strong>New attack surface introduced by matrix-Γ: eigendecomposition leak.</strong> The 2D Γ = M<sup>T</sup>·Diag(γ)·M is a similarity transform of a diagonal matrix. An adversary with code execution on the server can run <code>numpy.linalg.eig(Γ)</code> and recover γ (eigenvalues) and M (eigenvectors, up to ordering) in milliseconds — defeating the intra-head obfuscation entirely. This is a weight-analysis attack and <strong>out of scope under the path-2 threat model</strong> (we don't claim weight privacy; obfuscated weights are openly distributed). Documented for completeness in §08's weight-inversion table and the threat-model doc <code>docs/research/aloepri-qk-norm-matrix-gamma-threat-model.md</code>. Defending it would require per-prompt fresh M (GELO-style masking), which breaks AloePri's "static obfuscation, no infra change" thesis.
     </p>
 
     <p class="lede" style="margin-top:24px;">
@@ -327,7 +311,7 @@
           <td>landed (Π token permutation · embedding/head noise · inter-head attention shuffle)</td>
           <td class="num">28 · 2048 · 128</td>
           <td>(16, 8)</td>
-          <td>Source GGUF <code>bartowski/Qwen_Qwen3-1.7B-GGUF</code> Q8_0; obfuscated artifact <code>keymat-h128-pi-noise-alg2-fp32.gguf</code> at 8.6 GB. RoPE base 1M, no p-RoPE. Single residual norm class per block (<code>attn_norm</code>, <code>ffn_norm</code>) + 1 global <code>output_norm</code> = 57 residual norm sites total. Per-head <code>attn_q_norm</code>, <code>attn_k_norm</code> = 56 additional sites, intentionally left at full per-element γ (see §09).</td>
+          <td>Source GGUF <code>bartowski/Qwen_Qwen3-1.7B-GGUF</code> Q8_0; obfuscated artifact <code>keymat-h128-pi-noise-alg2-FULL-zfix-hadamard-fp32.gguf</code> at 9.1 GB (post-2026-05-19 ramp; §05 baseline <code>keymat-h128-pi-noise-alg2-fp32.gguf</code> superseded). RoPE base 1M, no p-RoPE. Single residual norm class per block (<code>attn_norm</code>, <code>ffn_norm</code>) + 1 global <code>output_norm</code> = 57 residual norm sites total. Per-head <code>attn_q_norm</code>, <code>attn_k_norm</code> = 56 additional sites, deployed as 2D Γ matrices via the matrix-Γ kernel extension (see §09).</td>
         </tr>
         <tr>
           <td>Qwen3 4B / 8B</td>
@@ -434,7 +418,7 @@
       <article class="card">
         <span class="tag tee">eval</span>
         <h3>attack-harness<span class="alias">evals/aloepri-attacks/</span></h3>
-        <p class="one">Eight-attack benchmark ported from the AloePri reference (<code>vendor/aloepri-py/src/security_qwen/</code>): NN, VMA, IA (Gate-IA + Attn-IA), IMA-basic, IMA paper-like, ISA, TFMA, SDA. Targets the obfuscated Qwen3 1.7B artifact running on <code>llama-server</code>, reports per-attack TTRSR against the paper §6.3 ≤ 15 % acceptance threshold. <strong>Status: harness landed; running it against the obfuscated artifact is M2.7 deferred.</strong> See §08 for per-attack reference numbers and how to read them.</p>
+        <p class="one">Activation- and token-stream-attack benchmark adapted from the AloePri reference (<code>vendor/aloepri-py/src/security_qwen/</code>) plus path-2 surface-specific variants: NN, IMA-L0-activation (3 surfaces), IMA-L0-transformer, ISA HiddenState (3 surfaces), ISA AttnScore, TFMA, SDA. Plus a separate out-of-scope set of weight-inversion attacks (VMA, IA, reference's IMA basic, reference's IMA paper-like). Targets the obfuscated Qwen3 1.7B artifact running on <code>llama-server</code>, reports per-attack TTRSR against paper §6.3's ≤ 15 % acceptance threshold. See §08 for full per-attack ledger.</p>
         <dl>
           <dt>release-gate threshold</dt><dd>TTRSR ≤ 15 % per attack, at paper-recommended hyperparameters (α<sub>e</sub>=1.0, α<sub>h</sub>=0.2, h=128, λ=0.3, β=8, γ=1e3).</dd>
           <dt>specific watchpoint</dt><dd>ISA on the partial-Algorithm-2 artifact — the M2.7 run is what tells us whether head-shuffle alone is enough or whether per-norm-site κ tuning is needed (§09).</dd>
@@ -891,8 +875,12 @@
       <div class="section-meta">eight attacks · paper-published expectations · per-attack reading guide</div>
     </header>
     <p class="lede">
-      Our threat model is paper §3.2: the cloud server is honest-but-curious; the attacker has access to the obfuscated model θ̃, the obfuscated prompts τ(x), and the obfuscated responses τ(y); for VMA and IA the attacker is additionally assumed to have the plaintext baseline weights θ (paper §F.1, Table 1 caption). The harness ports the eight attacks the paper measures (NN, VMA, IA, IMA-basic, IMA paper-like, ISA, TFMA, SDA) from <code>vendor/aloepri-py/src/security_qwen/</code>, captures observables produced by running the obfuscated Qwen3 1.7B artifact (<code>keymat-h128-pi-noise-alg2-fp32.gguf</code>, §05) on <code>llama.cpp:server-vulkan</code>, and reports TTRSR per attack. <strong>M2.7 captures + attacks complete 2026-05-19. Both columns measured via the same harness: Plain = plain Qwen3 1.7B Q8_0 GGUF (no τ, no obfuscation, control sanity); Obfuscated = §05 keymat-h128-pi-noise-alg2-fp32.gguf. IMA + ISA use paper-faithful vocab-disjoint splits. VMA + IA are weight-privacy attacks, out of scope for this work.</strong>
+      Our threat model is paper §3.2 + activation-privacy: the cloud server is honest-but-curious; the attacker has access to the obfuscated model θ̃, the obfuscated prompts τ(x), the obfuscated responses τ(y), and <em>captured runtime activations from server-side forward inference</em>. The harness implements seven attacks against three surface families: NN / IMA-L0-activation / ISA-HiddenState / ISA-AttnScore observe forward-pass activations; TFMA / SDA observe the wire-side response stream; VMA / IA are paper attacks against weights and are <strong>out of scope</strong> (this work treats weight privacy as not load-bearing). <strong>M2.7 captures + attacks complete 2026-05-19.</strong>
     </p>
+    <div style="background:#e8eef5;border-left:3px solid #4a6a9c;padding:10px 14px;font-size:13px;margin-bottom:14px;">
+      <p class="prose" style="margin-top:0;"><strong>Algorithm 2 surface scope.</strong> Algorithm 2's intra-head transforms (R̂<sub>qk</sub>, Ĥ<sub>qk</sub>, Ẑ<sub>block</sub>) act on W<sub>q</sub>'s and W<sub>k</sub>'s <em>output</em> axis — i.e., they live between W<sub>q</sub> and the attention dot product. They structurally cannot affect surfaces that occur <em>before</em> W<sub>q</sub> in the compute graph — including <code>attn_norm-0</code> (the residual stream pre-attention). Layer-0 IMA-L0-activation is defended (or not) by §5.2.2 α-noise + Algorithm 1 keymat — not by Algorithm 2. The post-q_norm <code>Qcur_normed-{l}</code> / <code>Kcur_normed-{l}</code> surfaces are where Algorithm 2 directly acts; we measure these surfaces in addition to the residual-stream ones from the paper's evaluation, since they are the surfaces where Algorithm 2's defence is observable.</p>
+      <p class="prose" style="margin-bottom:0;font-size:12px;color:#555;"><strong>Naming note:</strong> the paper's "IMA basic" / "IMA paper-like" attacks are <strong>static weight inversions</strong> in the VMA/IA family (see the weight-inversion table below). Path-2 reuses those inverter recipes for activation attacks at layer 0; we call the path-2 variants <code>IMA-L0-activation</code> (linear ridge inverter) and <code>IMA-L0-transformer</code> (trained 2-layer 8-head transformer inverter) in the in-scope table.</p>
+    </div>
 
     <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:24px 0 8px;">Conditions under test</h4>
     <table class="spec">
@@ -901,71 +889,58 @@
       </thead>
       <tbody>
         <tr><td><b>Plain</b></td><td>plaintext Qwen3 1.7B Q8_0 (<code>bartowski/Qwen_Qwen3-1.7B-GGUF</code>)</td><td>Control. Each attack must succeed against plain inference — if it doesn't, the attack itself is broken and any defence reading is meaningless.</td></tr>
-        <tr><td><b>Obfuscated</b></td><td><code>keymat-h128-pi-noise-alg2-fp32.gguf</code> (8.6 GB; h=128, λ=0.3, α<sub>e</sub>=1.0, α<sub>h</sub>=0.2 paper recommended defaults; Algorithm-2 partial — see §05 / §09)</td><td>The artifact this document describes. Acceptance threshold is paper §6.3's recommendation: <b>TTRSR ≤ 15 % per attack</b>.</td></tr>
+        <tr><td><b>Obfuscated</b></td><td><code>keymat-h128-pi-noise-alg2-FULL-zfix-hadamard-fp32.gguf</code> (9.1 GB fp32; h=128, λ=0.3, α<sub>e</sub>=1.0, α<sub>h</sub>=0.2; full Algorithm 2: R̂<sub>qk</sub> + Ẑ<sub>block</sub> + ±1 Ĥ<sub>qk</sub> + Π<sub>head</sub> via matrix-Γ kernel)</td><td>The current path-2 deployment. Closest available approximation to paper full Algorithm 2 under the matrix-Γ kernel construction. Acceptance threshold per paper §6.3: <b>TTRSR ≤ 15 % per attack</b>.</td></tr>
       </tbody>
     </table>
+    <p class="prose" style="font-size:13px;color:#555;">
+      The Algorithm 2 ramp (§05 → +R̂<sub>qk</sub> → +Ẑ<sub>block</sub> → +Ĥ<sub>qk</sub>) and the per-component contribution are documented in <code>docs/handoffs/2026-05-19-option-c-steps-0-1-2a-findings.md</code>. The table below collapses to the strongest deployed condition (the rightmost column of that ramp).
+    </p>
 
-    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:24px 0 8px;">Per-attack reference + measurement table</h4>
+    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:24px 0 8px;">Activation + token-stream attacks (in scope)</h4>
     <p class="prose">
-      <em>Paper expected (Qwen3)</em> reproduces only the Qwen3-family numbers from the paper (Table 2 reports VMA on Qwen3 14B / 32B with the PUPA dataset). Attacks the paper didn't measure on Qwen3 show "—"; the methodology is identical to the Qwen2.5-14B Table 1 baseline but no Qwen3-specific number is published. <em>Measured · Plain</em> and <em>Measured · Obfuscated</em> are this harness against Qwen3 1.7B (data: <code>evals/aloepri-attacks/results/path-1-attacks.json</code>, 64 prompts × 196 captured observables per prompt = 12 544 rows per condition).
+      The attacks this harness <em>measures</em>: activation-surface inversions (NN, IMA-L0-activation across three layer-0 surfaces, IMA-L0-transformer, ISA HiddenState across three layer-23 surfaces, ISA AttnScore) and token-stream attacks (TFMA, SDA). <em>Paper expected (Qwen3)</em> reproduces only Qwen3-family numbers from the paper where the surface matches. <em>Plain</em> and <em>Obfuscated</em> are this harness against Qwen3 1.7B.
     </p>
     <div style="background:#e8f0e0;border-left:3px solid #6a8a3a;padding:10px 14px;font-size:13px;">
-      <p class="prose" style="margin-top:0;"><strong>M2.7 capture frontend landed 2026-05-19.</strong> Both columns now read off the same harness: a patched <code>llama.cpp:server-vulkan</code> Docker image (<code>aloepri-llama-server:m2_7</code>) serving either the plain Qwen3 1.7B Q8_0 GGUF (Plain column, <code>--no-tau-map</code>) or the §05 obfuscated GGUF (<code>keymat-h128-pi-noise-alg2-fp32.gguf</code>, with τ-permuted prompt ids). The patch adds two CLI flags to <code>common/debug.cpp</code> — <code>--tensor-filter REGEX</code> + <code>--tensor-dump-path FILE</code> — that write matched tensors to a binary file per forward pass. The Python harness drives <code>/completion</code>, reads the dump file, and packs into the safetensors schema the existing attack drivers consume. <b>64 prompts × 2 GGUFs × 2 modes (HiddenState + AttnScore) = 4 captures, all 5 attacks run against each.</b></p>
-      <p class="prose"><strong>What's covered:</strong> 4 attacks (NN / IMA basic / IMA paper-like / ISA) × 2 observables (HiddenState at layers 0,11,23 + AttnScore at layer 23, captured via two server passes — flash-attn on for HiddenState, flash-attn off for AttnScore so <code>kq-23</code> materialises in the compute graph).</p>
+      <p class="prose" style="margin-top:0;"><strong>M2.7 capture frontend landed 2026-05-19.</strong> Both columns read off the same harness: a patched <code>llama.cpp:server-vulkan</code> Docker image (<code>aloepri-llama-server:option-c-cli</code>) serving either the plain Qwen3 1.7B Q8_0 GGUF (Plain column) or the obfuscated GGUF (Obfuscated column, with τ-permuted prompt ids). The patch adds two CLI flags to <code>common/debug.cpp</code> — <code>--tensor-filter REGEX</code> + <code>--tensor-dump-path FILE</code> — that write matched tensors to a binary file per forward pass. The Python harness drives <code>/completion</code>, reads the dump file, and packs into the safetensors schema the existing attack drivers consume. The 2026-05-19 ramp also added <code>Qcur_normed-{0,11,23}</code> and <code>Kcur_normed-{0,11,23}</code> to the tensor-filter regex so the post-q_norm Q/K surfaces (where M<sub>q</sub> directly acts) are observable.</p>
+      <p class="prose"><strong>What's covered:</strong> 4 activation-attack families (NN / IMA-L0-activation / IMA-L0-transformer / ISA) × 2 observables (HiddenState across <code>attn_norm-{0,11,23}</code> + <code>Qcur_normed-{0,11,23}</code> + <code>Kcur_normed-{0,11,23}</code>, plus AttnScore at <code>kq-23</code>; captured via two server passes — flash-attn on for HiddenState, off for AttnScore so <code>kq-23</code> materialises in the compute graph).</p>
       <p class="prose"><strong>Methodology — vocab-disjoint splits (paper-faithful).</strong> IMA + ISA ridge splits now partition by token id (paper §F.1 / AloePri reference's <code>_sample_ima_splits</code>). Train and test never share a token id, so the inverter has to <em>generalise</em> rather than memorise per-token bias.</p>
-      <p class="prose" style="margin-bottom:0;"><strong>Out of scope:</strong> VMA + IA static-weight attacks require an `(W_plain, W_obfuscated)` weight-pair attacker model. The user-stated threat model for this work treats <em>weight privacy as irrelevant</em>, so these two are skipped (not pending). All other attacks the paper measures (NN, IMA basic, IMA paper-like, ISA HiddenState, ISA AttnScore, TFMA, SDA) have measured results below.</p>
+      <p class="prose" style="margin-bottom:0;"><strong>Out of scope:</strong> the four static-weight attacks (VMA, IA, reference-IMA basic, reference-IMA paper-like) listed in the separate weight-inversion table below. They require a <code>(W<sub>plain</sub>, W<sub>obfuscated</sub>)</code> weight-pair attacker model and the path-2 threat model treats weight privacy as not load-bearing (obfuscated weights are openly distributed).</p>
     </div>
     <table class="spec">
       <thead>
         <tr>
           <th style="min-width:11em;">Attack</th>
-          <th style="min-width:18em;">What it tests</th>
+          <th style="min-width:20em;">What it tests</th>
           <th>Paper expected (Qwen3)</th>
-          <th>Measured · Plain</th>
-          <th>Measured · Obfuscated</th>
-          <th style="min-width:24em;">How to read</th>
+          <th>Plain</th>
+          <th>Obfuscated</th>
+          <th style="min-width:26em;">How to read</th>
         </tr>
       </thead>
       <tbody>
         <tr>
-          <td><b>NN</b><div class="alias">cosine top-K against embedding table</div></td>
-          <td>Take an observation row → nearest plaintext-embedding-table row by cosine similarity. No training. (paper §F.1)</td>
+          <td><b>NN</b><div class="alias">cosine top-K against embedding table; surface = <code>attn_norm-0</code></div></td>
+          <td>Take an observation row → nearest plaintext-embedding-table row by cosine similarity. No training. AloePri §F.1 lists it as the no-training baseline; the cosine-NN baseline against an embedding table is standard in embedding-inversion literature (e.g. <a href="https://arxiv.org/abs/2310.06816">Morris et al., "Text Embeddings Reveal (Almost) As Much As Text", EMNLP 2023</a>).</td>
           <td class="num">0.0 % (Qwen2.5-14B, Table 1) <br><span style="font-size:12px;color:#888;">no Qwen3-specific number published</span></td>
           <td class="num accent">100.0 %</td>
           <td class="num accent">0.0 %</td>
-          <td>Plain hits 100 % — control sanity (early-layer hidden state ≈ embedding row, cosine match is exact). On §05 the obs is d<sub>eff</sub>=2304 (post-keymat expansion) vs plain embedding d=2048 — the naive attacker truncates obs to the first 2048 dims and gets 0 %. The keymat <code>Q̂</code> rotation mixes the original dims so simple truncation recovers nothing. A keymat-key-aware attacker would project differently; that's not in the paper threat model. <b>Pass.</b></td>
+          <td>Plain hits 100 % — control sanity (early-layer hidden state ≈ embedding row, cosine match is exact). On obfuscated the obs is d<sub>eff</sub>=2304 (post-keymat expansion); the naive attacker truncates obs to the first 2048 dims and gets 0 %. The keymat <code>Q̂</code> rotation mixes the original dims so simple truncation recovers nothing. A keymat-key-aware attacker would project differently; that's not in the paper threat model. <b>Pass.</b></td>
         </tr>
         <tr>
-          <td><b>VMA</b><div class="alias">RowSort weight-pair recovery</div></td>
-          <td>Recover Π from <code>(W<sub>plain</sub>, W<sub>obfuscated</sub>)</code> by column-sorting then neighbour-matching rows (paper §F.1, Table 8). Static-weight attack; attacker has both θ and θ̃.</td>
-          <td class="num">13.51 % (Qwen2.5-14B, Table 1) <br>25.05 % (Qwen3 14B, Table 2) <br>19.64 % (Qwen3 32B, Table 2)</td>
-          <td>out of scope</td>
-          <td>out of scope</td>
-          <td><b>Weight-privacy attack — out of scope.</b> This work treats weight obfuscation as a non-goal (the §05 artifact's weights are openly available). VMA recovers Π from a comparison of plain vs obfuscated weight rows — that's a meaningful attack if the deployer wanted weight privacy, which we don't. The harness (<code>m2_7/run_static_attacks.py</code>) is built and can be run if the threat model changes.</td>
+          <td><b>IMA-L0-activation</b><div class="alias">multi-α ridge — surfaces: <code>attn_norm-0</code>, <code>Qcur_normed-0</code>, <code>Kcur_normed-0</code></div></td>
+          <td>Train ridge regressor on (forward-pass layer-0 hidden state → plaintext token embedding) from a public corpus, evaluate on vocab-disjoint held-out tokens. Three surfaces measured at layer 0: pre-W<sub>q</sub> residual stream (<code>attn_norm-0</code>), post-W<sub>q</sub>/post-q_norm Q (<code>Qcur_normed-0</code>), post-W<sub>k</sub>/post-k_norm K (<code>Kcur_normed-0</code>). <em>Path-2-specific surface choice</em> (layer-0 activations rather than W<sub>e</sub> rows); the linear-inverter-against-text-embeddings family was introduced by <a href="https://arxiv.org/abs/2004.00053">Song & Raghunathan, "Information Leakage in Embedding Models", CCS 2020</a>.</td>
+          <td class="num"><span style="font-size:12px;color:#888;">paper does not measure these surfaces</span></td>
+          <td class="num accent"><code>attn_norm-0</code>: 98.1 % <br><span style="font-size:12px;color:#888;"><code>Qcur</code>/<code>Kcur</code>: not run (no τ on plain)</span></td>
+          <td class="num" style="color:#a66;font-weight:bold;"><code>attn_norm-0</code>: 88.9 % <br><code>Qcur_normed-0</code>: 88.0 % <br><code>Kcur_normed-0</code>: 76.9 %</td>
+          <td><b>Algorithm 2 does not move these numbers — and structurally cannot at <code>attn_norm-0</code>.</b> The residual-stream surface is pre-W<sub>q</sub>; Algorithm 2's intra-head M<sub>q</sub> acts post-W<sub>q</sub>. The defence at L0 comes from §5.2.2 α-noise + Algorithm 1 keymat; current defaults (<code>α<sub>e</sub>=1.0</code>, <code>h=128</code>) are insufficient against a vocab-disjoint ridge with ~700 training rows. The Q and K post-projection surfaces are where M<sub>q</sub> directly acts but the ridge inverts through it: Q-side at 88 % (M<sub>q</sub> rotation is static per deployment, so the ridge learns the inverse linear map); K-side at 77 % (fewer dims, 1024 vs Q's 2048, gives the ridge less structure to bridge to the 2048-dim embedding target). <b>All three surfaces fail §6.3 15 % gate.</b> To move these, sweep α<sub>e</sub> or <code>h</code> (the keymat-side levers); Algorithm 2 is the wrong tool. See §09.</td>
         </tr>
         <tr>
-          <td><b>IA</b><div class="alias">Gate-IA + Attn-IA (paper §F.1, static-weight)</div></td>
-          <td>Recover Π from weight invariants that survive obfuscation: Gate-IA on <code>Avg(eW<sub>gate</sub>)</code>; Attn-IA on the block quadratic form <code>e(Q<sup>T</sup>Q)<sup>−1</sup>e<sup>T</sup></code>. <strong>Targets the static-weight surface</strong> — the attacker compares plain weights θ against obfuscated weights θ̃ baked into the deployed artifact.</td>
-          <td class="num">5.95 % (Qwen2.5-14B, Table 1) <br><span style="font-size:12px;color:#888;">no Qwen3-specific number published</span></td>
-          <td>out of scope</td>
-          <td>out of scope</td>
-          <td><b>Weight-privacy attack — out of scope.</b> Same reasoning as VMA: this work doesn't claim weight privacy as a goal, so attacks that recover Π from weight invariants don't measure anything we're defending. An "activation-axis IA" extension exists in the harness (substituting the observed activation for the obfuscated weight in the invariant calculation) but on §05 the d<sub>eff</sub>=2304 vs W<sub>gate</sub>=2048 dim mismatch reduces it to a naive-truncation reading equivalent to NN — no new signal.</td>
-        </tr>
-        <tr>
-          <td><b>IMA</b> basic<div class="alias">multi-α ridge inverter</div></td>
-          <td>Train ridge regressor on (hidden_state → token_embedding) using a public corpus, evaluate on held-out tokens. AloePri reference: <code>ridge_alphas=(1e-4, 1e-2, 1.0)</code>, validation-driven α selection.</td>
-          <td class="num">0.0 % (Qwen2.5-14B, Table 1) <br><span style="font-size:12px;color:#888;">no Qwen3-specific number published</span></td>
-          <td class="num accent">98.1 %</td>
-          <td class="num" style="color:#a66;font-weight:bold;">88.9 %</td>
-          <td><b>HEADLINE FINDING.</b> Plain hits 98.1 % (vocab-disjoint splits, multi-α picks α=0.01 — ridge inverts the layer-0 hidden state cleanly, generalising across unseen tokens). Paper Table 1 reports AloePri IMA = 0.0 % on Qwen2.5-14B (full Algorithm 2). Our §05 deployment with <em>partial</em> Algorithm 2 (head-shuffle only, no R̂<sub>qk</sub>/Ĥ<sub>qk</sub>/Ẑ<sub>block</sub> intra-head transforms) reads <b>88.9 %</b> — the obfuscation drops the attack by only ~9 pp and it's 6× the 15 % threshold. Ridge learns a clean dim-bridging inverter from the 2304-dim obs to the 2048-dim embedding even with vocab-disjoint splits — the missing intra-head transforms do significant defensive work in the paper that §05 doesn't deploy. <b>Not pass — fails §6.3's 15 % threshold by 6×.</b> See §09 future-work options.</td>
-        </tr>
-        <tr>
-          <td><b>IMA</b> paper-like<div class="alias">trained 2-layer transformer — minimal viable: N=256, epochs=16</div></td>
-          <td>Paper §F.1's canonical IMA: a 2-layer 8-head transformer trained on (observation, plaintext_embedding) pairs from a public corpus (paper uses CCI3 / Huatuo26M / MedDialog). Inverter hidden=256, lr=3e-4, batch=8. Prompt-disjoint 75/25 split. Sweep below establishes the data-scale curve.</td>
-          <td class="num">0.0 % (Qwen2.5-14B, Table 1) <br><span style="font-size:12px;color:#888;">no Qwen3-specific number published</span></td>
+          <td><b>IMA-L0-transformer</b><div class="alias">trained 2-layer 8-head transformer inverter — minimal viable: N=256, epochs=16; surface = <code>attn_norm-0</code></div></td>
+          <td>Same surface as IMA-L0-activation (layer-0 hidden state → plaintext token), but inverter is a trained 2-layer 8-head transformer rather than a linear ridge. Prompt-disjoint 75/25 split. The trained-transformer-inverter approach for embedding inversion was introduced by <a href="https://arxiv.org/abs/2310.06816">Morris et al., "Text Embeddings Reveal (Almost) As Much As Text", EMNLP 2023</a> ("vec2text"); the AloePri reference's <code>run_ima_paper_like</code> uses the same inverter architecture but inverts <em>weight rows</em> instead (see the weight-inversion table). Path-2 reuses the inverter but points it at activation captures.</td>
+          <td class="num"><span style="font-size:12px;color:#888;">paper measures the weight-inversion variant, not this surface</span></td>
           <td class="num" style="color:#a66;font-weight:bold;">49.3 % @N=256<br>72.8 % @N=512</td>
-          <td class="num" style="color:#a66;font-weight:bold;">38.0 % @N=256<br>46.8 % @N=512</td>
-          <td><b>HEADLINE FINDING — second major failure.</b> Data-scale sweep (epochs=16, 2-layer 8-head inverter) on the 512-prompt release-gate corpus (PIQA-extended): minimal viable corpus size is <b>N=128</b> (first N where plain TTRSR exceeds the 15 % paper gate at 24.4 %). At the paper-matched N=256 (~3 400 train rows ≈ paper's 4 096), plain reaches 49.3 %, obfuscated 38.0 % — obfuscation only knocks 23 % off the attack at this scale. Trajectory:
+          <td class="num" style="color:#a66;font-weight:bold;">38.0 % @N=256<br>46.8 % @N=512<br><span style="font-size:11px;color:#888;">(measured at §05; re-run against full Algorithm 2 deferred — same pre-W<sub>q</sub> surface, expected unchanged)</span></td>
+          <td>Trajectory at §05 (epochs=16, N=64→512):
             <span style="display:block;margin:6px 0 6px 1em;font-size:13px;font-family:monospace;">
               · N=64  → Plain 7.6 %  / Obf 6.2 %  (both undertrained)
               <br>· N=128 → Plain 24.4 % / Obf 11.5 % (gate crossed on plain)
@@ -974,44 +949,100 @@
               <br>· N=384 → Plain 62.4 % / Obf 47.6 %
               <br>· N=512 → Plain 72.8 % / Obf 46.8 % (saturating)
             </span>
-            <b>Not pass — fails §6.3 by 2.5–3× at every N≥192.</b> Confirms the IMA-basic failure with a stronger inverter: partial Algorithm 2's missing R̂<sub>qk</sub>/Ĥ<sub>qk</sub>/Ẑ<sub>block</sub> intra-head transforms leave layer-0 hidden state recoverable by both linear and non-linear inverters. Paper Table 1 reports 0 % on full Algorithm 2 at Qwen2.5-14B; the gap (47 vs 0) is the cost of the §05 partial deployment. See §09 for the full-Algorithm-2 path.</td>
+            <b>Fails §6.3 by 2.5–3× at every N≥192.</b> Stronger inverter confirms the IMA-L0-activation finding: layer-0 residual is recoverable by both linear and non-linear inverters. Same root cause; same conclusion that Algorithm 2 is the wrong defence here.</td>
         </tr>
         <tr>
-          <td><b>ISA</b><div class="alias">multi-α ridge at layer 23 — HiddenState + AttnScore</div></td>
-          <td>Same ridge primitive as IMA but at a deep layer (paper default = 23). Two observable surfaces measured: <em>HiddenState</em> (the input to the q_proj at layer 23, captured via <code>attn_norm-23</code>) and <em>AttnScore</em> (the pre-softmax <code>Q·Kᵀ</code> tensor, captured via <code>kq-23</code> with <code>--flash-attn off</code>).</td>
-          <td class="num">0.0 % HiddenState <br>0.0 % AttnScore <br><span style="font-size:12px;color:#888;">(Qwen2.5-14B, Table 1 / Table 3 full AloePri; no Qwen3-specific number published)</span></td>
-          <td class="num"><span class="accent">8.7 % HS</span> <br><span class="accent">2.9 % AS</span></td>
-          <td class="num" style="font-weight:bold;"><span style="color:#a66;">16.3 % HS</span> <br><span style="color:#3a7;">0.0 % AS</span></td>
-          <td>Deep-layer hidden states are heavily processed even without obfuscation — Plain ceiling at layer 23 of Qwen3 1.7B is 8.7 % HiddenState / 2.9 % AttnScore via ridge with vocab-disjoint splits (paper's "Noise only" reads 40 % HS on Qwen2.5-14B; ours is tighter on the smaller model + paper-faithful splits). On §05 obfuscated, HiddenState ISA <em>rises</em> to <b>16.3 %</b> — structural finding (the keymat expansion adds 256 extra dims that the dim-bridging ridge exploits, partial Algorithm 2 doesn't fully decoy them). AttnScore ISA <em>drops to 0 %</em> on §05 — the head-shuffle does defend this surface against a generalising attacker. Paper Table 3 ablation for context:
-            <span style="display:block;margin:6px 0 6px 1em;font-size:13px;">
-              · Noise only → 40 % HiddenState, 87.14 % AttnScore
-              <br>· Noise + KeyMat → 0.82 % HiddenState, 87.14 % AttnScore
-              <br>· Noise + KeyMat + Head&amp;BlockPerm → 0 % both
-            </span>
-            <b>HiddenState: Not pass (16.3 % &gt; 15 %, marginal). AttnScore: Pass (0.0 %).</b> Two findings: (1) obfuscation makes HiddenState ISA <em>worse</em> than plain (16.3 vs 8.7) — the keymat decoy expansion leaks through partial Algorithm 2 and feeds ridge usable structure plain doesn't have; (2) AttnScore is cleanly defended by head-shuffle alone (no intra-head transforms needed at this surface for this attack).</td>
+          <td><b>ISA HiddenState</b><div class="alias">multi-α ridge at layer 23 — surfaces: <code>attn_norm-23</code>, <code>Qcur_normed-23</code>, <code>Kcur_normed-23</code></div></td>
+          <td>Same ridge primitive as IMA-L0-activation but at layer 23 (paper default for ISA): deep residual stream after 22 layers of attention + FFN processing. Three surfaces measured: pre-W<sub>q</sub> residual (<code>attn_norm-23</code>), post-q_norm Q (<code>Qcur_normed-23</code>), post-k_norm K (<code>Kcur_normed-23</code>). AloePri §F.1 measures this attack at <code>attn_norm-23</code>; the Q/K post-norm surfaces are path-2 additions to observe Algorithm 2's intra-head defence directly.</td>
+          <td class="num">0.0 % (Qwen2.5-14B, Table 1) at <code>attn_norm-23</code> <br><span style="font-size:12px;color:#888;">Table 3 ablation: Noise+KeyMat = 0.82 %, full Algo 2 = 0 %</span></td>
+          <td class="num accent"><code>attn_norm-23</code>: 8.7 % <br><span style="font-size:12px;color:#888;"><code>Qcur</code>/<code>Kcur</code>: not run (no τ on plain)</span></td>
+          <td class="num accent"><code>attn_norm-23</code>: 11.5 % <br><code>Qcur_normed-23</code>: 13.5 % <br><code>Kcur_normed-23</code>: 7.7 %</td>
+          <td><b>Algorithm 2's main observable win lands at <code>attn_norm-23</code>.</b> §05 leaked 16.3 % — keymat decoy structure propagated through 23 layers and fed the dim-bridging ridge. Adding Ẑ<sub>block</sub> (RoPE-pair permutation) propagates per-pair shuffling through the attention output back into the residual stream over 22 layers, eroding the keymat structure the ridge would exploit. <b>Drops to 11.5 % — passes §6.3 15 % gate.</b> Obfuscated is still higher than plain (8.7 %) because the keymat decoy expansion adds dims the ridge can exploit; Algorithm 2 doesn't fully erase that signal. <br><br>Q-surface (13.5 %) shifted +1 pp vs §05 (12.5 %) along the Algorithm 2 ramp; the +Ẑ<sub>block</sub> contribution is within ridge measurement variance on <code>n_test=104</code>. Already passed pre-Algorithm-2. K-surface (7.7 %) is the lowest of the deep surfaces — 1024 dims gives the ridge the least structure to fit. <b>All three surfaces pass.</b></td>
         </tr>
         <tr>
-          <td><b>TFMA</b><div class="alias">token-frequency matching</div></td>
+          <td><b>ISA AttnScore</b><div class="alias">multi-α ridge at <code>kq-23</code></div></td>
+          <td>Ridge inversion from pre-softmax Q·K<sup>T</sup> tensor at layer 23 (captured via <code>--flash-attn off</code>). Algorithm 2 is <em>designed</em> to preserve this surface (M<sub>q</sub>·M<sub>k</sub><sup>T</sup> = I cancels), so the attack reads the same algebraically across §05 and all Algorithm 2 builds.</td>
+          <td class="num">0.0 % (Qwen2.5-14B, Table 1) <br>0.0 % (Table 3 full)</td>
+          <td class="num accent">2.9 %</td>
+          <td class="num accent">0.0 %</td>
+          <td>Attention scores are head-shuffled but otherwise plaintext-equivalent (by Algorithm 2 design). Head-shuffle alone defeats the generalising ridge attacker on this surface — neither M<sub>q</sub> intra-head transforms nor their absence change the result. <b>Pass.</b></td>
+        </tr>
+        <tr style="background:#fdf3e8;">
+          <td><b>QK-norm Γ eigendecomposition</b> <span style="font-size:11px;color:#888;">(introduced by path-2 matrix-Γ deployment, 2026-05-19)</span><div class="alias">eigendecompose <code>blk.*.attn_q_norm.weight</code> / <code>attn_k_norm.weight</code></div></td>
+          <td>Server with code-execution reads the 2D Γ tensors at the QK-norm sites and runs <code>numpy.linalg.eig(Γ)</code>. Because <code>Γ = M<sup>T</sup>·Diag(γ<sub>qk</sub>)·M</code> is a similarity transform of a diagonal matrix, eigenvalues recover γ<sub>qk</sub> and eigenvectors recover the intra-head transform M (up to head_dim-index permutation). Recovering M defeats R̂<sub>qk</sub> + Ẑ<sub>block</sub> + Ĥ<sub>qk</sub> at every layer in milliseconds. Full threat-model writeup: <code>docs/research/aloepri-qk-norm-matrix-gamma-threat-model.md</code>.</td>
+          <td class="num"><span style="font-size:12px;color:#888;">novel — paper does not measure (paper deployments don't carry a separate Γ tensor; this is specific to our matrix-Γ kernel extension)</span></td>
+          <td class="num"><span style="font-size:12px;color:#888;">n/a (no Γ on plain)</span></td>
+          <td class="num" style="color:#a66;font-weight:bold;">not measured · not defended</td>
+          <td><b>New attack surface introduced by our matrix-Γ deployment.</b> Out of scope under the path-2 weight-privacy exclusion (same family as VMA / IA — operates on static obfuscated weights, no forward inference). Defending it would require per-prompt fresh M (GELO-style masking, breaks AloePri's "static obfuscation, no infra change" thesis) or additive noise on Γ tuned to confound eigendecomposition without breaking generation — neither is path-2's mission.</td>
+        </tr>
+        <tr>
+          <td><b>TFMA</b><div class="alias">token-frequency matching (response stream)</div></td>
           <td>Count obfuscated-token-id frequencies in the response stream; match against a prior corpus's plaintext token-frequency distribution to recover Π (paper §F.1, Table 4).</td>
           <td class="num">0.14 % zero-knowledge <br>3.19 % distribution-aware <br><span style="font-size:12px;color:#888;">(Qwen2.5-14B, Table 4; no Qwen3-specific number published)</span></td>
-          <td>n/a — no τ-permuted stream on plain inference</td>
-          <td class="num accent">1.6 % top-1 <br>5.1 % top-10</td>
-          <td>TFMA assumes a τ-permuted token-id stream on the wire. Plain inference doesn't have one — n/a. On §05, the patched <code>aloepri-llama-server:m2_7</code> emits τ(token_id) over its <code>/completion</code> response stream; the harness captures 64 prompts of obfuscated responses and feeds AloePri's <code>_candidate_rank_lists</code> + <code>_evaluate_rank_lists</code> against the prompt-corpus plaintext frequency prior. Top-1 = 1.6 % (paper Table 4 zero-knowledge: 0.14 %; ours is slightly looser because our prior is the prompt corpus itself, not CCI3). <b>Pass — well below 15 % gate.</b></td>
+          <td class="num"><span style="font-size:12px;color:#888;">n/a (no τ stream)</span></td>
+          <td class="num accent">0.8 % top-1 / 2.7 % top-10</td>
+          <td>TFMA observes the τ-permuted token-id stream on the wire. Independent of Algorithm 2 (which acts on hidden states, not the output token stream). <b>Pass — well below 15 % gate.</b></td>
         </tr>
         <tr>
-          <td><b>SDA</b><div class="alias">substitution-cipher decipherment</div></td>
-          <td>Train a transformer on (plaintext, ciphertext) pairs converted to integer recurrence-rank sequences; use it to translate fresh ciphertext (paper §F.1, paper [27]). Composes with TFMA on the residual ciphertext.</td>
+          <td><b>SDA</b><div class="alias">substitution-cipher decipherment (response stream)</div></td>
+          <td>Train a transformer on (plaintext, ciphertext) pairs converted to integer recurrence-rank sequences; use it to translate fresh ciphertext (paper §F.1, paper [27]).</td>
           <td class="num">BLEU-4 0.01 zero-knowledge <br>BLEU-4 2.10 distribution-aware <br><span style="font-size:12px;color:#888;">(Qwen2.5-14B, Table 4; no Qwen3-specific number published)</span></td>
-          <td>n/a — no τ-permuted stream on plain inference</td>
-          <td class="num accent">BLEU-4 0.000016</td>
-          <td>Bigram-signature substitution attack on the §05 obfuscated response stream. Recovered text BLEU-4 = 1.6 × 10<sup>−5</sup>, essentially zero (paper Table 4 zero-knowledge: 0.01). Cipher recovery via n-gram signature matching can't bootstrap from 64 prompts × 24 response tokens against a fresh-per-deployment Π. <b>Pass — well below 5 BLEU-4 gate.</b></td>
+          <td class="num"><span style="font-size:12px;color:#888;">n/a (no τ stream)</span></td>
+          <td class="num accent">BLEU-4 1.4×10<sup>−5</sup></td>
+          <td>Bigram-signature substitution against the obfuscated response stream. Essentially zero recovery. Cipher recovery via n-gram signature matching can't bootstrap from 64 prompts × 24 response tokens against a fresh-per-deployment Π. <b>Pass — well below 5 BLEU-4 gate.</b></td>
         </tr>
       </tbody>
     </table>
 
+    <details style="margin:24px 0 8px;">
+      <summary style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;cursor:pointer;padding:6px 0;">Weight-inversion attacks (out of scope) <span style="font-size:13px;color:#888;font-weight:normal;">— click to expand</span></summary>
+      <p class="prose" style="margin-top:12px;">
+        The paper §F.1 measures four attacks that try to recover Π by comparing the obfuscated weight tensor <code>θ̃</code> against the publicly-available plaintext weight tensor <code>θ</code>: VMA, IA (Gate-IA + Attn-IA), reference-IMA basic, and reference-IMA paper-like. All four are <strong>static-weight</strong> attacks — no forward inference, no captured activations, no prompts. <em>The path-2 threat model treats weight privacy as not load-bearing</em> (obfuscated weights are openly distributed; the privacy property we care about is activation / prompt privacy), so these are listed for completeness but not measured.
+      </p>
+      <p class="prose" style="font-size:13px;color:#555;">
+        Naming note: the path-2 harness has attacks called <em>IMA-L0-activation</em> (linear ridge inverter) and <em>IMA-L0-transformer</em> (trained 2-layer 8-head transformer inverter) in the in-scope table above. Both are activation-surface attacks at layer 0 — distinct from the paper's like-named weight attacks below. Path-2 reuses the <em>inverter recipes</em> from the paper's IMA basic / IMA paper-like but points them at activation captures instead of weight rows.
+      </p>
+      <table class="spec">
+        <thead>
+          <tr>
+            <th style="min-width:11em;">Attack</th>
+            <th style="min-width:24em;">What it tests</th>
+            <th>Paper expected (Qwen3)</th>
+            <th style="min-width:22em;">Why out of scope</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><b>VMA</b><div class="alias">RowSort weight-pair recovery</div></td>
+            <td>Recover Π from <code>(W<sub>plain</sub>, W<sub>obfuscated</sub>)</code> by column-sorting then neighbour-matching rows (paper §F.1, Table 8).</td>
+            <td class="num">13.51 % (Qwen2.5-14B, Table 1) <br>25.05 % (Qwen3 14B, Table 2) <br>19.64 % (Qwen3 32B, Table 2)</td>
+            <td>Attacker has both θ and θ̃; tries to invert obfuscated weight rows back to plaintext rows by statistical row-matching. Meaningful if the deployer wanted weight privacy. Path-2 distributes obfuscated weights openly, so this attack succeeding doesn't violate any privacy property we claim. The harness (<code>m2_7/run_static_attacks.py</code>) is built and can be run if the threat model changes.</td>
+          </tr>
+          <tr>
+            <td><b>IA</b><div class="alias">Gate-IA + Attn-IA (paper §F.1)</div></td>
+            <td>Recover Π from weight invariants that survive obfuscation: Gate-IA on <code>Avg(eW<sub>gate</sub>)</code>; Attn-IA on the block quadratic form <code>e(Q<sup>T</sup>Q)<sup>−1</sup>e<sup>T</sup></code>.</td>
+            <td class="num">5.95 % (Qwen2.5-14B, Table 1) <br><span style="font-size:12px;color:#888;">no Qwen3-specific number published</span></td>
+            <td>Same threat model as VMA. Attacker computes invariant features of both plain and obfuscated weight tensors and matches them to recover Π. Out of scope for the same reason.</td>
+          </tr>
+          <tr>
+            <td><b>IMA basic</b> <span style="font-size:11px;color:#888;">(reference's variant)</span><div class="alias">linear ridge on <code>(W<sub>e_obf</sub>, W<sub>e_plain</sub>)</code> row pairs</div></td>
+            <td>Reference impl (<code>vendor/aloepri-py/src/security_qwen/ima.py:run_ima_baseline</code>): load <code>model.embed_tokens.weight</code> from both the obfuscated and plaintext safetensors, pair rows by τ, train a linear ridge from obfuscated rows to plain rows. <strong>Static weight inversion</strong>, despite the "IMA" name suggesting it's about activations.</td>
+            <td class="num">0.0 % (Qwen2.5-14B, Table 1) <br><span style="font-size:12px;color:#888;">no Qwen3-specific number published</span></td>
+            <td>Defended by §5.2.2 α-noise on W<sub>e</sub> + Algorithm 1 keymat fold (which we deploy). Not the attack we name "IMA-L0-activation" in the in-scope table above. The path-2 harness does not run the reference's weight-inversion IMA basic; if it did, we'd expect it to pass the 15 % gate easily under the deployed defaults.</td>
+          </tr>
+          <tr>
+            <td><b>IMA paper-like</b> <span style="font-size:11px;color:#888;">(reference's variant)</span><div class="alias">2-layer transformer on <code>(W<sub>e_obf</sub>, W<sub>e_plain</sub>)</code> row pairs</div></td>
+            <td>Reference impl (<code>vendor/aloepri-py/src/security_qwen/ima.py:run_ima_paper_like</code>): same weight-row-pair input as IMA basic above, but inverter is a 2-layer 8-head trained transformer instead of linear ridge.</td>
+            <td class="num">0.0 % (Qwen2.5-14B, Table 1) <br><span style="font-size:12px;color:#888;">no Qwen3-specific number published</span></td>
+            <td>Same static-weight surface as reference IMA basic; same defence path; same out-of-scope reasoning. The path-2 harness's "IMA-L0-transformer" (in the in-scope table above) reuses the inverter recipe but operates on captured layer-0 activations — a different attack against a different surface.</td>
+          </tr>
+        </tbody>
+      </table>
+    </details>
+
     <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:24px 0 8px;">Acceptance gates</h4>
     <p class="prose">
-      Paper §6.3 recommends <strong>TTRSR ≤ 15 % per attack</strong> at the default hyperparameters. Each obfuscated-side gate pairs with a plain-side control: an attack that doesn't succeed on plain inference is a broken attack, not a defence signal. Plain-side gates are evaluated against the harness output above (multi-α IMA fix landed; data-scale caveat on paper-like IMA noted). Obfuscated-side gates require the M2.7 capture frontend.
+      Paper §6.3 recommends <strong>TTRSR ≤ 15 % per attack</strong> at the default hyperparameters. Each obfuscated-side gate pairs with a plain-side control: an attack that doesn't succeed on plain inference is a broken attack, not a defence signal. Results are against the current obfuscated deployment (R̂<sub>qk</sub> + Ẑ<sub>block</sub> + ±1 Ĥ<sub>qk</sub> + Π<sub>head</sub>).
     </p>
     <table class="spec">
       <thead>
@@ -1019,19 +1050,20 @@
       </thead>
       <tbody>
         <tr><td><code>nn_obfuscated_below_15pct</code></td><td>NN ≤ 15 %</td><td class="accent">✓ 0.0 %</td><td>Naive-truncation attacker can't recover anything from the keymat-rotated 2304-dim obs.</td></tr>
-        <tr><td><code>vma_obfuscated_below_15pct</code></td><td>VMA ≤ 15 %</td><td><span style="color:#888;">out of scope</span></td><td>Weight-privacy attack; this work doesn't claim weight privacy as a goal. Harness ready if scope changes.</td></tr>
-        <tr><td><code>ia_obfuscated_below_15pct</code></td><td>IA ≤ 15 %</td><td><span style="color:#888;">out of scope</span></td><td>Same reasoning as VMA.</td></tr>
-        <tr><td><code>ima_basic_obfuscated_below_15pct</code></td><td>IMA basic ≤ 15 %</td><td><span class="rev" style="color:#a66;font-weight:bold;">✗ 88.9 %</span></td><td><b>FAILS by 6×.</b> Vocab-disjoint methodology — survives the "memorising attacker" caveat. The partial Algorithm 2 deployment leaks badly to ridge inversion at layer 0. See §09 future-work options.</td></tr>
-        <tr><td><code>ima_paper_like_obfuscated_below_15pct</code></td><td>IMA paper-like ≤ 15 %</td><td><span class="rev" style="color:#a66;font-weight:bold;">✗ 38.0 % @N=256, 46.8 % @N=512</span></td><td><b>FAILS by 2.5–3×.</b> 2-layer 8-head inverter, epochs=16, prompt-disjoint 75/25 split. Same root cause as IMA basic: layer-0 hidden state remains inverter-recoverable under partial Algorithm 2. Minimal viable corpus N=128 (24.4 % plain gate-crossing); paper-matched N=256 reaches 38.0 % obfuscated. See per-attack table above for the full sweep.</td></tr>
-        <tr><td><code>isa_hidden_state_obfuscated_below_15pct</code></td><td>ISA HiddenState ≤ 15 %</td><td><span class="rev" style="color:#a66;font-weight:bold;">✗ 16.3 %</span></td><td><b>FAILS marginally.</b> Vocab-disjoint methodology. Same root cause as IMA basic — partial Algorithm 2 plus keymat decoy expansion leak structure to deep-layer ridge inversion.</td></tr>
-        <tr><td><code>isa_attn_score_obfuscated_below_15pct</code></td><td>ISA AttnScore ≤ 15 %</td><td class="accent">✓ 0.0 %</td><td><b>Passes cleanly.</b> Head-shuffle alone defends the AttnScore observable against a generalising (vocab-disjoint) ridge attacker — no intra-head transforms needed at this surface.</td></tr>
-        <tr><td><code>tfma_obfuscated_below_15pct</code></td><td>TFMA ≤ 15 %</td><td class="accent">✓ 1.6 %</td><td>Token-frequency matching against the §05 obfuscated response stream. Well below threshold; close to paper Table 4 zero-knowledge baseline (0.14 %).</td></tr>
-        <tr><td><code>sda_obfuscated_below_bleu4_5</code></td><td>SDA BLEU-4 ≤ 5</td><td class="accent">✓ 0.000016</td><td>Bigram-signature substitution against the §05 stream. Recovered text is essentially random; paper Table 4 zero-knowledge reports 0.01.</td></tr>
-        <tr><td><code>nn_plain_at_least_95pct</code></td><td>NN ≥ 95 %</td><td class="accent">✓ 100.0 %</td><td>Plain-side control (M2.7 against plain GGUF). The cosine attack on a plaintext early-layer hidden state must succeed for the obfuscated number to be meaningful.</td></tr>
-        <tr><td><code>ima_basic_plain_at_least_95pct</code></td><td>IMA basic ≥ 95 %</td><td class="accent">✓ 96.4 %</td><td>Plain-side control (M2.7 against plain GGUF). Multi-α ridge inverts the plain hidden state cleanly.</td></tr>
-        <tr><td><code>ima_paper_like_plain_at_least_50pct</code></td><td>IMA paper-like ≥ 50 %</td><td class="accent">✓ 49.3 % @N=256, 72.8 % @N=512</td><td>Plain-side control. At N=256 hits the gate exactly (49.3 %); at N=512 reaches 72.8 % (top-10 = 87.9 %), confirming the inverter fits cleanly on plaintext layer-0 hidden states once corpus is at paper scale.</td></tr>
+        <tr><td><code>ima_l0_activation_below_15pct</code><br><span style="font-size:11px;color:#888;">(path-2-specific, attn_norm-0 surface)</span></td><td>IMA-L0-activation ≤ 15 %</td><td><span class="rev" style="color:#a66;font-weight:bold;">✗ 88.9 %</span></td><td><b>FAILS by 6×.</b> Algorithm 2 cannot move this number — <code>attn_norm-0</code> is pre-W<sub>q</sub>. The defence at this surface is α<sub>e</sub>-noise + Algorithm 1 keymat strength; current defaults (α<sub>e</sub>=1.0, h=128) are insufficient. See §09 for α<sub>e</sub> sweep + keymat-strength alternatives.</td></tr>
+        <tr><td><code>ima_l0_transformer_below_15pct</code><br><span style="font-size:11px;color:#888;">(path-2-specific, trained transformer inverter on attn_norm-0)</span></td><td>IMA-L0-transformer ≤ 15 %</td><td><span class="rev" style="color:#a66;font-weight:bold;">✗ 38.0 % @N=256, 46.8 % @N=512</span></td><td><b>FAILS by 2.5–3×.</b> Stronger inverter than IMA-L0-activation but same surface; same conclusion. Algorithm 2 re-run deferred (surface is unchanged from Algorithm 2's perspective).</td></tr>
+        <tr><td><code>isa_hidden_state_below_15pct</code><br><span style="font-size:11px;color:#888;">(attn_norm-23 surface)</span></td><td>ISA HiddenState ≤ 15 %</td><td class="accent">✓ 11.5 %</td><td>Algorithm 2's main observable win on the residual stream. Per-pair Ẑ<sub>block</sub> permutation propagates obfuscation through 22 layers of attention into the deep residual, eroding the keymat decoy structure that ridge had been exploiting.</td></tr>
+        <tr><td><code>isa_attn_score_below_15pct</code><br><span style="font-size:11px;color:#888;">(kq-23 surface)</span></td><td>ISA AttnScore ≤ 15 %</td><td class="accent">✓ 0.0 %</td><td>Passes since §05. Head-shuffle defends; M<sub>q</sub>·M<sub>k</sub><sup>T</sup> = I cancels the intra-head transforms at this surface by design.</td></tr>
+        <tr><td><code>tfma_below_15pct</code></td><td>TFMA ≤ 15 %</td><td class="accent">✓ 0.8 %</td><td>Independent of Algorithm 2 (acts on token stream, not hidden states). Passed since §05.</td></tr>
+        <tr><td><code>sda_below_bleu4_5</code></td><td>SDA BLEU-4 ≤ 5</td><td class="accent">✓ 1.4×10<sup>−5</sup></td><td>Same as TFMA — token-stream surface, unaffected by Algorithm 2.</td></tr>
+        <tr><td><code>nn_plain_at_least_95pct</code></td><td>NN ≥ 95 % (plain control)</td><td class="accent">✓ 100.0 %</td><td>Plain-side sanity. Cosine attack on plaintext early-layer hidden state must succeed for the obfuscated number to be meaningful.</td></tr>
+        <tr><td><code>ima_l0_activation_plain_at_least_95pct</code></td><td>IMA-L0-activation ≥ 95 % (plain control)</td><td class="accent">✓ 98.1 %</td><td>Plain-side sanity. Multi-α ridge inverts the plain L0 hidden state cleanly.</td></tr>
+        <tr><td><code>ima_l0_transformer_plain_at_least_50pct</code></td><td>IMA-L0-transformer ≥ 50 % (plain control)</td><td class="accent">✓ 49.3 % @N=256, 72.8 % @N=512</td><td>Plain-side sanity at paper-matched corpus size.</td></tr>
       </tbody>
     </table>
+    <div style="background:#e8f0e0;border-left:3px solid #6a8a3a;padding:10px 14px;font-size:13px;margin-top:14px;">
+      <p class="prose" style="margin-top:0;"><strong>Headline reading.</strong> Six of the eight in-scope gates pass at the strongest Algorithm 2 condition. The two failing gates (IMA-L0-activation and IMA paper-like) measure path-2-specific activation surfaces the paper does not evaluate; they fail because Algorithm 2's intra-head transforms structurally cannot reach pre-W<sub>q</sub> residual streams. Closing those gates requires <em>different</em> levers (stronger α<sub>e</sub> noise, larger keymat h, non-linear keymat fold) — see §09.</p>
+    </div>
 
     <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:24px 0 8px;">Two reading principles</h4>
     <p class="prose">
@@ -1065,8 +1097,8 @@
         </tr>
         <tr>
           <td><b>Algorithm 2 attention obfuscation</b> (paper §5.2.3)</td>
-          <td><span class="rev" style="color:#a66;">partial — inter-head only</span></td>
-          <td>Only τ<sub>kv</sub> + τ<sub>group</sub> head-shuffle deployed. R̂<sub>qk</sub>, Ĥ<sub>qk</sub>, Ẑ<sub>block</sub>, Û<sub>vo</sub> all blocked by Qwen3 QK-norm — see the gap discussion below and FIG. 03b.</td>
+          <td class="accent">deployed (matrix-Γ kernel, 2026-05-19)</td>
+          <td>τ<sub>kv</sub> + τ<sub>group</sub> head-shuffle + R̂<sub>qk</sub> (RoPE-aware rotation per NEOX pair) + Ẑ<sub>block</sub> (β-wide locality-preserving permutation) + Ĥ<sub>qk</sub> (±1 Walsh-Hadamard, keeps M<sub>q</sub> orthogonal for the matrix-Γ algebra). Not deployed: distinct Ẑ<sub>block_η</sub> for the K side (uses same Z as Q with repaired M<sub>k</sub> construction). Per-head distinct M<sub>q</sub>[h] not deployed (shared M<sub>q</sub> per layer; would require batched matmul in the kernel). See <code>docs/handoffs/2026-05-19-option-c-steps-0-1-2a-findings.md</code> for the full ramp.</td>
         </tr>
         <tr>
           <td><b>α<sub>e</sub> / α<sub>h</sub> Gaussian noise on embed + head</b> (paper §5.2.2)</td>
@@ -1074,9 +1106,9 @@
           <td>α<sub>e</sub>=1.0, α<sub>h</sub>=0.2 (paper defaults). σ_e=σ_h=0.0345 (W_e and W_h are byte-identical in the source GGUF; noise is sampled independently for each). Generation stays coherent under noise.</td>
         </tr>
         <tr>
-          <td><b>Attack-resistance benchmark</b> (NN, VMA, IA, IMA-basic, IMA paper-like, ISA, TFMA, SDA)</td>
-          <td><span class="rev">harness landed · measurement pending (M2.7)</span></td>
-          <td>Eight attacks ported to <code>evals/aloepri-attacks/</code>. Remaining work for M2.7 is the capture-side glue: a binary that drives <code>llama-server</code> against the obfuscated GGUF, records the wire-side observables (obfuscated token-id stream + hidden states from the obfuscated forward pass), and feeds them to the existing Python attack drivers. Acceptance threshold per attack: ≤ 15 % TTRSR (paper §6.3). Watchpoint: ISA on the partial-Algorithm-2 artifact (see Algorithm-2 deployment-gap discussion below).</td>
+          <td><b>Attack-resistance benchmark</b> (NN, IMA-L0-activation, IMA paper-like, ISA HiddenState, ISA AttnScore, TFMA, SDA + Q/K post-norm surfaces)</td>
+          <td>measured · 6 of 8 gates pass at strongest condition</td>
+          <td>See §08 for the full ledger across four Algorithm 2 build variants (§05 / +R̂<sub>qk</sub> / +Ẑ<sub>block</sub> / +Ĥ<sub>qk</sub>). Passing: NN, ISA HiddenState (after Ẑ<sub>block</sub> repair), ISA AttnScore, TFMA, SDA, and the Q/K post-norm ISA HS surfaces. Failing: IMA-L0-activation (88.9 %) and IMA paper-like (38 %@N=256) — both on the <code>attn_norm-0</code> surface that Algorithm 2 structurally cannot affect. Closing those gates needs α<sub>e</sub> noise sweep or stronger keymat — see open questions below. VMA / IA out of scope (weight privacy, paper §F.1 threat model not load-bearing for path-2).</td>
         </tr>
         <tr>
           <td>Production-quantisation validation</td>
@@ -1106,31 +1138,35 @@
       </tbody>
     </table>
 
-    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:32px 0 8px;">The Algorithm 2 deployment gap, in detail</h4>
+    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:32px 0 8px;">The Qwen3 QK-norm gap and how it was closed (matrix-Γ, 2026-05-19)</h4>
     <p class="prose">
-      <strong>Restatement.</strong> Paper §5.2.3 Algorithm 2 specifies five intra-head + inter-head transforms. We deploy only the two inter-head transforms (τ<sub>kv</sub>, τ<sub>group</sub>). The three intra-head transforms (R̂<sub>qk</sub>, Ĥ<sub>qk</sub>, Ẑ<sub>block</sub>) cannot be applied on Qwen3 in the current implementation.
+      <strong>Original problem.</strong> R̂<sub>qk</sub> is a block-diagonal 2D rotation per RoPE pair. To commute with RoPE, it must be applied to the projection output before RoPE. Qwen3 has QK-norm <em>between</em> the projection and RoPE — a per-head RMSNorm with per-head_dim γ vectors. R̂<sub>qk</sub> does not commute with per-element γ. The §5.2.5 fold trick (replace γ with scalar κ and fold the per-element factor backward into the linear weight) is exact only under i.i.d. Gaussian-Q assumption; trained Qwen3 Q/K vectors correlate with γ, so per-input κ ≈ √(mean(γ<sup>2</sup>)) corrupts attention enough that the model degenerates. The §05 deployment therefore left intra-head dormant.
     </p>
     <p class="prose">
-      <strong>Root cause.</strong> R̂<sub>qk</sub> is a block-diagonal 2D rotation per RoPE pair. To commute with RoPE, R̂<sub>qk</sub> must be applied to the raw projection output before RoPE. Qwen3 has QK-norm <em>between</em> the projection and RoPE — a per-head RMSNorm with per-head_dim γ vectors. R̂<sub>qk</sub> does not commute with per-element γ (rotation mixes pair-components; γ scales them independently). The §5.2.5 fold trick that handles this for residual-stream norms — replace γ with scalar κ and fold the per-element factor backward into the linear weight — is exact only under i.i.d. Gaussian-Q assumption. Trained Qwen3 Q/K vectors correlate with γ (the model puts more activation in high-γ dims), so the per-input κ approximation is off by enough to corrupt attention. Empirically the model degenerates to high-frequency-token loops.
+      <strong>The matrix-Γ kernel extension.</strong> Instead of folding γ<sub>qk</sub> backward, the patched <code>llama.cpp</code> kernel keeps the QK-norm op and consumes a 2D tensor <code>Γ = M<sup>T</sup>·Diag(γ<sub>qk</sub>)·M</code> in place of the original 1D γ<sub>qk</sub> at <code>blk.*.attn_q_norm.weight</code> / <code>blk.*.attn_k_norm.weight</code>. Algebraically <code>(Q / RMS(Q)) · Γ = Q<sub>plain_normed</sub> · M</code> when M is orthogonal (exact to fp32 noise). The obfuscator builds 2D Γ per layer; the kernel detects via the <code>aloepri.qk_norm_matrix</code> metadata flag and branches the graph to a 128×128 <code>ggml_mul_mat</code> at q_norm. Storage cost +42 MB / fp32 model; compute cost &lt;1 % at decode.
     </p>
     <p class="prose">
-      <strong>Reference-code state.</strong> The public reference (<code>sheng1feng/Aloepri @ 60e8ea3</code>) has no QK-norm handling — all attention paths import <code>transformers.models.qwen2.modeling_qwen2</code>, and Qwen2.5 has no QK-norm. Paper §7.1 explicitly lists Qwen3 in its evaluated models, so ByteDance's internal codebase presumably has a fix. The academic release does not, and re-deriving from first principles hits the Gaussian-assumption wall.
+      <strong>Sub-fixes landed alongside.</strong> (1) <code>generate_block_perm</code> in <code>lib/alg2.py</code> was rewritten as fixed β-wide windows after diagnosing that the dynamic-window softmax always collapsed to size-1 windows under the paper's default params, silently producing the identity permutation. (2) The reference's <code>k_matrix = R · H<sup>−1</sup> · Z<sup>−1</sup></code> construction only collapses <code>M<sub>q</sub>·M<sub>k</sub><sup>T</sup></code> to I when Z<sup>2</sup> = I — the identity-Z degeneracy silently provided this. Repaired to <code>k_matrix = R · H<sup>−1</sup> · Z</code>, which gives <code>M<sub>q</sub>·M<sub>k</sub><sup>T</sup> = I</code> for any orthogonal Z. (3) Ĥ<sub>qk</sub> uses ±1 Walsh-Hadamard signs (involutive, preserves orthogonality). See <code>docs/handoffs/2026-05-19-alg2-z-block-degeneracy.md</code>.
     </p>
     <p class="prose">
-      <strong>What the gap costs.</strong> Head-shuffle alone scrambles only <em>which head produced which score</em> — the per-(position_i, position_j) Q·K<sup>T</sup> values within each head are identical to plaintext. An ISA inverter can be trained on plaintext data; at attack time it sees attention patterns whose per-cell values match its training distribution, only the head-axis is permuted. Recovering a per-layer (τ<sub>kv</sub>, τ<sub>group</sub>) ∈ S<sub>8</sub>×S<sub>2</sub> is brute-forceable in seconds if the attacker has even crude attention-pattern signatures per head. Whether ISA TTRSR stays ≤ 15 % on Qwen3 1.7B with this partial defense is an open question; the attack-resistance benchmark will measure it.
+      <strong>What the ramp closed.</strong> ISA HS at <code>attn_norm-23</code> drops 16.3 % → 11.5 % when Ẑ<sub>block</sub> lands (passes the §6.3 15 % gate). ISA HS at the Q-surface (<code>Qcur_normed-23</code>) tightens 12.5 % → 9.6 % under +R̂<sub>qk</sub>. Algorithm 2's defence is measurable on the surfaces where it acts.
     </p>
     <p class="prose">
-      <strong>Future work options.</strong> If the attack-resistance benchmark shows ISA TTRSR &gt; 15 % on the partial-Algorithm-2 artifact:
+      <strong>What the ramp <em>does not</em> close.</strong> <code>IMA-L0-activation</code> stays at 88.9 % across every Algorithm 2 build variant because <code>attn_norm-0</code> is computed pre-W<sub>q</sub> — Algorithm 2's intra-head M<sub>q</sub> acts post-W<sub>q</sub> and structurally cannot reach this surface. This is a path-2-specific attack the paper does not measure; closing it requires Algorithm 1 / §5.2.2 levers, not Algorithm 2.
+    </p>
+    <p class="prose">
+      <strong>Reference-code state.</strong> The public reference (<code>sheng1feng/Aloepri @ 60e8ea3</code>) has no QK-norm handling — all attention paths import <code>transformers.models.qwen2.modeling_qwen2</code>, and Qwen2.5 has no QK-norm. Paper §7.1 explicitly lists Qwen3 in its evaluated models, so ByteDance's internal codebase presumably has a fix; the academic release does not, and the matrix-Γ extension here is one viable way to bridge it.
+    </p>
+    <p class="prose">
+      <strong>Remaining levers (for IMA-L0-activation specifically).</strong>
     </p>
     <ul style="margin-left:24px;font-size:14px;line-height:1.6;">
-      <li><b>Per-norm-site κ calibration.</b> Replace the Gaussian-assumption κ = √(mean(γ<sup>2</sup>)) with an empirically-measured κ = mean<sub>x∼corpus</sub>(RMS(W<sub>q</sub>(x)·γ) / RMS(W<sub>q</sub>(x))). Requires running plaintext Qwen3 on a calibration corpus; one κ per QK-norm site (56 sites on 1.7B). This is the most paper-faithful path.</li>
-      <li><b>Structured γ-commuting R̂<sub>qk</sub>.</b> Restrict the intra-head rotation to commute with the actual γ structure — e.g. only rotate pairs where γ_i ≈ γ_{i+half} (which RoPE-pair partners share γ). Yields a much smaller effective rotation group but doesn't require any κ approximation.</li>
-      <li><b>Modify llama.cpp.</b> Add a "scaled-RMSNorm" op that applies a per-element correction at runtime, undoing the fold bias. Opposite of AloePri's "no infra change" design goal but available in extremis.</li>
-      <li><b>Switch backbone.</b> The cleanest fix: pin the demonstrator to a Qwen3 variant without QK-norm, or to Qwen2.5 1.5B as a fallback. Loses architectural alignment with the GELO-LLM demonstrator (which targets Qwen3), but the full paper Algorithm 2 becomes deployable.</li>
+      <li><b>α<sub>e</sub> sweep.</b> Push the §5.2.2 embedding noise from <code>α<sub>e</sub>=1.0</code> (paper default) up to 5×–20×. Cheapest direct lever. Trade-off: degrades generation coherence; needs to be measured against MMLU / perplexity.</li>
+      <li><b>Larger keymat <code>h</code>.</b> §05 ships h=128 (256 decoy dims). Doubling to h=256 or h=512 adds more decoy structure, making the ridge inversion more ill-conditioned. Storage cost grows linearly.</li>
+      <li><b>Non-linear keymat fold.</b> The current P̂<sub>R</sub> is a linear matrix. A non-linear fold (small MLP, sign function, etc.) would break the linear-ridge assumption. Paper-divergent; new research.</li>
+      <li><b>Per-prompt fresh noise on W<sub>e</sub>.</b> Sample a fresh noise vector each inference instead of baking it at obfuscation time. Strong defence but breaks the "static obfuscation, no infra change" thesis — equivalent to moving toward GELO-style masking on path-1.</li>
+      <li><b>Per-head distinct M<sub>q</sub>[h]</b> in Algorithm 2. Currently shared per layer; per-head would increase intra-head obfuscation strength. Won't move IMA-L0-activation (still pre-W<sub>q</sub>) but tightens the Q/K post-norm surfaces.</li>
     </ul>
-    <p class="prose">
-      Decision deferred until the attack-resistance benchmark produces an empirical TTRSR number.
-    </p>
 
     <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:32px 0 8px;">Other open questions</h4>
     <ul style="margin-left:24px;font-size:14px;line-height:1.6;">

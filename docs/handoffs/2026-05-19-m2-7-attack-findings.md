@@ -1,9 +1,38 @@
 # Handoff — M2.7 attack-resistance findings on §05 obfuscated GGUF
 
-**Date:** 2026-05-19
-**Status:** measurement complete. Next session: triage the failures, not run more attacks.
+**Date:** 2026-05-19 (initial measurement) · 2026-05-19 (addendum after Option C
++ Ẑ-block + Hadamard ramp).
+**Status:** initial measurement complete; superseded in part by
+`2026-05-19-option-c-steps-0-1-2a-findings.md` for the Algorithm 2 build
+sweep. Numbers below are correct for the **§05 baseline**.
 
-## TL;DR
+## Addendum (2026-05-19, post-ramp)
+
+The original diagnosis below — "two failures share a single root cause:
+partial Algorithm 2" — turned out to be partially wrong. Subsequent
+work (matrix-Γ kernel patch + Ẑ_block repair + ±1 Walsh-Hadamard Ĥ_qk)
+deployed the missing intra-head transforms. Results:
+
+- **ISA HS at attn_norm-23**: 16.3 % → 11.5 % under +Ẑ_block. **Now
+  passes** the §6.3 gate. Algorithm 2 was the right defence for this
+  surface.
+- **IMA basic ("IMA-L0-activation")**: 88.9 % → **88.9 %** unchanged
+  across every Algorithm 2 build variant. The failing surface
+  (`attn_norm-0`) is **pre-W_q**; M_q acts post-W_q. Algorithm 2 is
+  structurally the wrong defence here.
+- Plus: the path-2 attack named "IMA basic" is different from the
+  paper's `run_ima_baseline` (which is a static weight-inversion attack
+  paired by τ, in the VMA/IA family). The path-2 version inverts
+  layer-0 activations from forward inference and is a stricter
+  privacy property than the paper measures.
+
+For full Option C / step 0-1-2a numbers + the disambiguation rationale,
+see `docs/handoffs/2026-05-19-option-c-steps-0-1-2a-findings.md`.
+Updated user-facing acceptance gates: `docs/prototype/aloepri-llm.html`
+§08 (renamed gate ids: `ima_l0_activation_below_15pct`,
+`isa_hidden_state_below_15pct`).
+
+## TL;DR (original measurement, §05 only)
 
 Two attacks **fail** §6.3's 15 % gate on the §05 deployment
 (`keymat-h128-pi-noise-alg2-fp32.gguf`); five attacks pass.
