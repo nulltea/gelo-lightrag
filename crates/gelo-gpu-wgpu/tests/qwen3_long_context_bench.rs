@@ -87,6 +87,23 @@ fn skip_permuted_from_env() -> bool {
         .unwrap_or(false)
 }
 
+/// Opt into HD₃ Hadamard-cascade mask via `GELO_BENCH_MASK_KIND=hd3`.
+/// Default (any other value, or unset) uses the paper-parity Haar
+/// mask. The `gpu_gelo` cell honours this — `gpu_plain` is unaffected
+/// (no mask) and `gpu_gelo_permuted` keeps Haar (its protocol assumes
+/// the dense mask).
+fn mask_kind_from_env() -> gelo_protocol::MaskKind {
+    match std::env::var("GELO_BENCH_MASK_KIND")
+        .ok()
+        .as_deref()
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("hd3") => gelo_protocol::MaskKind::Hd3,
+        _ => gelo_protocol::MaskKind::Haar,
+    }
+}
+
 /// Long-ish source text we tokenise and truncate to hit a target token count.
 /// Content is irrelevant for perf measurement — only the resulting token
 /// count matters. Repeated to ensure we always overflow the largest
@@ -335,13 +352,15 @@ fn qwen3_1_7b_long_context_breakdown() -> Result<()> {
     let prompt_lengths = prompt_lengths_from_env();
     let max_tokens = max_tokens_from_env();
     let skip_permuted = skip_permuted_from_env();
+    let mask_kind = mask_kind_from_env();
     eprintln!("RSS before any load: {}", fmt_gib(rss_bytes()));
     eprintln!(
-        "Qwen3-1.7B long-context bench — model={} lengths={:?} max_tokens={} skip_permuted={}",
+        "Qwen3-1.7B long-context bench — model={} lengths={:?} max_tokens={} skip_permuted={} mask_kind={:?}",
         VARIANT.hf_model_id(),
         prompt_lengths,
         max_tokens,
         skip_permuted,
+        mask_kind,
     );
     eprintln!(
         "Mask GEMM backend: {}",
@@ -376,11 +395,21 @@ fn qwen3_1_7b_long_context_breakdown() -> Result<()> {
     eprintln!("RSS after gpu_plain provision: {}", fmt_gib(rss_bytes()));
 
     // 2. gpu_gelo (paper-parity defaults: per-forward A + shield(8, 4.0)).
-    eprintln!("[gpu_gelo] provisioning (per-forward A + shield(8,4.0))...");
+    //    Mask family chosen by `GELO_BENCH_MASK_KIND` (Haar by default;
+    //    `hd3` opts into the structured-orthogonal cascade — pads the
+    //    stacked-with-shield operand to the next power of two before
+    //    each apply, so the GPU sees `s_pad ≈ 2× n` rows at non-pow2 n).
+    eprintln!(
+        "[gpu_gelo] provisioning (per-forward A + shield(8,4.0), mask_kind={:?})...",
+        mask_kind
+    );
     let mut gpu_gelo = InProcessTrustedExecutor::with_seed(
         gpu_root.clone_shared(),
         MaskSeed::from_bytes([13u8; 32]),
     );
+    if mask_kind == gelo_protocol::MaskKind::Hd3 {
+        gpu_gelo = gpu_gelo.with_hd3_mask();
+    }
     provision_decoder_weights(&cfg_offload, &weights, &mut gpu_gelo)?;
     eprintln!("RSS after gpu_gelo provision: {}", fmt_gib(rss_bytes()));
 

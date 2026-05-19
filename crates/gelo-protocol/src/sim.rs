@@ -8,7 +8,8 @@ use rand_chacha::ChaCha20Rng;
 
 use crate::attention::{self, PermAttnConfig};
 use crate::integrity::verify_offload;
-use crate::mask::GeloMask;
+use crate::hd3::Hd3Mask;
+use crate::mask::{GeloMask, MaskFamily, MaskKind};
 use crate::out_attn_mult;
 use crate::profile;
 use crate::rng::MaskSeed;
@@ -130,6 +131,17 @@ pub struct InProcessTrustedExecutor<E: GpuOffloadEngine> {
     /// post-mask operand (and engine output, configurable) into the
     /// buffer for later drain by the test harness.
     snapshot_capture: Option<SnapshotCapture>,
+    /// Which mask family to use. Default `MaskKind::Haar` is the GELO
+    /// paper's dense Householder-QR sample — paper-parity. Switching
+    /// to `MaskKind::Hd3` via [`Self::with_hd3_mask`] uses the
+    /// structured QuIP#/QuaRot-style cascade described in
+    /// [`crate::hd3`]. **Trade**: HD₃ kills the per-forward Haar QR
+    /// (~3 s wall at n=2048 prefill on Qwen3-1.7B) and drops mask
+    /// GEMM cost from `O(s²·d)` to `O(s·d·log s)`, but requires
+    /// power-of-two `s`. At non-pow2 shapes the executor pads the
+    /// stacked-with-shield operand to `s_pad = s.next_power_of_two()`,
+    /// so the GPU sees `s_pad/s ≈ 2×` more rows per call.
+    mask_kind: MaskKind,
 }
 
 /// Clone the executor sharing the underlying engine (engines that opt
@@ -161,6 +173,7 @@ impl<E: GpuOffloadEngine + Clone> Clone for InProcessTrustedExecutor<E> {
                 .snapshot_capture
                 .as_ref()
                 .map(|c| SnapshotCapture::new(c.config())),
+            mask_kind: self.mask_kind,
         }
     }
 }
@@ -169,10 +182,12 @@ impl<E: GpuOffloadEngine + Clone> Clone for InProcessTrustedExecutor<E> {
 /// "one A per batch" construction (§3.2). Constructed inside
 /// `begin_forward_pass` and dropped on `end_forward_pass`.
 struct SessionMask {
-    /// Haar-uniform orthogonal mask of size `(stacked_n, stacked_n)`
-    /// where `stacked_n = data_n + shield.k`.
-    mask: GeloMask,
-    /// Original data-row count (excluding shield rows).
+    /// The mask. For `MaskFamily::Haar` `mask.n() == data_n + shield.k`;
+    /// for `MaskFamily::Hd3` `mask.n() == (data_n + shield.k).next_power_of_two()`.
+    mask: MaskFamily,
+    /// Original data-row count (excluding shield rows and any
+    /// HD₃-padding rows). The pipeline strips back to this at the end
+    /// of every `offload_*` call.
     data_n: usize,
 }
 
@@ -210,6 +225,7 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             perm_attn: PermAttnConfig::default(),
             ple_table: None,
             snapshot_capture: None,
+            mask_kind: MaskKind::Haar,
         }
     }
 
@@ -234,7 +250,35 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             perm_attn: PermAttnConfig::default(),
             ple_table: None,
             snapshot_capture: None,
+            mask_kind: MaskKind::Haar,
         }
+    }
+
+    /// Opt into the HD₃ Hadamard-cascade mask
+    /// ([`crate::hd3::Hd3Mask`]) instead of the default Haar mask.
+    /// Eliminates the per-forward `O(s³)` Haar QR sampler and drops
+    /// the mask apply/unapply cost from `O(s²·d)` to `O(s·d·log s)`
+    /// at the cost of zero-padding the operand to the next power of
+    /// two before the engine matmul (~2× GPU rows at `n=2048`).
+    ///
+    /// **Security gate (open)**: the HD₃ orbit is a discrete subset
+    /// of `O(s)` rather than the full Haar measure. Empirical parity
+    /// with Haar against the paper §4.3 attack pipeline has not yet
+    /// been validated at our shapes — see the round-3 doc step B.3.
+    /// **Treat as research-grade** until the attack-suite gate
+    /// passes; default stays Haar (paper-parity) until then.
+    pub fn with_hd3_mask(mut self) -> Self {
+        self.mask_kind = MaskKind::Hd3;
+        // Clear any stale Haar session — mask kind change invalidates
+        // the per-forward mask. The caller must re-bracket with
+        // `begin_forward_pass` after switching kinds.
+        self.session = None;
+        self.stacked_scratch.clear();
+        self
+    }
+
+    pub fn mask_kind(&self) -> MaskKind {
+        self.mask_kind
     }
 
     /// Set or update the shield configuration in place.
@@ -429,14 +473,21 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
     fn build_shielded_and_apply(
         &mut self,
         hidden: ArrayView2<'_, f32>,
-    ) -> (GeloMask, Array2<f32>, usize) {
+    ) -> (MaskFamily, Array2<f32>, usize) {
         let n_data = hidden.nrows();
         let d = hidden.ncols();
         let k = self.shield.k;
-        let stacked_n = n_data + k;
+        // The mask must be sized to `stacked_n`. For Haar that's `n_data + k`;
+        // for HD₃ it must be a power of two, so we round up. The extra rows
+        // (between `n_data + k` and `stacked_n`) get zero-padded — they sit
+        // in the HD₃ mask's output and round-trip exactly (orthogonality).
+        let stacked_n = match self.mask_kind {
+            MaskKind::Haar => n_data + k,
+            MaskKind::Hd3 => (n_data + k).next_power_of_two().max(2),
+        };
 
-        // Resolve the mask first (cheap; just an Arc-clone of the session
-        // mask in paper-parity mode, or a fresh Haar sample otherwise).
+        // Resolve the mask first (cheap; clone of session mask in
+        // paper-parity mode, fresh sample otherwise).
         let mask = if self.per_forward_mask {
             match &self.session {
                 Some(s) if s.data_n == n_data && s.mask.n() == stacked_n => s.mask.clone(),
@@ -455,18 +506,19 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
                 ),
             }
         } else {
-            profile::time("gelo:mask_sample", || {
-                GeloMask::fresh(stacked_n, &mut self.rng)
+            profile::time("gelo:mask_sample", || match self.mask_kind {
+                MaskKind::Haar => MaskFamily::Haar(GeloMask::fresh(stacked_n, &mut self.rng)),
+                MaskKind::Hd3 => MaskFamily::Hd3(Hd3Mask::fresh(stacked_n, &mut self.rng)),
             })
         };
 
         let masked = if self.per_forward_mask && self.shield.enabled() {
             // Scratch-reuse path: populate cached buffer in place, then
             // apply the mask. The buffer stays owned by `stacked_scratch`
-            // — no per-offload clone or allocation.
+            // — no per-offload clone or allocation. For HD₃ the buffer
+            // is `(s_pad, d)` and the rows past `n_data + k` stay zero
+            // (zero-padding the operand to a power of two).
             let scale = self.shield.energy_scale;
-            // Compute mean_row_norm before we borrow the scratch buffer
-            // (avoids overlapping borrow on hidden through the buffer slice).
             let mean_norm = mean_row_norm(hidden);
             let sigma = if d == 0 { 0.0 } else { scale * mean_norm / (d as f32).sqrt() };
 
@@ -474,21 +526,50 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
                 .stacked_scratch
                 .entry(d)
                 .or_insert_with(|| Array2::<f32>::zeros((stacked_n, d)));
-            debug_assert_eq!(buf.shape(), &[stacked_n, d]);
+            // Re-allocate if a previous forward at a different `n_data`
+            // left a wrongly-sized scratch in place. End-of-forward
+            // already clears, but per-offload mode never sets a session
+            // and won't trigger that clear path.
+            if buf.shape() != [stacked_n, d] {
+                *buf = Array2::<f32>::zeros((stacked_n, d));
+            }
+            let shield_end = (n_data + k).min(stacked_n);
             profile::time("gelo:shield_stack", || {
+                // Top n_data rows: actual hidden data.
                 buf.slice_mut(ndarray::s![..n_data, ..]).assign(&hidden);
+                // Next k rows: Gaussian shield (Gram-leak mitigation).
                 fill_shield_rows_inline(
-                    buf.slice_mut(ndarray::s![n_data.., ..]),
+                    buf.slice_mut(ndarray::s![n_data..shield_end, ..]),
                     sigma,
                     &mut self.rng,
                 );
+                // For HD₃ only: rows past `shield_end` are the pow2 pad.
+                // They must be zero so the round-trip identity holds —
+                // the unapply step interprets the engine output's full
+                // `stacked_n` rows as the masked image of a vector that
+                // had zeros below `shield_end`. Clear here (cheap: same
+                // rows we'd have zero'd at construction) in case the
+                // scratch was reused across `data_n` shapes.
+                if stacked_n > shield_end {
+                    buf.slice_mut(ndarray::s![shield_end.., ..]).fill(0.0);
+                }
             });
             profile::time("gelo:mask_apply", || mask.apply(buf.view()))
         } else {
             // Legacy path: allocate-each-time, used in per-offload mode
-            // and whenever shield is disabled.
+            // and whenever shield is disabled. For HD₃ this path zero-
+            // pads the stacked operand to `stacked_n` (a power of two).
             let stacked = profile::time("gelo:shield_stack", || {
-                let (stacked, _n) = stack_shield(hidden, self.shield, &mut self.rng);
+                let (mut stacked, _n) = stack_shield(hidden, self.shield, &mut self.rng);
+                // `stack_shield` returns shape `(n_data + k, d)`. For
+                // HD₃ pad to `stacked_n` with zeros.
+                if stacked.nrows() < stacked_n {
+                    let mut padded = Array2::<f32>::zeros((stacked_n, d));
+                    padded
+                        .slice_mut(ndarray::s![..stacked.nrows(), ..])
+                        .assign(&stacked);
+                    stacked = padded;
+                }
                 stacked
             });
             profile::time("gelo:mask_apply", || mask.apply(stacked.view()))
@@ -540,8 +621,13 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
             return Ok(());
         }
         let stacked_n = n + self.shield.k;
-        let mask = profile::time("gelo:mask_sample", || {
-            GeloMask::fresh(stacked_n, &mut self.rng)
+        let mask = profile::time("gelo:mask_sample", || match self.mask_kind {
+            MaskKind::Haar => MaskFamily::Haar(GeloMask::fresh(stacked_n, &mut self.rng)),
+            MaskKind::Hd3 => {
+                // HD₃ requires power-of-two side length.
+                let s_pad = stacked_n.next_power_of_two().max(2);
+                MaskFamily::Hd3(Hd3Mask::fresh(s_pad, &mut self.rng))
+            }
         });
         self.session = Some(SessionMask { mask, data_n: n });
         // Stale scratches from a prior forward with a different `n` are
@@ -1020,6 +1106,100 @@ mod tests {
         }
         for ((i, j), e) in expected_v.indexed_iter() {
             assert!((v[[i, j]] - e).abs() < 1e-3);
+        }
+    }
+
+    /// `with_hd3_mask()` produces the same downstream output as
+    /// `PlaintextExecutor` to f32 noise — i.e. HD₃ is a correct GELO
+    /// mask alternative on the round-trip math. Uses a power-of-two
+    /// `n` so the executor's pad-to-pow2 step is a no-op (well, k=8
+    /// shield rows still force pow2 pad — see below).
+    #[test]
+    fn hd3_executor_agrees_with_plaintext() {
+        let mut rng = ChaCha20Rng::from_seed([13u8; 32]);
+        let normal = StandardNormal;
+        let n = 16;
+        let d = 12;
+        let p = 8;
+
+        let hidden = Array2::<f32>::from_shape_fn((n, d), |_| normal.sample(&mut rng));
+        let weight = Array2::<f32>::from_shape_fn((d, p), |_| normal.sample(&mut rng));
+        let handle = WeightHandle::new(0, WeightKind::Q);
+
+        let mut plain = PlaintextExecutor::new(RayonCpuEngine::new());
+        plain.provision_weight(handle, weight.view()).unwrap();
+        let plain_out = plain.offload_linear(handle, hidden.view()).unwrap();
+
+        let mut hd3 = InProcessTrustedExecutor::with_seed(
+            RayonCpuEngine::new(),
+            MaskSeed::from_bytes([19u8; 32]),
+        )
+        .with_hd3_mask();
+        assert_eq!(hd3.mask_kind(), MaskKind::Hd3);
+        hd3.provision_weight(handle, weight.view()).unwrap();
+        hd3.begin_forward_pass(n).unwrap();
+        let hd3_out = hd3.offload_linear(handle, hidden.view()).unwrap();
+        hd3.end_forward_pass().unwrap();
+
+        assert_eq!(hd3_out.dim(), plain_out.dim());
+        for ((i, j), &e) in plain_out.indexed_iter() {
+            let got = hd3_out[[i, j]];
+            // HD₃ + shield + matmul + unapply accumulates noise from
+            // 3·log₂(s_pad) FWHT stages plus the depth-d inner matmul.
+            // Loose tolerance because the shield rows add their own
+            // Gaussian energy on top of the pure round-trip noise.
+            assert!(
+                (got - e).abs() < 5e-3,
+                "({i},{j}): plain={e} hd3={got} diff={}",
+                (got - e).abs()
+            );
+        }
+    }
+
+    /// HD₃ executor at `offload_qkv`: all three projections produce
+    /// the same downstream output as plaintext. Verifies the
+    /// shared-mask path (3× unapply on one apply).
+    #[test]
+    fn hd3_qkv_agrees_with_plaintext() {
+        let mut rng = ChaCha20Rng::from_seed([21u8; 32]);
+        let normal = StandardNormal;
+        let n = 16;
+        let d = 12;
+
+        let hidden = Array2::<f32>::from_shape_fn((n, d), |_| normal.sample(&mut rng));
+        let wq = Array2::<f32>::from_shape_fn((d, d), |_| normal.sample(&mut rng));
+        let wk = Array2::<f32>::from_shape_fn((d, d), |_| normal.sample(&mut rng));
+        let wv = Array2::<f32>::from_shape_fn((d, d), |_| normal.sample(&mut rng));
+
+        let mut exec = InProcessTrustedExecutor::with_seed(
+            RayonCpuEngine::new(),
+            MaskSeed::from_bytes([27u8; 32]),
+        )
+        .with_hd3_mask();
+        for (kind, w) in [
+            (WeightKind::Q, &wq),
+            (WeightKind::K, &wk),
+            (WeightKind::V, &wv),
+        ] {
+            exec.provision_weight(WeightHandle::new(0, kind), w.view())
+                .unwrap();
+        }
+
+        exec.begin_forward_pass(n).unwrap();
+        let (q, k, v) = exec.offload_qkv(0, hidden.view()).unwrap();
+        exec.end_forward_pass().unwrap();
+
+        let expected_q = hidden.dot(&wq);
+        let expected_k = hidden.dot(&wk);
+        let expected_v = hidden.dot(&wv);
+        for ((i, j), e) in expected_q.indexed_iter() {
+            assert!((q[[i, j]] - e).abs() < 5e-3);
+        }
+        for ((i, j), e) in expected_k.indexed_iter() {
+            assert!((k[[i, j]] - e).abs() < 5e-3);
+        }
+        for ((i, j), e) in expected_v.indexed_iter() {
+            assert!((v[[i, j]] - e).abs() < 5e-3);
         }
     }
 }

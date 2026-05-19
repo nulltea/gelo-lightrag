@@ -4,6 +4,58 @@ use rand_distr::{Distribution, StandardNormal};
 
 pub use crate::rng::MaskSeed;
 
+use crate::hd3::Hd3Mask;
+
+/// Mask family used by [`crate::sim::InProcessTrustedExecutor`].
+/// `Haar` is the dense Householder-QR-sampled orthogonal mask
+/// described in the GELO paper §3.2 (per-forward `O(s³)` sample +
+/// `O(s²·d)` per apply/unapply). `Hd3` is the QuIP#/QuaRot-style
+/// structured-orthogonal cascade `D₃·H·D₂·H·D₁·H` with `O(s)` sample
+/// and `O(s·d·log s)` per apply/unapply at power-of-two `s` — see
+/// [`crate::hd3`] for the math + security trade.
+#[derive(Debug, Clone)]
+pub enum MaskFamily {
+    Haar(GeloMask),
+    Hd3(Hd3Mask),
+}
+
+impl MaskFamily {
+    /// Side length the mask operates on. For `Haar` this matches the
+    /// stacked-with-shield row count `n + k`; for `Hd3` this is
+    /// `(n + k).next_power_of_two()` (the caller must arrange the
+    /// pow2 padding before constructing the mask).
+    pub fn n(&self) -> usize {
+        match self {
+            Self::Haar(m) => m.n(),
+            Self::Hd3(m) => m.n(),
+        }
+    }
+
+    pub fn apply(&self, hidden: ArrayView2<'_, f32>) -> Array2<f32> {
+        match self {
+            Self::Haar(m) => m.apply(hidden),
+            Self::Hd3(m) => m.apply(hidden),
+        }
+    }
+
+    pub fn unapply(&self, masked: ArrayView2<'_, f32>) -> Array2<f32> {
+        match self {
+            Self::Haar(m) => m.unapply(masked),
+            Self::Hd3(m) => m.unapply(masked),
+        }
+    }
+}
+
+/// Which mask family `InProcessTrustedExecutor` should use. Default
+/// is [`MaskKind::Haar`] (paper-parity). Switch to [`MaskKind::Hd3`]
+/// via [`crate::sim::InProcessTrustedExecutor::with_hd3_mask`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MaskKind {
+    #[default]
+    Haar,
+    Hd3,
+}
+
 /// Token-axis orthogonal mask used to obfuscate hidden states before the
 /// untrusted side sees them.
 ///

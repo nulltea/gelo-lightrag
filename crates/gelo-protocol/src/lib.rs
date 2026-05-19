@@ -18,6 +18,7 @@
 use blas_src as _;
 
 pub mod attention;
+pub mod hd3;
 pub mod integrity;
 pub mod mask;
 pub mod out_attn_mult;
@@ -30,9 +31,10 @@ pub mod snapshot;
 pub mod substrate;
 
 pub use attention::PermAttnConfig;
+pub use hd3::Hd3Mask;
 pub use mask::{
-    GeloMask, MaskSeed, ensure_blis_single_thread, mask_backend_description,
-    set_blis_num_threads, tee_matmul,
+    GeloMask, MaskFamily, MaskKind, MaskSeed, ensure_blis_single_thread,
+    mask_backend_description, set_blis_num_threads, tee_matmul,
 };
 pub use ple::PleTable;
 pub use shield::ShieldConfig;
