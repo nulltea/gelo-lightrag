@@ -50,15 +50,37 @@ def generate_r_qk(head_dim: int, seed: int) -> np.ndarray:
     return matrix
 
 
-def generate_h_qk(head_dim: int, scale_range: tuple[float, float], seed: int) -> np.ndarray:
+def generate_h_qk(
+    head_dim: int,
+    scale_range: tuple[float, float],
+    seed: int,
+    *,
+    hadamard_signs: bool = False,
+) -> np.ndarray:
+    """Per-RoPE-pair scale diagonal.
+
+    When `hadamard_signs=True`, sample each block scale uniformly from
+    {-1, +1} (Walsh-Hadamard ±1 form). Keeps `M_q = R · H · Z`
+    orthogonal so the matrix-Γ kernel algebra stays exact, while
+    adding per-pair sign flips to the obfuscation.
+
+    Otherwise `scale_range` controls uniform sampling in (low, high)
+    — the reference convention. With non-unit scale, M_q becomes
+    non-orthogonal and matrix-Γ algebra drifts; safe only when not
+    deploying through the matrix-Γ kernel.
+    """
     if head_dim % 2 != 0:
         raise ValueError("head_dim must be even")
-    low, high = scale_range
-    if low <= 0 or high <= 0 or low > high:
-        raise ValueError(f"invalid scale range {scale_range}")
     rng = np.random.default_rng(seed)
     num_blocks = head_dim // 2
-    block_scales = rng.uniform(low, high, size=num_blocks).astype(np.float32)
+    if hadamard_signs:
+        block_scales = rng.choice(np.array([-1.0, 1.0], dtype=np.float32),
+                                  size=num_blocks).astype(np.float32)
+    else:
+        low, high = scale_range
+        if low <= 0 or high <= 0 or low > high:
+            raise ValueError(f"invalid scale range {scale_range}")
+        block_scales = rng.uniform(low, high, size=num_blocks).astype(np.float32)
     # Reference uses cat([block_scales, block_scales]) — same value on both
     # halves of the diagonal so it pairs with the half-rotated R_qk layout.
     diag = np.concatenate([block_scales, block_scales])
@@ -72,38 +94,31 @@ def generate_block_perm(
     rope_base: float,
     seed: int,
 ) -> np.ndarray:
-    """Dynamic-window block permutation.
+    """Block-wise locality-preserving permutation of RoPE pairs.
 
-    Permutes RoPE pairs only within a window of "similar" RoPE
-    frequencies, controlled by (β, γ, ζ=rope_base). Window size is
-    sampled per-step from a softmax over the zeta_log differences.
+    Paper §5.2.3 Ẑ_block permutes RoPE pairs but only within bands of
+    similar angular frequency, otherwise attention scores drift after
+    RoPE (R̂_qk's commutation with RoPE assumes the data at position
+    i continues to see RoPE frequency θ_i).
+
+    The earlier dynamic-window softmax variant (parameterised by β,
+    γ, rope_base) collapsed to identity at default params — see
+    docs/handoffs/2026-05-19-alg2-z-block-degeneracy.md. This
+    replacement uses **fixed β-wide windows**: each consecutive group
+    of β RoPE pairs is shuffled internally. `γ` and `rope_base` are
+    accepted for signature stability but unused.
     """
+    _ = (gamma, rope_base)  # unused — see docstring
     rng = np.random.default_rng(seed)
-    beta = max(1, min(beta, num_blocks))
-    zeta_log = np.array(
-        [(-2.0 * idx / max(1, num_blocks)) * np.log(float(rope_base)) for idx in range(num_blocks)],
-        dtype=np.float32,
-    )
+    beta = max(1, min(int(beta), num_blocks))
     perm_blocks: list[int] = []
     start = 0
     while start < num_blocks:
         c = min(beta, num_blocks - start)
-        if c == 1:
-            perm_blocks.append(start)
-            start += 1
-            continue
-        local_scores = gamma * (zeta_log[start : start + c] - zeta_log[start])
-        # softmax
-        local_scores = local_scores - local_scores.max()
-        probs = np.exp(local_scores)
-        probs = probs / probs.sum()
-        # sample window size in [1, c] (multinomial: choose index by probability, then +1)
-        ws_idx = int(rng.choice(c, p=probs))
-        window_size = ws_idx + 1
-        window = np.arange(start, start + window_size)
+        window = np.arange(start, start + c, dtype=np.int64)
         rng.shuffle(window)
         perm_blocks.extend(window.tolist())
-        start += window_size
+        start += c
     perm = np.array(perm_blocks, dtype=np.int64)
 
     # Build the (head_dim, head_dim) permutation matrix in half-rotated layout
@@ -157,9 +172,11 @@ def build_layer_keys(
     beta: int = 8,
     gamma: float = 1e3,
     rope_base: float = 1e6,
+    h_hadamard_signs: bool = False,
 ) -> LayerAlg2Keys:
     r_qk = generate_r_qk(head_dim, seed + 1)
-    h_qk = generate_h_qk(head_dim, qk_scale_range, seed + 2)
+    h_qk = generate_h_qk(head_dim, qk_scale_range, seed + 2,
+                         hadamard_signs=h_hadamard_signs)
     h_qk_inv = np.linalg.inv(h_qk).astype(np.float32)
     z_block = generate_block_perm(
         num_blocks=head_dim // 2,
@@ -171,7 +188,15 @@ def build_layer_keys(
     z_block_inv = z_block.T
 
     q_matrix = (r_qk @ h_qk @ z_block).astype(np.float32)
-    k_matrix = (r_qk @ h_qk_inv @ z_block_inv).astype(np.float32)
+    # Score-invariance requires M_q · M_kᵀ = I. With M_q = R·H·Z, the
+    # algebraic solution is M_k = R · H⁻¹ · Z (same Z, no transpose):
+    #   M_k.T = Zᵀ · H⁻¹ · Rᵀ
+    #   M_q · M_k.T = R · H · (Z · Zᵀ) · H⁻¹ · Rᵀ = R · I · I · Rᵀ = I
+    # The original construction used Z⁻¹ = Zᵀ on M_k which gives an
+    # extra factor of Z² in the cancellation — only collapses to I when
+    # Z² = I (which the identity-Z degeneracy above silently provided).
+    # See docs/handoffs/2026-05-19-alg2-z-block-degeneracy.md.
+    k_matrix = (r_qk @ h_qk_inv @ z_block).astype(np.float32)
 
     if num_kv_heads > 1:
         tau_kv, inv_tau_kv = generate_head_perm(num_kv_heads, seed + 4)

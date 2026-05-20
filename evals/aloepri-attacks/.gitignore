@@ -5,4 +5,4 @@ __pycache__/
 # are the small, version-controllable summaries; snapshots/ is
 # the raw artifact those summaries are derived from.
 snapshots/
-
+results/
