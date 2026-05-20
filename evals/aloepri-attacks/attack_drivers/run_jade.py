@@ -128,71 +128,144 @@ def _build_cumulants(y: np.ndarray) -> np.ndarray:
     return q
 
 
-def _joint_diag(q: np.ndarray, max_sweeps: int = 50, tol: float = 1e-6) -> np.ndarray:
-    """Cardoso's joint-Givens diagonalisation.
+try:
+    from numba import njit, prange
+    _HAS_NUMBA = True
+except ImportError:
+    _HAS_NUMBA = False
+
+    def njit(*args, **kwargs):  # type: ignore[no-redef]
+        def _decorator(fn):
+            return fn
+        if len(args) == 1 and callable(args[0]):
+            return args[0]
+        return _decorator
+
+    def prange(*args):  # type: ignore[no-redef]
+        return range(*args)
+
+
+@njit(cache=True, parallel=True, fastmath=True)
+def _joint_diag_batched_jit(q: np.ndarray, max_sweeps: int, tol: float) -> np.ndarray:
+    """Numba-JIT batched JADE Jacobi joint-diagonalisation.
 
     Args:
-      q: cumulant stack (nbcm, m, m).
-      max_sweeps: cap on Jacobi sweeps.
+      q: (B, nbcm, m, m) cumulant stacks per snapshot — modified in
+         place.
+      max_sweeps: cap on Jacobi sweeps (per snapshot).
       tol: per-sweep convergence threshold on max rotation magnitude.
     Returns:
-      Rotation matrix U (m × m) such that ``Uᵀ · Q_k · U`` are
-      jointly as diagonal as possible across k.
+      u: (B, m, m) — per-snapshot rotation matrix such that
+      ``u[b]ᵀ · q[b, k] · u[b]`` are jointly as diagonal as
+      possible across k.
+
+    Parallelism: ``prange`` across B parallelises whole-snapshot
+    Jacobi sweeps across cores. Each snapshot's sweep is serial by
+    construction (Cardoso's algorithm requires sequential rotations).
+    Manual scalar loops avoid the per-call numpy slice + .copy()
+    allocator churn that dominated the non-JIT path.
+    """
+    B = q.shape[0]
+    nbcm = q.shape[1]
+    m = q.shape[2]
+    u = np.zeros((B, m, m), dtype=q.dtype)
+
+    for b in prange(B):
+        # Initialise u[b] = identity.
+        for i in range(m):
+            u[b, i, i] = 1.0
+
+        for _sweep in range(max_sweeps):
+            max_angle = 0.0
+            for p in range(m - 1):
+                for r in range(p + 1, m):
+                    # Accumulate G entries over the nbcm cumulant
+                    # matrices: gpp = Σ_k v1[k]², grr = Σ_k v2[k]²,
+                    # gpr = Σ_k v1[k]·v2[k] where
+                    # v1[k] = q[k, p, p] − q[k, r, r],
+                    # v2[k] = q[k, p, r] + q[k, r, p].
+                    gpp = 0.0
+                    grr = 0.0
+                    gpr = 0.0
+                    for k in range(nbcm):
+                        v1 = q[b, k, p, p] - q[b, k, r, r]
+                        v2 = q[b, k, p, r] + q[b, k, r, p]
+                        gpp += v1 * v1
+                        grr += v2 * v2
+                        gpr += v1 * v2
+
+                    tau = (grr - gpp) / 2.0
+                    if abs(gpr) < 1e-30 and abs(tau) < 1e-30:
+                        continue
+
+                    tau_sign = 1.0 if tau >= 0.0 else -1.0
+                    denom = tau + tau_sign * (tau * tau + gpr * gpr + 1e-30) ** 0.5
+                    t = gpr / denom
+                    cos_t = 1.0 / (1.0 + t * t) ** 0.5
+                    sin_t = t * cos_t
+                    angle = abs(sin_t)
+                    if angle < tol:
+                        continue
+                    if angle > max_angle:
+                        max_angle = angle
+
+                    # Rotate u columns p, r (right-multiply by Givens G).
+                    for i in range(m):
+                        u_p_i = u[b, i, p]
+                        u_r_i = u[b, i, r]
+                        u[b, i, p] = cos_t * u_p_i - sin_t * u_r_i
+                        u[b, i, r] = sin_t * u_p_i + cos_t * u_r_i
+
+                    # Rotate every Q_k from both sides: Q ← Gᵀ · Q · G.
+                    # Right rotation on columns (p, r).
+                    for k in range(nbcm):
+                        for i in range(m):
+                            qpi = q[b, k, i, p]
+                            qri = q[b, k, i, r]
+                            q[b, k, i, p] = cos_t * qpi - sin_t * qri
+                            q[b, k, i, r] = sin_t * qpi + cos_t * qri
+                    # Left rotation on rows (p, r).
+                    for k in range(nbcm):
+                        for j in range(m):
+                            qpj = q[b, k, p, j]
+                            qrj = q[b, k, r, j]
+                            q[b, k, p, j] = cos_t * qpj - sin_t * qrj
+                            q[b, k, r, j] = sin_t * qpj + cos_t * qrj
+
+            if max_angle < tol:
+                break
+
+    return u
+
+
+def _joint_diag(q: np.ndarray, max_sweeps: int = 50, tol: float = 1e-6) -> np.ndarray:
+    """Single-snapshot wrapper around ``_joint_diag_batched_jit``.
+
+    Kept for callers that build one cumulant stack at a time (notably
+    ``run_jd.py``'s observation-stack JD, where each T-stack feeds
+    one joint-diag call).
     """
     nbcm, m, _ = q.shape
-    u = np.eye(m, dtype=q.dtype)
-    for _sweep in range(max_sweeps):
-        max_angle = 0.0
-        for p in range(m - 1):
-            for r in range(p + 1, m):
-                # 2x2 sub-problem: find c, s such that the rotation
-                # G(p, r, θ) minimises the sum over k of off-diagonal
-                # contributions from Q_k[p, r] and Q_k[r, p]. This is
-                # eq. (8) of Cardoso–Souloumiac '93.
-                a_pp = q[:, p, p]
-                a_pr = q[:, p, r]
-                a_rp = q[:, r, p]
-                a_rr = q[:, r, r]
-                # Build the 2-vector u_k = (a_pp − a_rr, a_pr + a_rp)
-                # and form the 2x2 G = sum_k u_k u_k^T.
-                v1 = a_pp - a_rr
-                v2 = a_pr + a_rp
-                gpp = float(np.dot(v1, v1))
-                grr = float(np.dot(v2, v2))
-                gpr = float(np.dot(v1, v2))
-                # The optimal rotation is the eigenvector of G
-                # corresponding to the larger eigenvalue.
-                # 2x2 eigenproblem closed form:
-                tau = (grr - gpp) / 2.0
-                if abs(gpr) < 1e-30 and abs(tau) < 1e-30:
-                    continue
-                # Rotation angle theta solving tan(2θ) = 2*gpr / (grr - gpp)
-                # The canonical Jacobi form:
-                t = (gpr) / (tau + np.sign(tau if tau != 0 else 1.0) * np.sqrt(tau * tau + gpr * gpr + 1e-30))
-                cos_t = 1.0 / np.sqrt(1.0 + t * t)
-                sin_t = t * cos_t
-                angle = abs(sin_t)
-                if angle < tol:
-                    continue
-                max_angle = max(max_angle, angle)
-                # Apply rotation to U columns p, r (right-multiply by G).
-                u_p = u[:, p].copy()
-                u_r = u[:, r].copy()
-                u[:, p] = cos_t * u_p - sin_t * u_r
-                u[:, r] = sin_t * u_p + cos_t * u_r
-                # Apply rotation to each Q_k from both sides:
-                #   Q ← G^T · Q · G   (rows p, r mixed; cols p, r mixed)
-                qp = q[:, :, p].copy()
-                qr = q[:, :, r].copy()
-                q[:, :, p] = cos_t * qp - sin_t * qr
-                q[:, :, r] = sin_t * qp + cos_t * qr
-                qp = q[:, p, :].copy()
-                qr = q[:, r, :].copy()
-                q[:, p, :] = cos_t * qp - sin_t * qr
-                q[:, r, :] = sin_t * qp + cos_t * qr
-        if max_angle < tol:
-            break
-    return u
+    q_batched = q[np.newaxis, :, :, :].astype(np.float64, copy=True)
+    u_batched = _joint_diag_batched_jit(q_batched, max_sweeps, tol)
+    return u_batched[0].astype(q.dtype, copy=False)
+
+
+def _joint_diag_batched(q_batch: np.ndarray, max_sweeps: int = 50, tol: float = 1e-6) -> np.ndarray:
+    """Batched joint-diag entry point.
+
+    Args:
+      q_batch: (B, nbcm, m, m) cumulant stacks.
+    Returns:
+      u_batch: (B, m, m) rotations.
+
+    Use this when many snapshots share the same `(nbcm, m, m)` shape
+    (e.g. JADE applied per (layer, kind) bucket) to amortise the
+    per-snapshot Jacobi sweep across CPU cores.
+    """
+    q_f64 = q_batch.astype(np.float64, copy=True)
+    u = _joint_diag_batched_jit(q_f64, max_sweeps, tol)
+    return u.astype(q_batch.dtype, copy=False)
 
 
 def _jade_demix(u_obs: np.ndarray, m: int) -> np.ndarray | None:
@@ -284,10 +357,17 @@ def run(
     for meta in plain_snaps.snapshots:
         plain_index[(meta.prompt_idx, meta.layer, meta.kind)] = meta
 
+    # Bucket snapshots by (layer, kind, shape) so we can batch-process
+    # joint-diag across many snapshots that share the same `(m, d)`.
+    # Different prompts in the same bucket may have different `n`
+    # (= `s` after strip_shield), so we sub-bucket by shape too.
     accumulators: dict[tuple[int, str], _OpAccumulator] = {}
     n_paired = 0
     n_skipped = 0
     rng = np.random.default_rng(0)
+
+    Bucket = dict[tuple[int, str, int, int], list[tuple[np.ndarray, np.ndarray]]]
+    buckets: Bucket = {}
 
     for meta in snapshots.snapshots:
         key = (meta.prompt_idx, meta.layer, meta.kind)
@@ -311,7 +391,7 @@ def run(
             u = u[sel]
             h = h[sel]
             s = max_dim
-        if s < 4:
+        if s < 4 or u.shape[1] < 2 * s:
             n_skipped += 1
             continue
         if max_features is not None and u.shape[1] > max_features:
@@ -319,17 +399,60 @@ def run(
             feat_sel.sort()
             u = u[:, feat_sel]
             h = h[:, feat_sel]
+        bucket_key = (meta.layer, meta.kind, u.shape[0], u.shape[1])
+        buckets.setdefault(bucket_key, []).append((u, h))
 
-        b = _jade_demix(u, m=s)
-        if b is None:
-            n_skipped += 1
+    # Per (layer, kind, shape) bucket: build whitening + cumulants per
+    # snapshot (cheap, BLAS), then run ONE batched joint-diag across
+    # the whole bucket. Recovers s_hat per snapshot, evaluates p95
+    # cosine, accumulates per (layer, kind).
+    for (layer, kind, s, d), pairs in buckets.items():
+        m = s
+        if m < 2 or d < 2 * m:
+            n_skipped += len(pairs)
             continue
-        s_hat = b @ u           # (m, d)
-        p95 = _p95_cosine_with_hungarian(s_hat, h)
-        op_key = (meta.layer, meta.kind)
-        acc = accumulators.setdefault(op_key, _OpAccumulator.empty(meta.layer, meta.kind))
-        acc.p95_cosines.append(p95)
-        n_paired += 1
+        B = len(pairs)
+        # Whiten + cumulants per snapshot (numpy / BLAS — fast).
+        whiten_mats: list[np.ndarray] = []
+        cum_stacks: list[np.ndarray] = []
+        nbcm = None
+        for u_arr, _h_arr in pairs:
+            try:
+                y, w = _whiten(u_arr, m)
+                cum = _build_cumulants(y)
+            except np.linalg.LinAlgError:
+                whiten_mats.append(None)  # type: ignore[arg-type]
+                cum_stacks.append(None)  # type: ignore[arg-type]
+                continue
+            whiten_mats.append(w)
+            cum_stacks.append(cum)
+            if nbcm is None:
+                nbcm = cum.shape[0]
+        if nbcm is None:
+            n_skipped += B
+            continue
+        # Drop snapshots whose whitening failed; keep an index map
+        # back to the original `pairs` for the cosine evaluation.
+        valid_idx = [i for i, c in enumerate(cum_stacks) if c is not None]
+        if not valid_idx:
+            n_skipped += B
+            continue
+        q_batch = np.stack([cum_stacks[i] for i in valid_idx], axis=0)
+        rot_batch = _joint_diag_batched(q_batch)
+        # Evaluate per snapshot.
+        acc = accumulators.setdefault(
+            (layer, kind), _OpAccumulator.empty(layer, kind)
+        )
+        for batch_idx, orig_idx in enumerate(valid_idx):
+            u_arr, h_arr = pairs[orig_idx]
+            rot = rot_batch[batch_idx]
+            w = whiten_mats[orig_idx]
+            b_demix = rot.T @ w
+            s_hat = b_demix @ u_arr
+            p95 = _p95_cosine_with_hungarian(s_hat, h_arr)
+            acc.p95_cosines.append(p95)
+            n_paired += 1
+        n_skipped += B - len(valid_idx)
 
     if n_paired == 0:
         return AttackResult(

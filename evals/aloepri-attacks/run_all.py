@@ -55,6 +55,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from snapshots_loader import open_three_conditions  # type: ignore  # noqa: E402
 
+# Memory pre-flight (ported from m2_7/m2_7_common.py). The
+# `attack_matrix` phase peaks ~6 GB on Qwen3-1.7B (embedding table
+# f32 ≈ 600 MB + per-condition snapshot caches + numpy scratch for
+# the §4.3 drivers); 8 GB minimum is the documented threshold.
+from m2_7.m2_7_common import check_phase_memory, add_min_mem_args  # type: ignore  # noqa: E402
+
+# Add the gate phase if it's not in the path-2 default table.
+import m2_7.m2_7_common as _m2_7_common  # type: ignore  # noqa: E402
+_m2_7_common.PHASE_MIN_GB.setdefault("attack_matrix", 8.0)
+
 from attack_drivers import (  # type: ignore  # noqa: E402
     run_anchor_ica,
     run_gram_error,
@@ -62,6 +72,7 @@ from attack_drivers import (  # type: ignore  # noqa: E402
     run_ima,
     run_ima_paper_like,
     run_isa,
+    run_isa_attn_score,
     run_jade,
     run_jd,
     run_nn,
@@ -95,6 +106,10 @@ ATTACKS = [
     ("jade", run_jade),
     ("jd", run_jd),
     ("gram_error", run_gram_error),
+    # ISA-AttnScore — placeholder for the M1.10 permuted-attention
+    # path. Emits not_applicable until the GELO protocol grows an
+    # attention-score snapshot kind. See run_isa_attn_score.py.
+    ("isa_attn_score", run_isa_attn_score),
 ]
 
 
@@ -135,7 +150,30 @@ def main() -> None:
         dest="strip_shield",
         action="store_false",
     )
+    p.add_argument(
+        "--skip-attacks",
+        default="",
+        help=(
+            "Comma-separated list of attack names to skip (e.g. "
+            "`anchor_ica` to bypass the multi-minute FastICA loop). "
+            "Skipped attacks emit a `not_applicable` row with phase="
+            "`skip_attacks_flag` so the result table stays square."
+        ),
+    )
+    add_min_mem_args(p, phase="attack_matrix")
     args = p.parse_args()
+
+    # Pre-flight memory check — fails fast with a clear message if
+    # the box can't hold the embedding table + per-condition caches.
+    check_phase_memory(
+        phase="attack_matrix",
+        override_min_gb=args.min_mem_gb,
+        skip=args.skip_mem_check,
+    )
+
+    skip_set = {s.strip() for s in args.skip_attacks.split(",") if s.strip()}
+    if skip_set:
+        print(f"[skip] attacks excluded by --skip-attacks: {sorted(skip_set)}")
 
     conditions = open_three_conditions(args.snapshot_root)
     print(
@@ -151,9 +189,25 @@ def main() -> None:
     for cond_slug, snaps in conditions.items():
         per_attack: dict[str, Any] = {}
         for name, mod in ATTACKS:
+            if name in skip_set:
+                print(f"  [{cond_slug}] skipping {name} (--skip-attacks)")
+                from attack_drivers.common import AttackResult  # type: ignore
+                per_attack[name] = AttackResult(
+                    attack=name,
+                    condition=snaps.condition,
+                    model_id=snaps.model_id,
+                    n_prompts=snaps.n_prompts(),
+                    n_train=0,
+                    n_test=0,
+                    ttrsr_top1=None,
+                    ttrsr_top10=None,
+                    risk_level="not_applicable",
+                    extra={"phase": "skip_attacks_flag"},
+                ).to_dict()
+                continue
             print(f"  [{cond_slug}] running {name}…")
             kwargs: dict[str, Any] = {}
-            if name in {"nn", "ima", "isa", "ima_paper_like"}:
+            if name in {"nn", "ima", "isa", "ima_paper_like", "isa_attn_score"}:
                 kwargs["strip_shield"] = args.strip_shield
                 kwargs["embed_table"] = embed_table
             if name == "ima":
