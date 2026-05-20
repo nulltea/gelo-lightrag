@@ -12,7 +12,7 @@ Vulkan GPU, and distance-preserving ciphertext (CAPRISE) at rest.
 Extends end-to-end to private LightRAG retrieval over Ring-ORAM +
 XorMM volume-hiding multimaps.
 
-Design and measurement docs: **<https://nulltea.github.io/gelo-lightrag/>**
+Design and measurement docs: **<https://nulltea.github.io/rag-privacy/>**
 
 ## Workspace layout
 
@@ -49,7 +49,7 @@ cargo test -- --ignored        # downloads embedding model via fastembed
 obfuscated Qwen3-1.7B GGUF served by a patched `llama-server`.
 Captures observables, runs prompt-inversion attacks against them.
 Measured results in
-[`docs/prototype/aloepri-llm.html`](https://nulltea.github.io/gelo-lightrag/aloepri-llm.html);
+[`docs/prototype/aloepri-llm.html`](https://nulltea.github.io/rag-privacy/aloepri-llm.html);
 operator runbook in `evals/aloepri-attacks/README.md`.
 
 The patched `llama-server` builds from the `vendor/llama.cpp`
