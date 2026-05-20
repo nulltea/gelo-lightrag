@@ -1134,9 +1134,11 @@
           </div>
         </header>
         <p class="lede">
-          Two figures and two algorithm specs. <strong>FIG. 03a</strong> traces
-          one full request end-to-end, showing what is plaintext, what is
-          obfuscated, and where the trust boundary sits.
+          Two figures and two algorithm specs. <strong>FIG. 03a</strong> shows
+          the full deployment in two stages — Stage 1 is the one-time setup
+          where the client samples the keymat / τ and builds the obfuscated
+          GGUF; Stage 2 is the per-request flow where plaintext stays inside the
+          trusted zone and only an obfuscated integer-ID array crosses the wire.
           <strong>FIG. 03b</strong> shows the per-attention-block Algorithm 2
           deployment, now fully landed (matrix-Γ kernel, 2026-05-19) including
           the intra-head transforms (R̂<sub>qk</sub>, Ĥ<sub>qk</sub>,
@@ -1350,23 +1352,24 @@
           </p>
         </div>
 
-        <!-- ══════════ FIG. 03a — End-to-end request flow ══════════ -->
+        <!-- ══════════ FIG. 03a — End-to-end (setup + request) ══════════ -->
         <div class="diagram-frame">
           <div class="diagram-cap">
             <span class="l"
-              >FIG. 03a — One request through AloePri · plaintext stays inside
-              the trusted zone · only an obfuscated integer-ID array crosses the
-              wire</span
+              >FIG. 03a — Two stages · Stage 1 setup builds the obfuscated GGUF
+              on the client (Algorithm 1 + §5.2.2 noise + Π + optional Algorithm
+              2) · Stage 2 per-request flow keeps plaintext inside the trusted
+              zone, only an obfuscated int array crosses the wire</span
             >
             <span
               >navy = client (trusted) · gpu-tone =
               <code>llama-server</code> (untrusted) · dashed amber = obfuscated
-              wire payload</span
+              wire payload · solid grey arrows = one-time setup transfers</span
             >
           </div>
           <svg
             class="flow"
-            viewBox="0 0 1320 720"
+            viewBox="0 0 1320 1340"
             xmlns="http://www.w3.org/2000/svg"
             role="img"
           >
@@ -1383,107 +1386,455 @@
                 <path d="M0,0 L10,5 L0,10 z" fill="context-stroke" />
               </marker>
             </defs>
+
+            <!-- Zone bands spanning both stages -->
             <rect
               x="0"
               y="40"
               width="700"
-              height="660"
+              height="1300"
               class="zone-band zone-band-client"
             />
             <rect
               x="700"
               y="40"
               width="620"
-              height="660"
+              height="1300"
               class="zone-band zone-band-gpu"
             />
             <text x="20" y="64" class="zone-label">
               Trusted zone · client wrapper
             </text>
             <text x="20" y="80" class="zone-sublabel">
-              holds τ · tokenizer · no GPU · no TEE
+              holds τ · keymat · tokenizer · plain Qwen3 source weights · no GPU
             </text>
             <text x="720" y="64" class="zone-label">
-              Untrusted zone · llama-server
+              Untrusted zone · llama-server (matrix-Γ patched llama.cpp)
             </text>
             <text x="720" y="80" class="zone-sublabel">
-              obfuscated GGUF θ̃ · stock binary · no protocol awareness
+              receives obfuscated GGUF θ̃ once · serves /completion · no τ, no
+              keymat
             </text>
-            <line x1="700" y1="40" x2="700" y2="700" class="boundary" />
-            <text x="704" y="696" class="boundary-label">
-              HTTPS · obfuscated int array
+            <line x1="700" y1="40" x2="700" y2="1340" class="boundary" />
+            <text x="704" y="1336" class="boundary-label">
+              setup: HTTPS GGUF upload · request: HTTPS obf int array
             </text>
 
-            <!-- Step 1: plaintext prompt -->
+            <!-- ══════════ STAGE 1 BANNER ══════════ -->
+            <rect x="0" y="100" width="1320" height="26" fill="#333" />
+            <text
+              x="20"
+              y="118"
+              font-family="JetBrains Mono"
+              font-size="11"
+              font-weight="700"
+              fill="#fff"
+              letter-spacing="0.22em"
+            >
+              STAGE 1 · SETUP (one-time, per deployment)
+            </text>
+            <text
+              x="380"
+              y="118"
+              font-family="Fraunces"
+              font-style="italic"
+              font-size="13"
+              fill="#fff"
+            >
+              client samples keymat + τ · applies Algorithm 1 + noise + Π +
+              Algorithm 2 to the source GGUF · uploads obfuscated θ̃ to server
+            </text>
+
+            <!-- Stage 1: source GGUF arrives from HuggingFace -->
             <rect
               x="60"
-              y="100"
+              y="146"
+              width="580"
+              height="38"
+              class="box box-client"
+            />
+            <text x="350" y="166" class="box-label" text-anchor="middle">
+              ① source plain GGUF
+            </text>
+            <text x="350" y="180" class="box-mono" text-anchor="middle">
+              Qwen_Qwen3-1.7B-Q8_0.gguf · obtained from huggingface.co/bartowski
+            </text>
+
+            <!-- Stage 1: Algorithm 1 sampling -->
+            <path
+              d="M350 184 L350 198"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxflow)"
+            />
+            <rect
+              x="60"
+              y="198"
+              width="580"
+              height="86"
+              class="box box-client box-strong"
+            />
+            <text x="350" y="218" class="box-label" text-anchor="middle">
+              ② Algorithm 1 — sample keymat P̂, Q̂ with P̂·Q̂ = I_d
+            </text>
+            <text x="350" y="236" class="box-mono" text-anchor="middle">
+              params: d=2048 (Qwen3-1.7B), h=128, λ=0.3
+            </text>
+            <text x="350" y="252" class="box-mono" text-anchor="middle">
+              U ~ O_d · V ~ N(0,1/d)^{d×d} · B = U+λV · E,F via rank-h/2
+              Gaussian pairs · Z ~ O_{d+2h}
+            </text>
+            <text x="350" y="266" class="box-mono" text-anchor="middle">
+              P̂ = [B | C | E]·Z ; Q̂ = Zᵀ · [B⁻¹ | F | D]ᵀ
+            </text>
+            <text
+              x="350"
+              y="280"
+              class="box-mono"
+              text-anchor="middle"
+              style="font-style: italic; fill: #555"
+            >
+              C ⊂ null(Fᵀ), D ⊂ null(E) — decoy structure in the +2h expansion
+            </text>
+
+            <!-- Stage 1: τ permutation -->
+            <path
+              d="M350 284 L350 298"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxflow)"
+            />
+            <rect
+              x="60"
+              y="298"
+              width="580"
+              height="60"
+              class="box box-client box-strong"
+            />
+            <text x="350" y="318" class="box-label" text-anchor="middle">
+              ③ sample τ ∈ S_151643 (vocab permutation, special tokens identity)
+            </text>
+            <text x="350" y="334" class="box-mono" text-anchor="middle">
+              permutable = {ids with token_type ∈ {NORMAL, BYTE}} · 151 643 of
+              151 669 active
+            </text>
+            <text x="350" y="350" class="box-mono" text-anchor="middle">
+              26 special tokens (EOS, BOS, im_start, im_end, fim_*) kept
+              identity
+            </text>
+
+            <!-- Stage 1: apply transforms to every tensor -->
+            <path
+              d="M350 358 L350 372"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxflow)"
+            />
+            <rect
+              x="60"
+              y="372"
+              width="580"
+              height="120"
+              class="box box-client"
+            />
+            <text x="350" y="392" class="box-label" text-anchor="middle">
+              ④ apply §5.2.5 fusion + Π + noise + Algorithm 1 + Algorithm 2
+            </text>
+            <text x="350" y="410" class="box-mono" text-anchor="middle">
+              W̃_embed = Π · (W_e + α_e·σ_e·ε) · P̂_embed (α_e = 0.1 path-2
+              default; paper 1.0)
+            </text>
+            <text x="350" y="424" class="box-mono" text-anchor="middle">
+              W̃_q,k = Q̂_R · W_q,k · M_q,k where M_q = R̂_qk·Ĥ_qk·Ẑ_block
+              (orthogonal, Walsh-Hadamard Ĥ)
+            </text>
+            <text x="350" y="438" class="box-mono" text-anchor="middle">
+              Γ_q = M_qᵀ·Diag(γ_q)·M_q → attn_q_norm becomes 2D (matrix-Γ)
+            </text>
+            <text x="350" y="452" class="box-mono" text-anchor="middle">
+              W̃_v = Q̂_v·W_v·Û_vo ; W̃_o = Û_vo⁻¹·W_o·P̂_o
+            </text>
+            <text x="350" y="466" class="box-mono" text-anchor="middle">
+              W̃_ffn covariant chain ; W̃_head = Q̂_head·(W_h+α_h·ε)·Πᵀ
+            </text>
+            <text
+              x="350"
+              y="482"
+              class="box-mono"
+              text-anchor="middle"
+              style="font-style: italic; fill: #555"
+            >
+              residual γ folded into adjacent linear, norm site replaced with
+              scalar κ (§5.2.5)
+            </text>
+
+            <!-- Stage 1: outputs split — GGUF goes to server, key.npz stays -->
+            <path
+              d="M180 492 L180 510"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxflow)"
+            />
+            <path
+              d="M520 492 L520 510"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxflow)"
+            />
+            <rect
+              x="60"
+              y="510"
+              width="280"
+              height="50"
+              class="box box-client box-strong"
+            />
+            <text x="200" y="528" class="box-label" text-anchor="middle">
+              ⑤a obfuscated GGUF θ̃
+            </text>
+            <text x="200" y="544" class="box-mono" text-anchor="middle">
+              keymat-h128-pi-noise-alg2.gguf
+            </text>
+            <text x="200" y="558" class="box-mono" text-anchor="middle">
+              + aloepri.qk_norm_matrix=true
+            </text>
+
+            <rect
+              x="380"
+              y="510"
+              width="260"
+              height="50"
+              class="box box-client box-strong"
+              style="fill: #fff5d6; stroke: #c89b3a"
+            />
+            <text
+              x="510"
+              y="528"
+              class="box-label"
+              text-anchor="middle"
+              style="fill: #6b4a00"
+            >
+              ⑤b .key.npz (stays on client, forever)
+            </text>
+            <text x="510" y="544" class="box-mono" text-anchor="middle">
+              {τ, τ⁻¹, vocab_size, active_size, seeds}
+            </text>
+            <text
+              x="510"
+              y="558"
+              class="box-mono"
+              text-anchor="middle"
+              style="font-style: italic; fill: #6b4a00"
+            >
+              never crosses the wire
+            </text>
+
+            <!-- Stage 1: server side -->
+            <rect x="760" y="146" width="540" height="38" class="box box-gpu" />
+            <text x="1030" y="166" class="box-label" text-anchor="middle">
+              ⑥ llama-server (patched llama.cpp · option-c image)
+            </text>
+            <text x="1030" y="180" class="box-mono" text-anchor="middle">
+              awaiting model upload
+            </text>
+
+            <!-- Stage 1: GGUF upload arrow client → server -->
+            <path
+              d="M340 535 L760 200"
+              stroke="#888"
+              stroke-width="1.5"
+              fill="none"
+              marker-end="url(#ahxflow)"
+            />
+            <text
+              x="540"
+              y="320"
+              font-family="JetBrains Mono"
+              font-size="11"
+              fill="#555"
+            >
+              one-time upload
+            </text>
+            <text
+              x="540"
+              y="334"
+              font-family="JetBrains Mono"
+              font-size="11"
+              fill="#555"
+            >
+              ~9 GB · HTTPS
+            </text>
+
+            <!-- Stage 1: server loads model -->
+            <path
+              d="M1030 184 L1030 198"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxflow)"
+            />
+            <rect
+              x="760"
+              y="198"
+              width="540"
+              height="100"
+              class="box box-gpu box-strong"
+            />
+            <text x="1030" y="218" class="box-label" text-anchor="middle">
+              ⑦ load θ̃ · build compute graph
+            </text>
+            <text x="1030" y="236" class="box-mono" text-anchor="middle">
+              detects aloepri.qk_norm_matrix → branches q_norm/k_norm to
+              ggml_mul_mat
+            </text>
+            <text x="1030" y="252" class="box-mono" text-anchor="middle">
+              consumes 2D Γ_q (128×128) instead of legacy 1D γ_q
+            </text>
+            <text x="1030" y="268" class="box-mono" text-anchor="middle">
+              else (no flag) → bit-identical to upstream llama.cpp
+            </text>
+            <text
+              x="1030"
+              y="286"
+              class="box-mono"
+              text-anchor="middle"
+              style="font-style: italic; fill: #555"
+            >
+              server has no awareness of τ or the obfuscation protocol
+            </text>
+
+            <!-- Stage 1: server ready -->
+            <path
+              d="M1030 298 L1030 312"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxflow)"
+            />
+            <rect x="760" y="312" width="540" height="38" class="box box-gpu" />
+            <text x="1030" y="332" class="box-label" text-anchor="middle">
+              ⑧ /health → ok · listening on :8061
+            </text>
+            <text x="1030" y="346" class="box-mono" text-anchor="middle">
+              forward graph identical to plaintext Qwen3 modulo matrix-Γ branch
+            </text>
+
+            <!-- τ persistence dashed arrow from .key.npz down to Stage 2 -->
+            <path
+              d="M510 565 L510 620"
+              stroke="#c89b3a"
+              stroke-width="1.5"
+              fill="none"
+              stroke-dasharray="3 3"
+              marker-end="url(#ahxflow)"
+            />
+            <text
+              x="520"
+              y="600"
+              font-family="JetBrains Mono"
+              font-size="10"
+              fill="#6b4a00"
+              style="font-style: italic"
+            >
+              τ persists across all Stage 2 requests
+            </text>
+
+            <!-- ══════════ STAGE SEPARATOR ══════════ -->
+            <line
+              x1="0"
+              y1="625"
+              x2="1320"
+              y2="625"
+              stroke="#333"
+              stroke-width="1"
+              stroke-dasharray="6 4"
+              opacity="0.6"
+            />
+
+            <!-- ══════════ STAGE 2 BANNER ══════════ -->
+            <rect x="0" y="640" width="1320" height="26" fill="#333" />
+            <text
+              x="20"
+              y="658"
+              font-family="JetBrains Mono"
+              font-size="11"
+              font-weight="700"
+              fill="#fff"
+              letter-spacing="0.22em"
+            >
+              STAGE 2 · ONLINE REQUEST (per query)
+            </text>
+            <text
+              x="380"
+              y="658"
+              font-family="Fraunces"
+              font-style="italic"
+              font-size="13"
+              fill="#fff"
+            >
+              plaintext prompt → tokenize → τ-map → /completion (obf int array)
+              → τ⁻¹ → detokenize → plaintext response
+            </text>
+
+            <!-- Stage 2 Step 1: plaintext prompt -->
+            <rect
+              x="60"
+              y="686"
               width="580"
               height="46"
               class="box box-client box-strong"
             />
-            <text x="350" y="120" class="box-label" text-anchor="middle">
+            <text x="350" y="706" class="box-label" text-anchor="middle">
               ① plaintext prompt
             </text>
-            <text x="350" y="138" class="box-mono" text-anchor="middle">
+            <text x="350" y="724" class="box-mono" text-anchor="middle">
               "What is the capital of France?"
             </text>
 
             <!-- Step 2: tokenize -->
             <path
-              d="M350 146 L350 162"
+              d="M350 732 L350 748"
               class="arrow arrow-secret"
               marker-end="url(#ahxflow)"
             />
             <rect
               x="60"
-              y="162"
+              y="748"
               width="580"
               height="46"
               class="box box-client"
             />
-            <text x="350" y="182" class="box-label" text-anchor="middle">
+            <text x="350" y="768" class="box-label" text-anchor="middle">
               ② tokenize (Qwen3 BPE, no special tokens)
             </text>
-            <text x="350" y="200" class="box-mono" text-anchor="middle">
+            <text x="350" y="786" class="box-mono" text-anchor="middle">
               plain_ids = [3838, 374, 279, 6722, 315, 9625, 30]
             </text>
 
             <!-- Step 3: τ-map -->
             <path
-              d="M350 208 L350 224"
+              d="M350 794 L350 810"
               class="arrow arrow-secret"
               marker-end="url(#ahxflow)"
             />
             <rect
               x="60"
-              y="224"
+              y="810"
               width="580"
               height="46"
               class="box box-client box-strong"
             />
-            <text x="350" y="244" class="box-label" text-anchor="middle">
-              ③ map each token ID through τ (length-151 669 permutation)
+            <text x="350" y="830" class="box-label" text-anchor="middle">
+              ③ map each token ID through τ (from .key.npz, never crosses wire)
             </text>
-            <text x="350" y="262" class="box-mono" text-anchor="middle">
+            <text x="350" y="848" class="box-mono" text-anchor="middle">
               obf_ids = [137 397, 44 230, 90 908, 60 247, 33 846, 135 351, 102
               727]
             </text>
 
-            <!-- (no detokenize step — IDs go on the wire directly) -->
-
             <!-- ④ wire: POST to llama-server -->
             <path
-              d="M640 246 L1000 246"
+              d="M640 832 L1000 832"
               class="arrow arrow-masked"
               marker-end="url(#ahxflow)"
             />
-            <text x="820" y="240" class="arrow-label masked">
-              POST /completion {"prompt": [obf_ids], "return_tokens": true}
+            <text x="820" y="826" class="arrow-label masked">
+              POST /completion {"prompt": [obf_ids], "return_tokens": true,
+              "stream": true}
             </text>
             <text
               x="820"
-              y="276"
+              y="862"
               class="arrow-label masked"
               style="font-style: italic"
             >
@@ -1494,35 +1845,35 @@
             <!-- llama-server box -->
             <rect
               x="780"
-              y="296"
+              y="882"
               width="460"
               height="170"
               class="box box-gpu box-strong"
             />
-            <text x="1010" y="318" class="box-label" text-anchor="middle">
+            <text x="1010" y="904" class="box-label" text-anchor="middle">
               ④ llama-server forward pass
             </text>
-            <text x="1010" y="340" class="box-mono" text-anchor="middle">
+            <text x="1010" y="926" class="box-mono" text-anchor="middle">
               accepts int array directly — no
             </text>
-            <text x="1010" y="354" class="box-mono" text-anchor="middle">
+            <text x="1010" y="940" class="box-mono" text-anchor="middle">
               server-side tokenisation needed
             </text>
-            <text x="1010" y="376" class="box-mono" text-anchor="middle">
+            <text x="1010" y="962" class="box-mono" text-anchor="middle">
               embedding lookup: W̃_e[obf_ids] →
             </text>
-            <text x="1010" y="390" class="box-mono" text-anchor="middle">
+            <text x="1010" y="976" class="box-mono" text-anchor="middle">
               (implicit) plain_embed in P̂_R space
             </text>
-            <text x="1010" y="410" class="box-mono" text-anchor="middle">
+            <text x="1010" y="996" class="box-mono" text-anchor="middle">
               28 decoder blocks · GQA(16,8) · RoPE 1M
             </text>
-            <text x="1010" y="424" class="box-mono" text-anchor="middle">
+            <text x="1010" y="1010" class="box-mono" text-anchor="middle">
               sample argmax over obfuscated logits
             </text>
             <text
               x="1010"
-              y="446"
+              y="1032"
               class="box-sub"
               text-anchor="middle"
               fill="#666"
@@ -1531,7 +1882,7 @@
             </text>
             <text
               x="1010"
-              y="460"
+              y="1046"
               class="box-sub"
               text-anchor="middle"
               fill="#666"
@@ -1541,84 +1892,86 @@
 
             <!-- ⑤ wire back -->
             <path
-              d="M1000 484 L640 484"
+              d="M1000 1070 L640 1070"
               class="arrow arrow-masked"
               marker-end="url(#ahxflow)"
             />
-            <text x="820" y="478" class="arrow-label masked">
-              HTTP 200 {"content": "…", "tokens": [obf_resp_ids]}
+            <text x="820" y="1064" class="arrow-label masked">
+              SSE stream {"content": "…(gibberish)", "tokens": [obf_resp_ids]} ·
+              client ignores content
             </text>
 
             <!-- ⑤ obf response -->
             <rect
               x="60"
-              y="464"
+              y="1050"
               width="580"
               height="46"
               class="box box-client"
             />
-            <text x="350" y="484" class="box-label" text-anchor="middle">
-              ⑤ receive obf_resp_ids · ignore content field
+            <text x="350" y="1070" class="box-label" text-anchor="middle">
+              ⑤ accumulate obf_resp_ids from SSE chunks
             </text>
-            <text x="350" y="502" class="box-mono" text-anchor="middle">
-              obf_resp_ids = […] (24 tokens for max_tokens=24)
+            <text x="350" y="1088" class="box-mono" text-anchor="middle">
+              obf_resp_ids = […] · stream-mode dodges server-side PEG
+              chat-parser
             </text>
 
             <!-- ⑥ τ⁻¹ -->
             <path
-              d="M350 510 L350 526"
+              d="M350 1096 L350 1112"
               class="arrow arrow-secret"
               marker-end="url(#ahxflow)"
             />
             <rect
               x="60"
-              y="526"
+              y="1112"
               width="580"
               height="46"
               class="box box-client box-strong"
             />
-            <text x="350" y="546" class="box-label" text-anchor="middle">
+            <text x="350" y="1132" class="box-label" text-anchor="middle">
               ⑥ map response IDs through τ
               <sup>-1</sup>
             </text>
-            <text x="350" y="564" class="box-mono" text-anchor="middle">
+            <text x="350" y="1150" class="box-mono" text-anchor="middle">
               plain_resp_ids = inv_tau[obf_resp_ids]
             </text>
 
             <!-- ⑦ detokenize -->
             <path
-              d="M350 572 L350 588"
+              d="M350 1158 L350 1174"
               class="arrow arrow-secret"
               marker-end="url(#ahxflow)"
             />
             <rect
               x="60"
-              y="588"
+              y="1174"
               width="580"
               height="46"
               class="box box-client"
             />
-            <text x="350" y="608" class="box-label" text-anchor="middle">
+            <text x="350" y="1194" class="box-label" text-anchor="middle">
               ⑦ detokenize plaintext IDs
             </text>
-            <text x="350" y="626" class="box-mono" text-anchor="middle">
+            <text x="350" y="1212" class="box-mono" text-anchor="middle">
               "The capital of France is Paris.\n\nNo, that's not right…"
             </text>
 
             <!-- ⑧ return -->
             <path
-              d="M350 634 L350 650"
+              d="M350 1220 L350 1236"
               class="arrow arrow-secret"
               marker-end="url(#ahxflow)"
             />
             <rect
               x="60"
-              y="650"
+              y="1236"
               width="580"
               height="38"
               class="box box-client box-strong"
             />
-            <text x="350" y="674" class="box-label" text-anchor="middle">
+            <text x="350" y="1260" class="box-label" text-anchor="middle">
               ⑧ return plaintext response to caller
             </text>
           </svg>
@@ -1650,7 +2003,19 @@
           </thead>
           <tbody>
             <tr>
-              <td>Trusted zone ↔ network</td>
+              <td><b>Stage 1 · setup</b> · client ↔ server</td>
+              <td>
+                obfuscated GGUF θ̃ (~9 GB, one-time) ·
+                <code>aloepri.qk_norm_matrix</code> metadata flag · public Qwen3
+                architecture metadata
+              </td>
+              <td>
+                τ · .key.npz · keymat (P̂, Q̂, M_q, Û_vo) · noise seeds · the
+                plain source GGUF
+              </td>
+            </tr>
+            <tr>
+              <td><b>Stage 2 · request</b> · trusted zone ↔ network</td>
               <td>
                 obfuscated prompt int array · obfuscated response int array ·
                 HTTPS metadata · request count · request timing
