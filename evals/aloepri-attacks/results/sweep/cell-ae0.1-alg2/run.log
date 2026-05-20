@@ -1,0 +1,54 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[M2.7 quality+humaneval] endpoint=http://127.0.0.1:8063
+[M2.7 quality+humaneval] key=/home/timo/.cache/huggingface/path-2-aloepri/qwen3-1.7b/keymat-h128-pi-noise-ae0.1-ah0.033-alg2-fp32.gguf.key.npz
+[M2.7 quality+humaneval] quality probe (5 prompts)…
+  q[0] readable=True (ok) [ 48 tok, 1.9 s] 'The capital of France is' → ' Paris. The capital of the United Kingdom is London. The cap'
+  q[1] readable=True (ok) [ 48 tok, 1.8 s] 'Q: What is 17 times 4? A:' → ' 17 times 4 is 68. 17 times 4 is 68. The product of 17 and 4'
+  q[2] readable=True (ok) [ 22 tok, 0.9 s] 'Write a haiku about autumn leaves:' → ' 3 lines, 5-7-5 syllables.\nOkay, the user wants a haiku abou'
+  q[3] readable=True (ok) [ 48 tok, 1.8 s] 'def is_prime(n):' → '\n    if n <= 1:\n        return False\n    if n <= 3:\n        '
+  q[4] readable=True (ok) [ 48 tok, 1.8 s] "Translate to French: 'Good morning, how " → " 'Bonjour, comment ça va ?'\n\nYes, that's correct. But I want"
+  → all_readable=True (8.2 s)
+[M2.7 quality+humaneval] HumanEval pass@1 (n=20)…
+  he[ 0/20] HumanEval/163    fail (384 tok, 14.3 s) Traceback (most recent call last):
+  File "/tmp/tmpde6toyvd.py", line 34, in <mo
+  he[ 1/20] HumanEval/28     PASS (384 tok, 14.3 s) 
+  he[ 2/20] HumanEval/6      fail (384 tok, 14.3 s) Traceback (most recent call last):
+  File "/tmp/tmpfjfbfnsj.py", line 29, in <mo
+  he[ 3/20] HumanEval/70     fail ( 61 tok, 2.4 s)   File "/tmp/tmpi87cjio6.py", line 24
+    def check(candidate):
+IndentationError
+  he[ 4/20] HumanEval/62     fail (384 tok, 14.5 s) Traceback (most recent call last):
+  File "/tmp/tmpt626nteo.py", line 32, in <mo
+  he[ 5/20] HumanEval/57     PASS (384 tok, 14.4 s) 
+  he[ 6/20] HumanEval/35     PASS (384 tok, 14.4 s) 
+  he[ 7/20] HumanEval/26     fail ( 63 tok, 2.5 s) Traceback (most recent call last):
+  File "/tmp/tmpp8nm5q9e.py", line 32, in <mo
+  he[ 8/20] HumanEval/139    fail (384 tok, 14.4 s) Traceback (most recent call last):
+  File "/tmp/tmpr8a9qdkt.py", line 33, in <mo
+  he[ 9/20] HumanEval/22     PASS (384 tok, 14.4 s) 
+  he[10/20] HumanEval/151    fail (384 tok, 14.5 s)   File "/tmp/tmpmjdeotmd.py", line 20
+    But wait, the problem says to ignore n
+  he[11/20] HumanEval/108    fail (384 tok, 14.4 s)   File "/tmp/tmpo82taph9.py", line 38
+    Wait, but in the test case [-1, 11, -1
+  he[12/20] HumanEval/8      PASS (384 tok, 14.4 s) 
+  he[13/20] HumanEval/7      PASS (384 tok, 14.4 s) 
+  he[14/20] HumanEval/23     PASS (384 tok, 14.4 s) 
+  he[15/20] HumanEval/55     fail (384 tok, 14.4 s) Traceback (most recent call last):
+  File "/tmp/tmpja91q4wk.py", line 36, in <mo
+  he[16/20] HumanEval/59     fail (384 tok, 14.3 s)   File "/tmp/tmp34o0nv60.py", line 22
+    Wait, but the function is supposed to 
+  he[17/20] HumanEval/129    fail (384 tok, 14.5 s)   File "/tmp/tmpj8it1w86.py", line 38
+    Let's think about the approach.
+      
+  he[18/20] HumanEval/161    fail (384 tok, 14.4 s)   File "/tmp/tmpjld3sggs.py", line 25
+    ```
+    ^
+SyntaxError: invalid syntax
+
+  he[19/20] HumanEval/143    fail (384 tok, 14.4 s)   File "/tmp/tmp7w9wtofc.py", line 27
+    ```
+    ^
+SyntaxError: invalid syntax
+
+  → pass@1 = 7/20 = 0.350 (264 s)
+[M2.7 quality+humaneval] wrote evals/aloepri-attacks/results/sweep/cell-ae0.1-alg2/quality-humaneval.json
