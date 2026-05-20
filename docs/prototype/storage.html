@@ -30,7 +30,7 @@
       <div><b>key model</b>&nbsp;&nbsp;Option 3 · two-party HKDF</div>
       <div><b>runner</b>&nbsp;&nbsp;<code>gelo-snp-runner</code> ships this</div>
       <div><b>tests</b>&nbsp;&nbsp;9 / 9 e2e passing</div>
-      <span class="rev">forward-secure against TEE-only break</span>
+      <span class="rev">production storage path · two-party HKDF</span>
     </div>
   </header>
 
@@ -50,10 +50,34 @@
     </div>
   </section>
 
-  <!-- ═════ § 2 THREAT MODEL ═════ -->
-  <section id="threats">
+  <!-- ═════ § 2 DEFINITIONS ═════ -->
+  <section id="defs">
     <header class="section-head">
       <div class="section-num">§02</div>
+      <h2 class="section-title">Definitions &amp; glossary</h2>
+      <div class="section-meta">terms used on this page</div>
+    </header>
+    <table class="spec">
+      <thead>
+        <tr><th style="width:22%">Term</th><th>Definition</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>CAPRISE</strong></td><td>Ciphertext-Aware Privacy-pReserving Inner-product Similarity Encryption (Ye et al. 2026). Distance-preserving encryption: cosine similarity over ciphertext equals cosine over plaintext up to a known coefficient, so the server can run ANN directly on ciphertext.</td></tr>
+        <tr><td><strong>Two-party HKDF</strong></td><td>The CAPRISE seed and AES-GCM chunk key are derived per request via HKDF from <code>(user_x_sk ‖ tee_user_x_sk)</code>. <code>user_x_sk</code> lives client-side; <code>tee_user_x_sk</code> lives inside the SEV-SNP CVM. Neither half alone is sufficient — forward-secure against TEE-only break.</td></tr>
+        <tr><td><strong>RATLS</strong></td><td>Remote-Attested TLS. Client verifies the SEV-SNP attestation report inside the TLS handshake before sending plaintext; ECDHE is forward-secret per session.</td></tr>
+        <tr><td><strong>SEV-SNP / CVM</strong></td><td>AMD Secure Encrypted Virtualization · Secure Nested Paging. Confidential VM technology providing memory encryption + attestation.</td></tr>
+        <tr><td><strong><code>MEASUREMENT</code></strong></td><td>SHA-384 of the CVM launch image + initial register state. Pinned in the SEV-SNP attestation report — any change in TEE code rotates this value and invalidates impersonation.</td></tr>
+        <tr><td><strong>REPORT_DATA</strong></td><td>64-byte field in the SEV-SNP attestation report controlled by the guest. This codebase binds <code>(model_id, scheme_id, nonce)</code> into it so attestation covers the deployed scheme parameters.</td></tr>
+        <tr><td><strong>Vec2Text</strong></td><td>Morris et al., EMNLP 2023. Inverts embedding vectors back to near-exact source text — the canonical reason for keeping embeddings off the storage server even if "only" the geometry leaks.</td></tr>
+        <tr><td><strong>DPE</strong></td><td>Distance-Preserving Encryption — the class of schemes (CAPRISE is one) that preserve a chosen distance function across the boundary.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ═════ § 3 THREAT MODEL ═════ -->
+  <section id="threats">
+    <header class="section-head">
+      <div class="section-num">§03</div>
       <h2 class="section-title">Threat model</h2>
       <div class="section-meta">CAPRISE-at-rest · who sees what</div>
     </header>
@@ -93,14 +117,14 @@
     </table>
 
     <p class="lede" style="margin-top:24px;">
-      <strong>Known structural weakness.</strong> CAPRISE is distance-preserving by construction — the server can run cosine over ciphertext directly. That property leaks <em>inter-embedding distance geometry</em> even though it hides plaintext vectors. Defence-in-depth: compose with <a href="embedding.html">DP-Forward</a> on the pooled embedding inside the TEE (currently off by default — empirically destroys retrieval at ε = 4 in our bench). NOT secure against a key-holder running Vec2Text — that's the gap DP-Forward closes if enabled.
+      <strong>Known structural weakness.</strong> CAPRISE is distance-preserving by construction — the server can run cosine over ciphertext directly. That property leaks <em>inter-embedding distance geometry</em> even though it hides plaintext vectors. NOT secure against a key-holder running Vec2Text.
     </p>
   </section>
 
   <!-- ═════ § 3 COMPONENTS ═════ -->
   <section id="components">
     <header class="section-head">
-      <div class="section-num">§03</div>
+      <div class="section-num">§04</div>
       <h2 class="section-title">Components</h2>
       <div class="section-meta">CAPRISE path · 6 implementation units</div>
     </header>
@@ -118,7 +142,7 @@
           <dt>method</dt><dd>scale + radial-Gaussian noise on the unit sphere · PRF-derived per-nonce direction · <code>3/8</code> coefficient for docs, <code>1/8</code> for queries · <code>CapriseKey::from_seed</code> takes HKDF output</dd>
           <dt>source</dt><dd>Ye et al. 2026 / prRAG — arXiv</dd>
           <dt>secures</dt><dd>stored embedding vectors against a curious operator without the key</dd>
-          <dt>threat</dt><dd>curious cloud operator with full DB access. NOT secure against a key-holder running Vec2Text — that's what DP-Forward catches.</dd>
+          <dt>threat</dt><dd>curious cloud operator with full DB access. NOT secure against a key-holder running Vec2Text.</dd>
           <dt>cost</dt><dd><span class="overhead good">~0 retrieval overhead</span> · 2,339 vec/s encryption · Vec2Text BLEU drops 83 → 12.4 (paper)</dd>
         </dl>
       </article>
@@ -158,7 +182,7 @@
           <dt>source</dt><dd>in-house. Implements design-doc Option 3.</dd>
           <dt>secures</dt><dd>forward security against TEE-only compromise · cross-tenant isolation by construction</dd>
           <dt>threat</dt><dd>untrusted cloud operator. Breaks only under simultaneous TEE + client compromise.</dd>
-          <dt>cost</dt><dd>HKDF µs + CAPRISE µs per request. <strong>Variant A</strong> persistence today (in-memory <code>tee_user_x_sk</code> table); Variants B (KMS-released) and C (RP-escrowed) deferred.</dd>
+          <dt>cost</dt><dd>HKDF µs + CAPRISE µs per request. Today: in-memory <code>tee_user_x_sk</code> table; KMS-released and RP-escrowed persistence deferred.</dd>
         </dl>
       </article>
 
@@ -194,7 +218,7 @@
   <!-- ═════ § 4 COMPUTE FLOW ═════ -->
   <section id="flow">
     <header class="section-head">
-      <div class="section-num">§04</div>
+      <div class="section-num">§05</div>
       <h2 class="section-title">Compute flow &amp; trust boundaries</h2>
       <div class="section-meta">query path · ingest path is the same shape, encrypts instead of decrypting</div>
     </header>
@@ -305,94 +329,10 @@
     </table>
   </section>
 
-  <!-- ═════ § 5 INTERFACES ═════ -->
-  <section id="interfaces">
-    <header class="section-head">
-      <div class="section-num">§05</div>
-      <h2 class="section-title">Interfaces</h2>
-      <div class="section-meta">storage seams · HTTP surface</div>
-    </header>
-
-    <table class="spec">
-      <thead>
-        <tr><th>Seam</th><th>Trait / type</th><th>Crate</th><th>Boundary</th><th>Implementors / variants</th></tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td><b>Embedding cipher</b></td>
-          <td class="code">EmbeddingEncryptionScheme</td>
-          <td class="code">core (rag_core)</td>
-          <td>vector encryption with distinct doc / query forms</td>
-          <td><code>Caprise</code> · <code>SapScheme</code> · constructed via <code>CapriseKey::from_seed</code></td>
-        </tr>
-        <tr>
-          <td><b>Two-party KDF</b></td>
-          <td class="code">HkdfPolicy</td>
-          <td class="code">core (rag_core::keying)</td>
-          <td>deterministic <code>(user_x_sk, tee_sk, tenant) → (caprise_seed, aes_key)</code> + canonical <code>scheme_identity</code> encoder</td>
-          <td><code>HkdfPolicy::V1</code> · pinned in attestation REPORT_DATA</td>
-        </tr>
-        <tr>
-          <td><b>Tenant id</b></td>
-          <td class="code">TenantId</td>
-          <td class="code">core (rag_core::keying)</td>
-          <td>typed wrapper · scopes per-tenant <code>tee_user_x_sk</code> + index map · HKDF salt</td>
-          <td>opaque client-chosen utf-8 string</td>
-        </tr>
-        <tr>
-          <td><b>Chunk cipher</b></td>
-          <td class="code">AesChunkCipher</td>
-          <td class="code">core (rag_core::content)</td>
-          <td>AES-256-GCM authenticated chunk text</td>
-          <td><code>::generate()</code> for tests · <code>::from_key</code> for HKDF-derived path</td>
-        </tr>
-        <tr>
-          <td><b>ANN over ciphertext</b></td>
-          <td class="code">InMemoryEncryptedIndex</td>
-          <td class="code">core (rag_core::storage)</td>
-          <td>cosine top-k over CAPRISE ciphertext · no decryption</td>
-          <td>linear sweep today · HNSW swap planned</td>
-        </tr>
-        <tr>
-          <td><b>HTTP surface (runner)</b></td>
-          <td class="code">axum routes</td>
-          <td class="code">gelo-snp-runner</td>
-          <td>operator-facing service · <code>SNP_MODE</code> fail-closed · per-request <code>(tenant_id, user_x_sk)</code> over RATLS body</td>
-          <td><code>GET /health</code> · <code>GET /attest</code> · <code>POST /ingest</code> · <code>POST /query</code> · <code>POST /rotate</code> (501 stub)</td>
-        </tr>
-      </tbody>
-    </table>
-
-    <div class="two-col">
-      <div>
-        <h4>GeloRagTwoPartyService — what the runner binds</h4>
-        <ul>
-          <li><code>new(embedder, verifier)</code> · <code>with_params(embedder, verifier, scheme_params, hkdf_policy)</code> — generic over each seam, <strong>no scheme field</strong> (derived per request)</li>
-          <li><code>ingest_chunks_for(tenant_id, user_x_sk: Zeroizing&lt;[u8;32]&gt;, chunks)</code> — HKDF · CAPRISE · AES · index, zeroize at return</li>
-          <li><code>query_for(tenant_id, user_x_sk, text, top_k)</code> — re-derive same keys deterministically · search · decrypt · zeroize</li>
-          <li><code>rotate_tenant(...)</code> — stub returning <code>TwoPartyError::Inner("…")</code>; runner maps to 501. Full re-key flow in M8.</li>
-          <li><code>forget_tenant(tenant_id)</code> · <code>tenant_known</code> · <code>scheme_identity() → [u8;32]</code></li>
-          <li><code>TwoPartyError::UnknownTenant(t)</code> → HTTP 410 Gone (loud failure on CVM restart)</li>
-        </ul>
-      </div>
-      <div>
-        <h4>HkdfPolicy — what flows across the KDF seam</h4>
-        <ul>
-          <li><code>HkdfPolicy::V1.derive(user_x_sk, tee_user_x_sk, tenant_id) → (Zeroizing&lt;[u8;32]&gt;, Zeroizing&lt;[u8;32]&gt;)</code></li>
-          <li>One <code>Hkdf::&lt;Sha256&gt;::new(Some(tenant_id), user_x_sk ‖ tee_user_x_sk)</code> (Extract)</li>
-          <li>Two <code>hk.expand("gelo-rag.v1.caprise.seed", &amp;mut buf)</code> + <code>"…aes-chunks"</code> (Expand)</li>
-          <li><code>scheme_identity_fragment(params) → Vec&lt;u8&gt;</code> — canonical bytes for hashing</li>
-          <li><code>scheme_identity_digest(params) → [u8; 32]</code> — sha256 over fragment for REPORT_DATA[32..64]</li>
-          <li>Versioned via the info strings · bumping <code>v1 → v2</code> yields entirely fresh keys</li>
-        </ul>
-      </div>
-    </div>
-  </section>
-
   <!-- ═════ § 6 PERFORMANCE ═════ -->
   <section id="numbers">
     <header class="section-head">
-      <div class="section-num">§06</div>
+      <div class="section-num">§07</div>
       <h2 class="section-title">Performance &amp; correctness</h2>
       <div class="section-meta">measured · BEIR/NFCorpus · 9 / 9 e2e tests passing</div>
     </header>
@@ -407,7 +347,6 @@
         <tr><td>CAPRISE only (no DP)</td><td class="num">matches plain</td><td class="num">≥ 0.95</td><td>distance-preserving — protocol-fidelity asserted</td></tr>
         <tr><td>CAPRISE + GELO/BGE-base</td><td class="num">≈ plain BGE</td><td class="num">≥ 0.95</td><td>protocol-fidelity asserted</td></tr>
         <tr><td>CAPRISE + GELO/Qwen3-Emb</td><td class="num">≈ plain Qwen3</td><td class="num">≥ 0.95</td><td>model-vs-MiniLM gap reported separately</td></tr>
-        <tr><td>+ DP-Forward(ε=4) on pooled output</td><td class="num" style="color:var(--tee)">≪ plain</td><td class="num">—</td><td>destroys retrieval — documented finding, off by default</td></tr>
       </tbody>
     </table>
 
@@ -435,11 +374,11 @@
         <tr><th>Primitive</th><th>Crate</th><th>Org</th><th>Status in workspace</th></tr>
       </thead>
       <tbody>
-        <tr><td>HKDF (Extract + Expand)</td><td><code>hkdf 0.12</code></td><td>RustCrypto</td><td>added M1 · pure-Rust</td></tr>
+        <tr><td>HKDF (Extract + Expand)</td><td><code>hkdf 0.12</code></td><td>RustCrypto</td><td>pure-Rust</td></tr>
         <tr><td>HMAC-SHA256 (HKDF backbone)</td><td><code>hmac 0.12</code></td><td>RustCrypto</td><td>already in workspace</td></tr>
         <tr><td>SHA-256</td><td><code>sha2 0.10</code></td><td>RustCrypto</td><td>already in workspace</td></tr>
         <tr><td>AES-256-GCM</td><td><code>aes-gcm 0.10</code></td><td>RustCrypto</td><td>already in workspace</td></tr>
-        <tr><td>Secret zeroization</td><td><code>zeroize 1.x</code></td><td>RustCrypto</td><td>added M1 · <code>Zeroizing&lt;T&gt;</code></td></tr>
+        <tr><td>Secret zeroization</td><td><code>zeroize 1.x</code></td><td>RustCrypto</td><td><code>Zeroizing&lt;T&gt;</code></td></tr>
         <tr><td>TLS 1.3 ECDHE</td><td><code>rustls</code> via <code>reqwest/rustls-tls</code></td><td>rustls.dev</td><td>already in workspace</td></tr>
         <tr><td>SEV-SNP report parsing</td><td><code>sev 7</code></td><td>virtee (AMD)</td><td>already in workspace</td></tr>
       </tbody>
@@ -449,7 +388,7 @@
   <!-- ═════ § 7 STATUS ═════ -->
   <section id="status">
     <header class="section-head">
-      <div class="section-num">§07</div>
+      <div class="section-num">§08</div>
       <h2 class="section-title">Status &amp; gaps</h2>
       <div class="section-meta">CAPRISE-in-TEE milestones · open deferred items</div>
     </header>
@@ -466,7 +405,7 @@
         <tr><td><b>M4</b></td><td>Runner swap · <code>UserXskB64</code> redact-Debug newtype · <code>/rotate</code> stub → 501 · <code>UnknownTenant</code> → 410</td><td class="accent">green</td><td><code>gelo-snp-runner/src/main.rs</code></td></tr>
         <tr><td><b>M5</b></td><td><code>compose_scheme_identity(cfg ‖ 0x00 ‖ HkdfPolicy::digest)</code> → <code>REPORT_DATA[32..64]</code></td><td class="accent">green</td><td>runner main</td></tr>
         <tr><td><b>M6</b></td><td>E2E test suite (9 tests above) — happy path · CVM-restart loud failure · forward security · cross-tenant separation · scheme_identity stability · rotation stub</td><td class="accent">green</td><td><code>gelo-rag/tests/two_party_kdf_e2e.rs</code></td></tr>
-        <tr><td><b>M7</b></td><td>KMS-released <code>tee_user_x_sk</code> persistence (Variant B) · survives CVM restart at same <code>MEASUREMENT</code></td><td>deferred</td><td>spec'd, blocked on attested-KMS spike</td></tr>
+        <tr><td><b>M7</b></td><td>KMS-released <code>tee_user_x_sk</code> persistence · survives CVM restart at same <code>MEASUREMENT</code></td><td>deferred</td><td>spec'd, blocked on attested-KMS spike</td></tr>
         <tr><td><b>M8</b></td><td>Tenant key rotation flow · decrypt-under-old · re-encrypt-under-new · atomic swap</td><td>deferred</td><td>spec'd in <code>caprise-two-party-kdf.md §5.3</code></td></tr>
       </tbody>
     </table>
@@ -476,8 +415,8 @@
         <h4>Open levers (Storage layer)</h4>
         <ul>
           <li><b>HNSW swap in <code>InMemoryEncryptedIndex</code></b> — sub-ms search at 100k+ encrypted docs.</li>
-          <li><b>Variant-B persistence</b> for <code>tee_user_x_sk</code> — KMS-released disk-sealed secret, survives CVM restart at same <code>MEASUREMENT</code>. M7.</li>
-          <li><b>Rotation flow</b> — <code>/rotate</code> decrypts-under-old + re-encrypts-under-new atomically. M8.</li>
+          <li><b>KMS-released persistence</b> for <code>tee_user_x_sk</code> — disk-sealed secret released to the CVM under attestation, survives CVM restart at same <code>MEASUREMENT</code>.</li>
+          <li><b>Rotation flow</b> — <code>/rotate</code> decrypts-under-old + re-encrypts-under-new atomically.</li>
           <li><b>Server-side ZK proof of correct ANN</b> — V3DB-style. Open research gap; would close the integrity story for the storage side analogous to U-Verify on the GPU side.</li>
         </ul>
       </div>
@@ -507,7 +446,6 @@
       <h5>Source docs</h5>
       <ul>
         <li><code>docs/prototype/caprise-two-party-kdf.md</code></li>
-        <li><code>docs/prototype/dp-forward.md</code></li>
         <li><code>crates/core/src/keying.rs</code></li>
         <li><code>crates/gelo-rag/src/two_party_service.rs</code></li>
       </ul>
@@ -516,7 +454,6 @@
       <h5>External papers</h5>
       <ul>
         <li>CAPRISE / prRAG · Ye et al. 2026</li>
-        <li>DP-Forward · <a href="https://arxiv.org/abs/2309.06746">arXiv 2309.06746</a></li>
         <li>RFC 5869 · HKDF · Krawczyk 2010</li>
       </ul>
     </div>

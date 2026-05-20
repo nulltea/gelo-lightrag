@@ -30,7 +30,7 @@
       <div><b>tiers</b>&nbsp;&nbsp;T1 ✓ · T2 ✓ · T3 deferred</div>
       <div><b>tests</b>&nbsp;&nbsp;150 passed · 0 failed</div>
       <div><b>rev</b>&nbsp;&nbsp;2026·05·14</div>
-      <span class="rev">implements Approach 4</span>
+      <span class="rev">attested TEE · blind GPU · ciphertext at rest</span>
     </div>
   </header>
 
@@ -66,7 +66,7 @@
       <div class="section-meta">scope · goal</div>
     </header>
     <p class="lede">
-      A working <em>retrieval-only private RAG</em> system: a regulated enterprise outsources a document corpus to a cloud provider, queries it interactively, and gets ranked results back — without the cloud ever seeing plaintext text, plaintext embeddings, or which document matched. The prototype implements <strong>Approach 4</strong> from <span class="mono">docs/research/private-rag-system-design.md</span>: a thin client, an attested embedding TEE, an untrusted-but-blind GPU, and distance-preserving ciphertext at rest.
+      A working <em>retrieval-only private RAG</em> system: a regulated enterprise outsources a document corpus to a cloud provider, queries it interactively, and gets ranked results back — without the cloud ever seeing plaintext text, plaintext embeddings, or which document matched. The prototype combines a thin client, an attested embedding TEE, an untrusted-but-blind GPU, and distance-preserving ciphertext at rest.
     </p>
 
     <div class="prose">
@@ -75,12 +75,38 @@
     </div>
   </section>
 
-  <!-- ═════ § 2 FULL PROCESS FLOW ═════ -->
-  <section id="flow">
+  <!-- ═════ § 2 DEFINITIONS ═════ -->
+  <section id="defs">
     <header class="section-head">
       <div class="section-num">§02</div>
+      <h2 class="section-title">Definitions &amp; glossary</h2>
+      <div class="section-meta">cross-page terms used on the overview</div>
+    </header>
+    <table class="spec">
+      <thead>
+        <tr><th style="width:20%">Term</th><th>Definition</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>TEE / CVM</strong></td><td>Trusted Execution Environment. This codebase uses an AMD SEV-SNP Confidential VM as the trust boundary — encrypted memory plus a hardware-signed attestation report.</td></tr>
+        <tr><td><strong>RATLS</strong></td><td>Remote-Attested TLS. Client verifies the SEV-SNP attestation report inside the TLS handshake before any plaintext is sent.</td></tr>
+        <tr><td><strong>CAPRISE</strong></td><td>Distance-preserving encryption (Ye et al. 2026). Server can run cosine over ciphertext directly; the production storage path uses CAPRISE with a two-party HKDF-derived seed.</td></tr>
+        <tr><td><strong>GELO</strong></td><td>The per-forward orthogonal-mask split-inference protocol used by embedding / reranking / generation. Hidden states cross PCIe as <code>U = A·H</code> with <code>A</code> a fresh Haar mask sampled inside the TEE.</td></tr>
+        <tr><td><strong>RemoteRAG</strong></td><td>An alternative storage protocol (Cheng et al., ACL Findings 2025). Plaintext doc index plus planar-Laplace DP on the query plus Paillier rerank. Prototyped and parked — mutually exclusive with CAPRISE.</td></tr>
+        <tr><td><strong>Compass</strong></td><td>Zhu, Patel, Zaharia, Popa (OSDI 2025). HNSW-over-Ring-ORAM private graph retrieval — the GraphRAG layer wraps it.</td></tr>
+        <tr><td><strong>AloePri</strong></td><td>A static weight-obfuscation alternative to GELO (matrix-Γ obfuscated weights served via unmodified vLLM). Evaluated as a comparison generation path; no TEE in the loop.</td></tr>
+        <tr><td><strong>HNSW</strong></td><td>Hierarchical Navigable Small World graph — the graph-based ANN index used by every retrieval layer in this stack.</td></tr>
+        <tr><td><strong>Vec2Text</strong></td><td>Morris et al., EMNLP 2023. Inverts embedding vectors back to near-exact source text — the canonical motivation for keeping embeddings off the storage server.</td></tr>
+        <tr><td><strong>T1 / T2 / T3</strong></td><td>Hardware deployment tiers used in §05 hardware table. T1 = in-process mock, T2 = VM-simulated CVM, T3 = real SEV-SNP silicon with VFIO GPU passthrough.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ═════ § 3 FULL PROCESS FLOW ═════ -->
+  <section id="flow">
+    <header class="section-head">
+      <div class="section-num">§03</div>
       <h2 class="section-title">Full process flow</h2>
-      <div class="section-meta">three stages · ingest then retrieval then rerank · approach 4 checklist below</div>
+      <div class="section-meta">three stages · ingest then retrieval then rerank</div>
     </header>
     <p class="lede">
       A request traverses four trust zones, in three stages. <em>Stage 1 · Ingest</em> takes raw chunks from the client, embeds them inside the attested TEE (offloading the matmuls to a blind GPU under the GELO mask), derives the CAPRISE + AES keys via two-party HKDF, and writes the resulting ciphertext records to the untrusted vector DB. <em>Stage 2 · Retrieval</em> embeds the query through the same shape, encrypts it under the <em>query</em> CAPRISE coefficient, runs cosine ANN over the ciphertext on the server, then decrypts the top-k′ hits back inside the TEE. <em>Stage 3 · Rerank</em> derives a per-session <code>SessionKey</code> via HKDF, scores each <code>(query, chunk)</code> pair under GELO+mask, sorts in the TEE, and AES-GCM-seals the top-k final list (padded with decoys to <code>k_max</code>, shuffled) under a per-query key — scores never leave the CVM.
@@ -106,7 +132,7 @@
       </div>
       <div class="cell">
         <span class="lbl"><span class="swatch" style="background:var(--crypto)"></span>CRYPTO PRIMITIVE</span>
-        <span class="desc">value-class — HKDF, CAPRISE, AES-GCM, optional DP-Forward</span>
+        <span class="desc">value-class — HKDF, CAPRISE, AES-GCM</span>
       </div>
     </div>
 
@@ -417,13 +443,12 @@
         <tr><td class="num">1</td><td><b>Ingestion / chunking</b></td><td>Client passes raw text to TEE over RATLS; TEE chunk-encrypts AES-256-GCM with the derived <code>aes_chunk_key</code></td><td class="accent">green</td></tr>
         <tr><td class="num">2</td><td><b>Session setup / attestation</b></td><td>SEV-SNP attestation via <code>/attest</code>; <code>SnpAttestationVerifier</code> chain validates ARK→ASK→VCEK; <code>REPORT_DATA</code> binds <code>(model_id, scheme_id, nonce)</code></td><td class="accent">green</td></tr>
         <tr><td class="num">3</td><td><b>Embedding (TEE-side)</b></td><td><strong>Primary variant</strong> chosen: full embedding model in TEE with GELO mask offloading linears to GPU. ObfuscaTune-encoder + GELO-encoder variants not built.</td><td class="accent">green</td></tr>
-        <tr><td class="num">4</td><td><b>Storage — CAPRISE key management</b></td><td><strong>Option 3 chosen</strong>: two-party HKDF (<code>user_x_sk</code> client + <code>tee_user_x_sk</code> TEE → <code>caprise_seed_key</code> + <code>aes_chunk_key</code>). Variant A in-memory persistence today; Variant B (KMS-released) deferred.</td><td class="accent">green</td></tr>
+        <tr><td class="num">4</td><td><b>Storage — CAPRISE key management</b></td><td><strong>Option 3 chosen</strong>: two-party HKDF (<code>user_x_sk</code> client + <code>tee_user_x_sk</code> TEE → <code>caprise_seed_key</code> + <code>aes_chunk_key</code>). In-memory persistence today; KMS-released variant deferred.</td><td class="accent">green</td></tr>
         <tr><td class="num">5</td><td><b>Query submission</b></td><td>Client POSTs <code>(tenant_id, user_x_sk, text, top_k)</code> over RATLS; TEE re-derives the same keys deterministically, embeds via GELO, CAPRISE-encrypts with the <em>query</em> coefficient (1/8)</td><td class="accent">green</td></tr>
         <tr><td class="num">6</td><td><b>Retrieval</b></td><td>Cosine over CAPRISE ciphertext (in-memory linear ANN today; HNSW swap planned at &gt;100k docs). Distance-preserving — no server-side decryption ever.</td><td class="accent">green</td></tr>
         <tr><td class="num">7</td><td><b>Decryption / handoff</b></td><td>TEE CAPRISE-decrypts the candidate embeddings + AES-decrypts the chunk texts inside the CVM, zeroizes the derived keys, returns plaintext top-k over the same RATLS session.</td><td class="accent">green</td></tr>
-        <tr><td class="num">8</td><td><b>DistanceDP — defence in depth</b></td><td>DP-Forward (Recipe-B aMGM) implemented in <code>crates/dp-forward</code>, callable on the pooled output inside the embedder. <strong>Empirically destroys NFCorpus retrieval at ε = 4</strong> — kept available, not on by default.</td><td>partial</td></tr>
-        <tr><td class="num">9</td><td><b>Reranking / filtering</b></td><td>Not implemented in-TEE; client-side cross-encoder rerank is the design intent (TEE returns plaintext top-k that the client reranks locally). The TEE re-ranks Stage-1 candidates against the clean embedding only for accuracy verification in the bench.</td><td style="color:var(--ink-3)">deferred</td></tr>
-        <tr><td class="num">10</td><td><b>Answer generation</b></td><td>Out of scope for the prototype — client-side LLM is the assumed architecture. ObfuscaTune / GELO+OSNIP variants for hosted generation are designed in the spec, not built.</td><td style="color:var(--ink-3)">deferred</td></tr>
+        <tr><td class="num">8</td><td><b>Reranking / filtering</b></td><td>Not implemented in-TEE; client-side cross-encoder rerank is the design intent (TEE returns plaintext top-k that the client reranks locally). The TEE re-ranks Stage-1 candidates against the clean embedding only for accuracy verification in the bench.</td><td style="color:var(--ink-3)">deferred</td></tr>
+        <tr><td class="num">9</td><td><b>Answer generation</b></td><td>Out of scope for the prototype — client-side LLM is the assumed architecture. ObfuscaTune / GELO+OSNIP variants for hosted generation are designed in the spec, not built.</td><td style="color:var(--ink-3)">deferred</td></tr>
       </tbody>
     </table>
   </section>
@@ -431,7 +456,7 @@
   <!-- ═════ § 3 HIGH-LEVEL COMPONENTS ═════ -->
   <section id="components">
     <header class="section-head">
-      <div class="section-num">§03</div>
+      <div class="section-num">§04</div>
       <h2 class="section-title">High-level components</h2>
       <div class="section-meta">map of the boxes above · click through for detail</div>
     </header>
@@ -476,7 +501,6 @@
           <li><code>gelo-embedder</code> · GeloBertEmbedder · GeloQwenEmbedder</li>
           <li><code>gelo-gpu-wgpu</code> · WgpuVulkanEngine</li>
           <li><code>gelo-tee-sev-snp</code> · SnpTrustedExecutor · SnpAttestationVerifier</li>
-          <li><code>dp-forward</code> · aMGM Gaussian on pooled output (optional)</li>
         </ul>
         <span class="arrow">read more</span>
       </a>
@@ -520,7 +544,7 @@
             <a class="path-card" href="graphrag.html">
         <div class="num">§G</div>
         <h3>GraphRAG · Compass</h3>
-        <p class="tagline"><em>Shipped · Variant A · M0–M8.1 · benched.</em> Private LightRAG retrieval inside the same SEV-SNP CVM. Three Compass-encrypted HNSW indexes (entities · relations · chunks) plus two XorMM volume-hiding multimaps (adjacency · src_chunks) plus an AES-GCM chunk store — every server-visible op reduces to a Ring-ORAM read, an EMM lookup, or a blob fetch. Local + Hybrid modes wired; 10–58 ms p50 in-memory at N=100–2000.</p>
+        <p class="tagline"><em>Shipped · benched.</em> Private LightRAG retrieval inside the same SEV-SNP CVM. Three Compass-encrypted HNSW indexes (entities · relations · chunks) plus two XorMM volume-hiding multimaps (adjacency · src_chunks) plus an AES-GCM chunk store — every server-visible op reduces to a Ring-ORAM read, an EMM lookup, or a blob fetch. Local + Hybrid modes wired; 10–58 ms p50 in-memory at N=100–2000.</p>
         <ul>
           <li><code>ring-oram</code> · semi-honest baseline + lazy eviction + treetop cache · async <code>BlockBackend</code></li>
           <li><code>compass-index</code> · layered HNSW · Directional Filter (~50 % read reduction)</li>
@@ -543,13 +567,13 @@
         </ul>
         <span class="arrow">jump to section</span>
       </a>
-    </div></div>
+    </div>
   </section>
 
   <!-- ═════ § 4 HARDWARE ═════ -->
   <section id="hardware">
     <header class="section-head">
-      <div class="section-num">§04</div>
+      <div class="section-num">§05</div>
       <h2 class="section-title">Hardware</h2>
       <div class="section-meta">silicon · GPU stack · simulation tiers</div>
     </header>
@@ -593,7 +617,7 @@
       <tbody>
         <tr><td><b>T1 — in-process</b></td><td>any x86_64 Linux</td><td><code>cargo test --features mock</code></td><td class="accent">green</td><td>protocol math · report format · parser/verifier round-trip · tamper rejection</td></tr>
         <tr><td><b>T2 — VM-sim CVM</b></td><td>regular QEMU/KVM</td><td><code>SNP_MODE=mock</code></td><td class="accent">green</td><td>OS boundary · systemd lifecycle · weight loading · full HTTP service</td></tr>
-        <tr><td><b>T3 — real silicon</b></td><td>Hetzner EPYC + VFIO GPU</td><td><code>SNP_MODE=production</code></td><td>deferred (M5.9)</td><td>real <code>/dev/sev-guest</code> · ARK chain · RMP · SWIOTLB · GPU passthrough</td></tr>
+        <tr><td><b>T3 — real silicon</b></td><td>Hetzner EPYC + VFIO GPU</td><td><code>SNP_MODE=production</code></td><td>deferred</td><td>real <code>/dev/sev-guest</code> · ARK chain · RMP · SWIOTLB · GPU passthrough</td></tr>
       </tbody>
     </table>
   </section>
@@ -606,7 +630,7 @@
         <li><a href="embedding.html">Embedding · GELO</a> — TEE↔GPU split-inference protocol, mask + shield + U-Verify</li>
         <li><a href="storage.html">Storage · CAPRISE-at-rest</a> — production storage path · two-party HKDF</li>
         <li><a href="storage-remoterag.html">Storage · RemoteRAG</a> — alternative explored, not pursued</li>
-        <li><a href="graphrag.html">GraphRAG · Compass</a> — shipped · Variant A · Ring-ORAM + XorMM under SEV-SNP · M0–M8.1 · benched</li>
+        <li><a href="graphrag.html">GraphRAG · Compass</a> — shipped · Ring-ORAM + XorMM under SEV-SNP · benched</li>
         <li><a href="aloepri-llm.html">Generation · AloePri</a> — forward-looking · obfuscated Gemma 4 served via unmodified vLLM · no TEE in the loop</li>
         <li><a href="caprise-two-party-kdf.md">CAPRISE two-party KDF spec</a> — Option 3 design + delivery</li>
       </ul>
@@ -616,7 +640,6 @@
       <ul>
         <li><code>docs/research/private-rag-system-design.md</code></li>
         <li><code>docs/prototype/gelo.md</code></li>
-        <li><code>docs/prototype/dp-forward.md</code></li>
         <li><code>docs/prototype/remote-rag.md</code></li>
         <li><code>docs/prototype/inference-optimization.md</code></li>
         <li><code>docs/prototype/caprise-two-party-kdf.md</code></li>
@@ -631,7 +654,6 @@
         <li>GELO · <a href="https://arxiv.org/abs/2603.05035">arXiv 2603.05035</a></li>
         <li>TwinShield · Xue et al. 2025</li>
         <li>CAPRISE / prRAG · Ye et al. 2026</li>
-        <li>DP-Forward · <a href="https://arxiv.org/abs/2309.06746">arXiv 2309.06746</a></li>
         <li>RemoteRAG · <a href="https://arxiv.org/abs/2412.12775">arXiv 2412.12775</a></li>
       </ul>
     </div>

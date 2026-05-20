@@ -15,9 +15,7 @@
 
 (function () {
   const ITEMS = [
-    { href: "index.html", label: "Overview" },
     { href: "storage.html", label: "Storage · CAPRISE" },
-    { href: "storage-remoterag.html", label: "Storage · RemoteRAG" },
     { href: "embedding.html", label: "Embedding · GELO" },
     { href: "reranking.html", label: "Reranking · GELO" },
     {
@@ -28,7 +26,6 @@
       ],
     },
     { href: "graphrag.html", label: "GraphRAG · Compass" },
-    { href: "#hardware", label: "Hardware" },
   ];
 
   function currentPage() {
@@ -71,7 +68,7 @@
     const html = `
       <nav class="topnav">
         <a class="brand" href="index.html">
-          private-rag<span class="dot">·</span><span class="rev">prototype</span>
+          private-rag
         </a>
         <div class="links">${links}</div>
       </nav>`;
