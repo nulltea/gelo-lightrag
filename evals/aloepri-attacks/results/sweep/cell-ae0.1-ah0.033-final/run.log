@@ -1,0 +1,51 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[M2.7 quality+humaneval] endpoint=http://127.0.0.1:8063
+[M2.7 quality+humaneval] key=/home/timo/.cache/huggingface/path-2-aloepri/qwen3-1.7b/keymat-h128-pi-noise-ae0.1-ah0.033-fp32.gguf.key.npz
+[M2.7 quality+humaneval] quality probe (5 prompts)…
+  q[0] readable=True (ok) [ 48 tok, 1.8 s] 'The capital of France is' → ' Paris. The capital of the United Kingdom is London. The cap'
+  q[1] readable=True (ok) [ 48 tok, 1.8 s] 'Q: What is 17 times 4? A:' → ' 17 times 4 is 68. 17 multiplied by 4 is 68. 17×4=68. 17×4=6'
+  q[2] readable=True (ok) [ 22 tok, 0.9 s] 'Write a haiku about autumn leaves:' → ' 3 lines, 5-7-5 syllables.\nOkay, the user wants a haiku abou'
+  q[3] readable=True (ok) [ 48 tok, 1.8 s] 'def is_prime(n):' → '\n    if n == 1:\n        return False\n    if n == 2:\n        '
+  q[4] readable=True (ok) [ 48 tok, 1.8 s] "Translate to French: 'Good morning, how " → " 'Bonjour, comment ça va ?'\n\nYes, that's correct. But I want"
+  → all_readable=True (8.0 s)
+[M2.7 quality+humaneval] HumanEval pass@1 (n=20)…
+  he[ 0/20] HumanEval/163    fail (337 tok, 12.6 s)   File "/tmp/tmpawj7z1nj.py", line 37
+    def check(candidate):
+IndentationError
+  he[ 1/20] HumanEval/28     PASS (384 tok, 14.4 s) 
+  he[ 2/20] HumanEval/6      fail (384 tok, 14.4 s) Traceback (most recent call last):
+  File "/tmp/tmpzzfqowtd.py", line 38, in <mo
+  he[ 3/20] HumanEval/70     fail ( 15 tok, 0.7 s)   File "/tmp/tmpxbbh28tv.py", line 17
+    def
+       ^
+SyntaxError: invalid synt
+  he[ 4/20] HumanEval/62     fail (384 tok, 14.3 s) Traceback (most recent call last):
+  File "/tmp/tmp63i8s5xh.py", line 45, in <mo
+  he[ 5/20] HumanEval/57     PASS (384 tok, 14.3 s) 
+  he[ 6/20] HumanEval/35     PASS (384 tok, 14.3 s) 
+  he[ 7/20] HumanEval/26     fail ( 63 tok, 2.5 s) Traceback (most recent call last):
+  File "/tmp/tmp1ru3kf5k.py", line 32, in <mo
+  he[ 8/20] HumanEval/139    fail (384 tok, 14.3 s) Traceback (most recent call last):
+  File "/tmp/tmpom9n7uvj.py", line 32, in <mo
+  he[ 9/20] HumanEval/22     PASS (384 tok, 14.4 s) 
+  he[10/20] HumanEval/151    fail (384 tok, 14.3 s)   File "/tmp/tmp4cym6odh.py", line 21
+    Wait, but the problem says to ignore n
+  he[11/20] HumanEval/108    fail (384 tok, 14.3 s) Traceback (most recent call last):
+  File "/tmp/tmpsoof5wl_.py", line 51, in <mo
+  he[12/20] HumanEval/8      PASS (384 tok, 14.2 s) 
+  he[13/20] HumanEval/7      PASS (384 tok, 14.3 s) 
+  he[14/20] HumanEval/23     PASS (384 tok, 14.2 s) 
+  he[15/20] HumanEval/55     PASS (384 tok, 14.2 s) 
+  he[16/20] HumanEval/59     fail (384 tok, 14.2 s)   File "/tmp/tmpkba5qvmq.py", line 22
+    Wait, but the function is supposed to 
+  he[17/20] HumanEval/129    fail ( 83 tok, 3.2 s)   File "/tmp/tmpgs0ciigw.py", line 35
+    To solve this problem, we need to find
+  he[18/20] HumanEval/161    fail (384 tok, 14.3 s)   File "/tmp/tmp5fgltx0u.py", line 26
+    The problem is that the code is not ha
+  he[19/20] HumanEval/143    fail (244 tok, 9.1 s)   File "/tmp/tmp07y02fl4.py", line 27
+    ```
+    ^
+SyntaxError: invalid syntax
+
+  → pass@1 = 8/20 = 0.400 (242 s)
+[M2.7 quality+humaneval] wrote evals/aloepri-attacks/results/sweep/cell-ae0.1-ah0.033-stream-fixed-utf8/quality-humaneval.json
