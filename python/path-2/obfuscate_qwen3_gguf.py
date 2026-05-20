@@ -297,6 +297,7 @@ def rewrite_gguf(
     # ---- Π: row-permute token_embd and output by τ⁻¹ on the vocab axis ----
     tau: np.ndarray | None = None
     pi_active_size: int | None = None
+    pi_special_ids: list[int] = []
     if apply_pi:
         if "token_embd.weight" not in arrays:
             raise SystemExit("token_embd.weight missing — cannot apply Π")
@@ -308,10 +309,47 @@ def rewrite_gguf(
         pi_active_size = 151669
         if pi_active_size > n_vocab:
             raise SystemExit(f"active range {pi_active_size} > n_vocab {n_vocab}")
+
+        # Exclude special tokens (EOS / BOS / im_start / im_end / fim_*
+        # / tool markers etc.) from Π. They stay at identity so the
+        # inference server's standard stop-on-EOS / chat-template
+        # plumbing keeps working — without this, the model emits
+        # `inv_τ[151645]` to mean "stop" but the server is looking for
+        # `151645` in the wire stream, generation runs to max_tokens,
+        # the model drifts off-manifold, and HumanEval pass@1 collapses
+        # (see 2026-05-20 sweep diagnosis under `evals/aloepri-attacks/
+        # results/sweep/`). Public knowledge — token-type metadata is
+        # already exposed in the GGUF and reveals nothing useful to an
+        # attacker; the privacy guarantee comes from permuting the
+        # *content-bearing* tokens.
+        token_type_field = r.fields.get("tokenizer.ggml.token_type")
+        if token_type_field is None:
+            raise SystemExit(
+                "tokenizer.ggml.token_type missing — needed to exclude "
+                "special tokens from Π. Re-source the GGUF with full tokenizer "
+                "metadata or set --pi-active-size explicitly."
+            )
+        token_types = np.asarray(token_type_field.contents(), dtype=np.int32)
+        # llama.cpp token type codes: 1=NORMAL, 2=UNKNOWN, 3=CONTROL,
+        # 4=USER_DEFINED, 5=UNUSED, 6=BYTE. Keep only NORMAL (1) and
+        # BYTE (6) in the permutable set — all others must stay
+        # identity so generation control flow works.
+        permutable_mask = np.isin(token_types[:pi_active_size], [1, 6])
+        permutable_ids = np.where(permutable_mask)[0].astype(np.int32)
+        pi_special_ids = sorted(set(range(pi_active_size)) - set(permutable_ids.tolist()))
+        log.info(
+            "Π special-token exclusion: %d permutable, %d kept identity "
+            "(non-NORMAL/BYTE token-type) within active range %d",
+            len(permutable_ids), len(pi_special_ids), pi_active_size,
+        )
+
         pi_rng = np.random.default_rng(pi_seed)
-        perm = pi_rng.permutation(pi_active_size).astype(np.int32)
+        # Permute only `permutable_ids` among themselves. tau starts at
+        # identity, then we shuffle the permutable subset by reassigning
+        # tau[permutable_ids] = shuffled(permutable_ids).
         tau = np.arange(n_vocab, dtype=np.int32)
-        tau[:pi_active_size] = perm
+        shuffled = pi_rng.permutation(permutable_ids).astype(np.int32)
+        tau[permutable_ids] = shuffled
         inv_tau = np.argsort(tau).astype(np.int32)
         # τ : plain_id → obf_id ;  inv_tau : obf_id → plain_id.
         # W̃[i, :] = W[inv_tau[i], :] so the obfuscated table at obf_id i
@@ -321,8 +359,10 @@ def rewrite_gguf(
                 continue
             assert arrays[vocab_tensor].shape[0] == n_vocab
             arrays[vocab_tensor] = arrays[vocab_tensor][inv_tau]
-        log.info("applied Π (τ pi_seed=%d, active=%d/%d) to %d vocab tensors",
+        log.info("applied Π (τ pi_seed=%d, active=%d/%d, permuted=%d, "
+                 "specials-identity=%d) to %d vocab tensors",
                  pi_seed, pi_active_size, n_vocab,
+                 len(permutable_ids), len(pi_special_ids),
                  sum(1 for t in ("token_embd.weight", "output.weight") if t in arrays))
 
     # ---- Algorithm 2 prep: per-layer keys (item 7) ----

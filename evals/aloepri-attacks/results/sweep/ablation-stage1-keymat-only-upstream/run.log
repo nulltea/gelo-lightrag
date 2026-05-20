@@ -1,0 +1,48 @@
+[M2.7 quality+humaneval] endpoint=http://127.0.0.1:8063
+[M2.7 quality+humaneval] plain-mode (no τ)
+[M2.7 quality+humaneval] quality probe (5 prompts)…
+  q[0] readable=True (ok) [ 48 tok, 1.8 s] 'The capital of France is' → ' Paris. The capital of Italy is Rome. The capital of Spain i'
+  q[1] readable=True (ok) [ 48 tok, 1.8 s] 'Q: What is 17 times 4? A:' → ' 17 times 4 is 68. 17 multiplied by 4 is 68. 17×4=68. 17×4=6'
+  q[2] readable=True (ok) [ 48 tok, 1.8 s] 'Write a haiku about autumn leaves:' → ' 3 lines, 5-7-5 syllables. Autumn leaves fall, crisp and bri'
+  q[3] readable=True (ok) [ 48 tok, 1.8 s] 'def is_prime(n):' → '\n    if n <= 1:\n        return False\n    if n <= 3:\n        '
+  q[4] readable=True (ok) [ 48 tok, 1.8 s] "Translate to French: 'Good morning, how " → " 'Bonjour, comment ça va ?'\n\nYes, that's correct. But I want"
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+  → all_readable=True (9.0 s)
+[M2.7 quality+humaneval] HumanEval pass@1 (n=20)…
+  he[ 0/20] HumanEval/163    fail (384 tok, 14.3 s) Traceback (most recent call last):
+  File "/tmp/tmpiexh0k86.py", line 35, in <mo
+  he[ 1/20] HumanEval/28     PASS (384 tok, 14.3 s) 
+  he[ 2/20] HumanEval/6      PASS (384 tok, 14.3 s) 
+  he[ 3/20] HumanEval/70     fail (384 tok, 14.3 s) Traceback (most recent call last):
+  File "/tmp/tmptx6vgzog.py", line 36, in <mo
+  he[ 4/20] HumanEval/62     fail (384 tok, 14.4 s)   File "/tmp/tmprep_p8zt.py", line 21
+    Wait, but the first element is xs[0], 
+  he[ 5/20] HumanEval/57     fail (384 tok, 14.3 s) Traceback (most recent call last):
+  File "/tmp/tmp9xi4dwka.py", line 37, in <mo
+  he[ 6/20] HumanEval/35     PASS (384 tok, 14.4 s) 
+  he[ 7/20] HumanEval/26     fail (384 tok, 14.4 s) Traceback (most recent call last):
+  File "/tmp/tmpemkti5k7.py", line 32, in <mo
+  he[ 8/20] HumanEval/139    fail (384 tok, 14.4 s)   File "/tmp/tmpadqwq6cc.py", line 20
+    Wait, but the factorial function is no
+  he[ 9/20] HumanEval/22     PASS (384 tok, 14.3 s) 
+  he[10/20] HumanEval/151    fail (384 tok, 14.3 s)   File "/tmp/tmpmgbrui2u.py", line 20
+    ```
+    ^
+SyntaxError: invalid syntax
+
+  he[11/20] HumanEval/108    fail (384 tok, 14.4 s)   File "/tmp/tmpszeghe8e.py", line 30
+    Wait, but the problem says that for ne
+  he[12/20] HumanEval/8      PASS (384 tok, 14.4 s) 
+  he[13/20] HumanEval/7      PASS (384 tok, 14.4 s) 
+  he[14/20] HumanEval/23     PASS (384 tok, 14.2 s) 
+  he[15/20] HumanEval/55     PASS (384 tok, 14.3 s) 
+  he[16/20] HumanEval/59     fail (384 tok, 14.2 s) Traceback (most recent call last):
+  File "/tmp/tmp7ug1rbi4.py", line 52, in <mo
+  he[17/20] HumanEval/129    fail (384 tok, 14.3 s)   File "/tmp/tmp8w8szk2s.py", line 44
+    4. **Complexity Analysis**: The algori
+  he[18/20] HumanEval/161    fail (384 tok, 14.4 s)   File "/tmp/tmpcbxmw6od.py", line 22
+    But the code is not working. Let me se
+  he[19/20] HumanEval/143    fail (384 tok, 14.3 s)   File "/tmp/tmpy_6s03_4.py", line 33
+    1. **Identify Prime Numbers**: First, 
+  → pass@1 = 8/20 = 0.400 (287 s)
+[M2.7 quality+humaneval] wrote evals/aloepri-attacks/results/sweep/ablation-stage1-keymat-only-upstream/quality-humaneval.json

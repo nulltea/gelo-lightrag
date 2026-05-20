@@ -1,0 +1,219 @@
+{
+  "endpoint": "http://127.0.0.1:8061",
+  "key_path": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-1.7b/keymat-h128-pi-noise-fp32.gguf.key.npz",
+  "plain_mode": false,
+  "tokenizer": "Qwen/Qwen3-1.7B",
+  "quality": {
+    "prompts": [
+      {
+        "idx": 0,
+        "prompt": "The capital of France is",
+        "response": " in Paris, and the population of France is 64,000,000. How many more than the population of France is in Paris?\nThe question is in French, but I think the answer is 64",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.797403998207301
+      },
+      {
+        "idx": 1,
+        "prompt": "Q: What is 17 times 4? A:",
+        "response": " 1) 68 2) 64 3) 60 4) 62 5) 66 6) 68 7) 64 8) 60",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.8060759757645428
+      },
+      {
+        "idx": 2,
+        "prompt": "Write a haiku about autumn leaves:",
+        "response": " 17 syllables, 5 lines, 10-14 words each line.\n\nHere's a haiku about autumn leaves:\n\nThe leaves fall from the tree,  \nA golden hue in the air,  \nA season's",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.809078237041831
+      },
+      {
+        "idx": 3,
+        "prompt": "def is_prime(n):",
+        "response": "\n    if n <=2:\n        return False\n    else:\n        for i in range(3, n):\n            if n % i ==0:\n                return False\n        return True\ndef is_prime(n):\n    if",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.7767346408218145
+      },
+      {
+        "idx": 4,
+        "prompt": "Translate to French: 'Good morning, how are you?' \u2192",
+        "response": " 'Bonjour, comment allez-vous ?' \n\nBut, in French, 'Bonjour' is used in different contexts, like 'Bonjour, comment allez-vous ?' is used in a different context than 'bonjour' in French.\n\n",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.791132525075227
+      }
+    ],
+    "all_readable": true,
+    "wall_s": 8.98061087820679
+  },
+  "humaneval": {
+    "n": 20,
+    "passed": 0,
+    "accuracy": 0.0,
+    "wall_s": 285.117652064655,
+    "details": [
+      {
+        "task_id": "HumanEval/163",
+        "passed": false,
+        "completion": "    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpqwq28ggj.py\", line 219, in <module>\n    check(generate_integers)\n  File \"/tmp/tmpqwq28ggj.py\", line 209, in check\n    assert candidate(2, 10) == [2, ",
+        "n_response_tokens": 384,
+        "wall_s": 14.297967866063118
+      },
+      {
+        "task_id": "HumanEval/28",
+        "passed": false,
+        "completion": "    # 1. \u901a\u8fc7join\u65b9\u6cd5\u5c06\u5217\u8868\u4e2d\u7684\u5143\u7d20\u8fde\u63a5\u8d77\u6765\n    # 2. \u901a\u8fc7\u5faa\u73af\u5c06\u5143\u7d20\u8fde\u63a5\u8d77\u6765\n    # 3. \u901a\u8fc7\u751f\u6210\u5668\u751f\u6210\u5143\u7d20\u5e76\u8fde\u63a5\u8d77\u6765\n    # 4. \u901a\u8fc7\u751f\u6210\u5668\u751f\u6210\u5143\u7d20\u5e76\u8fde\u63a5\u8d77\u6765\n    # 5. \u901a\u8fc7\u751f\u6210\u5668\u751f\u6210\u5143\u7d20\u5e76\u8fde\u63a5\u8d77\u6765\n    # 6. \u901a\u8fc7\u751f\u6210\u5668\u751f\u6210\u5143\u7d20\u5e76\u8fde\u63a5\u8d77\u6765\n    # 7. \u901a\u8fc7\u751f\u6210\u5668\u751f\u6210\u5143\u7d20\u5e76\u8fde\u63a5\u8d77\u6765\n    # 8. \u901a\u8fc7\u751f\u6210\u5668\u751f\u6210\u5143\u7d20\u5e76\u8fde\u63a5\u8d77\u6765\n    # 9. \u901a\u8fc7\u751f\u6210\u5668\u751f\u6210\u5143\u7d20\u5e76\u8fde\u63a5\u8d77\u6765\n    # 10. \u901a\u8fc7\u751f\u6210\u5668\u751f\u6210\u5143\u7d20\u5e76\u8fde\u63a5\u8d77\u6765\n    # 11. \u901a\u8fc7\u751f\u6210\u5668\u751f\u6210\u5143\u7d20\u5e76\u8fde\u63a5\u8d77\u6765\n    # 12. \u901a\u8fc7\u751f\u6210\u5668\u751f\u6210\u5143\u7d20\u5e76\u8fde\u63a5\u8d77\u6765\n    # 13. \u901a\u8fc7\u751f\u6210\u5668\u751f\u6210\u5143\u7d20\u5e76\u8fde\u63a5\u8d77\u6765\n    # 14. \u901a\u8fc7\u751f\u6210\u5668\u751f\u6210\u5143\u7d20\u5e76\u8fde\u63a5\u8d77\u6765\n    # 15. \u901a\u8fc7\u751f\u6210\u5668\u751f\u6210\u5143\u7d20\u5e76\u8fde\u63a5\u8d77\u6765\n    # 16. \u901a\u8fc7\u751f\u6210\u5668\u751f\u6210\u5143\u7d20\u5e76\u8fde\u63a5\u8d77\u6765\n    # 17. \u901a\u8fc7\u751f\u6210\u5668\u751f\u6210\u5143\u7d20\u5e76\u8fde\u63a5\u8d77\u6765\n    # 18. \u901a\u8fc7\u751f\u6210\u5668\u751f\u6210\u5143\u7d20\u5e76\u8fde\u63a5\u8d77\u6765\n    # 19. \u901a\u8fc7\u751f\u6210\u5668\u751f\u6210\u5143\u7d20\u5e76\u8fde\u63a5\u8d77\u6765\n    # 20. \u901a\u8fc7\u751f\u6210\u5668\u751f\u6210\u5143\u7d20\u5e76\u8fde\u63a5\u8d77\u6765\n    # 21. \u901a\u8fc7\u751f\u6210\u5668\u751f\u6210\u5143\u7d20\u5e76\u8fde\u63a5\u8d77\u6765\n    # 22. \u901a\u8fc7\u751f\u6210\u5668\u751f\u6210\u5143\u7d20\u5e76\u8fde\u63a5\u8d77\u6765\n    # 23. \u901a\u8fc7\u751f\u6210\u5668\u751f\u6210\u5143\u7d20\u5e76\u8fde\u63a5\u8d77\u6765\n    # 24. \u901a\u8fc7\u751f\u6210\u5668\u751f\u6210\u5143\u7d20\u5e76\u8fde\u63a5\u8d77\u6765\n    # 2",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp9my6a6qb.py\", line 51, in <module>\n    check(concatenate)\n  File \"/tmp/tmp9my6a6qb.py\", line 46, in check\n    assert candidate([]) == ''\n           ^",
+        "n_response_tokens": 384,
+        "wall_s": 14.25262518785894
+      },
+      {
+        "task_id": "HumanEval/6",
+        "passed": false,
+        "completion": "    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmppt6t7p_m.py\", line 220, in <module>\n    check(parse_nested_parens)\n  File \"/tmp/tmppt6t7p_m.py\", line 215, in check\n    assert candidate('(()()) ((()",
+        "n_response_tokens": 384,
+        "wall_s": 14.272061017807573
+      },
+      {
+        "task_id": "HumanEval/70",
+        "passed": false,
+        "completion": "    # YOUR \u30b3\u30e1\u30f3\u30c8\n    # 2\n    # 3\n    # 4\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n    # 5\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpk9mlb7yz.py\", line 109, in <module>\n    check(strange_sort_list)\n  File \"/tmp/tmpk9mlb7yz.py\", line 94, in check\n    assert candidate([1, 2, 3, 4]) =",
+        "n_response_tokens": 384,
+        "wall_s": 14.264555532019585
+      },
+      {
+        "task_id": "HumanEval/62",
+        "passed": false,
+        "completion": "    if xs[0] == 0:\n        return [0] # if the first coefficient is zero, then the Derivative is [0]?\n    else:\n        return [1, xs[1] * 1, xs[2] * 2, ...]\n    # What's wrong here?\n    # What's wrong here?\n    # What's wrong here?\n    # What's wrong here?\n    # What's wrong here?\n    # What's wrong here?\n    # What's wrong here?\n    # What's wrong here?\n    # What's wrong here?\n    # What's wrong here?\n    # What's wrong here?\n    # What's wrong here?\n    # What's wrong here?\n    # What's wrong here?\n    # What's wrong here?\n    # What's wrong here?\n    # What's wrong here?\n    # What's wron",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpf8z1b47h.py\", line 78, in <module>\n    check(derivative)\n  File \"/tmp/tmpf8z1b47h.py\", line 70, in check\n    assert candidate([3, 1, 2, 4, 5]) == [1,",
+        "n_response_tokens": 384,
+        "wall_s": 14.267045873217285
+      },
+      {
+        "task_id": "HumanEval/57",
+        "passed": false,
+        "completion": "    # your code here\n    # you can use the following functions\n    # for checking if all elements in list\n    # for checking if all elements in list\n    # for checking if all elements in list\n    # for checking if all elements in list\n    # for checking if all elements in list\n    # for checking if all elements in list\n    # for checking if all elements in list\n    # for checking if all elements in list\n    # for checking if all elements in list\n    # for checking if all elements in list\n    # for checking if all elements in list\n    # for checking if all elements in list\n    # for checking if",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpjok4p8ri.py\", line 69, in <module>\n    check(monotonic)\n  File \"/tmp/tmpjok4p8ri.py\", line 58, in check\n    assert candidate([1, 2, 4, 10]) == True\n ",
+        "n_response_tokens": 384,
+        "wall_s": 14.271026656031609
+      },
+      {
+        "task_id": "HumanEval/35",
+        "passed": false,
+        "completion": "    # # YOUR CODE HERE #\n    # # YOUR CODE HERE #\n    # # YOUR CODE HERE #\n    # # YOUR CODE HERE #\n    # # YOUR CODE HERE #\n    # # YOUR CODE HERE #\n    # # YOUR CODE HERE #\n    # # YOUR CODE HERE #\n    # # YOUR CODE HERE #\n    # # YOUR CODE HERE #\n    # # YOUR CODE HERE #\n    # # YOUR CODE HERE #\n    # # YOUR CODE HERE #\n    # # YOUR CODE HERE #\n    # # YOUR CODE HERE #\n    # # YOUR CODE HERE #\n    # # YOUR CODE HERE #\n    # # YOUR CODE HERE #\n    # # YOUR CODE HERE #\n    # # YOUR CODE HERE #\n    # # YOUR CODE HERE #\n    # # YOUR CODE HERE #\n    # # YOUR CODE HERE #\n    # # YOUR CODE HERE #\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpzd7lzg7z.py\", line 76, in <module>\n    check(max_element)\n  File \"/tmp/tmpzd7lzg7z.py\", line 72, in check\n    assert candidate([1, 2, 3]) == 3\n      ",
+        "n_response_tokens": 384,
+        "wall_s": 14.374524956103414
+      },
+      {
+        "task_id": "HumanEval/26",
+        "passed": false,
+        "completion": "    # your code here\n    # you can use the built-in set() function\n    # but you must implement the solution\n    # you can use the built-in list()function\n    # but you must implement the solution\n    # you can use the built-in list()function\n    # but you must implement the solution\n    # you can useThe built-in list()function\n    # but you must implement the solution\n    # you can useThe built-in list()function\n    # but you must implement the solution\n    # you can useThe built-in list()function\n    # but you must implement the solution\n    # you can useThe built-in list()function\n    # but",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpdoq5y6qx.py\", line 63, in <module>\n    check(remove_duplicates)\n  File \"/tmp/tmpdoq5y6qx.py\", line 58, in check\n    assert candidate([]) == []\n      ",
+        "n_response_tokens": 384,
+        "wall_s": 14.27280405210331
+      },
+      {
+        "task_id": "HumanEval/139",
+        "passed": false,
+        "completion": "    # the code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpwtur62ub.py\", line 124, in <module>\n    check(special_factorial)\n  File \"/tmp/tmpwtur62ub.py\", line 115, in check\n    assert candidate(4) == 288, \"Te",
+        "n_response_tokens": 384,
+        "wall_s": 14.67141154082492
+      },
+      {
+        "task_id": "HumanEval/22",
+        "passed": false,
+        "completion": "    filtered = []\n    for value in values:\n        if isinstance(Value, int):\n            filtered.append(Value)\n    return filtered\n\nWait, but in Python, the isinstance() function is not available in the standard library, but in Python 3.4+, it is available in the type check.\n\nBut in the Python 3.4+, the isinstance() is available in the standard library.\n\nBut in the Python 3.4+,the isinstance() is available in the standard library.\n\nBut in the Python 3.4+,the isinstance() is available in the standard library.\n\nBut in the Python 3.4+,the isinstance() is available in the standard library.\n\nBut ",
+        "error": "  File \"/tmp/tmp1woc165h.py\", line 17\n    Wait, but in Python, the isinstance() function is not available in the standard library, but in Python 3.4+, it is available in the type check.\n              ",
+        "n_response_tokens": 384,
+        "wall_s": 14.18632852518931
+      },
+      {
+        "task_id": "HumanEval/151",
+        "passed": false,
+        "completion": "    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n  ",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpy7y2mu99.py\", line 290, in <module>\n    check(double_the_difference)\n  File \"/tmp/tmpy7y2mu99.py\", line 275, in check\n    assert candidate([]) == 0 ,",
+        "n_response_tokens": 384,
+        "wall_s": 14.145740164909512
+      },
+      {
+        "task_id": "HumanEval/108",
+        "passed": false,
+        "completion": "    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpvksqpidg.py\", line 127, in <module>\n    check(count_nums)\n  File \"/tmp/tmpvksqpidg.py\", line 113, in check\n    assert candidate([]) == 0\n           ^",
+        "n_response_tokens": 384,
+        "wall_s": 14.149218074046075
+      },
+      {
+        "task_id": "HumanEval/8",
+        "passed": false,
+        "completion": "",
+        "error": "client_error: HTTPError('500 Server Error: Internal Server Error for url: http://127.0.0.1:8061/completion')"
+      },
+      {
+        "task_id": "HumanEval/7",
+        "passed": false,
+        "completion": "",
+        "error": "client_error: HTTPError('500 Server Error: Internal Server Error for url: http://127.0.0.1:8061/completion')"
+      },
+      {
+        "task_id": "HumanEval/23",
+        "passed": false,
+        "completion": "    if string == '':\n        return 0\n    else:\n        return len(string)\n\nBut I think this is wrong, but I can't find the mistake.\n\nWait, but in Python, the string is already a string, so why is this code wrong?\n\nWait, but in Python, the string is already a string, So why is this code wrong?\n\nWait, but in Python,The string is already a string, So why is this code wrong?\n\nWait, but in Python,The string is already a string, So why is this code wrong?\n\nWait, but in Python,The string is already a string, So why is This code wrong?\n\nWait, but in Python,The string is already a string, So why is Th",
+        "error": "  File \"/tmp/tmpb4thgtoy.py\", line 15\n    But I think this is wrong, but I can't find the mistake.\n                                        ^\nSyntaxError: unterminated string literal (detected at line ",
+        "n_response_tokens": 384,
+        "wall_s": 14.092099606059492
+      },
+      {
+        "task_id": "HumanEval/55",
+        "passed": false,
+        "completion": "",
+        "error": "client_error: HTTPError('500 Server Error: Internal Server Error for url: http://127.0.0.1:8061/completion')"
+      },
+      {
+        "task_id": "HumanEval/59",
+        "passed": false,
+        "completion": "    # YOUR \u30b3\u30fc\u30c9\u3092\u66f8\u3051\n    # \u3053\u3053\u306b 13195 29 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 ",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpzeidmakh.py\", line 27, in <module>\n    check(largest_prime_factor)\n  File \"/tmp/tmpzeidmakh.py\", line 19, in check\n    assert candidate(15) == 5\n    ",
+        "n_response_tokens": 384,
+        "wall_s": 14.261880819220096
+      },
+      {
+        "task_id": "HumanEval/129",
+        "passed": false,
+        "completion": "    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpjc3sw58b.py\", line 246, in <module>\n    check(minPath)\n  File \"/tmp/tmpjc3sw58b.py\", line 230, in check\n    assert candidate([[1, 2, 3], [4, 5, 6], [",
+        "n_response_tokens": 384,
+        "wall_s": 14.424816326703876
+      },
+      {
+        "task_id": "HumanEval/161",
+        "passed": false,
+        "completion": "    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp7h2f1_t4.py\", line 224, in <module>\n    check(solve)\n  File \"/tmp/tmp7h2f1_t4.py\", line 210, in check\n    assert candidate(\"AsDf\") == \"aSdF\"\n        ",
+        "n_response_tokens": 384,
+        "wall_s": 14.281915040686727
+      },
+      {
+        "task_id": "HumanEval/143",
+        "passed": false,
+        "completion": "    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpcgxhkn9j.py\", line 231, in <module>\n    check(words_in_sentence)\n  File \"/tmp/tmpcgxhkn9j.py\", line 219, in check\n    assert candidate(\"This is a tes",
+        "n_response_tokens": 384,
+        "wall_s": 14.290025762282312
+      }
+    ]
+  }
+}

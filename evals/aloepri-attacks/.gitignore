@@ -5,4 +5,9 @@ __pycache__/
 # are the small, version-controllable summaries; snapshots/ is
 # the raw artifact those summaries are derived from.
 snapshots/
-results/
+# results/ is ignored at the file level so large captured JSONs
+# (hidden-state dumps, token streams) don't get tracked, but
+# the small per-cell sweep summaries under results/sweep/ are
+# evidence we want to version.
+results/*
+!results/sweep/

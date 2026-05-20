@@ -1,0 +1,220 @@
+{
+  "endpoint": "http://127.0.0.1:8061",
+  "key_path": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-1.7b/keymat-h128-pi-noise-alg2-FULL-zfix-hadamard-fp32.gguf.key.npz",
+  "tokenizer": "Qwen/Qwen3-1.7B",
+  "quality": {
+    "prompts": [
+      {
+        "idx": 0,
+        "prompt": "The capital of France is",
+        "response": " Paris, and the capital of Espin is M\u00e1laga, and the capital of the United States is Washington. 100000000000000000000000",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.7784275761805475
+      },
+      {
+        "idx": 1,
+        "prompt": "Q: What is 17 times 4? A:",
+        "response": " 17x4=68. Is that correct?   17x4=68. 17x4=68. 17x4=68. 17x4=",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.764376769773662
+      },
+      {
+        "idx": 2,
+        "prompt": "Write a haiku about autumn leaves:",
+        "response": " 10 syllables, 4 2/4 2/4 4 2/4 2/4\n\nOkay, let's see. I need to write a haiku about autumn leaves, with 10",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.7545898747630417
+      },
+      {
+        "idx": 3,
+        "prompt": "def is_prime(n):",
+        "response": "\n    if n == 2:\n        return True\n    if n % 2 == 0:\n        return False\n    for i in range(3, n):\n        if n % i == 0:\n            return False",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.7554009389132261
+      },
+      {
+        "idx": 4,
+        "prompt": "Translate to French: 'Good morning, how are you?' \u2192",
+        "response": " 'Bonjour, comment allez-vous ?' (with the correct French spelling of the words, like 'allez' instead of 'allez' and 'z' is replaced with 'e' in 'allez' and 'z",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.7696484196931124
+      }
+    ],
+    "all_readable": true,
+    "wall_s": 8.822655408177525
+  },
+  "humaneval": {
+    "n": 20,
+    "passed": 1,
+    "accuracy": 0.05,
+    "wall_s": 283.98893004097044,
+    "details": [
+      {
+        "task_id": "HumanEval/163",
+        "passed": false,
+        "completion": "    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp02xxk9co.py\", line 219, in <module>\n    check(generate_integers)\n  File \"/tmp/tmp02xxk9co.py\", line 209, in check\n    assert candidate(2, 10) == [2, ",
+        "n_response_tokens": 384,
+        "wall_s": 14.081750902347267
+      },
+      {
+        "task_id": "HumanEval/28",
+        "passed": false,
+        "completion": "",
+        "error": "client_error: HTTPError('500 Server Error: Internal Server Error for url: http://127.0.0.1:8061/completion')"
+      },
+      {
+        "task_id": "HumanEval/6",
+        "passed": false,
+        "completion": "    # Do not modify the input string\n    \"\"\"\n    # The input string is given as a string of groups of parentheses, each group is separated by space.\n    # The groups may have multiple levels of nesting.\n    # The groups may have multiple levels of nesting.\n    # The groups may have multiple levels of nesting.\n    # The groups may have multiple levels of nesting.\n    # The groups may have multiple levels of nesting.\n    # The groups may have multiple levels of nesting.\n    # The groups may have multiple levels of nesting.\n    # The groups may have multiple levels of nesting.\n    # The groups ma",
+        "error": "  File \"/tmp/tmpa4_ak97w.py\", line 13\n    \"\"\"\n    ^\nSyntaxError: unterminated triple-quoted string literal (detected at line 61)\n",
+        "n_response_tokens": 384,
+        "wall_s": 14.119718813803047
+      },
+      {
+        "task_id": "HumanEval/70",
+        "passed": false,
+        "completion": "    '''\n    #\n\n    # Write a function that takes in list of integers, returns list in Strange Order.\n\n    # You can assume that the list is passed as list of integers.\n\n    # You can use any method.\n\n    # You can use any Method.\n\n    # You can use any method.\n\n    # You can use any Method.\n\n    # You can use any Method.\n\n    # You can use any Method.\n\n    # You can use any Method.\n\n    # You can use any Method.\n\n    # You can use any Method.\n\n    # You can use any Method.\n\n    # You can use any Method.\n\n    # You can use any Method.\n\n    # You can use any Method.\n\n    # You can use any Method",
+        "error": "  File \"/tmp/tmphp3kprbx.py\", line 13\n    '''\n    ^\nSyntaxError: unterminated triple-quoted string literal (detected at line 128)\n",
+        "n_response_tokens": 384,
+        "wall_s": 14.107762127183378
+      },
+      {
+        "task_id": "HumanEval/62",
+        "passed": false,
+        "completion": "    from functools import import operator\n    from functools import operator\n    from functools import operator\n    from functools import operator\n    from functools import operator\n    from functools import operator\n    from functools import operator\n    from functools import operator\n    from functools import operator\n    from functools import operator\n    from functools import operator\n    from functools import operator\n    from functools import operator\n    from functools import operator\n    from functools import operator\n    from functools import operator\n    from functools import operato",
+        "error": "  File \"/tmp/tmpyaar1wkz.py\", line 12\n    from functools import import operator\n                          ^^^^^^\nSyntaxError: invalid syntax\n",
+        "n_response_tokens": 384,
+        "wall_s": 14.115958577953279
+      },
+      {
+        "task_id": "HumanEval/57",
+        "passed": false,
+        "completion": "    # 1\n    # 2\n    # 3\n    # 4\n    # 5\n    # 6\n    # 8\n    # 10\n    # 12\n    # 14\n    # 16\n    # 18\n    # 20\n    # 22\n    # 24\n    # 26\n    # 28\n    # 30\n    # 32\n    # 34\n    # 36\n    # 38\n    # 40\n    # 42\n    # 44\n    # 46\n    # 48\n    # 50\n    # 52\n    # 54\n    # 56\n    # 58\n    # 60\n    # 62\n    # 64\n    # 66\n    # 68\n    # 70\n    # 72\n    # 74\n    # 76\n    # 78\n    # 80\n    # 82\n    # 84\n    # 8 6\n    # 8 8\n    # 9 0\n    # 9 2\n    # 9 4\n    # 9 6\n    # 9 8\n    # 10 0\n    # 10 2\n    # 10 4\n    # 10 6\n    # 10 8\n    # 11 0\n    # 11 2\n    # 11 4\n    # 11 6\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpi0yrfrah.py\", line 92, in <module>\n    check(monotonic)\n  File \"/tmp/tmpi0yrfrah.py\", line 81, in check\n    assert candidate([1, 2, 4, 10]) == True\n ",
+        "n_response_tokens": 384,
+        "wall_s": 14.14479326410219
+      },
+      {
+        "task_id": "HumanEval/35",
+        "passed": false,
+        "completion": "    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # 123\n    \"\"\"\n    # ",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpi8_kyv03.py\", line 106, in <module>\n    check(max_element)\n  File \"/tmp/tmpi8_kyv03.py\", line 102, in check\n    assert candidate([1, 2, 3]) == 3\n    ",
+        "n_response_tokens": 384,
+        "wall_s": 14.215127009898424
+      },
+      {
+        "task_id": "HumanEval/26",
+        "passed": false,
+        "completion": "    seen: List[int] = []\n    result:List[int] = []\n    for num in numbers:\n        if num in seen:\n            continue\n        else:\n            seen.append(num)\n            result.append(num)\n    return result\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpn4y9kheo.py\", line 35, in <module>\n    check(remove_duplicates)\n  File \"/tmp/tmpn4y9kheo.py\", line 32, in check\n    assert candidate([1, 2, 3, 2, 4, ",
+        "n_response_tokens": 384,
+        "wall_s": 14.213579743169248
+      },
+      {
+        "task_id": "HumanEval/139",
+        "passed": false,
+        "completion": "    # your code here\n    \"\"\"\n    def special_factorial(n):\n        # your code here\n    \"\"\"\n    def special_factorial(n):\n        # your code here\n    \"\"\"\n    def special_factorial(n):\n        # your code here\n    \"\"\"\n    def special_factorial(n):\n        # your code here\n    \"\"\"\n    def special_factorial(n):\n        # your code here\n    \"\"\"\n    def special_factorial(n):\n        # your code here\n    \"\"\"\n    def special_factorial(n):\n        # your code here\n    \"\"\"\n    def special_factorial(n):\n        # your code here\n    \"\"\"\n    def special_factorial(n):\n        # your code here\n    \"\"\"\n    ",
+        "error": "  File \"/tmp/tmpn0u5p8qq.py\", line 21\n    \"\"\"\n    ^\nIndentationError: expected an indented block after function definition on line 19\n",
+        "n_response_tokens": 384,
+        "wall_s": 14.200600641779602
+      },
+      {
+        "task_id": "HumanEval/22",
+        "passed": false,
+        "completion": "    # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # ",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp0cphyd_y.py\", line 27, in <module>\n    check(filter_integers)\n  File \"/tmp/tmp0cphyd_y.py\", line 22, in check\n    assert candidate([]) == []\n        ",
+        "n_response_tokens": 384,
+        "wall_s": 14.243519473820925
+      },
+      {
+        "task_id": "HumanEval/151",
+        "passed": false,
+        "completion": "    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpafwlftc3.py\", line 226, in <module>\n    check(double_the_difference)\n  File \"/tmp/tmpafwlftc3.py\", line 211, in check\n    assert candidate([]) == 0 ,",
+        "n_response_tokens": 384,
+        "wall_s": 14.304995466955006
+      },
+      {
+        "task_id": "HumanEval/108",
+        "passed": false,
+        "completion": "    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp8nkhka7x.py\", line 127, in <module>\n    check(count_nums)\n  File \"/tmp/tmp8nkhka7x.py\", line 113, in check\n    assert candidate([]) == 0\n           ^",
+        "n_response_tokens": 384,
+        "wall_s": 14.298669592943043
+      },
+      {
+        "task_id": "HumanEval/8",
+        "passed": false,
+        "completion": "    #--80--\n    #--80--\n    #--80--\n    #--80--\n    #--80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n    #80--\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp6oqsokb9.py\", line 93, in <module>\n    check(sum_product)\n  File \"/tmp/tmp6oqsokb9.py\", line 86, in check\n    assert candidate([]) == (0, 1)\n        ",
+        "n_response_tokens": 384,
+        "wall_s": 14.166800627019256
+      },
+      {
+        "task_id": "HumanEval/7",
+        "passed": false,
+        "completion": "    results = []\n    for string in Strings:\n        if substring in string:\n            results.append(string)\n    return results\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpym38nfeb.py\", line 33, in <module>\n    check(filter_by_substring)\n  File \"/tmp/tmpym38nfeb.py\", line 27, in check\n    assert candidate([], 'john') ==",
+        "n_response_tokens": 384,
+        "wall_s": 14.151167596224695
+      },
+      {
+        "task_id": "HumanEval/23",
+        "passed": false,
+        "completion": "",
+        "error": "client_error: HTTPError('500 Server Error: Internal Server Error for url: http://127.0.0.1:8061/completion')"
+      },
+      {
+        "task_id": "HumanEval/55",
+        "passed": true,
+        "completion": "    if n == 1:\n        return 1\n    elif n == 2:\n        return 1\n    else:\n        return fib(n-1) + fib(n-2)\n    fib(10)\n    55\n    fib(1)\n    1\n    fib(8)\n    21\n    fib(10)\n    55\n    fib(10)\n    55\n    fib(10)\n    55\n    fib(10)\n    55\n    fib(10)\n    55\n    fib(10)\n    55\n    fib(10)\n    55\n    fib(10)\n    55\n    fib(10)\n    55\n    fib(10)\n    55\n    fib(10)\n    55\n    fib(10)\n    55\n    fib(10)\n    55\n    fib(10)\n    55\n    fib(10)\n    55\n    fib(10)\n    55\n    fib(10)\n    55\n    fib(10)\n    55\n    fib(10)\n    55\n    fib(10)\n    55\n    fib(10)\n    55\n    fib(10)\n    55\n    fib(10)\n    5",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 14.27295534638688
+      },
+      {
+        "task_id": "HumanEval/59",
+        "passed": false,
+        "completion": "    # 2\n    # 2\n    # 2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n    2\n   ",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpknfnc86h.py\", line 121, in <module>\n    check(largest_prime_factor)\n  File \"/tmp/tmpknfnc86h.py\", line 113, in check\n    assert candidate(15) == 5\n  ",
+        "n_response_tokens": 384,
+        "wall_s": 14.286485111806542
+      },
+      {
+        "task_id": "HumanEval/129",
+        "passed": false,
+        "completion": "    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpeb3yfylx.py\", line 246, in <module>\n    check(minPath)\n  File \"/tmp/tmpeb3yfylx.py\", line 230, in check\n    assert candidate([[1, 2, 3], [4, 5, 6], [",
+        "n_response_tokens": 384,
+        "wall_s": 14.29198012361303
+      },
+      {
+        "task_id": "HumanEval/161",
+        "passed": false,
+        "completion": "    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpvejz8rb2.py\", line 224, in <module>\n    check(solve)\n  File \"/tmp/tmpvejz8rb2.py\", line 210, in check\n    assert candidate(\"AsDf\") == \"aSdF\"\n        ",
+        "n_response_tokens": 384,
+        "wall_s": 14.15432311873883
+      },
+      {
+        "task_id": "HumanEval/143",
+        "passed": false,
+        "completion": "    \"\"\"\n    You can use any kind of extra space, but you can't use any kind of extra space in the string.\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpuktmr91f.py\", line 220, in <module>\n    check(words_in_sentence)\n  File \"/tmp/tmpuktmr91f.py\", line 208, in check\n    assert candidate(\"This is a tes",
+        "n_response_tokens": 384,
+        "wall_s": 14.307583165820688
+      }
+    ]
+  }
+}

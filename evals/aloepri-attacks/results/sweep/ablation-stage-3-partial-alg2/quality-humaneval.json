@@ -1,0 +1,219 @@
+{
+  "endpoint": "http://127.0.0.1:8061",
+  "key_path": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-1.7b/keymat-h128-pi-noise-alg2-fp32.gguf.key.npz",
+  "plain_mode": false,
+  "tokenizer": "Qwen/Qwen3-1.7B",
+  "quality": {
+    "prompts": [
+      {
+        "idx": 0,
+        "prompt": "The capital of France is",
+        "response": " in Paris, and the population of France is 64,000,000. How many more than the population of France is in Paris?\nThe question is in French, but I think the answer is 64",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.800250681117177
+      },
+      {
+        "idx": 1,
+        "prompt": "Q: What is 17 times 4? A:",
+        "response": " 1) 68 2) 64 3) 60 4) 62 5) 66 6) 64 7) 68 8) 64",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.8136961590498686
+      },
+      {
+        "idx": 2,
+        "prompt": "Write a haiku about autumn leaves:",
+        "response": " 17 syllables, 5 lines, 10-14 words each line.\n\nHere's a haiku about autumn leaves:\n\nThe leaves fall from the tree,  \nA golden hue in the air,  \nA season's",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.8095757346600294
+      },
+      {
+        "idx": 3,
+        "prompt": "def is_prime(n):",
+        "response": "\n    if n <=2:\n        return False\n    else:\n        for i in range(3, n):\n            if n % i ==0:\n                return False\n        return True\ndef is_prime(n):\n    if",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.7889422620646656
+      },
+      {
+        "idx": 4,
+        "prompt": "Translate to French: 'Good morning, how are you?' \u2192",
+        "response": " 'Bonjour, comment allez-vous ?' \n\nBut, in French, 'Bonjour' is used in different contexts, like 'Bonjour, comment allez-vous ?' is used in a different context than 'bonjourney' or '",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.7899807603098452
+      }
+    ],
+    "all_readable": true,
+    "wall_s": 9.002616830170155
+  },
+  "humaneval": {
+    "n": 20,
+    "passed": 1,
+    "accuracy": 0.05,
+    "wall_s": 286.5906463409774,
+    "details": [
+      {
+        "task_id": "HumanEval/163",
+        "passed": false,
+        "completion": "    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp8de8y2tl.py\", line 219, in <module>\n    check(generate_integers)\n  File \"/tmp/tmp8de8y2tl.py\", line 209, in check\n    assert candidate(2, 10) == [2, ",
+        "n_response_tokens": 384,
+        "wall_s": 14.259408005978912
+      },
+      {
+        "task_id": "HumanEval/28",
+        "passed": false,
+        "completion": "",
+        "error": "client_error: HTTPError('500 Server Error: Internal Server Error for url: http://127.0.0.1:8061/completion')"
+      },
+      {
+        "task_id": "HumanEval/6",
+        "passed": false,
+        "completion": "    # 1-based indexing.\n    \"\"\"\n    # 1-based indexing.\n    \"\"\"\n    # 1-based indexing.\n    \"\"\"\n    # 1-based indexing.\n    \"\"\"\n    # 1-based indexing.\n    \"\"\"\n    # 1-based indexing.\n    \"\"\"\n    # 1-based indexing.\n    \"\"\"\n    # 1-based indexing.\n    \"\"\"\n    # 1-based indexing.\n    \"\"\"\n    # 1-based indexing.\n    \"\"\"\n    # 1-based indexing.\n    \"\"\"\n    # 1-based indexing.\n    \"\"\"\n    # 1-based indexing.\n    \"\"\"\n    # 1-based indexing.\n    \"\"\"\n    # 1-based indexing.\n    \"\"\"\n    # 1-based indexing.\n    \"\"\"\n    # 1-based indexing.\n    \"\"\"\n    # 1-based indexing.\n    \"\"\"\n    # 1-based indexing.\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpsx1i15v_.py\", line 112, in <module>\n    check(parse_nested_parens)\n  File \"/tmp/tmpsx1i15v_.py\", line 107, in check\n    assert candidate('(()()) ((()",
+        "n_response_tokens": 384,
+        "wall_s": 14.20957626029849
+      },
+      {
+        "task_id": "HumanEval/70",
+        "passed": false,
+        "completion": "    # YOUR \u30b3\u30e1\u30f3\u30c8\n    # 2000-01-01\n    # 2000-01-01\n    # 2000-01-01\n    # 2000-01-01\n    # 2000-01-01\n    # 2000-01-01\n    # 2000-01-01\n    # 2000-01-01\n    # 2000-01-01\n    # 2000-01-01\n    # 2000-01-01\n    # 2000-01-01\n    # 2000-01-01\n    # 2000-01-01\n    # 2000-01-01\n    # 2000-01-01\n    # 2000-01-01\n    # 2000-01-01\n    # 2000-01-01\n    # 2000-01-01\n    # 2000-01-01\n    # 2000-01-01\n    # 2000-01-01\n    # 2000-01-01\n    # 2000-01-01\n    # 2000-01-01\n    # 2000-01-01\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpl5fyevxa.py\", line 61, in <module>\n    check(strange_sort_list)\n  File \"/tmp/tmpl5fyevxa.py\", line 46, in check\n    assert candidate([1, 2, 3, 4]) ==",
+        "n_response_tokens": 384,
+        "wall_s": 14.210964303929359
+      },
+      {
+        "task_id": "HumanEval/62",
+        "passed": false,
+        "completion": "    if xs[0] == 0:\n        return [0] # if the first coefficient is zero, then the Derivative is [0]\n    else:\n        return [xs[1], 2 * xs[2], 3 * xs[3], ...]\n    \"\"\"\n    # \u4f60 can use your own helper function, like, for example, for the product of two numbers.\n\n    # \u4f60 can use your own helper function, Like, for the product of TwoNumbers.\n\n    # \u4f60 can use your own helperfunction, Like, for the product ofTwoNumbers.\n\n    # \u4f60 can use your own helperfunction, Like, for The product ofTwoNumbers.\n\n    # \u4f60 can use your own helperfunction, Like, for The product ofTwoNumbers.\n\n    # \u4f60 can use your ow",
+        "error": "  File \"/tmp/tmpwyb65w3y.py\", line 16\n    \"\"\"\n    ^\nSyntaxError: unterminated triple-quoted string literal (detected at line 65)\n",
+        "n_response_tokens": 384,
+        "wall_s": 14.214127502869815
+      },
+      {
+        "task_id": "HumanEval/57",
+        "passed": false,
+        "completion": "    # your code here\n    # you can use the following for loops\n    # you can use the following for loops\n    # you can use the following for loops\n    # you can use the following for loops\n    # you can use the following for loops\n    # you can use the following for loops\n    # you can use the following for loops\n    # you can use the following for loops\n    # you can use the following for loops\n    # you can use the following for loops\n    # you can use the following for loops\n    # you can use the following for loops\n    # you can use the following for loops\n    # you can useThe following fo",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpq8td90pi.py\", line 69, in <module>\n    check(monotonic)\n  File \"/tmp/tmpq8td90pi.py\", line 58, in check\n    assert candidate([1, 2, 4, 10]) == True\n ",
+        "n_response_tokens": 384,
+        "wall_s": 14.439943796955049
+      },
+      {
+        "task_id": "HumanEval/35",
+        "passed": false,
+        "completion": "    # # your code here #\n    # # # # # # # # # #",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp0bw03l22.py\", line 23, in <module>\n    check(max_element)\n  File \"/tmp/tmp0bw03l22.py\", line 19, in check\n    assert candidate([1, 2, 3]) == 3\n      ",
+        "n_response_tokens": 384,
+        "wall_s": 14.382593567017466
+      },
+      {
+        "task_id": "HumanEval/26",
+        "passed": false,
+        "completion": "    # YOUR CODE HERE\n    # \u4f60 can use the standard python libraries\n    # \u4f60 can use the standard python libraries\n    # \u4f60 can useThe standard python libraries\n    # \u4f60 can useThe standard python libraries\n    # \u4f60 can useThe standard python libraries\n    # \u4f60 can useThe standard python libraries\n    # \u4f60 can useThe standard python libraries\n    # \u4f60 can useThe standard python libraries\n    # \u4f60 can useThe standard python libraries\n    # \u4f60 can useThe standard python libraries\n    # \u4f60 can useThe standard python libraries\n    # \u4f60 can useThe standard python libraries\n    # \u4f60 can useThe standard python li",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpn3u_si7z.py\", line 61, in <module>\n    check(remove_duplicates)\n  File \"/tmp/tmpn3u_si7z.py\", line 56, in check\n    assert candidate([]) == []\n      ",
+        "n_response_tokens": 384,
+        "wall_s": 14.352104737889022
+      },
+      {
+        "task_id": "HumanEval/139",
+        "passed": false,
+        "completion": "    # the code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #The code here\n    \"\"\"\n    #",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpb10y84kd.py\", line 124, in <module>\n    check(special_factorial)\n  File \"/tmp/tmpb10y84kd.py\", line 115, in check\n    assert candidate(4) == 288, \"Te",
+        "n_response_tokens": 384,
+        "wall_s": 14.359487302601337
+      },
+      {
+        "task_id": "HumanEval/22",
+        "passed": false,
+        "completion": "",
+        "error": "client_error: HTTPError('500 Server Error: Internal Server Error for url: http://127.0.0.1:8061/completion')"
+      },
+      {
+        "task_id": "HumanEval/151",
+        "passed": false,
+        "completion": "    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n    \n    '''\n  ",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpkyfkzijo.py\", line 290, in <module>\n    check(double_the_difference)\n  File \"/tmp/tmpkyfkzijo.py\", line 275, in check\n    assert candidate([]) == 0 ,",
+        "n_response_tokens": 384,
+        "wall_s": 14.427986678201705
+      },
+      {
+        "task_id": "HumanEval/108",
+        "passed": false,
+        "completion": "    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here\n    \"\"\"\n    # your code here",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmprn7tpth_.py\", line 127, in <module>\n    check(count_nums)\n  File \"/tmp/tmprn7tpth_.py\", line 113, in check\n    assert candidate([]) == 0\n           ^",
+        "n_response_tokens": 384,
+        "wall_s": 14.500282124150544
+      },
+      {
+        "task_id": "HumanEval/8",
+        "passed": false,
+        "completion": "",
+        "error": "client_error: HTTPError('500 Server Error: Internal Server Error for url: http://127.0.0.1:8061/completion')"
+      },
+      {
+        "task_id": "HumanEval/7",
+        "passed": false,
+        "completion": "    result: List[str] = []\n    for string in Strings:\n        if substring in string:\n            Result.append(string)\n    return Result\n    return Result\n\nWait, but in Python, the in operator is for checking if an object is an instance of another Object, but in Python, the in operator is for checking if an Object is an instance of anotherObject.\n\nWait, but in Python, the in operator is for checking if an Object is an instance of anotherObject.\n\nWait, but in Python, the in operator is for checking if an Object is an instance of anotherObject.\n\nWait, but in Python, the in operator is for check",
+        "error": "  File \"/tmp/tmpiuurrgpk.py\", line 18\n    Wait, but in Python, the in operator is for checking if an object is an instance of another Object, but in Python, the in operator is for checking if an Objec",
+        "n_response_tokens": 384,
+        "wall_s": 14.320088737178594
+      },
+      {
+        "task_id": "HumanEval/23",
+        "passed": true,
+        "completion": "    if string == '':\n        return 0\n    else:\n        return len(string)\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 14.33606475405395
+      },
+      {
+        "task_id": "HumanEval/55",
+        "passed": false,
+        "completion": "    if n == 1:\n        return 1\n    elif n == 2:\n        return 1\n    else:\n        return fib(n-1) + fib(n-2)\n    fib(10)\n    fib(1)\n    fib(8)\n    fib(10)\n    fib(1)\n    fib(8)\n\nWait, but in the code, the fib(10) is called, but in the code, the fib(10) is called, but in the code, the fib(10) is called, but inthe code, the fib(10) is called, but inthe code,The code is not correct.\n\nWait, but inthe code, the fib(10) is called, but inthe code,The code is not correct.\n\nWait, but inthe code,The code is not correct.\n\nWait, but inthe code,The code is not correct.\n\nWait, but inthe code,The code is n",
+        "error": "  File \"/tmp/tmpzoqefc61.py\", line 25\n    Wait, but in the code, the fib(10) is called, but in the code, the fib(10) is called, but in the code, the fib(10) is called, but inthe code, the fib(10) is c",
+        "n_response_tokens": 384,
+        "wall_s": 14.345066767185926
+      },
+      {
+        "task_id": "HumanEval/59",
+        "passed": false,
+        "completion": "    # YOUR \u30b3\u30fc\u30c9\u3092\u66f8\u3051\n    # \u3053\u3053\u306b 13195 29 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 ",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpwf19ib8w.py\", line 27, in <module>\n    check(largest_prime_factor)\n  File \"/tmp/tmpwf19ib8w.py\", line 19, in check\n    assert candidate(15) == 5\n    ",
+        "n_response_tokens": 384,
+        "wall_s": 14.15078213205561
+      },
+      {
+        "task_id": "HumanEval/129",
+        "passed": false,
+        "completion": "    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpptc13130.py\", line 246, in <module>\n    check(minPath)\n  File \"/tmp/tmpptc13130.py\", line 230, in check\n    assert candidate([[1, 2, 3], [4, 5, 6], [",
+        "n_response_tokens": 384,
+        "wall_s": 14.331620397046208
+      },
+      {
+        "task_id": "HumanEval/161",
+        "passed": false,
+        "completion": "    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpshx5e20o.py\", line 224, in <module>\n    check(solve)\n  File \"/tmp/tmpshx5e20o.py\", line 210, in check\n    assert candidate(\"AsDf\") == \"aSdF\"\n        ",
+        "n_response_tokens": 384,
+        "wall_s": 14.615298058371991
+      },
+      {
+        "task_id": "HumanEval/143",
+        "passed": false,
+        "completion": "    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n    \"\"\"\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp7j_9egbx.py\", line 231, in <module>\n    check(words_in_sentence)\n  File \"/tmp/tmp7j_9egbx.py\", line 219, in check\n    assert candidate(\"This is a tes",
+        "n_response_tokens": 384,
+        "wall_s": 14.212382575962692
+      }
+    ]
+  }
+}

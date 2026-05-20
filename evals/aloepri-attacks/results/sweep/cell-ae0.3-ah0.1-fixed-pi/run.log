@@ -1,0 +1,41 @@
+[M2.7 quality+humaneval] endpoint=http://127.0.0.1:8063
+[M2.7 quality+humaneval] key=/home/timo/.cache/huggingface/path-2-aloepri/qwen3-1.7b/keymat-h128-pi-noise-ae0.3-ah0.1-fp32.gguf.key.npz
+[M2.7 quality+humaneval] quality probe (5 prompts)…
+  q[0] readable=True (ok) [ 48 tok, 1.8 s] 'The capital of France is' → ' Paris, and the capital of the United States is Washington, '
+  q[1] readable=True (ok) [ 48 tok, 1.8 s] 'Q: What is 17 times 4? A:' → ' 17 times 4 is 68. 17 multiplied by 4 is 68. 17×4=68. 17×4=6'
+  q[2] ERROR: HTTPError('500 Server Error: Internal Server Error for url: http://127.0.0.1:8063/completion')
+  q[3] readable=True (ok) [ 48 tok, 1.8 s] 'def is_prime(n):' → '\n    if n <= 1:\n        return False\n    if n <= 3:\n        '
+  q[4] readable=True (ok) [ 48 tok, 1.8 s] "Translate to French: 'Good morning, how " → " 'Bonjour, comment ça va ?'\n\nYes, that's correct. But I want"
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+  → all_readable=False (9.0 s)
+[M2.7 quality+humaneval] HumanEval pass@1 (n=20)…
+  he[ 0/20] HumanEval/163 ERROR: HTTPError('500 Server Error: Internal Server Error for url: http://127.0.0.1:8063/completion')
+  he[ 1/20] HumanEval/28 ERROR: HTTPError('500 Server Error: Internal Server Error for url: http://127.0.0.1:8063/completion')
+  he[ 2/20] HumanEval/6      PASS (384 tok, 14.4 s) 
+  he[ 3/20] HumanEval/70 ERROR: HTTPError('500 Server Error: Internal Server Error for url: http://127.0.0.1:8063/completion')
+  he[ 4/20] HumanEval/62     fail (384 tok, 14.4 s) Traceback (most recent call last):
+  File "/tmp/tmpg3j_nb8z.py", line 44, in <mo
+  he[ 5/20] HumanEval/57 ERROR: HTTPError('500 Server Error: Internal Server Error for url: http://127.0.0.1:8063/completion')
+  he[ 6/20] HumanEval/35     PASS (384 tok, 14.3 s) 
+  he[ 7/20] HumanEval/26     fail (384 tok, 14.2 s) Traceback (most recent call last):
+  File "/tmp/tmpsvqtx33_.py", line 32, in <mo
+  he[ 8/20] HumanEval/139    fail (384 tok, 14.3 s)   File "/tmp/tmpmfjc3_yv.py", line 23
+    **Note:** The `factorial` function is 
+  he[ 9/20] HumanEval/22     PASS (384 tok, 14.2 s) 
+  he[10/20] HumanEval/151    fail (384 tok, 14.2 s)   File "/tmp/tmptfh5barg.py", line 29
+    So the function needs to check if each
+  he[11/20] HumanEval/108    fail (384 tok, 14.3 s)   File "/tmp/tmpjv6xai_u.py", line 34
+    Wait, the test case for [-1, 11, -11] 
+  he[12/20] HumanEval/8      PASS (384 tok, 14.4 s) 
+  he[13/20] HumanEval/7      PASS (384 tok, 14.3 s) 
+  he[14/20] HumanEval/23     PASS (384 tok, 14.3 s) 
+  he[15/20] HumanEval/55     PASS (384 tok, 14.3 s) 
+  he[16/20] HumanEval/59     fail (384 tok, 14.2 s)   File "/tmp/tmpbhp2l68x.py", line 23
+    Wait, but the problem says that n is n
+  he[17/20] HumanEval/129    fail (384 tok, 14.4 s) Traceback (most recent call last):
+  File "/tmp/tmp35tir5_6.py", line 56, in <mo
+  he[18/20] HumanEval/161    fail (384 tok, 14.2 s) Traceback (most recent call last):
+  File "/tmp/tmp7iyvun0z.py", line 35, in <mo
+  he[19/20] HumanEval/143 ERROR: HTTPError('500 Server Error: Internal Server Error for url: http://127.0.0.1:8063/completion')
+  → pass@1 = 7/20 = 0.350 (286 s)
+[M2.7 quality+humaneval] wrote evals/aloepri-attacks/results/sweep/cell-ae0.3-ah0.1-fixed-pi/quality-humaneval.json
