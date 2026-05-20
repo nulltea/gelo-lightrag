@@ -5,24 +5,24 @@
  */
 
 :root {
-  --paper: #f1e8d6;
-  --paper-2: #e8dec6;
-  --paper-3: #d9cca8;
-  --ink: #1a1815;
-  --ink-2: #44403a;
-  --ink-3: #6e695e;
-  --rule: #1a1815;
-  --tee: #b73228;           /* trusted / TEE — signal red */
-  --tee-soft: #ecc8c3;
-  --gpu: #b07a1f;           /* untrusted GPU — ochre */
-  --gpu-soft: #ecdab1;
-  --storage: #2e5a4d;       /* untrusted storage — deep teal */
-  --storage-soft: #c0d6cc;
-  --client: #1c3a6e;        /* client — navy */
-  --client-soft: #c4cfe1;
-  --crypto: #5a2e6b;        /* crypto / DP — plum */
-  --crypto-soft: #d6c5dd;
-  --warn: #8a3a05;
+  --paper: #fafafa;         /* neutral off-white · R=G=B */
+  --paper-2: #f1f1f1;
+  --paper-3: #e3e3e3;
+  --ink: #14181c;           /* cool near-black */
+  --ink-2: #3c434b;
+  --ink-3: #6a7280;
+  --rule: #14181c;
+  --tee: #b85a32;           /* trusted / TEE — terracotta · warm primary */
+  --tee-soft: #ecd1c0;
+  --gpu: #5a6573;           /* untrusted GPU — slate */
+  --gpu-soft: #dde0e5;
+  --storage: #2e6a5e;       /* untrusted storage — teal */
+  --storage-soft: #c6dbd4;
+  --client: #2a5092;        /* client — navy */
+  --client-soft: #c8d4e6;
+  --crypto: #5e4a7a;        /* crypto / DP — muted plum */
+  --crypto-soft: #d6cce2;
+  --warn: #a3460a;          /* hazard — deep amber */
 }
 
 * { box-sizing: border-box; }
@@ -32,7 +32,7 @@ body {
   font-size: 13px;
   line-height: 1.55;
   font-feature-settings: "ss01" 1, "ss02" 1, "calt" 1;
-  background-image: radial-gradient(rgba(26,24,21,0.025) 1px, transparent 1px);
+  background-image: radial-gradient(rgba(20,24,28,0.03) 1px, transparent 1px);
   background-size: 4px 4px;
 }
 ::selection { background: var(--ink); color: var(--paper); }

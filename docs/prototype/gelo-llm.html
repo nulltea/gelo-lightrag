@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>private-rag · generation (GELO LLM)</title>
+<title>private-rag — generation (GELO LLM)</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,300..900,0..100,0..1&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap" rel="stylesheet">
@@ -22,7 +22,7 @@
   <!-- ─── MASTHEAD ─── -->
   <header class="masthead">
     <div>
-      <h1 class="title">generation<br><em>· GELO LLM</em></h1>
+      <h1 class="title">generation<br><em>— GELO LLM</em></h1>
       <p class="subtitle">Autoregressive answer generation under the same GELO mask + TwinShield primitives the embedder and reranker already validated. Qwen3-1.7B runs end-to-end today inside an attested SEV-SNP CVM; every Q/K/V/O + MLP matmul rides through a per-batch Haar mask before crossing PCIe; QK-norm + RoPE + GQA + SwiGLU happen entirely in-TEE on plaintext tensors. Tokens stream back to the client over RATLS. Gemma 4 E2B/E4B remain the architecture north star — substrate landed; full decoder integration deferred.</p>
     </div>
     <div class="colophon">

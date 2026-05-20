@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>private-rag · landing</title>
+<title>private-rag — landing</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,300..900,0..100,0..1&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap" rel="stylesheet">
@@ -22,7 +22,7 @@
   <!-- ─── MASTHEAD ─── -->
   <header class="masthead">
     <div>
-      <h1 class="title">private<em>·</em>rag</h1>
+      <h1 class="title">private-rag</h1>
       <p class="subtitle">Outsource a confidential knowledge base to an untrusted cloud, embed inside an attested SEV-SNP CVM with an information-theoretically blind GPU, store as distance-preserving ciphertext, retrieve at near-plaintext cost.</p>
     </div>
     <div class="colophon">
@@ -479,7 +479,7 @@
         <span class="arrow">read more</span>
       </a>
             <a class="path-card muted" href="storage-remoterag.html">
-        <span class="alt-badge">✕ alternative · not pursued</span>
+        <span class="alt-badge">✕ alternative — not pursued</span>
         <div class="num">§B</div>
         <h3>Storage · RemoteRAG</h3>
         <p class="tagline">A second storage strategy prototyped during the work and parked. Keeps the index plaintext on the server; the query gets formal <code>(n, ε)</code>-DistanceDP via planar-Laplace noise, with a Paillier homomorphic dot-product reranking against the clean query. <strong>Mutually exclusive with CAPRISE — the project chose CAPRISE.</strong></p>
@@ -543,7 +543,7 @@
       </a>
             <a class="path-card" href="graphrag.html">
         <div class="num">§G</div>
-        <h3>GraphRAG · Compass</h3>
+        <h3>GraphRAG — Compass</h3>
         <p class="tagline"><em>Shipped · benched.</em> Private LightRAG retrieval inside the same SEV-SNP CVM. Three Compass-encrypted HNSW indexes (entities · relations · chunks) plus two XorMM volume-hiding multimaps (adjacency · src_chunks) plus an AES-GCM chunk store — every server-visible op reduces to a Ring-ORAM read, an EMM lookup, or a blob fetch. Local + Hybrid modes wired; 10–58 ms p50 in-memory at N=100–2000.</p>
         <ul>
           <li><code>ring-oram</code> · semi-honest baseline + lazy eviction + treetop cache · async <code>BlockBackend</code></li>
@@ -630,7 +630,7 @@
         <li><a href="embedding.html">Embedding · GELO</a> — TEE↔GPU split-inference protocol, mask + shield + U-Verify</li>
         <li><a href="storage.html">Storage · CAPRISE-at-rest</a> — production storage path · two-party HKDF</li>
         <li><a href="storage-remoterag.html">Storage · RemoteRAG</a> — alternative explored, not pursued</li>
-        <li><a href="graphrag.html">GraphRAG · Compass</a> — shipped · Ring-ORAM + XorMM under SEV-SNP · benched</li>
+        <li><a href="graphrag.html">GraphRAG — Compass</a> — shipped · Ring-ORAM + XorMM under SEV-SNP · benched</li>
         <li><a href="aloepri-llm.html">Generation · AloePri</a> — forward-looking · obfuscated Gemma 4 served via unmodified vLLM · no TEE in the loop</li>
         <li><a href="caprise-two-party-kdf.md">CAPRISE two-party KDF spec</a> — Option 3 design + delivery</li>
       </ul>
