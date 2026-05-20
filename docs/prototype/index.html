@@ -15,22 +15,9 @@
   <span class="crosshair tr"></span>
   <span class="crosshair bl"></span>
   <span class="crosshair br"></span>
-
-  <!-- ─── TOP NAV ─── -->
-  <nav class="topnav">
-    <a class="brand" href="index.html">
-      private-rag<span class="dot">·</span><span class="rev">prototype</span>
-    </a>
-    <div class="links">
-      <a class="current" href="index.html">Overview</a>
-      <a href="embedding.html">Embedding · GELO</a>
-      <a href="storage.html">Storage · CAPRISE</a>
-      <a href="reranking.html">Reranking · GELO</a>
-      <a href="gelo-llm.html">Generation · GELO</a>
-      <a href="graphrag.html">GraphRAG · Compass</a>
-      <a href="aloepri-llm.html">Generation · AloePri</a>
-    </div>
-  </nav>
+  <!-- ─── TOP NAV (shared, see _nav.js) ─── -->
+  <div id="topnav-mount"></div>
+  <script src="_nav.js" defer></script>
 
   <!-- ─── MASTHEAD ─── -->
   <header class="masthead">
@@ -453,21 +440,8 @@
     </p>
 
     <div class="path-grid">
-      <a class="path-card" href="embedding.html">
-        <div class="num">§A</div>
-        <h3>Embedding · GELO</h3>
-        <p class="tagline">An attested SEV-SNP CVM runs a transformer encoder; every Q/K/V/O + FFN GEMM is masked with a Haar-uniform orthogonal A per forward pass and offloaded to a commodity Vulkan GPU. The GPU sees only U=A·H plus public weights.</p>
-        <ul>
-          <li><code>gelo-protocol</code> · mask · shield · U-Verify · OutAttnMult · permuted attention</li>
-          <li><code>gelo-embedder</code> · GeloBertEmbedder · GeloQwenEmbedder</li>
-          <li><code>gelo-gpu-wgpu</code> · WgpuVulkanEngine</li>
-          <li><code>gelo-tee-sev-snp</code> · SnpTrustedExecutor · SnpAttestationVerifier</li>
-          <li><code>dp-forward</code> · aMGM Gaussian on pooled output (optional)</li>
-        </ul>
-        <span class="arrow">read more</span>
-      </a>
       <a class="path-card" href="storage.html">
-        <div class="num">§B</div>
+        <div class="num">§A</div>
         <h3>Storage · CAPRISE-at-rest</h3>
         <p class="tagline">The production storage path. Doc embeddings live on the untrusted server as distance-preserving CAPRISE ciphertext; cosine ANN runs over the ciphertext directly. The CAPRISE seed is HKDF-derived inside the SEV-SNP CVM per request from a two-party secret (Option 3) and zeroized at return.</p>
         <ul>
@@ -479,33 +453,9 @@
         </ul>
         <span class="arrow">read more</span>
       </a>
-      <a class="path-card" href="reranking.html">
-        <div class="num">§C</div>
-        <h3>Reranking · GELO</h3>
-        <p class="tagline">Post-retrieval rerank inside the same SEV-SNP CVM. Two architecture-typed services — Qwen3-Reranker-0.6B (causal-LM, primary) and bge-reranker-v2-m3 (XLM-RoBERTa cross-encoder, parity bench) — both ride the embedder's GELO mask + TwinShield primitives. Scores never leave the TEE; the wire emission is a fixed-shape, shuffled, AES-GCM bundle with rank sealed inside each ciphertext.</p>
-        <ul>
-          <li><code>gelo-reranker</code> · causal_discriminator · cross_encoder · score · session</li>
-          <li>shared GELO substrate — ~98% code reuse with the embedder</li>
-          <li>Qwen3 single-pair: 1.83 s · k′=20 batched on rayon candidates</li>
-          <li>output: fixed-shape encrypted bundle · rank order hidden from operator</li>
-        </ul>
-        <span class="arrow">read more</span>
-      </a>
-      <a class="path-card" href="gelo-llm.html">
-        <div class="num">§D</div>
-        <h3>Generation · GELO LLM</h3>
-        <p class="tagline">Autoregressive answer generation inside the same SEV-SNP CVM. Gemma 4 E2B and E4B run under the embedder's GELO mask + TwinShield primitives, with hybrid attention keeping cheap sliding-window layers fully in-TEE and only the long-range global layers crossing PCIe under mask. The Per-Layer Embedding table lives in encrypted CVM DRAM so token-id gather addresses never reach the GPU; the KV cache stays in-TEE and tokens stream back to the client under per-query AES-GCM.</p>
-        <ul>
-          <li><code>gelo-embedder::decoder</code> · gemma4 · generation · kv_cache · sampler</li>
-          <li><code>gelo-protocol::ple</code> · PLE table + gather inside the trusted executor</li>
-          <li>hybrid attention router · local SWA(W=512) in-TEE · global via OutAttnMult / fused permuted (deferred)</li>
-          <li>Gemma 4 E2B primary · E4B scaling · 31B stretch · MoE deferred</li>
-        </ul>
-        <span class="arrow">read more</span>
-      </a>
-      <a class="path-card muted" href="storage-remoterag.html">
+            <a class="path-card muted" href="storage-remoterag.html">
         <span class="alt-badge">✕ alternative · not pursued</span>
-        <div class="num">§E</div>
+        <div class="num">§B</div>
         <h3>Storage · RemoteRAG</h3>
         <p class="tagline">A second storage strategy prototyped during the work and parked. Keeps the index plaintext on the server; the query gets formal <code>(n, ε)</code>-DistanceDP via planar-Laplace noise, with a Paillier homomorphic dot-product reranking against the clean query. <strong>Mutually exclusive with CAPRISE — the project chose CAPRISE.</strong></p>
         <ul>
@@ -517,8 +467,58 @@
         </ul>
         <span class="arrow">read why not chosen</span>
       </a>
-      <a class="path-card" href="graphrag.html">
+            <a class="path-card" href="embedding.html">
+        <div class="num">§C</div>
+        <h3>Embedding · GELO</h3>
+        <p class="tagline">An attested SEV-SNP CVM runs a transformer encoder; every Q/K/V/O + FFN GEMM is masked with a Haar-uniform orthogonal A per forward pass and offloaded to a commodity Vulkan GPU. The GPU sees only U=A·H plus public weights.</p>
+        <ul>
+          <li><code>gelo-protocol</code> · mask · shield · U-Verify · OutAttnMult · permuted attention</li>
+          <li><code>gelo-embedder</code> · GeloBertEmbedder · GeloQwenEmbedder</li>
+          <li><code>gelo-gpu-wgpu</code> · WgpuVulkanEngine</li>
+          <li><code>gelo-tee-sev-snp</code> · SnpTrustedExecutor · SnpAttestationVerifier</li>
+          <li><code>dp-forward</code> · aMGM Gaussian on pooled output (optional)</li>
+        </ul>
+        <span class="arrow">read more</span>
+      </a>
+            <a class="path-card" href="reranking.html">
+        <div class="num">§D</div>
+        <h3>Reranking · GELO</h3>
+        <p class="tagline">Post-retrieval rerank inside the same SEV-SNP CVM. Two architecture-typed services — Qwen3-Reranker-0.6B (causal-LM, primary) and bge-reranker-v2-m3 (XLM-RoBERTa cross-encoder, parity bench) — both ride the embedder's GELO mask + TwinShield primitives. Scores never leave the TEE; the wire emission is a fixed-shape, shuffled, AES-GCM bundle with rank sealed inside each ciphertext.</p>
+        <ul>
+          <li><code>gelo-reranker</code> · causal_discriminator · cross_encoder · score · session</li>
+          <li>shared GELO substrate — ~98% code reuse with the embedder</li>
+          <li>Qwen3 single-pair: 1.83 s · k′=20 batched on rayon candidates</li>
+          <li>output: fixed-shape encrypted bundle · rank order hidden from operator</li>
+        </ul>
+        <span class="arrow">read more</span>
+      </a>
+            <a class="path-card" href="gelo-llm.html">
+        <div class="num">§E</div>
+        <h3>Generation · GELO LLM</h3>
+        <p class="tagline">Autoregressive answer generation inside the same SEV-SNP CVM. Gemma 4 E2B and E4B run under the embedder's GELO mask + TwinShield primitives, with hybrid attention keeping cheap sliding-window layers fully in-TEE and only the long-range global layers crossing PCIe under mask. The Per-Layer Embedding table lives in encrypted CVM DRAM so token-id gather addresses never reach the GPU; the KV cache stays in-TEE and tokens stream back to the client under per-query AES-GCM.</p>
+        <ul>
+          <li><code>gelo-embedder::decoder</code> · gemma4 · generation · kv_cache · sampler</li>
+          <li><code>gelo-protocol::ple</code> · PLE table + gather inside the trusted executor</li>
+          <li>hybrid attention router · local SWA(W=512) in-TEE · global via OutAttnMult / fused permuted (deferred)</li>
+          <li>Gemma 4 E2B primary · E4B scaling · 31B stretch · MoE deferred</li>
+        </ul>
+        <span class="arrow">read more</span>
+      </a>
+            <a class="path-card" href="aloepri-llm.html">
         <div class="num">§F</div>
+        <h3>Generation · AloePri LLM</h3>
+        <p class="tagline"><em>Forward-looking.</em> Second private-inference path for the generative LLM step, complementary to the GELO TEE-GPU stack. The Qwen3 1.7B weights are rewritten once offline into an obfuscated GGUF (covariant obfuscation, arXiv 2603.01499); stock <code>llama-server</code> hosts it without a fork; the trusted client wrapper holds only a secret token permutation τ and the tokenizer. Prompts cross the wire as an integer-array of obfuscated IDs — the server never reads any plaintext. Trade vs GELO: no TEE required, in exchange for static obfuscation (TTRSR ≤ 15% empirical, not information-theoretic per-batch).</p>
+        <ul>
+          <li>demonstrator: Qwen3 1.7B Q8_0 plaintext → fp32 obfuscated GGUF (8.6 GB)</li>
+          <li><code>obfuscate_qwen3_gguf</code> · offline weight rewriter (Algorithm 1 keymat · §5.2.5 norm fusion · Π · α<sub>e</sub>/α<sub>h</sub> noise · inter-head shuffle)</li>
+          <li><code>AloePriClient</code> · trusted-side τ-map over native <code>/completion</code> int-array endpoint</li>
+          <li>Qwen3 QK-norm blocks the paper's intra-head Algorithm 2 transforms — inter-head shuffle only deployed; ISA defense partial (see §08 of the doc)</li>
+          <li>Gemma 4 deferred: 5 residual norm sites per block push κ-compounding past comfortable accuracy bounds</li>
+        </ul>
+        <span class="arrow">read more</span>
+      </a>
+            <a class="path-card" href="graphrag.html">
+        <div class="num">§G</div>
         <h3>GraphRAG · Compass</h3>
         <p class="tagline"><em>Shipped · Variant A · M0–M8.1 · benched.</em> Private LightRAG retrieval inside the same SEV-SNP CVM. Three Compass-encrypted HNSW indexes (entities · relations · chunks) plus two XorMM volume-hiding multimaps (adjacency · src_chunks) plus an AES-GCM chunk store — every server-visible op reduces to a Ring-ORAM read, an EMM lookup, or a blob fetch. Local + Hybrid modes wired; 10–58 ms p50 in-memory at N=100–2000.</p>
         <ul>
@@ -531,20 +531,7 @@
         </ul>
         <span class="arrow">read more</span>
       </a>
-      <a class="path-card" href="aloepri-llm.html">
-        <div class="num">§G</div>
-        <h3>Generation · AloePri</h3>
-        <p class="tagline"><em>Forward-looking.</em> Second private-inference path for the generative LLM step, complementary to the GELO TEE-GPU stack. The Qwen3 1.7B weights are rewritten once offline into an obfuscated GGUF (covariant obfuscation, arXiv 2603.01499); stock <code>llama-server</code> hosts it without a fork; the trusted client wrapper holds only a secret token permutation τ and the tokenizer. Prompts cross the wire as an integer-array of obfuscated IDs — the server never reads any plaintext. Trade vs GELO: no TEE required, in exchange for static obfuscation (TTRSR ≤ 15% empirical, not information-theoretic per-batch).</p>
-        <ul>
-          <li>demonstrator: Qwen3 1.7B Q8_0 plaintext → fp32 obfuscated GGUF (8.6 GB)</li>
-          <li><code>obfuscate_qwen3_gguf</code> · offline weight rewriter (Algorithm 1 keymat · §5.2.5 norm fusion · Π · α<sub>e</sub>/α<sub>h</sub> noise · inter-head shuffle)</li>
-          <li><code>AloePriClient</code> · trusted-side τ-map over native <code>/completion</code> int-array endpoint</li>
-          <li>Qwen3 QK-norm blocks the paper's intra-head Algorithm 2 transforms — inter-head shuffle only deployed; ISA defense partial (see §08 of the doc)</li>
-          <li>Gemma 4 deferred: 5 residual norm sites per block push κ-compounding past comfortable accuracy bounds</li>
-        </ul>
-        <span class="arrow">read more</span>
-      </a>
-      <a class="path-card" href="#hardware">
+            <a class="path-card" href="#hardware">
         <div class="num">§H</div>
         <h3>Hardware</h3>
         <p class="tagline">AMD EPYC SEV-SNP for the TEE, commodity Vulkan GPU via VFIO passthrough for offload. No confidential-compute GPU needed — GELO masks make the GPU information-theoretically blind regardless.</p>
@@ -556,7 +543,7 @@
         </ul>
         <span class="arrow">jump to section</span>
       </a>
-    </div>
+    </div></div>
   </section>
 
   <!-- ═════ § 4 HARDWARE ═════ -->

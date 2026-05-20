@@ -106,6 +106,56 @@ a { color: var(--ink); }
 }
 .topnav a.current::before { content: "▸ "; color: var(--tee); }
 
+/* nav dropdown group (Generation: GELO LLM / AloePri LLM) */
+.topnav .navgroup {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.topnav .navgroup-label {
+  text-decoration: none;
+  color: var(--ink-2);
+  border-bottom: 1px solid transparent;
+  padding-bottom: 2px;
+  cursor: pointer;
+  transition: border-color 120ms, color 120ms;
+}
+.topnav .navgroup-label:hover,
+.topnav .navgroup:hover .navgroup-label,
+.topnav .navgroup.open .navgroup-label {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+.topnav .navgroup-label.current {
+  color: var(--tee);
+  border-color: var(--tee);
+}
+.topnav .navgroup-label.current::before {
+  content: "▸ ";
+  color: var(--tee);
+}
+.topnav .navgroup-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 6px;
+  background: var(--paper, #fff);
+  border: 1px solid var(--ink);
+  padding: 8px 14px;
+  display: none;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 12em;
+  z-index: 50;
+}
+.topnav .navgroup:hover .navgroup-menu,
+.topnav .navgroup.open .navgroup-menu {
+  display: flex;
+}
+.topnav .navgroup-menu a {
+  white-space: nowrap;
+}
+
 /* ────── MASTHEAD ────── */
 .masthead {
   display: grid;
@@ -675,6 +725,13 @@ footer a:hover { color: var(--tee); border-color: var(--tee); }
   .sheet { padding: 20px 20px; }
   .title { font-size: 12vw; }
   .topnav { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .topnav .links { flex-wrap: wrap; gap: 14px; }
+  .topnav .navgroup-menu {
+    position: static;
+    border: none;
+    padding: 4px 0 4px 14px;
+    margin-top: 4px;
+  }
   .masthead { grid-template-columns: 1fr; }
   .colophon { text-align: left; }
   .legend, .stat-strip { grid-template-columns: repeat(2, 1fr); }
