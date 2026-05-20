@@ -1831,32 +1831,28 @@
               width="560"
               height="78"
               class="box box-gpu"
-              style="fill: #fff; stroke: #bbb"
+              style="fill: #dff5e2"
             />
-            <text
-              x="660"
-              y="372"
-              class="box-label"
-              text-anchor="middle"
-              style="fill: #a66"
-            >
-              ④ QK-norm — γ_q, γ_k kept per-element, NOT fused
+            <text x="660" y="372" class="box-label" text-anchor="middle">
+              ④ QK-norm — matrix-Γ (2026-05-19 patched kernel)
             </text>
             <text x="660" y="392" class="box-mono" text-anchor="middle">
-              Q̃_normed[h, k] = (Q̃[h, k] / RMS_k(Q̃[h, :])) · γ_q[k]
+              attn_q_norm.weight is now 2D Γ_q = M_qᵀ · Diag(γ_q) · M_q
+              (head_dim × head_dim)
             </text>
             <text x="660" y="408" class="box-mono" text-anchor="middle">
-              γ_q[k] is the SAME for every head h — broadcast across the 16 (or
-              8) heads
+              kernel branches on aloepri.qk_norm_matrix → RMS-only + 128×128
+              ggml_mul_mat
             </text>
             <text
               x="660"
               y="424"
               class="box-mono"
               text-anchor="middle"
-              style="font-style: italic; fill: #a66"
+              style="font-style: italic; fill: #1f5024"
             >
-              head permutation (step ②) leaves this broadcast invariant
+              algebraic identity: (Q̃ / RMS(Q̃)) · Γ_q = Q_plain_normed · M_q (M_q
+              orthogonal)
             </text>
 
             <path
@@ -1864,12 +1860,20 @@
               class="arrow arrow-secret"
               marker-end="url(#ahxqkn)"
             />
-            <rect x="500" y="444" width="320" height="44" class="box box-gpu" />
+            <rect
+              x="500"
+              y="444"
+              width="320"
+              height="44"
+              class="box box-gpu"
+              style="fill: #dff5e2"
+            />
             <text x="660" y="464" class="box-label" text-anchor="middle">
-              ⑤ RoPE on Q̃, K̃ — base 1M, NEOX layout
+              ⑤ RoPE on Q̃, K̃ — Ẑ_block applied via M_q
             </text>
             <text x="660" y="480" class="box-mono" text-anchor="middle">
-              no Ẑ_block permutation; canonical freq schedule applies
+              R̂_qk folded into W_q's output; Ẑ_block (β=8 window) permutes RoPE
+              2×2 pairs
             </text>
 
             <path
@@ -1886,15 +1890,15 @@
               style="fill: #dff5e2"
             />
             <text x="660" y="524" class="box-label" text-anchor="middle">
-              ⑥ attention — head order shuffled by τ_kv, τ_group
+              ⑥ attention — intra-head M_q + head shuffle τ_kv, τ_group
             </text>
             <text x="660" y="544" class="box-mono" text-anchor="middle">
-              attn_obf[h] = softmax(Q̃_normed[h] · K̃_normed[η(h)]ᵀ / √d_head) ·
-              Ṽ[η(h)]
+              Q̃_normed = Q_plain_normed · M_q ; K̃_normed = K_plain_normed · M_k
+              with M_q·M_kᵀ = I (Ẑ-fix landed 2026-05-19)
             </text>
             <text x="660" y="560" class="box-mono" text-anchor="middle">
-              η(h) = h ÷ num_groups under the SHUFFLED head-axis: plain pairing
-              preserved
+              Q̃·K̃ᵀ ≡ Q_plain·K_plainᵀ exactly; head-axis index permuted by η(h)
+              = h ÷ num_groups
             </text>
 
             <path
@@ -1911,14 +1915,15 @@
               style="fill: #dff5e2"
             />
             <text x="660" y="606" class="box-label" text-anchor="middle">
-              ⑦ output projection — keymat · head-axis perm
+              ⑦ output projection — Û_vo + keymat + head-axis perm
             </text>
             <text x="660" y="624" class="box-mono" text-anchor="middle">
-              W̃_o = W_o · P̂_R · columns permuted by feature_order(τ_kv, τ_group)
+              W̃_v = Q̂_v · W_v · Û_vo ; W̃_o = Û_vo⁻¹ · W_o · P̂_o ; Û_vo cancels
+              through
             </text>
             <text x="660" y="640" class="box-mono" text-anchor="middle">
-              new W̃_o head-h column block = old W_o head q_head_order[h] column
-              block
+              columns permuted by feature_order(τ_kv, τ_group); attention output
+              lands in plaintext W_o space mod head shuffle
             </text>
 
             <path
@@ -1938,76 +1943,96 @@
               x="40"
               y="160"
               width="320"
-              height="290"
+              height="380"
               class="box box-gpu"
-              style="fill: #fbecec; stroke: #c97a7a"
+              style="fill: #ecf8ee; stroke: #7aa97e"
             />
             <text
               x="200"
               y="180"
               class="box-label"
               text-anchor="middle"
-              style="fill: #8a3030"
+              style="fill: #1f5024"
             >
-              why the paper's full Algorithm 2 doesn't deploy
+              matrix-Γ kernel: how Algorithm 2 lands on Qwen3
             </text>
-            <text x="56" y="204" class="box-mono" style="fill: #5a2020">
-              paper §5.2.3 for Q/K projection:
+            <text x="56" y="204" class="box-mono" style="fill: #1f5024">
+              paper §5.2.3 for Q projection:
             </text>
             <text x="56" y="220" class="box-mono">
               W̃_q = Q̂_q · W_q · R̂_qk · Ĥ_qk · Ẑ_block
             </text>
-            <text x="56" y="240" class="box-mono" style="fill: #5a2020">
-              requires Q̃ · K̃ᵀ invariance:
-            </text>
-            <text x="56" y="256" class="box-mono">
-              (q·R̂)·(k·R̂)ᵀ = q·kᵀ (R̂ orthogonal)
-            </text>
-            <text x="56" y="276" class="box-mono" style="fill: #5a2020">
-              commutes with RoPE only if R̂
-            </text>
-            <text x="56" y="290" class="box-mono" style="fill: #5a2020">
-              is applied to RAW Q/K, but
-            </text>
-            <text x="56" y="304" class="box-mono" style="fill: #5a2020">
+            <text x="56" y="240" class="box-mono" style="fill: #1f5024">
               Qwen3 has QK-norm γ between
             </text>
-            <text x="56" y="318" class="box-mono" style="fill: #5a2020">
-              W_q and RoPE.
+            <text x="56" y="254" class="box-mono" style="fill: #1f5024">
+              W_q and RoPE — §5.2.5 fold of γ
             </text>
-            <text x="56" y="340" class="box-mono" style="fill: #5a2020">
-              §5.2.5 fold attempts to fix:
+            <text x="56" y="268" class="box-mono" style="fill: #1f5024">
+              needs i.i.d. Gaussian q which
             </text>
-            <text x="56" y="356" class="box-mono">W'_q = W_q · diag(γ_q)</text>
-            <text x="56" y="370" class="box-mono">γ_q → κ_q = √(mean(γ²))</text>
-            <text x="56" y="392" class="box-mono" style="fill: #5a2020">
-              exact iff RMS(q·γ)/RMS(q) = κ_q
+            <text x="56" y="282" class="box-mono" style="fill: #1f5024">
+              empirically degrades the model.
             </text>
-            <text x="56" y="406" class="box-mono" style="fill: #5a2020">
-              i.e. q is i.i.d. Gaussian.
+            <text x="56" y="304" class="box-mono" style="fill: #1f5024">
+              Solution (patched llama.cpp):
+            </text>
+            <text x="56" y="320" class="box-mono">
+              attn_q_norm.weight is now 2D:
+            </text>
+            <text x="56" y="334" class="box-mono">
+              Γ_q = M_qᵀ · Diag(γ_q) · M_q
+            </text>
+            <text x="56" y="348" class="box-mono">
+              shape (head_dim, head_dim) = (128, 128)
+            </text>
+            <text x="56" y="370" class="box-mono" style="fill: #1f5024">
+              M_q orthogonal (Walsh-Hadamard ±1
+            </text>
+            <text x="56" y="384" class="box-mono" style="fill: #1f5024">
+              Ĥ_qk + Ẑ_block + R̂_qk).
+            </text>
+            <text x="56" y="406" class="box-mono">(Q̃ / RMS(Q̃)) · Γ_q</text>
+            <text x="56" y="420" class="box-mono">= Q_plain_normed · M_q</text>
+            <text
+              x="56"
+              y="442"
+              class="box-mono"
+              style="fill: #1f5024; font-weight: 700"
+            >
+              forward-pass identity exact:
             </text>
             <text
               x="56"
-              y="426"
+              y="456"
               class="box-mono"
-              style="fill: #5a2020; font-weight: 700"
+              style="fill: #1f5024; font-weight: 700"
             >
-              Empirically: Q vectors correlate
+              intra-head M_q lands in Q̃_normed
             </text>
             <text
               x="56"
-              y="440"
+              y="470"
               class="box-mono"
-              style="fill: #5a2020; font-weight: 700"
+              style="fill: #1f5024; font-weight: 700"
             >
-              with γ → model degenerates.
+              without Gaussian-q assumption.
+            </text>
+            <text x="56" y="494" class="box-mono" style="fill: #5a5a5a">
+              kernel gate: aloepri.qk_norm_matrix
+            </text>
+            <text x="56" y="508" class="box-mono" style="fill: #5a5a5a">
+              metadata flag · legacy 1D γ
+            </text>
+            <text x="56" y="522" class="box-mono" style="fill: #5a5a5a">
+              path is bit-identical fallback.
             </text>
 
             <rect
               x="960"
               y="160"
               width="320"
-              height="290"
+              height="380"
               class="box box-gpu"
               style="fill: #ecf8ee; stroke: #7aa97e"
             />
@@ -2018,64 +2043,80 @@
               text-anchor="middle"
               style="fill: #1f5024"
             >
-              why head-shuffle survives
+              what's now applied (full Algorithm 2)
             </text>
             <text x="976" y="204" class="box-mono" style="fill: #1f5024">
-              τ_kv ∈ S_8, τ_group ∈ S_2 per layer
+              intra-head, per layer:
             </text>
-            <text x="976" y="220" class="box-mono" style="fill: #1f5024">
-              permute whole heads only
+            <text x="976" y="220" class="box-mono">
+              R̂_qk · Ĥ_qk · Ẑ_block (orthogonal M)
             </text>
-            <text x="976" y="240" class="box-mono">
-              new W_q head h = old W_q head π(h)
+            <text x="976" y="234" class="box-mono">
+              folded into W_q output axis
             </text>
-            <text x="976" y="256" class="box-mono">
-              within each head: 128 elements
+            <text x="976" y="256" class="box-mono" style="fill: #1f5024">
+              inter-head, per layer:
             </text>
-            <text x="976" y="270" class="box-mono">
-              stay at the same head_dim indices
+            <text x="976" y="272" class="box-mono">
+              τ_kv ∈ S_8, τ_group ∈ S_2
             </text>
-            <text x="976" y="292" class="box-mono" style="fill: #1f5024">
-              γ_q[k] is broadcast across heads
+            <text x="976" y="286" class="box-mono">
+              η(h)-preserving on the GQA chain
             </text>
-            <text x="976" y="306" class="box-mono" style="fill: #1f5024">
-              ∴ before and after permutation:
+            <text x="976" y="308" class="box-mono" style="fill: #1f5024">
+              V/O leg:
             </text>
-            <text x="976" y="324" class="box-mono">
-              old q[π(h), k] · γ_q[k]
-            </text>
+            <text x="976" y="324" class="box-mono">Û_vo random invertible</text>
             <text x="976" y="338" class="box-mono">
-              = obfuscated q_new[h, k] · γ_q[k]
+              cancels W_v·W_o composition
             </text>
             <text x="976" y="360" class="box-mono" style="fill: #1f5024">
-              no §5.2.5 fold needed
+              residual-axis wrap:
             </text>
-            <text x="976" y="374" class="box-mono" style="fill: #1f5024">
-              no Gaussian assumption
+            <text x="976" y="376" class="box-mono">
+              Q̂_q, Q̂_k, Q̂_v on input;
             </text>
-            <text
-              x="976"
-              y="394"
-              class="box-mono"
-              style="fill: #1f5024; font-weight: 700"
-            >
-              non-linear norm survives
+            <text x="976" y="390" class="box-mono">
+              P̂_o on output projection
             </text>
             <text
               x="976"
-              y="408"
+              y="416"
               class="box-mono"
               style="fill: #1f5024; font-weight: 700"
             >
-              because the permutation is
+              measured defence gain on this
             </text>
             <text
               x="976"
-              y="422"
+              y="430"
               class="box-mono"
               style="fill: #1f5024; font-weight: 700"
             >
-              orthogonal to the norm's axis
+              Qwen3-1.7B / d=2048 config:
+            </text>
+            <text x="976" y="448" class="box-mono">
+              IMA-EmbedRow-ridge: 99.22 → 99.22%
+            </text>
+            <text x="976" y="462" class="box-mono">
+              IMA-L0-act @attn_norm-0: 22.6 → 22.6%
+            </text>
+            <text x="976" y="476" class="box-mono">
+              IMA @Qcur_normed-0: 35.5 → 38.7%
+            </text>
+            <text
+              x="976"
+              y="498"
+              class="box-mono"
+              style="fill: #5a2020; font-weight: 700"
+            >
+              → no measurable gain.
+            </text>
+            <text x="976" y="514" class="box-mono" style="fill: #5a2020">
+              Static orthogonal M_q is learnable
+            </text>
+            <text x="976" y="528" class="box-mono" style="fill: #5a2020">
+              by paired-data ridge. See §09.
             </text>
 
             <rect
@@ -2087,14 +2128,11 @@
               stroke="#aaa"
             />
             <text x="60" y="742" class="box-mono" style="fill: #1f5024">
-              ■ green: transform applied
+              ■ green box: transform applied (now full Algorithm 2 + matrix-Γ)
             </text>
-            <text x="280" y="742" class="box-mono" style="fill: #888">
-              □ outlined: applied with constraint (QK-norm γ unmodified)
-            </text>
-            <text x="780" y="742" class="box-mono" style="fill: #a66">
-              ■ pink panel: paper §5.2.3 transform NOT deployed (R̂_qk, Ĥ_qk,
-              Ẑ_block)
+            <text x="600" y="742" class="box-mono" style="fill: #5a5a5a">
+              kernel branches on aloepri.qk_norm_matrix GGUF metadata flag ·
+              legacy 1D γ path bit-identical to upstream
             </text>
 
             <text
@@ -2104,8 +2142,8 @@
               font-size="12"
               fill="var(--ink-2)"
             >
-              net result: keymat + head-shuffle preserve Q·Kᵀ values exactly at
-              the per-(head_position, head_position) cell
+              net result: keymat + intra-head M_q + head shuffle preserve Q·Kᵀ
+              exactly (M_q·M_kᵀ = I via Ẑ-fix); attention pattern is intact
             </text>
             <text
               x="660"
@@ -2114,9 +2152,9 @@
               font-size="12"
               fill="var(--ink-2)"
             >
-              attention pattern matrix is intact but the head-axis indexing is
-              permuted — ISA inverter trained on plaintext head-ordering must
-              recover π
+              attacker observing Q̃_normed sees Q_plain_normed · M_q — a static
+              orthogonal rotation that a paired-data ridge inverter learns in
+              closed form
             </text>
             <text
               x="660"
@@ -2125,8 +2163,9 @@
               font-size="12"
               fill="var(--ink-2)"
             >
-              the attack-resistance benchmark measures whether per-layer S_8 ×
-              S_2 uncertainty is enough to keep ISA TTRSR ≤ 15%
+              §08 ledger: ISA HiddenState @attn_norm-23 stays at 9.68 % ✓ · IMA
+              @Qcur_normed-0 = 38.71 % (vs 35.48 % without Alg 2) — Alg 2 does
+              not move the gate at d=2048
             </text>
             <text
               x="660"
@@ -2136,9 +2175,9 @@
               fill="var(--ink-2)"
               font-style="italic"
             >
-              paper §7.1 lists Qwen3; public reference at sheng1feng/Aloepri
-              imports qwen2 modeling — ByteDance's industrial fix is not in the
-              academic release
+              public reference at sheng1feng/Aloepri imports qwen2 modeling ·
+              has no QK-norm path · the matrix-Γ kernel extension bridges that
+              gap on Qwen3
             </text>
           </svg>
         </div>
@@ -2201,18 +2240,20 @@
               </td>
               <td>
                 <code
-                  >(x · Q̂<sub>R</sub>) · W<sub>q,k,v</sub> · (rows permuted by
-                  τ<sub>kv</sub>, τ<sub>group</sub>)</code
+                  >(x · Q̂<sub>R</sub>) · W<sub>q,k,v</sub> · M<sub>q/k</sub> ·
+                  (rows permuted by τ<sub>kv</sub>, τ<sub>group</sub>)</code
                 >
               </td>
               <td>
-                Keymat absorbs the residual-stream Q̂; head permutation lands the
-                per-head output at a shuffled index.
-                <strong
-                  >The intra-head transforms R̂<sub>qk</sub>, Ĥ<sub>qk</sub>,
-                  Ẑ<sub>block</sub>, Û<sub>vo</sub> are NOT applied</strong
+                Keymat absorbs the residual-stream Q̂; the intra-head M<sub
+                  >q</sub
                 >
-                — see FIG. 03b.
+                = R̂<sub>qk</sub>·Ĥ<sub>qk</sub>·Ẑ<sub>block</sub> (orthogonal)
+                is folded into W<sub>q</sub>'s output axis with the matching
+                M<sub>k</sub> on W<sub>k</sub> such that M<sub>q</sub>·M<sub
+                  >k</sub
+                ><sup>T</sup> = I; head permutation lands the per-head output at
+                a shuffled index. See FIG. 03b.
               </td>
             </tr>
             <tr>
@@ -2221,13 +2262,25 @@
                 <code>q · γ<sub>q</sub> / RMS<sub>head_dim</sub>(q)</code>
               </td>
               <td>
-                <strong>unchanged</strong> — γ<sub>q</sub>, γ<sub>k</sub> stay
-                per-element
+                <code>(q̃ / RMS(q̃)) · Γ<sub>q</sub></code>
+                with
+                <code
+                  >Γ<sub>q</sub> = M<sub>q</sub
+                  ><sup>T</sup>·Diag(γ<sub>q</sub>)·M<sub>q</sub></code
+                >
+                (matrix-Γ, 128×128)
               </td>
               <td>
-                Broadcast across the head axis; head-shuffle reorders heads but
-                γ_q hits the same head_dim indices. No Gaussian assumption
-                required.
+                Patched <code>llama.cpp</code> kernel reads the 2D tensor when
+                <code>aloepri.qk_norm_matrix</code> metadata flag is set,
+                applies RMS-only normalisation followed by a 128×128
+                <code>ggml_mul_mat</code>. Algebraic identity
+                <code
+                  >(q̃ / RMS(q̃)) · Γ<sub>q</sub> = q<sub>plain_normed</sub> ·
+                  M<sub>q</sub></code
+                >
+                holds for orthogonal M<sub>q</sub>; no Gaussian-q assumption
+                needed.
               </td>
             </tr>
             <tr>
