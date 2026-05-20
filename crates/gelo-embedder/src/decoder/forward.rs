@@ -34,14 +34,7 @@ pub fn run(
 
 /// Same as [`run`] but invokes `after_layer(layer_idx, &mut h)` after the
 /// residual stream output of each transformer block (before the next
-/// layer's input). The hook is the integration point for DP-Forward
-/// intermediate-layer aMGM noise (M7.1): the embedder constructs a
-/// closure that matches against `DpForwardConfig::layer_index` and applies
-/// clip + Gaussian noise to each token-row of `h`.
-///
-/// For pre-norm decoder blocks (Qwen3-style), the layer output is the
-/// final residual add at the end of the block — the analog of BERT's
-/// `add_and_norm_2` position in the DP-Forward paper.
+/// layer's input). The hook is a general per-layer instrumentation point.
 pub fn run_with_hook<F: FnMut(usize, &mut Array2<f32>)>(
     cfg: &DecoderConfig,
     weights: &DecoderWeights,

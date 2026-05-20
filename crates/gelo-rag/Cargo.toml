@@ -35,10 +35,9 @@ thiserror.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
-dp-forward = { workspace = true }
 flate2 = { workspace = true }
 zip = { workspace = true }
-gelo-embedder = { path = "../gelo-embedder", features = ["dp-forward"] }
+gelo-embedder = { path = "../gelo-embedder" }
 gelo-gpu-wgpu = { path = "../gelo-gpu-wgpu" }
 gelo-protocol = { path = "../gelo-protocol" }
 gelo-reranker = { path = "../gelo-reranker" }
@@ -47,7 +46,6 @@ zeroize = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
-remote-rag = { path = "../remote-rag" }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

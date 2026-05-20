@@ -26,8 +26,6 @@ Design and measurement docs: **<https://nulltea.github.io/gelo-lightrag/>**
 | `crates/gelo-rag` | orchestration · `GeloRagTwoPartyService` · `LightRagTwoPartyService` |
 | `crates/gelo-tee-sev-snp` | SEV-SNP attestation issuer + verifier · RATLS plumbing |
 | `crates/gelo-snp-runner` | axum service binding all of the above |
-| `crates/remote-rag` | RemoteRAG (planar-Laplace + Paillier) · alternative storage path, parked |
-| `crates/dp-forward` | aMGM Gaussian DP layer (defence-in-depth; not in the production runner) |
 | `crates/ring-oram` | Ring-ORAM semi-honest baseline + treetop cache |
 | `crates/compass-index` | Compass over Ring-ORAM + Directional Filter (HNSW-ORAM) |
 | `crates/xormm-emm` | XorMM volume-hiding encrypted multi-map |

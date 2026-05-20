@@ -23,11 +23,8 @@ pub fn run(
 }
 
 /// Same as [`run`] but invokes `after_layer(layer_idx, &mut h)` after the
-/// post-FFN `add_and_norm_2` position of each transformer block — the
-/// position used by the DP-Forward paper's released code for aMGM noise
-/// injection (`xiangyue9607/DP-Forward`, `noise_layer = 10` on BERT-base).
-/// The hook is the integration point for DP-Forward intermediate-layer
-/// aMGM (M7.1).
+/// post-FFN `add_and_norm_2` position of each transformer block. The hook
+/// is a general per-layer instrumentation point.
 pub fn run_with_hook<F: FnMut(usize, &mut Array2<f32>)>(
     cfg: &BertConfig,
     weights: &BertWeights,
