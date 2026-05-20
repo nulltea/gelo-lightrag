@@ -88,15 +88,58 @@ def load_qwen3_embedding_table(model_id: str) -> torch.Tensor:
             weight_map = json.load(fh)["weight_map"]
         shard = weight_map[embed_key]
         shard_path = os.path.join(snapshot_dir, shard)
-    else:
-        # Single-file layout.
+    elif os.path.exists(os.path.join(snapshot_dir, "model.safetensors")):
         shard_path = os.path.join(snapshot_dir, "model.safetensors")
-        if not os.path.exists(shard_path):
-            raise FileNotFoundError(
-                f"Couldn't find Qwen3-1.7B safetensors under {snapshot_dir}; "
-                "expected an `model.safetensors.index.json` shard map or a "
-                "single `model.safetensors`."
+    else:
+        # Last-resort fallback: pull embed_tokens from any plain GGUF in the
+        # HF hub cache whose repo dir name contains the model's basename.
+        # Covers both the official `Qwen/Qwen3-8B-GGUF` layout and uploader
+        # variants like `bartowski/Qwen_Qwen3-8B-GGUF`. Used when only the
+        # GGUF is downloaded (e.g. Qwen3-8B in the AloePri pipeline).
+        model_basename = model_id.split("/")[-1]
+        gguf_candidates = sorted(
+            p for p in glob.glob(
+                os.path.join(cache_root, "hub", "*-GGUF", "snapshots", "*", "*.gguf")
             )
+            if model_basename.replace("-", "").replace("_", "").lower()
+               in os.path.basename(p).replace("-", "").replace("_", "").lower()
+        )
+        if not gguf_candidates:
+            raise FileNotFoundError(
+                f"Couldn't find safetensors under {snapshot_dir} nor any "
+                f"GGUF under {cache_root}/hub/*-GGUF/ whose filename "
+                f"contains {model_basename!r}."
+            )
+        import gguf as _gguf
+        # Prefer a bf16/fp16/f32 plain GGUF — avoid block-quantised formats
+        # which would need dequantisation through gguf.quants.
+        preferred = sorted(
+            gguf_candidates,
+            key=lambda p: (0 if "bf16" in p.lower() else 1 if "f16" in p.lower()
+                           else 2 if "f32" in p.lower() else 3, p),
+        )
+        for path in preferred:
+            r = _gguf.GGUFReader(path)
+            by_name = {t.name: t for t in r.tensors}
+            if "token_embd.weight" not in by_name:
+                continue
+            t = by_name["token_embd.weight"]
+            shape = tuple(int(s) for s in reversed(list(t.shape)))
+            if t.tensor_type == _gguf.GGMLQuantizationType.F32:
+                import numpy as _np
+                arr = _np.frombuffer(t.data, dtype=_np.float32).reshape(shape).copy()
+            elif t.tensor_type == _gguf.GGMLQuantizationType.BF16:
+                import numpy as _np
+                u16 = _np.frombuffer(t.data, dtype=_np.uint16)
+                f32 = (u16.astype(_np.uint32) << 16).view(_np.float32)
+                arr = f32.reshape(shape).copy()
+            else:
+                import numpy as _np
+                arr = _gguf.quants.dequantize(_np.asarray(t.data), t.tensor_type).reshape(shape).astype(_np.float32)
+            return torch.from_numpy(arr)
+        raise FileNotFoundError(
+            f"GGUF candidates {gguf_candidates} lacked token_embd.weight"
+        )
 
     from safetensors import safe_open
 

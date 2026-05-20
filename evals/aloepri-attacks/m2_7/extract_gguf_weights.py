@@ -52,16 +52,36 @@ class ModelWeights:
     per_layer: list[dict[str, np.ndarray]]
 
 
-def _dequantize_to_f32(tensor: Any) -> np.ndarray:
-    """Return the tensor's f32 view, dequantising Q8_0 / other quants on
-    the fly. The plaintext Qwen3 Q8_0 GGUF needs this; the obfuscated
-    fp32 artifact returns a zero-copy view.
+def _dequantize_to_native(tensor: Any) -> np.ndarray:
+    """Return the tensor's natural-precision view, decompressing block-quant
+    formats on the fly. Output dtype:
+
+    - F32 input: zero-copy fp32 view (no upcast needed).
+    - BF16 input: bf16 view (via ml_dtypes.bfloat16) — half the memory of an
+      fp32 expansion, faithful to what the server actually stores. Attack
+      drivers `.astype(np.float32)` each tensor in their own working window
+      so the bf16 dict stays compact across the full model.
+    - F16 input: native fp16 view.
+    - Q8_0 / other quants: `gguf.quants.dequantize()` gives fp32, then
+      truncate to bf16 — sort/ridge/cosine attacks don't need fp32
+      precision and an 8B Q8_0+bf16 model pair fits in 33 GB instead of
+      66 GB.
     """
+    natural_shape = tuple(int(s) for s in reversed(list(tensor.shape)))
     arr = tensor.data
-    if arr.dtype == np.float32:
-        return arr.reshape(tensor.shape[::-1])
-    # GGUF stores tensors column-major: shape on disk is (cols, rows).
-    # Use gguf.quants.dequantize which handles every block-quant format.
+    if tensor.tensor_type == gguf.GGMLQuantizationType.F32:
+        return np.frombuffer(arr.tobytes(), dtype=np.float32).reshape(natural_shape) \
+            if arr.dtype != np.float32 else arr.reshape(natural_shape)
+    if tensor.tensor_type == gguf.GGMLQuantizationType.BF16:
+        # bf16 is stored as uint16 bit patterns; reinterpret with ml_dtypes.
+        import ml_dtypes  # local import — only needed for bf16 inputs
+        u16 = np.frombuffer(arr.tobytes(), dtype=np.uint16)
+        return u16.view(ml_dtypes.bfloat16).reshape(natural_shape)
+    if tensor.tensor_type == gguf.GGMLQuantizationType.F16:
+        u16 = np.frombuffer(arr.tobytes(), dtype=np.uint16)
+        return u16.view(np.float16).reshape(natural_shape)
+    # Block-quant path: dequantise to fp32 (only output gguf supports),
+    # then truncate to bf16 to halve memory peak.
     try:
         deq = gguf.quants.dequantize(arr, tensor.tensor_type)
     except Exception as exc:
@@ -69,11 +89,22 @@ def _dequantize_to_f32(tensor: Any) -> np.ndarray:
             f"failed to dequantize tensor {tensor.name!r} of type "
             f"{tensor.tensor_type}: {exc}"
         ) from exc
-    return deq.reshape(tensor.shape[::-1]).astype(np.float32, copy=False)
+    import ml_dtypes  # noqa
+    return deq.reshape(natural_shape).astype(ml_dtypes.bfloat16, copy=False)
 
 
-def load_model(path: str | Path, label: str) -> ModelWeights:
-    """Read a Qwen3 GGUF and return its load-bearing weights."""
+# Back-compat alias — older callers used the fp32 name.
+_dequantize_to_f32 = _dequantize_to_native
+
+
+def load_model(path: str | Path, label: str, *, embed_only: bool = False) -> ModelWeights:
+    """Read a Qwen3 GGUF and return its load-bearing weights.
+
+    With ``embed_only=True``, only ``token_embd.weight`` and ``output.weight``
+    are dequantised; per-layer attention/FFN weights are returned as empty
+    dicts. Used by IMA-EmbedRow attacks (which only need W_e pairs) to avoid
+    holding the full ~32 GB fp32 expansion of an 8B+ GGUF in memory.
+    """
     p = Path(path)
     reader = gguf.GGUFReader(str(p), "r")
 
@@ -84,7 +115,14 @@ def load_model(path: str | Path, label: str) -> ModelWeights:
         raise KeyError(f"GGUF {p} lacks token_embd.weight")
     token_embd = _dequantize_to_f32(by_name["token_embd.weight"])
     vocab_size, d_eff = token_embd.shape
-    output = _dequantize_to_f32(by_name["output.weight"])
+    # Qwen3-4B (and other tied-embedding variants) has no separate
+    # output.weight — the LM head reuses token_embd. Fall back so attacks
+    # that only need W_e (e.g. IMA-EmbedRow-ridge) work on both untied
+    # (1.7B) and tied (4B) backbones.
+    if "output.weight" in by_name:
+        output = _dequantize_to_f32(by_name["output.weight"])
+    else:
+        output = token_embd
 
     # Discover layer count by counting blk.{i}.attn_q.weight entries.
     layer_indices: list[int] = []
@@ -99,25 +137,31 @@ def load_model(path: str | Path, label: str) -> ModelWeights:
 
     per_layer: list[dict[str, np.ndarray]] = []
     intermediate_eff = None
-    for li in layer_indices:
-        layer = {}
-        for kind in ("attn_q", "attn_k", "attn_v", "attn_output",
-                     "ffn_gate", "ffn_up", "ffn_down"):
-            key = f"blk.{li}.{kind}.weight"
-            if key not in by_name:
-                raise KeyError(f"GGUF {p} missing {key}")
-            layer[kind] = _dequantize_to_f32(by_name[key])
-        # ffn_gate is stored (out=intermediate, in=d_eff) in nn.Linear order;
-        # the FFN intermediate dim lives on axis 0.
-        if intermediate_eff is None:
-            intermediate_eff = layer["ffn_gate"].shape[0]
-        per_layer.append(layer)
+    if embed_only:
+        # Skip per-layer dequantisation entirely. Read just the FFN-intermediate
+        # dim from the metadata cheaply so the dataclass invariant holds.
+        intermediate_eff = 0  # unused; per-layer attacks should not use embed_only
+        per_layer = [{} for _ in layer_indices]
+    else:
+        for li in layer_indices:
+            layer = {}
+            for kind in ("attn_q", "attn_k", "attn_v", "attn_output",
+                         "ffn_gate", "ffn_up", "ffn_down"):
+                key = f"blk.{li}.{kind}.weight"
+                if key not in by_name:
+                    raise KeyError(f"GGUF {p} missing {key}")
+                layer[kind] = _dequantize_to_f32(by_name[key])
+            # ffn_gate is stored (out=intermediate, in=d_eff) in nn.Linear order;
+            # the FFN intermediate dim lives on axis 0.
+            if intermediate_eff is None:
+                intermediate_eff = layer["ffn_gate"].shape[0]
+            per_layer.append(layer)
 
     return ModelWeights(
         label=label,
         path=p,
         d_eff=int(d_eff),
-        intermediate_eff=int(intermediate_eff),
+        intermediate_eff=int(intermediate_eff or 0),
         n_layers=n_layers,
         vocab_size=int(vocab_size),
         token_embd=token_embd,

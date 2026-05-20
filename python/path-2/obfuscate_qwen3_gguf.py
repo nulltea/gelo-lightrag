@@ -164,6 +164,47 @@ def identity_pad(arr: np.ndarray, cls: str, d: int, pad: int) -> np.ndarray:
     raise AssertionError(cls)
 
 
+def fp32_to_bf16(arr: np.ndarray) -> np.ndarray:
+    """fp32 → bf16 with round-to-nearest-even (matches IEEE-754 RTNE).
+
+    Returns a uint16 ndarray (same shape as input) holding the bf16 bit
+    pattern. Pass to `GGUFWriter.add_tensor` together with
+    `raw_dtype=GGMLQuantizationType.BF16`.
+
+    Why bf16 for AloePri-obfuscated GGUFs: the keymat × λ-perturbation
+    construction introduces a long lower tail (~1e-9 magnitudes) in the
+    transformed weight tensors. fp16's smallest normal is ~6e-5, so it
+    flushes ~1 %% of attn_q entries to zero and breaks the P̂·Q̂ = I_d
+    cancellation. bf16 keeps fp32's 8-bit exponent (range ~1e-38) so the
+    cancellation survives; only mantissa precision is reduced. Empirically
+    matches fp32 HumanEval pass@1 at half the file size and 2× the decode
+    throughput.
+    """
+    assert arr.dtype == np.float32, f"expected fp32 input, got {arr.dtype}"
+    u32 = arr.view(np.uint32)
+    # RTNE: bias = 0x7fff + lsb_of_truncated. Handles ties correctly.
+    rounded = (u32 + 0x7fff + ((u32 >> 16) & 1)) >> 16
+    return rounded.astype(np.uint16)
+
+
+def write_tensor_typed(writer: gguf.GGUFWriter, name: str, arr: np.ndarray,
+                       output_dtype: str, force_fp32: bool = False) -> None:
+    """Write `arr` to `writer` at the requested precision.
+
+    Norm-class tensors (1D vectors, matrix-Γ Γ_q/Γ_k) must stay F32 for
+    precision; pass `force_fp32=True` for those. Everything else honours
+    `output_dtype` ∈ {'fp32', 'bf16'}.
+    """
+    arr = arr.astype(np.float32, copy=False)
+    if force_fp32 or output_dtype == "fp32":
+        writer.add_tensor(name, arr, raw_dtype=gguf.GGMLQuantizationType.F32)
+    elif output_dtype == "bf16":
+        writer.add_tensor(name, fp32_to_bf16(arr),
+                          raw_dtype=gguf.GGMLQuantizationType.BF16)
+    else:
+        raise ValueError(f"unsupported output_dtype: {output_dtype!r}")
+
+
 def fuse_gamma_pre(linear_arr: np.ndarray, gamma: np.ndarray, kappa: float) -> np.ndarray:
     """Pre-norm fusion: γ row-scales the *following* linear's d-axis.
 
@@ -226,6 +267,13 @@ def rewrite_gguf(
     # flips to the obfuscation; M_q stays equal to M_k (because
     # H = H⁻¹ for ±1 diag), so Q/K cancel cleanly in attention.
     alg2_h_hadamard_signs: bool = False,
+    # Output precision for the large matmul tensors (token_embd,
+    # output, attn_*, ffn_*). Norm tensors and the matrix-Γ Γ_q/Γ_k
+    # tensors always stay F32 regardless of this setting. Default
+    # bf16: half the on-disk size and 2× decode throughput vs fp32,
+    # accuracy-equivalent on the obfuscated keymat chain. fp16 is
+    # NOT safe — see fp32_to_bf16 docstring.
+    output_dtype: str = "bf16",
 ) -> dict:
     log.info("opening %s (mode=%s pi=%s)", in_path, mode, apply_pi)
     r = gguf.GGUFReader(str(in_path))
@@ -257,15 +305,23 @@ def rewrite_gguf(
 
         log.info("sampling Algorithm 1 at d=%d h=%d λ=%.2f seed=%d", d, expansion, lam, seed)
         transform = build_keymat_transform(d=d, h=expansion, lam=lam, init_seed=seed)
-        p_r = transform.key.numpy().astype(np.float64)
-        q_r = transform.inverse.numpy().astype(np.float64)
-        identity_err = float(np.max(np.abs(p_r @ q_r - np.eye(d))))
+        # Sample at fp64 for identity-residual check + κ estimate (cheap ops),
+        # then keep fp32 copies for the per-tensor matmuls in pass 3. Holding
+        # only fp32 versions saves ~70 MB × 4 = 280 MB at the largest model
+        # scale but more importantly avoids per-tensor `.astype(np.float32)`
+        # scratch which compounds across the 36 layers × ~10 tensors.
+        p_r_64 = transform.key.numpy().astype(np.float64)
+        q_r_64 = transform.inverse.numpy().astype(np.float64)
+        identity_err = float(np.max(np.abs(p_r_64 @ q_r_64 - np.eye(d))))
         log.info("‖P̂·Q̂ - I_d‖_max = %.3e", identity_err)
-        kappa_e = estimate_kappa(p_r, d=d, num_samples=2000, seed=seed + 100)
+        kappa_e = estimate_kappa(p_r_64, d=d, num_samples=2000, seed=seed + 100)
         kappa = kappa_e * float(np.sqrt(d / float(d + 2 * expansion)))
         log.info("κ_E = %.5f  →  κ_correct = κ_E · √(d/(d+2h)) = %.5f", kappa_e, kappa)
-        q_r_t = q_r.T  # (d, d+2h)
-        p_r_t = p_r.T  # (d+2h, d)
+        p_r = p_r_64.astype(np.float32)
+        q_r = q_r_64.astype(np.float32)
+        q_r_t = q_r.T  # (d, d+2h)  fp32
+        p_r_t = p_r.T  # (d+2h, d)  fp32
+        del p_r_64, q_r_64
 
     # ---- pass 1: load every tensor ----
     log.info("loading + dequantising tensors...")
@@ -526,16 +582,18 @@ def rewrite_gguf(
                 M = (keys.q_matrix if stripped == "attn_q_norm.weight"
                      else keys.k_matrix).astype(np.float64)
                 gamma_matrix = (M.T @ np.diag(gamma) @ M).astype(np.float32)
-                writer.add_tensor(name, gamma_matrix,
-                                  raw_dtype=gguf.GGMLQuantizationType.F32)
+                # Γ_q / Γ_k is the matrix-Γ tensor — orthogonality
+                # precision matters; keep it F32 regardless of output_dtype.
+                write_tensor_typed(writer, name, gamma_matrix,
+                                   output_dtype, force_fp32=True)
                 n_changed += 1
                 continue
 
         if cls == "unchanged":
-            out_arr = arr.astype(np.float32) if arr.ndim <= 1 else arr.astype(np.float32)
-            out_qtype = (gguf.GGMLQuantizationType.F32 if arr.ndim <= 1
-                         else gguf.GGMLQuantizationType.F32)
-            writer.add_tensor(name, out_arr, raw_dtype=out_qtype)
+            # Most "unchanged" tensors in Qwen3 are 1D norm / position
+            # tensors. Keep at F32 — they are small, precision-sensitive,
+            # and not on the bandwidth-bound critical path.
+            write_tensor_typed(writer, name, arr, output_dtype, force_fp32=True)
             n_unchanged += 1
             continue
 
@@ -546,7 +604,9 @@ def rewrite_gguf(
                 out_arr = np.full((new_d,), float(kappa), dtype=np.float32)
             else:  # gamma-only
                 out_arr = np.full((d,), float(kappa), dtype=np.float32)
-            writer.add_tensor(name, out_arr, raw_dtype=gguf.GGMLQuantizationType.F32)
+            # Norm γ is a per-channel scale; 7 bits of mantissa is too
+            # coarse, keep F32.
+            write_tensor_typed(writer, name, out_arr, output_dtype, force_fp32=True)
             n_changed += 1
             continue
 
@@ -554,15 +614,26 @@ def rewrite_gguf(
         if mode == "identity-pad":
             out_arr = identity_pad(arr, cls, d=d, pad=pad).astype(np.float32)
         elif mode == "keymat":
-            arr_f64 = arr.astype(np.float64)
+            # Keymat matmul in fp32. Previously upcast to fp64 + downcast,
+            # which created a 3× peak per tensor (4-byte → 8-byte source +
+            # 8-byte output + 4-byte downcast). Load-bearing for 8B+ where
+            # the fp32 dict alone is ~32 GB and the fp64 scratch on the
+            # token_embd row was an extra ~7 GB peak per such tensor.
+            # Precision error from fp64→fp32 was already discarded at the
+            # final cast; the |P̂·Q̂ - I_d| residual stays at ~1e-7.
+            arr_f32 = arr.astype(np.float32, copy=False)
             if cls == "ne0_read":
-                out_arr = (arr_f64 @ q_r_t).astype(np.float32)
+                out_arr = arr_f32 @ q_r_t
             elif cls == "ne0_write":
-                out_arr = (arr_f64 @ p_r).astype(np.float32)
+                out_arr = arr_f32 @ p_r
             elif cls == "ne1":
-                out_arr = (p_r_t @ arr_f64).astype(np.float32)
+                out_arr = p_r_t @ arr_f32
             else:
                 raise AssertionError(cls)
+            # Drop the source tensor — it's been transformed; not referenced
+            # again. Saves the duplicate of the largest tensors at peak.
+            arrays[name] = None  # type: ignore[assignment]
+            del arr_f32
         else:  # gamma-only — fuse already applied, no dim change, no Algorithm 1
             out_arr = arr.astype(np.float32)
 
@@ -597,7 +668,11 @@ def rewrite_gguf(
                     elif stripped == "attn_output.weight":
                         out_arr = alg2.apply_o_output_transform(out_arr, q_feat)
 
-        writer.add_tensor(name, out_arr, raw_dtype=gguf.GGMLQuantizationType.F32)
+        # Large matmul tensors: honour output_dtype. bf16 is the default
+        # because the AloePri keymat construction creates ~1e-9 tail
+        # values that survive bf16's 1e-38 exponent floor but flush to
+        # zero under fp16's 6e-5 floor (breaks P̂·Q̂ = I_d cancellation).
+        write_tensor_typed(writer, name, out_arr, output_dtype)
         n_changed += 1
 
     writer.write_header_to_file()
@@ -708,6 +783,13 @@ def main(argv: list[str] | None = None) -> int:
                         help="Use ±1 Walsh-Hadamard Ĥ_qk instead of identity. Combine "
                              "with --alg2-qk-norm-matrix: keeps M_q orthogonal (H is "
                              "involutive), adds per-pair sign flips to the obfuscation.")
+    parser.add_argument("--output-dtype", choices=("fp32", "bf16"), default="bf16",
+                        help="Precision for the large matmul tensors. Default bf16: "
+                             "half the file size and 2× decode throughput vs fp32, "
+                             "accuracy-equivalent on the obfuscated keymat chain. "
+                             "fp16 is unsafe (collapses the obfuscation chain — see "
+                             "fp32_to_bf16 docstring). Norm tensors and matrix-Γ Γ_q/Γ_k "
+                             "always stay F32 regardless of this setting.")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
 
@@ -724,7 +806,8 @@ def main(argv: list[str] | None = None) -> int:
                        alg2_beta=args.alg2_beta, alg2_gamma=args.alg2_gamma,
                        alg2_qk_scale_range=(args.alg2_qk_scale_min, args.alg2_qk_scale_max),
                        alg2_qk_norm_matrix=args.alg2_qk_norm_matrix,
-                       alg2_h_hadamard_signs=args.alg2_h_hadamard_signs)
+                       alg2_h_hadamard_signs=args.alg2_h_hadamard_signs,
+                       output_dtype=args.output_dtype)
     log.info("done: %s", info)
     return 0
 

@@ -30,9 +30,20 @@ fi
 OBF_DIR=$(dirname "$OBF_GGUF")
 OBF_NAME=$(basename "$OBF_GGUF")
 
-echo "[M2.7 spawn] image=$IMAGE port=$PORT model=$OBF_NAME"
+# /dev/dri/renderD128 (Vulkan compute device) is owned by group `render`
+# on Ubuntu/Debian hosts — gid usually 992 or 109 depending on distro.
+# Resolve it dynamically so the patched llama.cpp's Vulkan backend can
+# enumerate the iGPU. card1 lives in `video` (gid 44) for display, which
+# Vulkan does not need. Without renderD128 group access the container
+# falls back to CPU silently with "no usable GPU found".
+RENDER_GID=$(getent group render | cut -d: -f3)
+VIDEO_GID=$(getent group video  | cut -d: -f3)
+
+echo "[M2.7 spawn] image=$IMAGE port=$PORT model=$OBF_NAME render_gid=$RENDER_GID video_gid=$VIDEO_GID"
 exec docker run --rm -d \
     --name "$CONTAINER" \
+    --user 1000:1000 \
+    --group-add "$RENDER_GID" --group-add "$VIDEO_GID" \
     -p "127.0.0.1:$PORT:8080" \
     -v "$OBF_DIR:/models:ro" \
     --device /dev/dri \
