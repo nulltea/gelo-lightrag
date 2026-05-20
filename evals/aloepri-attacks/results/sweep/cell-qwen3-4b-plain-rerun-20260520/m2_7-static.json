@@ -1,0 +1,59 @@
+{
+  "format": "aloepri_m2_7_static_v1",
+  "plain_path": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-4b/Qwen3-4B-Q8_0-untied.gguf",
+  "obfuscated_path": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-4b/Qwen3-4B-Q8_0-untied.gguf",
+  "attacks": {
+    "vma": {
+      "attack": "vma",
+      "condition": "obfuscated",
+      "model_id": "Qwen3-4B-Q8_0-untied.gguf",
+      "n_prompts": 0,
+      "n_train": 0,
+      "n_test": 256,
+      "ttrsr_top1": 0.98828125,
+      "ttrsr_top10": 0.9921875,
+      "risk_level": "high",
+      "primary_metric_name": "token_top1_recovery_rate",
+      "extra": {
+        "matching_strategy": "row_sort_quantile_voting",
+        "n_sources": 17,
+        "feature_bins": 64,
+        "projection_kinds": [
+          "attn_q",
+          "attn_k",
+          "attn_v",
+          "ffn_gate",
+          "ffn_up"
+        ],
+        "layer_indices": [
+          0,
+          11,
+          23
+        ],
+        "candidate_pool_size": 4349,
+        "runtime_seconds": 4.3
+      }
+    },
+    "ia": {
+      "attack": "ia",
+      "condition": "obfuscated",
+      "model_id": "Qwen3-4B-Q8_0-untied.gguf",
+      "n_prompts": 0,
+      "n_train": 0,
+      "n_test": 4096,
+      "ttrsr_top1": 0.9853515625,
+      "ttrsr_top10": 0.98681640625,
+      "risk_level": "high",
+      "primary_metric_name": "token_top1_recovery_rate",
+      "extra": {
+        "gate_ia_top1": 0.9853515625,
+        "gate_ia_top10": 0.98681640625,
+        "attn_ia_top1": 0.985107421875,
+        "attn_ia_top10": 0.986572265625,
+        "layer": 0,
+        "candidate_pool_size": 12059,
+        "runtime_seconds": 13.18
+      }
+    }
+  }
+}

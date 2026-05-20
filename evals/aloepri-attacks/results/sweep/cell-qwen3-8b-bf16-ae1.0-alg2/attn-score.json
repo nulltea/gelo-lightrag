@@ -1,0 +1,141 @@
+{
+  "format": "aloepri_m2_7_hidden_state_v1",
+  "captures_dir": "results/sweep/cell-qwen3-8b-bf16-ae1.0-alg2/captures-attn-l30",
+  "model_id": "Qwen/Qwen3-8B",
+  "attacks": {
+    "nn": {
+      "attack": "nn",
+      "condition": "m2_7_hidden",
+      "model_id": "Qwen/Qwen3-1.7B (obfuscated, keymat-h128-pi-noise-alg2-fp32)",
+      "n_prompts": 16,
+      "n_train": 0,
+      "n_test": 199,
+      "ttrsr_top1": 0.0,
+      "ttrsr_top10": 0.0,
+      "risk_level": "low",
+      "primary_metric_name": "token_top1_recovery_rate",
+      "extra": {
+        "layer": 0,
+        "kind": "attn_norm",
+        "strip_shield": false,
+        "matching_strategy": "cosine_topk_no_train"
+      }
+    },
+    "ima": {
+      "attack": "ima",
+      "condition": "m2_7_hidden",
+      "model_id": "Qwen/Qwen3-1.7B (obfuscated, keymat-h128-pi-noise-alg2-fp32)",
+      "n_prompts": 16,
+      "n_train": 139,
+      "n_test": 31,
+      "ttrsr_top1": 0.22580644488334656,
+      "ttrsr_top10": 0.25806450843811035,
+      "risk_level": "medium",
+      "primary_metric_name": "token_top1_recovery_rate",
+      "extra": {
+        "layer": 0,
+        "kind": "attn_norm",
+        "split_mode": "row",
+        "best_ridge_alpha": 0.0001,
+        "ridge_alpha_val_scan": [
+          {
+            "ridge_alpha": 0.0001,
+            "val_top1": 0.4137931168079376
+          },
+          {
+            "ridge_alpha": 0.01,
+            "val_top1": 0.4137931168079376
+          },
+          {
+            "ridge_alpha": 1.0,
+            "val_top1": 0.4137931168079376
+          }
+        ],
+        "strip_shield": false,
+        "candidate_pool_size": 2098,
+        "embedding_cosine_similarity": 0.2310108095407486
+      }
+    },
+    "ima_paper_like": {
+      "attack": "ima_paper_like",
+      "condition": "m2_7_hidden",
+      "ttrsr_top1": null,
+      "risk_level": "skipped",
+      "extra": {
+        "note": "pass --include-paper-like-ima; needs \u2265256 prompts"
+      }
+    },
+    "isa_hidden_state": {
+      "attack": "isa",
+      "condition": "m2_7_hidden",
+      "model_id": "Qwen/Qwen3-1.7B (obfuscated, keymat-h128-pi-noise-alg2-fp32)",
+      "n_prompts": 16,
+      "n_train": 139,
+      "n_test": 31,
+      "ttrsr_top1": 0.09677419066429138,
+      "ttrsr_top10": 0.29032257199287415,
+      "risk_level": "low",
+      "primary_metric_name": "token_top1_recovery_rate",
+      "extra": {
+        "layer": 30,
+        "kind": "attn_norm",
+        "split_mode": "row",
+        "best_ridge_alpha": 1.0,
+        "ridge_alpha_val_scan": [
+          {
+            "ridge_alpha": 0.0001,
+            "val_top1": 0.06896551698446274
+          },
+          {
+            "ridge_alpha": 0.01,
+            "val_top1": 0.17241379618644714
+          },
+          {
+            "ridge_alpha": 1.0,
+            "val_top1": 0.3103448152542114
+          }
+        ],
+        "strip_shield": false,
+        "candidate_pool_size": 2101,
+        "embedding_cosine_similarity": 0.13779684901237488,
+        "observable_type": "hidden_state"
+      }
+    },
+    "isa_attn_score": {
+      "attack": "isa",
+      "condition": "m2_7_attn",
+      "model_id": "Qwen/Qwen3-1.7B (obfuscated, keymat-h128-pi-noise-alg2-fp32)",
+      "n_prompts": 256,
+      "n_train": 256,
+      "n_test": 64,
+      "ttrsr_top1": 0.15625,
+      "ttrsr_top10": 0.3125,
+      "risk_level": "medium",
+      "primary_metric_name": "token_top1_recovery_rate",
+      "extra": {
+        "layer": 30,
+        "kind": "kq",
+        "split_mode": "row",
+        "best_ridge_alpha": 0.01,
+        "ridge_alpha_val_scan": [
+          {
+            "ridge_alpha": 0.0001,
+            "val_top1": 0.046875
+          },
+          {
+            "ridge_alpha": 0.01,
+            "val_top1": 0.28125
+          },
+          {
+            "ridge_alpha": 1.0,
+            "val_top1": 0.28125
+          }
+        ],
+        "strip_shield": true,
+        "candidate_pool_size": 2141,
+        "embedding_cosine_similarity": 0.156195268034935,
+        "observable_type": "hidden_state"
+      }
+    }
+  }
+}

@@ -1,0 +1,9 @@
+[ima_embedrow_attacks] MemAvailable=46.7 GB (min 25.0 GB)
+[IMA-EmbedRow] loading plaintext GGUF: /home/timo/.cache/huggingface/path-2-aloepri/qwen3-4b/Qwen3-4B-Q8_0-untied.gguf
+  loaded vocab=151936 d_eff=2560 n_layers=36
+[IMA-EmbedRow] loading obfuscated GGUF: /home/timo/.cache/huggingface/path-2-aloepri/qwen3-4b/Qwen3-4B-Q8_0-untied.gguf
+  loaded vocab=151936 d_eff=2560 n_layers=36
+[IMA-EmbedRow] τ = identity (plain control); active_size=151669
+[IMA-EmbedRow] running IMA-EmbedRow-ridge (multi-α ridge on embed rows)…
+  ima_embedrow_ridge top1=0.9844 top10=0.9922 risk=high α*=0.01
+[IMA-EmbedRow] wrote → evals/aloepri-attacks/results/sweep/cell-qwen3-4b-plain-rerun-20260520/m2_7-ima-embedrow.json

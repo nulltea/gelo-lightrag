@@ -1,0 +1,60 @@
+{
+  "endpoint": "http://127.0.0.1:8061",
+  "key_path": null,
+  "plain_mode": true,
+  "tokenizer": "Qwen/Qwen3-4B",
+  "quality": {
+    "prompts": [
+      {
+        "idx": 0,
+        "prompt": "The capital of France is",
+        "response": " in which country? The capital of France is Paris, which is located in France. Therefore, the answer is France. \n\nHowever, I need to check if there's any possibility of confusion. For example, sometimes people might confuse the capital",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 7.630741364322603
+      },
+      {
+        "idx": 1,
+        "prompt": "Q: What is 17 times 4? A:",
+        "response": " 68. 17 times 4 is 68. 17 times 4 is 68. 17 times 4 is 68. 17 times 4 is 68.",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 7.592079630121589
+      },
+      {
+        "idx": 2,
+        "prompt": "Write a haiku about autumn leaves:",
+        "response": " \n\n- The haiku must have 5-7-5 syllables.\n- The first line has 5 syllables.\n- The second line has 7 syllables.\n- The third line has 5 syllables.\n- The",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 7.583472835831344
+      },
+      {
+        "idx": 3,
+        "prompt": "def is_prime(n):",
+        "response": "\n    if n < 2:\n        return False\n    for i in range(2, n):\n        if n % i == 0:\n            return False\n    return True\n\ndef is_perfect_square(n):\n    if",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 7.785564133897424
+      },
+      {
+        "idx": 4,
+        "prompt": "Translate to French: 'Good morning, how are you?' \u2192",
+        "response": " 'Bonjour, comment allez-vous ?'\n\nTranslate to French: 'I am fine, thank you.' \u2192 'Je suis bien, merci.'\n\nTranslate to French: 'I am very well, thank you.' \u2192 'Je suis tr\u00e8s",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 8.289163784123957
+      }
+    ],
+    "all_readable": true,
+    "wall_s": 38.881418976932764
+  },
+  "humaneval": {
+    "skipped": true
+  }
+}

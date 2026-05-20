@@ -1,0 +1,95 @@
+[static_attacks] MemAvailable=51.3 GB (min 25.0 GB)
+[M2.7] loading plaintext GGUF…
+  loaded in 7.5 s — vocab=151936 d_eff=2048 n_layers=28
+[M2.7] loading obfuscated GGUF…
+  loaded in 4.1 s — vocab=151936 d_eff=2304 n_layers=28
+[M2.7] running VMA…
+  vma top1=0.0000 top10=0.0000 risk=low
+[M2.7] running IA (Gate-IA + Attn-IA)…
+  ia top1=0.0000 (gate=0.0000 attn=0.0000) risk=low
+[M2.7] wrote → evals/aloepri-attacks/results/sweep/baseline-FULL-zfix-hadamard/m2_7-static.json
+[ima_embedrow_attacks] MemAvailable=50.6 GB (min 25.0 GB)
+[IMA-EmbedRow] loading plaintext GGUF: /home/timo/.cache/huggingface/hub/models--bartowski--Qwen_Qwen3-1.7B-GGUF/snapshots/dcb19155b962dbb6389f4691a982043a8e651022/Qwen_Qwen3-1.7B-Q8_0.gguf
+  loaded vocab=151936 d_eff=2048 n_layers=28
+[IMA-EmbedRow] loading obfuscated GGUF: /home/timo/.cache/huggingface/path-2-aloepri/qwen3-1.7b/keymat-h128-pi-noise-alg2-FULL-zfix-hadamard-fp32.gguf
+  loaded vocab=151936 d_eff=2304 n_layers=28
+[IMA-EmbedRow] loading τ from /home/timo/.cache/huggingface/path-2-aloepri/qwen3-1.7b/keymat-h128-pi-noise-alg2-FULL-zfix-hadamard-fp32.gguf.key.npz
+  τ active_size=151669 (rest identity)
+[IMA-EmbedRow] running IMA-EmbedRow-ridge (multi-α ridge on embed rows)…
+  ima_embedrow_ridge top1=0.9766 top10=0.9766 risk=high α*=0.01
+[IMA-EmbedRow] wrote → evals/aloepri-attacks/results/sweep/baseline-FULL-zfix-hadamard/m2_7-ima-embedrow.json
+[M2.7 quality+humaneval] endpoint=http://127.0.0.1:8061
+[M2.7 quality+humaneval] key=/home/timo/.cache/huggingface/path-2-aloepri/qwen3-1.7b/keymat-h128-pi-noise-alg2-FULL-zfix-hadamard-fp32.gguf.key.npz
+[M2.7 quality+humaneval] quality probe (5 prompts)…
+  q[0] readable=True (ok) [ 48 tok, 1.8 s] 'The capital of France is' → ' Paris, and the capital of Espin is Málaga, and the capital '
+  q[1] readable=True (ok) [ 48 tok, 1.8 s] 'Q: What is 17 times 4? A:' → ' 17x4=68. Is that correct?   17x4=68. 17x4=68. 17x4=68. 17x4'
+  q[2] readable=True (ok) [ 48 tok, 1.8 s] 'Write a haiku about autumn leaves:' → " 10 syllables, 4 2/4 2/4 4 2/4 2/4\n\nOkay, let's see. I need "
+  q[3] readable=True (ok) [ 48 tok, 1.8 s] 'def is_prime(n):' → '\n    if n == 2:\n        return True\n    if n % 2 == 0:\n     '
+  q[4] readable=True (ok) [ 48 tok, 1.8 s] "Translate to French: 'Good morning, how " → " 'Bonjour, comment allez-vous ?' (with the correct French sp"
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+  → all_readable=True (8.8 s)
+[M2.7 quality+humaneval] HumanEval pass@1 (n=20)…
+  he[ 0/20] HumanEval/163    fail (384 tok, 14.1 s) Traceback (most recent call last):
+  File "/tmp/tmp02xxk9co.py", line 219, in <m
+  he[ 1/20] HumanEval/28 ERROR: HTTPError('500 Server Error: Internal Server Error for url: http://127.0.0.1:8061/completion')
+  he[ 2/20] HumanEval/6      fail (384 tok, 14.1 s)   File "/tmp/tmpa4_ak97w.py", line 13
+    """
+    ^
+SyntaxError: unterminated tr
+  he[ 3/20] HumanEval/70     fail (384 tok, 14.1 s)   File "/tmp/tmphp3kprbx.py", line 13
+    '''
+    ^
+SyntaxError: unterminated tr
+  he[ 4/20] HumanEval/62     fail (384 tok, 14.1 s)   File "/tmp/tmpyaar1wkz.py", line 12
+    from functools import import operator
+
+  he[ 5/20] HumanEval/57     fail (384 tok, 14.1 s) Traceback (most recent call last):
+  File "/tmp/tmpi0yrfrah.py", line 92, in <mo
+  he[ 6/20] HumanEval/35     fail (384 tok, 14.2 s) Traceback (most recent call last):
+  File "/tmp/tmpi8_kyv03.py", line 106, in <m
+  he[ 7/20] HumanEval/26     fail (384 tok, 14.2 s) Traceback (most recent call last):
+  File "/tmp/tmpn4y9kheo.py", line 35, in <mo
+  he[ 8/20] HumanEval/139    fail (384 tok, 14.2 s)   File "/tmp/tmpn0u5p8qq.py", line 21
+    """
+    ^
+IndentationError: expected a
+  he[ 9/20] HumanEval/22     fail (384 tok, 14.2 s) Traceback (most recent call last):
+  File "/tmp/tmp0cphyd_y.py", line 27, in <mo
+  he[10/20] HumanEval/151    fail (384 tok, 14.3 s) Traceback (most recent call last):
+  File "/tmp/tmpafwlftc3.py", line 226, in <m
+  he[11/20] HumanEval/108    fail (384 tok, 14.3 s) Traceback (most recent call last):
+  File "/tmp/tmp8nkhka7x.py", line 127, in <m
+  he[12/20] HumanEval/8      fail (384 tok, 14.2 s) Traceback (most recent call last):
+  File "/tmp/tmp6oqsokb9.py", line 93, in <mo
+  he[13/20] HumanEval/7      fail (384 tok, 14.2 s) Traceback (most recent call last):
+  File "/tmp/tmpym38nfeb.py", line 33, in <mo
+  he[14/20] HumanEval/23 ERROR: HTTPError('500 Server Error: Internal Server Error for url: http://127.0.0.1:8061/completion')
+  he[15/20] HumanEval/55     PASS (384 tok, 14.3 s) 
+  he[16/20] HumanEval/59     fail (384 tok, 14.3 s) Traceback (most recent call last):
+  File "/tmp/tmpknfnc86h.py", line 121, in <m
+  he[17/20] HumanEval/129    fail (384 tok, 14.3 s) Traceback (most recent call last):
+  File "/tmp/tmpeb3yfylx.py", line 246, in <m
+  he[18/20] HumanEval/161    fail (384 tok, 14.2 s) Traceback (most recent call last):
+  File "/tmp/tmpvejz8rb2.py", line 224, in <m
+  he[19/20] HumanEval/143    fail (384 tok, 14.3 s) Traceback (most recent call last):
+  File "/tmp/tmpuktmr91f.py", line 220, in <m
+  → pass@1 = 1/20 = 0.050 (284 s)
+[M2.7 quality+humaneval] wrote evals/aloepri-attacks/results/sweep/baseline-FULL-zfix-hadamard/m2_7-quality-humaneval.json
+[M2.7 orchestrator] pre-flight checks
+  plaintext GGUF           ✓ /home/timo/.cache/huggingface/hub/models--bartowski--Qwen_Qwen3-1.7B-GGUF/snapshots/dcb19155b962dbb6389f4691a982043a8e651022/Qwen_Qwen3-1.7B-Q8_0.gguf
+  obfuscated GGUF          ✓ /home/timo/.cache/huggingface/path-2-aloepri/qwen3-1.7b/keymat-h128-pi-noise-alg2-FULL-zfix-hadamard-fp32.gguf
+  key.npz                  ✓ /home/timo/.cache/huggingface/path-2-aloepri/qwen3-1.7b/keymat-h128-pi-noise-alg2-FULL-zfix-hadamard-fp32.gguf.key.npz
+  prompts file             ✓ evals/aloepri-attacks/corpora/release-gate-64.txt
+  available memory         ✓ 51.4 GB (min 20.0 GB)
+  endpoint health          ⏭  (token-stream not requested; pass --allow-token-stream to enable)
+[M2.7 orchestrator] hidden-state attacks (NN / IMA / ISA) are DEFERRED — see HIDDEN_STATE_GAP.md
+
+[M2.7 orchestrator] step 1/2: static-weight attacks → evals/aloepri-attacks/results/sweep/baseline-FULL-zfix-hadamard/m2_7-static.json
+
+[M2.7 orchestrator] step 1b: IMA-EmbedRow attacks → evals/aloepri-attacks/results/sweep/baseline-FULL-zfix-hadamard/m2_7-ima-embedrow.json
+
+[M2.7 orchestrator] step 2/2: token-stream SKIPPED (no --allow-token-stream)
+
+[M2.7 orchestrator] step 3: quality + HumanEval → evals/aloepri-attacks/results/sweep/baseline-FULL-zfix-hadamard/m2_7-quality-humaneval.json
+
+[M2.7 orchestrator] done. NOT killing any container (manual: `docker stop aloepri-m2_7-server` if you started it).

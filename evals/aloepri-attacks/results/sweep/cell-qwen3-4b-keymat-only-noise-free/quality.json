@@ -1,0 +1,54 @@
+{
+  "endpoint": "http://127.0.0.1:8061",
+  "key_path": null,
+  "plain_mode": true,
+  "tokenizer": "Qwen/Qwen3-4B",
+  "quality": {
+    "prompts": [
+      {
+        "idx": 0,
+        "prompt": "The capital of France is",
+        "response": "breaker\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0",
+        "readable": false,
+        "readable_reason": "repetition_ngram='\u51fa\u73b0\u51fa\u73b0'_count=23",
+        "n_response_tokens": 48,
+        "wall_s": 8.959440136794
+      },
+      {
+        "idx": 1,
+        "prompt": "Q: What is 17 times 4? A:",
+        "response": "\"<?\u6df1\u591c\u51fa\u73b0\u624b\u8155\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0\u51fa\u73b0",
+        "readable": false,
+        "readable_reason": "repetition_ngram='\u51fa\u73b0\u51fa\u73b0'_count=22",
+        "n_response_tokens": 48,
+        "wall_s": 8.098504210822284
+      },
+      {
+        "idx": 2,
+        "prompt": "Write a haiku about autumn leaves:",
+        "error": "500 Server Error: Internal Server Error for url: http://127.0.0.1:8061/completion",
+        "readable": false,
+        "readable_reason": "error"
+      },
+      {
+        "idx": 3,
+        "prompt": "def is_prime(n):",
+        "error": "500 Server Error: Internal Server Error for url: http://127.0.0.1:8061/completion",
+        "readable": false,
+        "readable_reason": "error"
+      },
+      {
+        "idx": 4,
+        "prompt": "Translate to French: 'Good morning, how are you?' \u2192",
+        "error": "500 Server Error: Internal Server Error for url: http://127.0.0.1:8061/completion",
+        "readable": false,
+        "readable_reason": "error"
+      }
+    ],
+    "all_readable": false,
+    "wall_s": 40.23076224187389
+  },
+  "humaneval": {
+    "skipped": true
+  }
+}

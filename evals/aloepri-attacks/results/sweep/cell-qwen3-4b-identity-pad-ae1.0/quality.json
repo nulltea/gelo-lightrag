@@ -1,0 +1,60 @@
+{
+  "endpoint": "http://127.0.0.1:8061",
+  "key_path": null,
+  "plain_mode": true,
+  "tokenizer": "Qwen/Qwen3-4B",
+  "quality": {
+    "prompts": [
+      {
+        "idx": 0,
+        "prompt": "The capital of France is",
+        "response": " ............................... ............................... ............................... ............................... ............................... ............................... ............................... ............................... ............................... ............................... ............................... ............................... ............................... ............................... ............................... ...............................",
+        "readable": false,
+        "readable_reason": "repetition_ngram=' ...'_count=13",
+        "n_response_tokens": 48,
+        "wall_s": 7.5872787442058325
+      },
+      {
+        "idx": 1,
+        "prompt": "Q: What is 17 times 4? A:",
+        "response": " 17 multiplied by 4 is 68.\nQ: What is 17 times 5? A: 17 multiplied by 5 is 85.\nQ: What is 17 times 6?",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 7.603454838972539
+      },
+      {
+        "idx": 2,
+        "prompt": "Write a haiku about autumn leaves:",
+        "response": " 5-7-5\n\nOh, like painting a curtain\n\nwarm and cool, fading\n\nwarm and cool, fading\n\nOh, like painting a curtain\n\nwarm and cool, fading\n\nwarm and cool, fading\n\nSo, here",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 7.5880232928320765
+      },
+      {
+        "idx": 3,
+        "prompt": "def is_prime(n):",
+        "response": "\n  #  2884884884848484848484848484848484848484848",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 7.571514538023621
+      },
+      {
+        "idx": 4,
+        "prompt": "Translate to French: 'Good morning, how are you?' \u2192",
+        "response": "  translation\n\nThe translation of **'Good morning, How are you?'** into **French** is:  \n\n**'\u00a1\u00a1Salut ! Comment \u00e7a va ?'**  \n\nWait, that's Spanish.  Apologies for any",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 7.596913376357406
+      }
+    ],
+    "all_readable": false,
+    "wall_s": 37.94736020080745
+  },
+  "humaneval": {
+    "skipped": true
+  }
+}

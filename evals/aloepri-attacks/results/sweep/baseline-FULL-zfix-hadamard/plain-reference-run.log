@@ -1,0 +1,49 @@
+[M2.7 quality+humaneval] endpoint=http://127.0.0.1:8062
+[M2.7 quality+humaneval] plain-mode (no τ)
+[M2.7 quality+humaneval] quality probe (5 prompts)…
+  q[0] readable=True (ok) [ 48 tok, 0.5 s] 'The capital of France is' → ' Paris. The capital of the United States is Washington, D.C.'
+  q[1] readable=True (ok) [ 48 tok, 0.5 s] 'Q: What is 17 times 4? A:' → ' 68\n\nWhat is 17 times 4? A: 68\n\nWhat is 17 times 4? A: 68\n\nW'
+  q[2] readable=True (ok) [ 48 tok, 0.5 s] 'Write a haiku about autumn leaves:' → ' 5-7-5 syllables.\n\nThe leaves fall, golden and bright,  \nA d'
+  q[3] readable=True (ok) [ 48 tok, 0.5 s] 'def is_prime(n):' → '\n    if n < 2:\n        return False\n    for i in range(2, in'
+  q[4] readable=True (ok) [ 48 tok, 0.5 s] "Translate to French: 'Good morning, how " → " 'Bonjour, comment ça va ?'\n\nYes, that's correct. But I need"
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+  → all_readable=True (2.4 s)
+[M2.7 quality+humaneval] HumanEval pass@1 (n=20)…
+  he[ 0/20] HumanEval/163    fail (384 tok, 3.7 s)   File "/tmp/tmpfr0b7pnw.py", line 24
+    ```
+    ^
+SyntaxError: invalid syntax
+
+  he[ 1/20] HumanEval/28     PASS (384 tok, 3.6 s) 
+  he[ 2/20] HumanEval/6      PASS (384 tok, 3.6 s) 
+  he[ 3/20] HumanEval/70     fail (384 tok, 3.6 s)   File "/tmp/tmpct9mdzpf.py", line 34
+    ```
+    ^
+SyntaxError: invalid syntax
+
+  he[ 4/20] HumanEval/62     PASS (384 tok, 3.6 s) 
+  he[ 5/20] HumanEval/57     PASS (384 tok, 3.6 s) 
+  he[ 6/20] HumanEval/35     PASS (384 tok, 3.6 s) 
+  he[ 7/20] HumanEval/26     fail (384 tok, 3.6 s) Traceback (most recent call last):
+  File "/tmp/tmpgfevo_u8.py", line 34, in <mo
+  he[ 8/20] HumanEval/139    fail (384 tok, 3.6 s)   File "/tmp/tmp0ibl3ssq.py", line 22
+    Wait, but the function is supposed to 
+  he[ 9/20] HumanEval/22     PASS (384 tok, 3.6 s) 
+  he[10/20] HumanEval/151    fail (384 tok, 3.7 s)   File "/tmp/tmp46sykadf.py", line 26
+    But what about if the list has negativ
+  he[11/20] HumanEval/108    fail (384 tok, 3.7 s)   File "/tmp/tmpr5u6bo40.py", line 36
+    print(count_nums([1, -1, 1, -1, 1, -1,
+  he[12/20] HumanEval/8      PASS (384 tok, 3.7 s) 
+  he[13/20] HumanEval/7      PASS (384 tok, 3.7 s) 
+  he[14/20] HumanEval/23     PASS (384 tok, 3.6 s) 
+  he[15/20] HumanEval/55     PASS (384 tok, 3.6 s) 
+  he[16/20] HumanEval/59     fail (384 tok, 3.6 s) Traceback (most recent call last):
+  File "/tmp/tmpu841grwi.py", line 33, in <mo
+  he[17/20] HumanEval/129    fail (384 tok, 3.8 s) Traceback (most recent call last):
+  File "/tmp/tmpfi0oqr4g.py", line 56, in <mo
+  he[18/20] HumanEval/161    fail (384 tok, 3.7 s) Traceback (most recent call last):
+  File "/tmp/tmp768v3iy0.py", line 44, in <mo
+  he[19/20] HumanEval/143    fail (384 tok, 3.7 s) Traceback (most recent call last):
+  File "/tmp/tmpykt9_ne8.py", line 50, in <mo
+  → pass@1 = 10/20 = 0.500 (73 s)
+[M2.7 quality+humaneval] wrote evals/aloepri-attacks/results/sweep/baseline-FULL-zfix-hadamard/plain-reference-quality-humaneval.json

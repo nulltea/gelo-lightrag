@@ -1,0 +1,213 @@
+{
+  "endpoint": "http://127.0.0.1:8063",
+  "key_path": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-1.7b/keymat-h128-pi-noise-ae0.3-ah0.1-fp32.gguf.key.npz",
+  "plain_mode": false,
+  "tokenizer": "Qwen/Qwen3-1.7B",
+  "quality": {
+    "prompts": [
+      {
+        "idx": 0,
+        "prompt": "The capital of France is",
+        "response": " Paris, and the capital of the United States is Washington, D.C.  The capital of the United Kingdom is London, and the capital of the United States is Washington, D.C.  The capital of the United States is Washington,",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.791745173279196
+      },
+      {
+        "idx": 1,
+        "prompt": "Q: What is 17 times 4? A:",
+        "response": " 17 times 4 is 68. 17 multiplied by 4 is 68. 17\u00d74=68. 17\u00d74=68. 17\u00d74=6",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.7935986430384219
+      },
+      {
+        "idx": 2,
+        "prompt": "Write a haiku about autumn leaves:",
+        "error": "500 Server Error: Internal Server Error for url: http://127.0.0.1:8063/completion",
+        "readable": false,
+        "readable_reason": "error"
+      },
+      {
+        "idx": 3,
+        "prompt": "def is_prime(n):",
+        "response": "\n    if n <= 1:\n        return False\n    if n <= 3:\n        return True\n    if n % 2 == 0 or n % 3 == 0:\n        return False\n    i =",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.7735419259406626
+      },
+      {
+        "idx": 4,
+        "prompt": "Translate to French: 'Good morning, how are you?' \u2192",
+        "response": " 'Bonjour, comment \u00e7a va ?'\n\nYes, that's correct. But I want to make it more natural and more natural-sounding. Can you help me with that?\n\nYes, of course. Let's see. The phrase \"how",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.7819295711815357
+      }
+    ],
+    "all_readable": false,
+    "wall_s": 8.968870304059237
+  },
+  "humaneval": {
+    "n": 20,
+    "passed": 7,
+    "accuracy": 0.35,
+    "wall_s": 286.2934908149764,
+    "details": [
+      {
+        "task_id": "HumanEval/163",
+        "passed": false,
+        "completion": "",
+        "error": "client_error: HTTPError('500 Server Error: Internal Server Error for url: http://127.0.0.1:8063/completion')"
+      },
+      {
+        "task_id": "HumanEval/28",
+        "passed": false,
+        "completion": "",
+        "error": "client_error: HTTPError('500 Server Error: Internal Server Error for url: http://127.0.0.1:8063/completion')"
+      },
+      {
+        "task_id": "HumanEval/6",
+        "passed": true,
+        "completion": "    # Split the input string into groups\n    groups = paren_string.split()\n    result = []\n    current_depth = 0\n    for group in groups:\n        max_depth = 0\n        for char in group:\n            if char == '(':\n                current_depth += 1\n                max_depth = max(max_depth, current_depth)\n            elif char == ')':\n                current_depth -= 1\n        result.append(max_depth)\n    return result",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 14.41724834498018
+      },
+      {
+        "task_id": "HumanEval/70",
+        "passed": false,
+        "completion": "",
+        "error": "client_error: HTTPError('500 Server Error: Internal Server Error for url: http://127.0.0.1:8063/completion')"
+      },
+      {
+        "task_id": "HumanEval/62",
+        "passed": false,
+        "completion": "    # xs is a list of coefficients\n    # for example, [3, 1, 2, 4, 5] is 3 + 1*x + 2*x^2 + 4*x^3 + 5*x^4\n    # derivative is 0 + 1*1*x^0 + 2*2*x^1 + 4*3*x^2 + 5*4*x^3\n    # so the coefficients are [1, 4, 12, 20]\n    # so the new list is [1, 4, 12, 20]\n    # so the new list is [1, 4, 12, 20]\n    # so the new list is [1, 4, 12, 20]\n    # so the new list is [1, 4, 12, 20]\n    # so the new list is [1, 4, 12, 20]\n    # so the new list is [1, 4, 12, 20]\n    # so the new list is [1, 4, 12, 20]\n    # so the new list is [1, 4, 12, 20]\n    # so the new list is [1, 4, 12, 20]\n    # so the new list is [1,",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpg3j_nb8z.py\", line 44, in <module>\n    check(derivative)\n  File \"/tmp/tmpg3j_nb8z.py\", line 36, in check\n    assert candidate([3, 1, 2, 4, 5]) == [1,",
+        "n_response_tokens": 384,
+        "wall_s": 14.404528451617807
+      },
+      {
+        "task_id": "HumanEval/57",
+        "passed": false,
+        "completion": "",
+        "error": "client_error: HTTPError('500 Server Error: Internal Server Error for url: http://127.0.0.1:8063/completion')"
+      },
+      {
+        "task_id": "HumanEval/35",
+        "passed": true,
+        "completion": "    # your code here\n    max_val = l[0]\n    for num in l:\n        if num > max_val:\n            max_val = num\n    return max_val\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 14.317760165315121
+      },
+      {
+        "task_id": "HumanEval/26",
+        "passed": false,
+        "completion": "    result = []\n    seen = set()\n    for num in numbers:\n        if num not in seen:\n            seen.add(num)\n            result.append(num)\n    return result",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpsvqtx33_.py\", line 32, in <module>\n    check(remove_duplicates)\n  File \"/tmp/tmpsvqtx33_.py\", line 29, in check\n    assert candidate([1, 2, 3, 2, 4, ",
+        "n_response_tokens": 384,
+        "wall_s": 14.245791499037296
+      },
+      {
+        "task_id": "HumanEval/139",
+        "passed": false,
+        "completion": "    result = 1\n    for i in range(1, n+1):\n        result *= factorial(i)\n    return result\n\n# Test the function\nprint(special_factorial(4))  # Expected output: 288\n```\n\n**Note:** The `factorial` function is defined elsewhere, and it's used in the `special_factorial` function to compute the factorial of each number from 1 to n.\n\n**Test Case 2:**\n```python\n# Test case 2\n# Expected output: 1\nprint(special_factorial(1))\n```\n\n**Note:** The `special_factorial` function is called with n=1, which should return 1, since 1! is 1, and the product is 1 * 1 = 1.\n\n**Test Case 3:**\n```python\n# Test case 3\n#",
+        "error": "  File \"/tmp/tmpmfjc3_yv.py\", line 23\n    **Note:** The `factorial` function is defined elsewhere, and it's used in the `special_factorial` function to compute the factorial of each number from 1 to n",
+        "n_response_tokens": 384,
+        "wall_s": 14.260368152987212
+      },
+      {
+        "task_id": "HumanEval/22",
+        "passed": true,
+        "completion": "    return [x for x in values if isinstance(x, int)]",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 14.174124284647405
+      },
+      {
+        "task_id": "HumanEval/151",
+        "passed": false,
+        "completion": "    # your code here\n    sum = 0\n    for num in lst:\n        if num % 2 == 1:\n            sum += num * num\n    return sum\n```\nWait, but the problem says to ignore numbers that are negative or not integers. So, for example, if the input is [-1, -2, 0], then the numbers that are odd are 0, but 0 is even, so sum is 0. But in the example given, double_the_difference([-1, -2, 0]) == 0, which is correct.\n\nBut in the problem statement, the function is supposed to return the sum of squares of the numbers in the list that are odd. So, the numbers that are odd are those that are integers and have a rema",
+        "error": "  File \"/tmp/tmptfh5barg.py\", line 29\n    So the function needs to check if each number is an integer, and if it is, then check if it's odd.\n                                                           ",
+        "n_response_tokens": 384,
+        "wall_s": 14.239353638142347
+      },
+      {
+        "task_id": "HumanEval/108",
+        "passed": false,
+        "completion": "    # your code here\n    count = 0\n    for num in arr:\n        if num < 0:\n            digits = list(map(int, str(num)))\n            digits = [digits[0]] + digits[1:]\n            # digits is now the list of digits with the sign\n            # sum of digits is sum(digits)\n            if sum(digits) > 0:\n                count += 1\n        else:\n            digits = list(map(int, str(num)))\n            if sum(digits) > 0:\n                count += 1\n    return count\n\n# Test cases\nprint(count_nums([]))  # 0\nprint(count_nums([-1, 11, -11]))  # 1\nprint(count_nums([1, 1, 2]))  # 3\n```\n\nWait, the test c",
+        "error": "  File \"/tmp/tmpjv6xai_u.py\", line 34\n    Wait, the test case for [-1, 11, -11] should return 1, but according to the code, let's see:\n                                                                 ",
+        "n_response_tokens": 384,
+        "wall_s": 14.280381842982024
+      },
+      {
+        "task_id": "HumanEval/8",
+        "passed": true,
+        "completion": "    sum_total = 0\n    product_total = 1\n    for num in numbers:\n        sum_total += num\n        product_total *= num\n    return (sum_total, product_total)",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 14.368065377231687
+      },
+      {
+        "task_id": "HumanEval/7",
+        "passed": true,
+        "completion": "    return [s for s in strings if substring in s]",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 14.325055252760649
+      },
+      {
+        "task_id": "HumanEval/23",
+        "passed": true,
+        "completion": "    # your code here\n    count = 0\n    for char in string:\n        count += 1\n    return count\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 14.305582880973816
+      },
+      {
+        "task_id": "HumanEval/55",
+        "passed": true,
+        "completion": "    if n == 1 or n == 0:\n        return n\n    else:\n        return fib(n-1) + fib(n-2)\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 14.300138851162046
+      },
+      {
+        "task_id": "HumanEval/59",
+        "passed": false,
+        "completion": "    # Check if n is even\n    if n % 2 == 0:\n        return 2\n    # Check for odd factors starting from 3\n    i = 3\n    while i * i <= n:\n        # Check if i divides n\n        if n % i == 0:\n            return i\n        i += 2\n    # If n is a prime number greater than 2\n    return n\n\nWait, but the problem says that n is not a prime, so the function is guaranteed to have a prime factor. So the code is correct.\n\nBut the problem says that the function is supposed to return the largest prime factor. So the code is correct.\n\nBut the test case for 2048 is 2, which is correct.\n\nBut for 13195, the cod",
+        "error": "  File \"/tmp/tmpbhp2l68x.py\", line 23\n    Wait, but the problem says that n is not a prime, so the function is guaranteed to have a prime factor. So the code is correct.\n              ^^^\nSyntaxError:",
+        "n_response_tokens": 384,
+        "wall_s": 14.183630160987377
+      },
+      {
+        "task_id": "HumanEval/129",
+        "passed": false,
+        "completion": "    # Your code here\n    pass\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp35tir5_6.py\", line 56, in <module>\n    check(minPath)\n  File \"/tmp/tmp35tir5_6.py\", line 40, in check\n    assert candidate([[1, 2, 3], [4, 5, 6], [7,",
+        "n_response_tokens": 384,
+        "wall_s": 14.378834525123239
+      },
+      {
+        "task_id": "HumanEval/161",
+        "passed": false,
+        "completion": "    # your code here\n    # return the string\n    pass\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp7iyvun0z.py\", line 35, in <module>\n    check(solve)\n  File \"/tmp/tmp7iyvun0z.py\", line 21, in check\n    assert candidate(\"AsDf\") == \"aSdF\"\n          ",
+        "n_response_tokens": 384,
+        "wall_s": 14.227112663444132
+      },
+      {
+        "task_id": "HumanEval/143",
+        "passed": false,
+        "completion": "",
+        "error": "client_error: HTTPError('500 Server Error: Internal Server Error for url: http://127.0.0.1:8063/completion')"
+      }
+    ]
+  }
+}

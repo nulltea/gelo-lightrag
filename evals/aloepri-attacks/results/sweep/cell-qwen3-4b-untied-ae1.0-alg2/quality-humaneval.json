@@ -1,0 +1,225 @@
+{
+  "endpoint": "http://127.0.0.1:8061",
+  "key_path": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-4b/untied-keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-fp32.gguf.key.npz",
+  "plain_mode": false,
+  "tokenizer": "Qwen/Qwen3-4B",
+  "quality": {
+    "prompts": [
+      {
+        "idx": 0,
+        "prompt": "The capital of France is",
+        "response": " Paris. The capital of Spain is Madrid. The capital of Italy is Roma. The capital of Portugal is Lisbon. The capital of Belgium is Brussels. The capital of Netherlands is Amsterdam. The capital of Germany is",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 42,
+        "wall_s": 6.9129665098153055
+      },
+      {
+        "idx": 1,
+        "prompt": "Q: What is 17 times 4? A:",
+        "response": " 17 multiplied by 4 is 68.\nA: 17 times 4 is 68.\nOkay, let me try to figure out how to answer the question \"What is 17 times 4?\"",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 7.686969751026481
+      },
+      {
+        "idx": 2,
+        "prompt": "Write a haiku about autumn leaves:",
+        "response": " \n\nThe first line is \"Crimson leaves fall\", \n\nThe second line is \"In the wind, they dance\", \n\nThe third line is \"Nature's final Poem\". \n\nNow, write a 200-word explanation",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 7.544351130723953
+      },
+      {
+        "idx": 3,
+        "prompt": "def is_prime(n):",
+        "response": "\n    if n <= 1:\n        return False\n    for i in range(2, int(n**0.5)+1):\n        if n%i == 0:\n            return False\n    return True\n\ndef is_prime",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 7.542571467813104
+      },
+      {
+        "idx": 4,
+        "prompt": "Translate to French: 'Good morning, how are you?' \u2192",
+        "response": " 'Bonjour, comment allez-vous ?' \n\nTranslate to French: 'Good morning, how are you?' \u2192 'Bonjour, comment allez-vous ?' \n\nTranslate to French: 'Good morning, how are you?' \u2192 'Bonjour",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 7.546893707942218
+      }
+    ],
+    "all_readable": true,
+    "wall_s": 37.23403338389471
+  },
+  "humaneval": {
+    "n": 20,
+    "passed": 6,
+    "accuracy": 0.3,
+    "wall_s": 1206.8188551897183,
+    "details": [
+      {
+        "task_id": "HumanEval/163",
+        "passed": false,
+        "completion": "    # Your code here\n    # Check if a > b, then reverse the order\n    # Generate all even digits between a and b\n    # So, the code should be something like:\n    # start = a if a is even else a+1\n    # end = b if b is even else b-1\n    # then, create a list of numbers from start to end with step 2\n    # but need to check if start > end, then return empty list\n    # So, the code could be:\n    # start = a if a % 2 ==0 else a+1\n    # end = b if b%2 ==0 else b-1\n    # if start > end:\n    #     return []\n    # else:\n    #     return list(range(start, end+1, 2))\n    # But wait, the example says gene",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpsatspd5x.py\", line 56, in <module>\n    check(generate_integers)\n  File \"/tmp/tmpsatspd5x.py\", line 46, in check\n    assert candidate(2, 10) == [2, 4,",
+        "n_response_tokens": 384,
+        "wall_s": 61.02279557334259
+      },
+      {
+        "task_id": "HumanEval/28",
+        "passed": false,
+        "completion": "    return ''.join(Strings)",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp964lk395.py\", line 27, in <module>\n    check(concatenate)\n  File \"/tmp/tmp964lk395.py\", line 22, in check\n    assert candidate([]) == ''\n           ^",
+        "n_response_tokens": 384,
+        "wall_s": 60.60973432706669
+      },
+      {
+        "task_id": "HumanEval/6",
+        "passed": false,
+        "completion": "    # Your code here\n    # Split the input string into individual groups by splitting on spaces\n    groups = s.split()\n    # For each group, calculate the maximum depth of nesting\n    result = []\n    for group in groups:\n        current_depth = 0\n        max_depth = 0\n        for char in group:\n            if char == '(':\n                current_depth +=1\n                if current_depth > max_depth:\n                    max_depth = current_depth\n            elif char == ')':\n                current_depth -=1\n        result.append(max_depth)\n    return result\n\n# Test case\nprint(parse_nested_par",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpue0s1qvg.py\", line 31, in <module>\n    print(parse_nested_parens('(()()) ((())) ()((())()())')) # Expected [2, 3, 1, 3]\n          ^^^^^^^^^^^^^^^^^^^",
+        "n_response_tokens": 214,
+        "wall_s": 34.40493396995589
+      },
+      {
+        "task_id": "HumanEval/70",
+        "passed": false,
+        "completion": "    # Your code here\n    # So the idea is to take the minimum and max alternately from the list\n    # But the problem is that after taking min and max, the next is min and max again\n    # So the steps are:\n    # 1. Take the min of the list\n    # 2. Take the max of the list (excluding the min)\n    # 3. Take the min of the list (exclude the previous min and max)\n    # 4. Take the max of the list (exclude the previous min and max)\n    # etc.\n\n    # So the approach is to sort the list and then take the elements in the order min, max, min, max...\n\n    # So first, sort the list\n    lst = sorted(lst)",
+        "error": "  File \"/tmp/tmp3iugc5wa.py\", line 45\n    Wait, but the code is not correct. Let me think again.\n              ^^^\nSyntaxError: invalid syntax\n",
+        "n_response_tokens": 384,
+        "wall_s": 61.177476725075394
+      },
+      {
+        "task_id": "HumanEval/62",
+        "passed": false,
+        "completion": "    # Your code here\n    # 1. Check if the list is empty or has one element\n    # 2. If the list is empty, return empty list\n    # 3. If the list has one element, return empty list\n    # 4. Else, create a new list where each element is i * xs[i+1]\n    # 5. Return the new list\n    # So, for example, the first element is 1 * xs[1], the second is 2 * xs[2], etc.\n    # So, the new list is [i * xs[i] for i in range(1, len(xs)]\n    # So, the code would be:\n    # return [i * xs[i] for i in range(1, len(xs)]\n    # But in Python, the indexes start from 0, so the first element is xs[1], which is multipl",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpiysi3i3g.py\", line 52, in <module>\n    check(derivative)\n  File \"/tmp/tmpiysi3i3g.py\", line 44, in check\n    assert candidate([3, 1, 2, 4, 5]) == [1,",
+        "n_response_tokens": 384,
+        "wall_s": 64.43654329609126
+      },
+      {
+        "task_id": "HumanEval/57",
+        "passed": true,
+        "completion": "    increasing = all(l[i] <= l[i+1] for i in range(len(l)-1))\n    decreasing = all(l[i] >= l[i+1] for i in range(len(l)-1))\n    return increasing or decreasing\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 61.09664337616414
+      },
+      {
+        "task_id": "HumanEval/35",
+        "passed": true,
+        "completion": "    max_element = l[0]\n    for i in range(1, len(l)):\n        if l[i] > max_element:\n            max_element = l[i]\n    return max_element\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 61.2056258819066
+      },
+      {
+        "task_id": "HumanEval/26",
+        "passed": false,
+        "completion": "    seen = set()\n    result = []\n    for num in numbers:\n        if num not in seen:\n            seen.add(num)\n            result.append(num)\n    return result\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp62i6st5n.py\", line 33, in <module>\n    check(remove_duplicates)\n  File \"/tmp/tmp62i6st5n.py\", line 30, in check\n    assert candidate([1, 2, 3, 2, 4, ",
+        "n_response_tokens": 384,
+        "wall_s": 63.74250060506165
+      },
+      {
+        "task_id": "HumanEval/139",
+        "passed": false,
+        "completion": "    # Your code here\n    # Base case: n=1, return 1\n    if n == 1:\n        return 1\n    # Recursive case: n * special_factorial(n-1)\n    return n * special_factorial(n-1)\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmph_rwfwwe.py\", line 34, in <module>\n    check(special_factorial)\n  File \"/tmp/tmph_rwfwwe.py\", line 25, in check\n    assert candidate(4) == 288, \"Test",
+        "n_response_tokens": 384,
+        "wall_s": 61.14449719293043
+      },
+      {
+        "task_id": "HumanEval/22",
+        "passed": true,
+        "completion": "    return [x for x in values if isinstance(x, int)]",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 61.33804720826447
+      },
+      {
+        "task_id": "HumanEval/151",
+        "passed": false,
+        "completion": "    # Your code here\n    sum = 0\n    for num in lst:\n        if num >=0 and num is integer:\n            if num % 2 == 1:\n                sum += num**2\n    return sum\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp_z47gqkt.py\", line 41, in <module>\n    check(double_the_difference)\n  File \"/tmp/tmp_z47gqkt.py\", line 27, in check\n    assert candidate([5, 4]) == 2",
+        "n_response_tokens": 384,
+        "wall_s": 61.671889137942344
+      },
+      {
+        "task_id": "HumanEval/108",
+        "passed": false,
+        "completion": "    count = 0\n    for num in arr:\n        s = 0\n        if num < 0:\n            s = -1\n            num = abs(num)\n        while num > 0:\n            s += num % 10\n            num = num //10\n        if s >0:\n            count +=1\n    return count\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpjml1kpbz.py\", line 43, in <module>\n    check(count_nums)\n  File \"/tmp/tmpjml1kpbz.py\", line 30, in check\n    assert candidate([-1, -2, 0]) == 0\n     ",
+        "n_response_tokens": 384,
+        "wall_s": 63.662434006109834
+      },
+      {
+        "task_id": "HumanEval/8",
+        "passed": true,
+        "completion": "    sum_numbers = 0\n    product_numbers = 1\n    for number in numbers:\n        sum_numbers += number\n        product_numbers *= number\n    return (sum_numbers, product_numbers)",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 62.85656873462722
+      },
+      {
+        "task_id": "HumanEval/7",
+        "passed": false,
+        "completion": "    return [s for s in Strings if substring in s]",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp9p1vm3_0.py\", line 28, in <module>\n    check(filter_by_substring)\n  File \"/tmp/tmp9p1vm3_0.py\", line 22, in check\n    assert candidate([], 'john') ==",
+        "n_response_tokens": 384,
+        "wall_s": 61.23723501479253
+      },
+      {
+        "task_id": "HumanEval/23",
+        "passed": true,
+        "completion": "    return len(string)",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 60.62454603333026
+      },
+      {
+        "task_id": "HumanEval/55",
+        "passed": true,
+        "completion": "    if n == 0:\n        return 0\n    elif n == 1:\n        return 1\n    else:\n        return fib(n-1) + fib(n-2)\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 60.23432739498094
+      },
+      {
+        "task_id": "HumanEval/59",
+        "passed": false,
+        "completion": "    # Check if n is even\n    if n % 2 ==0:\n        return 2\n    # Check for odd factors\n    i=3\n    max_factor =1\n    while i*i <=n:\n        while n%i ==0:\n            max_factor =i\n            n =n//i\n        i +=2\n    if n >1:\n        max_factor =n\n    return max_factor\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpre6yt84n.py\", line 40, in <module>\n    check(largest_prime_factor)\n  File \"/tmp/tmpre6yt84n.py\", line 35, in check\n    assert candidate(330) == 11\n  ",
+        "n_response_tokens": 384,
+        "wall_s": 60.7067117029801
+      },
+      {
+        "task_id": "HumanEval/129",
+        "passed": false,
+        "completion": "    # Your code here\n    # So the problem is to find the minimum path of length k in the grid. The path must be of length k, which means visiting exactly k cells. The path is considered lexicographically smaller if at the first differing position, the value is smaller. And the answer is unique.\n\n    # So the approach is to find the lexicographically smallest path of length k. How to do that?\n\n    # First, the grid is N x N. So the first thing is to find the minimum path of length k. Since the path is of length k, which is the number of steps, but the path is a sequence of cells. So the path is",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpausg_t8m.py\", line 69, in <module>\n    check(minPath)\n  File \"/tmp/tmpausg_t8m.py\", line 53, in check\n    assert candidate([[1, 2, 3], [4, 5, 6], [7,",
+        "n_response_tokens": 384,
+        "wall_s": 62.56326432293281
+      },
+      {
+        "task_id": "HumanEval/161",
+        "passed": false,
+        "completion": "    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # co",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp15c6vkb4.py\", line 108, in <module>\n    check(solve)\n  File \"/tmp/tmp15c6vkb4.py\", line 94, in check\n    assert candidate(\"AsDf\") == \"aSdF\"\n         ",
+        "n_response_tokens": 384,
+        "wall_s": 61.333406700287014
+      },
+      {
+        "task_id": "HumanEval/143",
+        "passed": false,
+        "completion": "    # your code here\n    # first, we need to split the sentence into words\n    words = sentence.split(\" \")\n    # split the sentence into a list of words\n    # then, for each word in words, check if its length is a prime number\n    # if it is, include it in the result\n    # finally, join the selected words with spaces\n    # but first, we need a function to check if a number is prime\n    def is_prime(n):\n        if n <= 1:\n            return False\n        for i in range(2, int(n**0.5)+1):\n            if n % i == 0:\n                return False\n        return True\n    # now, filter the words whos",
+        "error": "  File \"/tmp/tmp_fi43ypg.py\", line 49\n    Wait, the example 2 says input is \"lets Go for swimming\" (assuming\u0e17\u0e35\u0e48\u0e21\u0e35\u0e04\u0e33\u0e17\u0e35\u0e48 \"lets\", \"Go\", \"for\", \"swimming\")? Or maybe the example is \"lets Go for swimming\" ",
+        "n_response_tokens": 384,
+        "wall_s": 61.74900466995314
+      }
+    ]
+  }
+}

@@ -508,14 +508,14 @@ def main() -> int:
     check_phase_memory("ima_embedrow_attacks", args.min_mem_gb, args.skip_mem_check)
 
     print(f"[IMA-EmbedRow] loading plaintext GGUF: {args.plain}")
-    plain = load_model(args.plain, "plaintext")
+    plain = load_model(args.plain, "plaintext", embed_only=True)
     print(
         f"  loaded vocab={plain.vocab_size} d_eff={plain.d_eff} "
         f"n_layers={plain.n_layers}"
     )
 
     print(f"[IMA-EmbedRow] loading obfuscated GGUF: {args.obfuscated}")
-    obfuscated = load_model(args.obfuscated, "obfuscated")
+    obfuscated = load_model(args.obfuscated, "obfuscated", embed_only=True)
     print(
         f"  loaded vocab={obfuscated.vocab_size} d_eff={obfuscated.d_eff} "
         f"n_layers={obfuscated.n_layers}"

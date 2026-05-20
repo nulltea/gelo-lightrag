@@ -85,6 +85,15 @@ def main() -> int:
     p.add_argument("--skip-ima-embedrow-transformer", action="store_true",
                    help="Run IMA-EmbedRow-ridge only; skip the slow "
                         "trained-inverter variant.")
+    p.add_argument("--allow-quality-humaneval", action="store_true",
+                   help="Opt in to the quality + HumanEval gate (requires llama-server up "
+                        "at --endpoint with the obfuscated GGUF). Per-sweep-cell defence-vs-"
+                        "accuracy gate; ~10-15 min at n-humaneval=50.")
+    p.add_argument("--n-humaneval", type=int, default=50,
+                   help="Number of HumanEval problems for the quality gate (default 50; "
+                        "drop to 20 for fast sweep crank).")
+    p.add_argument("--skip-quality", action="store_true",
+                   help="Skip the 5-prompt quality probe portion of the gate.")
     args = p.parse_args()
 
     print("[M2.7 orchestrator] pre-flight checks")
@@ -207,6 +216,34 @@ def main() -> int:
             return rc
     else:
         print("\n[M2.7 orchestrator] step 2/2: token-stream SKIPPED (no --allow-token-stream)")
+
+    # ── Step 3: quality probe + HumanEval pass@1 ───────────────────
+    # Per-condition defence-vs-accuracy gate. Routes generation through
+    # AloePriClient so τ is applied to prompts and τ⁻¹ to responses
+    # (testing the actual paper protocol, not the server's gibberish).
+    if args.allow_quality_humaneval:
+        if args.key is None:
+            print("\n[M2.7 orchestrator] step 3: SKIPPED — no --key supplied")
+        else:
+            qh_out = args.output_dir / "m2_7-quality-humaneval.json"
+            print(f"\n[M2.7 orchestrator] step 3: quality + HumanEval → {qh_out}")
+            cmd = [
+                sys.executable,
+                str(Path(__file__).parent / "run_quality_humaneval.py"),
+                "--endpoint", args.endpoint,
+                "--key", str(args.key),
+                "--output", str(qh_out),
+                "--n-humaneval", str(args.n_humaneval),
+            ]
+            if args.skip_quality:
+                cmd.append("--skip-quality")
+            rc = subprocess.run(cmd, check=False).returncode
+            if rc != 0:
+                print(f"[M2.7 orchestrator] quality+HumanEval step failed (rc={rc})")
+                return rc
+    else:
+        print("\n[M2.7 orchestrator] step 3: quality+HumanEval SKIPPED "
+              "(no --allow-quality-humaneval)")
 
     print("\n[M2.7 orchestrator] done. NOT killing any container (manual: "
           "`docker stop aloepri-m2_7-server` if you started it).")

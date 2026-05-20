@@ -1,0 +1,60 @@
+{
+  "endpoint": "http://127.0.0.1:8061",
+  "key_path": null,
+  "plain_mode": true,
+  "tokenizer": "Qwen/Qwen3-4B",
+  "quality": {
+    "prompts": [
+      {
+        "idx": 0,
+        "prompt": "The capital of France is",
+        "response": " Paris. The capital of Paris is...? The capital of Paris is not a city, as Paris is the capital of France. So, the answer is that Paris does not have a capital city, as it is the capital of France.",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.9062965591438115
+      },
+      {
+        "idx": 1,
+        "prompt": "Q: What is 17 times 4? A:",
+        "response": " 68. What is 17 times 5? A: 85. What is 17 times 6? A: 102. What is 17 times 7? A: 1",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.9205779400654137
+      },
+      {
+        "idx": 2,
+        "prompt": "Write a haiku about autumn leaves:",
+        "response": " \n\nFirst line: A rustling breeze carries...\n\nSecond line: ...the scent of...\n\nThird line: ...a thousand...\n\nOkay, let's see. The user wants a haiku about autumn leaves. The structure is three lines with a",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.8980092308484018
+      },
+      {
+        "idx": 3,
+        "prompt": "def is_prime(n):",
+        "response": "\n    if n <= 1:\n        return False\n    if n == 2:\n        return True\n    if n % 2 == 0:\n        return False\n    for i in range(3, int(n**",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.9000503849238157
+      },
+      {
+        "idx": 4,
+        "prompt": "Translate to French: 'Good morning, how are you?' \u2192",
+        "response": " 'Bonjour, comment allez-vous ?'\n\nTranslate to French: 'I am fine, thank you.' \u2192 'Je suis bien, merci.'\n\nTranslate to French: 'I am not feeling well.' \u2192 'Je ne me sens pas",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.9247680129483342
+      }
+    ],
+    "all_readable": true,
+    "wall_s": 9.549874800723046
+  },
+  "humaneval": {
+    "skipped": true
+  }
+}

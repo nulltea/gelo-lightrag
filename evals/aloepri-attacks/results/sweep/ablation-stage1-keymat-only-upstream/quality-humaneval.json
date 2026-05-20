@@ -1,0 +1,225 @@
+{
+  "endpoint": "http://127.0.0.1:8063",
+  "key_path": null,
+  "plain_mode": true,
+  "tokenizer": "Qwen/Qwen3-1.7B",
+  "quality": {
+    "prompts": [
+      {
+        "idx": 0,
+        "prompt": "The capital of France is",
+        "response": " Paris. The capital of Italy is Rome. The capital of Spain is Madrid. The capital of Portugal is Lisbon. The capital of Germany is Berlin. The capital of the United Kingdom is London. The capital of the United States is Washington,",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.8213400589302182
+      },
+      {
+        "idx": 1,
+        "prompt": "Q: What is 17 times 4? A:",
+        "response": " 17 times 4 is 68. 17 multiplied by 4 is 68. 17\u00d74=68. 17\u00d74=68. 17\u00d74=6",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.7902973187156022
+      },
+      {
+        "idx": 2,
+        "prompt": "Write a haiku about autumn leaves:",
+        "response": " 3 lines, 5-7-5 syllables. Autumn leaves fall, crisp and bright, golden in the light. \ud83c\udf43\n\nOkay, the user wants a haiku about autumn leaves. Let me start by recalling the",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.791733215097338
+      },
+      {
+        "idx": 3,
+        "prompt": "def is_prime(n):",
+        "response": "\n    if n <= 1:\n        return False\n    if n <= 3:\n        return True\n    if n % 2 == 0 or n % 3 == 0:\n        return False\n    i =",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.7690918329171836
+      },
+      {
+        "idx": 4,
+        "prompt": "Translate to French: 'Good morning, how are you?' \u2192",
+        "response": " 'Bonjour, comment \u00e7a va ?'\n\nYes, that's correct. But I want to make it more natural. Can you think of a better way to say it?\n\nYes, I can. Let me think. The phrase \"comment \u00e7a",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.8125506839714944
+      }
+    ],
+    "all_readable": true,
+    "wall_s": 8.985182027798146
+  },
+  "humaneval": {
+    "n": 20,
+    "passed": 8,
+    "accuracy": 0.4,
+    "wall_s": 286.76382503518835,
+    "details": [
+      {
+        "task_id": "HumanEval/163",
+        "passed": false,
+        "completion": "    # Your code here\n    result = []\n    for num in range(a, b + 1):\n        # Convert the number to a string and check each character\n        for digit in str(num):\n            if int(digit) % 2 == 0:\n                result.append(int(digit))\n    return result\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpiexh0k86.py\", line 35, in <module>\n    check(generate_integers)\n  File \"/tmp/tmpiexh0k86.py\", line 25, in check\n    assert candidate(2, 10) == [2, 4,",
+        "n_response_tokens": 384,
+        "wall_s": 14.339505653828382
+      },
+      {
+        "task_id": "HumanEval/28",
+        "passed": true,
+        "completion": "    return ''.join(strings)",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 14.316835567820817
+      },
+      {
+        "task_id": "HumanEval/6",
+        "passed": true,
+        "completion": "    # Your code here\n    if not paren_string:\n        return []\n    # Split the string into groups\n    groups = paren_string.split()\n    result = []\n    for group in groups:\n        # Count the maximum depth of nesting in the group\n        max_depth = 0\n        current_depth = 0\n        for char in group:\n            if char == '(':\n                current_depth += 1\n                if current_depth > max_depth:\n                    max_depth = current_depth\n            elif char == ')':\n                current_depth -= 1\n        result.append(max_depth)\n    return result",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 14.342646333388984
+      },
+      {
+        "task_id": "HumanEval/70",
+        "passed": false,
+        "completion": "    # your code here\n    # return list\n    pass\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmptx6vgzog.py\", line 36, in <module>\n    check(strange_sort_list)\n  File \"/tmp/tmptx6vgzog.py\", line 21, in check\n    assert candidate([1, 2, 3, 4]) ==",
+        "n_response_tokens": 384,
+        "wall_s": 14.346661147195846
+      },
+      {
+        "task_id": "HumanEval/62",
+        "passed": false,
+        "completion": "    # your code here\n    new_list = []\n    for i in range(len(xs)):\n        if i == 0:\n            new_list.append(xs[1])\n        else:\n            new_list.append(xs[i] * (i + 1))\n    return new_list\n\nWait, but the first element is xs[0], which is the constant term. The derivative of that is 0. So the first element in the derivative is 0. But the code above adds xs[1] to the new list. So that's wrong. Oh, right, the first element is the coefficient of x^0, which is the constant term. Its derivative is 0. So the code is wrong. So the code should be:\n\nnew_list = []\nfor i in range(len(xs)):\n    ",
+        "error": "  File \"/tmp/tmprep_p8zt.py\", line 21\n    Wait, but the first element is xs[0], which is the constant term. The derivative of that is 0. So the first element in the derivative is 0. But the code above",
+        "n_response_tokens": 384,
+        "wall_s": 14.380805739201605
+      },
+      {
+        "task_id": "HumanEval/57",
+        "passed": false,
+        "completion": "    for i in range(len(l) - 1):\n        if l[i] < l[i + 1]:\n            return False\n        if l[i] > l[i + 1]:\n            return True\n    return True\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp9xi4dwka.py\", line 37, in <module>\n    check(monotonic)\n  File \"/tmp/tmp9xi4dwka.py\", line 26, in check\n    assert candidate([1, 2, 4, 10]) == True\n ",
+        "n_response_tokens": 384,
+        "wall_s": 14.287500381004065
+      },
+      {
+        "task_id": "HumanEval/35",
+        "passed": true,
+        "completion": "    # your code here\n    max_val = l[0]\n    for num in l:\n        if num > max_val:\n            max_val = num\n    return max_val\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 14.36009699292481
+      },
+      {
+        "task_id": "HumanEval/26",
+        "passed": false,
+        "completion": "    seen = set()\n    result = []\n    for num in numbers:\n        if num not in seen:\n            seen.add(num)\n            result.append(num)\n    return result",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpemkti5k7.py\", line 32, in <module>\n    check(remove_duplicates)\n  File \"/tmp/tmpemkti5k7.py\", line 29, in check\n    assert candidate([1, 2, 3, 2, 4, ",
+        "n_response_tokens": 384,
+        "wall_s": 14.420501790940762
+      },
+      {
+        "task_id": "HumanEval/139",
+        "passed": false,
+        "completion": "    result = 1\n    for i in range(1, n+1):\n        result *= i\n        result *= factorial(i)\n    return result\n\nWait, but the factorial function is not defined here. So I need to implement it.\n\nWait, the code is in the function, but the factorial function is not defined. So I need to implement it.\n\nWait, the code is in the function, but the factorial function is not defined. So I need to implement it.\n\nSo the code is:\n",
+        "error": "  File \"/tmp/tmpadqwq6cc.py\", line 20\n    Wait, but the factorial function is not defined here. So I need to implement it.\n              ^^^\nSyntaxError: invalid syntax\n",
+        "n_response_tokens": 384,
+        "wall_s": 14.375340494792908
+      },
+      {
+        "task_id": "HumanEval/22",
+        "passed": true,
+        "completion": "    return [x for x in values if isinstance(x, int)]",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 14.32810512278229
+      },
+      {
+        "task_id": "HumanEval/151",
+        "passed": false,
+        "completion": "    # your code here\n    total = 0\n    for num in lst:\n        if num % 2 == 1 and num > 0:\n            total += num * num\n    return total\n```\nWait, but the problem says to ignore numbers that are negative or not integers. So, for example, if the input is [-1, -2, 0], then the numbers are -1, -2, 0. But the problem says to ignore negative numbers. So the only numbers that are considered are the positive odd integers. So in the example, [-1, -2, 0] would have 0, but the code would not count any of them. So the code is correct.\n\nBut the code is not handling the case where the number is not an i",
+        "error": "  File \"/tmp/tmpmgbrui2u.py\", line 20\n    ```\n    ^\nSyntaxError: invalid syntax\n",
+        "n_response_tokens": 384,
+        "wall_s": 14.312495172955096
+      },
+      {
+        "task_id": "HumanEval/108",
+        "passed": false,
+        "completion": "    # your code here\n    count = 0\n    for num in arr:\n        if num < 0:\n            # split the number into its digits\n            digits = list(map(int, str(num)))\n            # check if the first digit is negative\n            if digits[0] < 0:\n                # add the first digit to the count\n                count += 1\n        else:\n            # check if the sum of digits is > 0\n            digits = list(map(int, str(num)))\n            sum_digits = sum(digits)\n            if sum_digits > 0:\n                count += 1\n    return count\n\nWait, but the problem says that for negative numbers",
+        "error": "  File \"/tmp/tmpszeghe8e.py\", line 30\n    Wait, but the problem says that for negative numbers, the first digit is negative. So for example, -123 has digits -1, 2, 3. So the sum is -1 + 2 + 3 = 4, whi",
+        "n_response_tokens": 384,
+        "wall_s": 14.366214466746897
+      },
+      {
+        "task_id": "HumanEval/8",
+        "passed": true,
+        "completion": "    # Your code here\n    sum_total = 0\n    product_total = 1\n    for num in numbers:\n        sum_total += num\n        product_total *= num\n    return (sum_total, product_total)",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 14.412857943214476
+      },
+      {
+        "task_id": "HumanEval/7",
+        "passed": true,
+        "completion": "    return [s for s in strings if substring in s]",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 14.419290290679783
+      },
+      {
+        "task_id": "HumanEval/23",
+        "passed": true,
+        "completion": "    return len(string)",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 14.213575537782162
+      },
+      {
+        "task_id": "HumanEval/55",
+        "passed": true,
+        "completion": "    if n <= 1:\n        return n\n    return fib(n-1) + fib(n-2)",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 14.28435141313821
+      },
+      {
+        "task_id": "HumanEval/59",
+        "passed": false,
+        "completion": "    # Your code here\n    # Check for the largest prime factor\n    # Start from the smallest prime factor and divide n by it as long as possible\n    # Then the remaining n is the largest prime factor\n    # So we need to find the smallest prime factor of n\n    # Then divide n by it until it's no longer divisible\n    # Then the remaining n is the largest prime factor\n    # So we can start checking from 2 upwards\n    # But we can optimize by checking up to sqrt(n)\n    # So we can start with 2 and check if it divides n\n    # If it does, divide n by 2 as long as possible\n    # Then check 3, 4, etc. ",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp7ug1rbi4.py\", line 52, in <module>\n    check(largest_prime_factor)\n  File \"/tmp/tmp7ug1rbi4.py\", line 44, in check\n    assert candidate(15) == 5\n    ",
+        "n_response_tokens": 384,
+        "wall_s": 14.227440774906427
+      },
+      {
+        "task_id": "HumanEval/129",
+        "passed": false,
+        "completion": "    # Your code here\n    pass\n\nTo solve this problem, we need to find the minimum path of length k in a grid where each cell contains a unique integer from 1 to N^2. The path is defined as a sequence of cells visited, and the path is considered lexicographically smaller if one sequence is lexicographically smaller than another. The challenge is to determine the lexicographically smallest path of length k.\n\n### Approach\n1. **Problem Analysis**: The problem requires finding the lexicographically smallest path of length k in the grid. The path can start from any cell and move to adjacent cells (u",
+        "error": "  File \"/tmp/tmp8w8szk2s.py\", line 44\n    4. **Complexity Analysis**: The algorithm's time complexity is O(N^2 * k), which is acceptable given the constraints. Each step in the priority queue explores",
+        "n_response_tokens": 384,
+        "wall_s": 14.33786623319611
+      },
+      {
+        "task_id": "HumanEval/161",
+        "passed": false,
+        "completion": "    # Your code here\n    result = []\n    for char in s:\n        if char.isalpha():\n            result.append(char.swapcase())\n        else:\n            result.append(char)\n    return ''.join(result)\n\nBut the code is not working. Let me see what's wrong.\n\nWait, the code is correct. Let me check the examples.\n\nsolve(\"1234\") = \"4321\" \u2192 correct.\n\nsolve(\"ab\") = \"AB\" \u2192 correct.\n\nsolve(\"#a@C\") = \"#A@c\" \u2192 correct.\n\nBut the code is not working. Wait, maybe the problem is that the code is not handling the case correctly. Let me think.\n\nWait, the code uses .swapcase(), which is correct. For example, 'a' ",
+        "error": "  File \"/tmp/tmpcbxmw6od.py\", line 22\n    But the code is not working. Let me see what's wrong.\n                                                ^\nSyntaxError: unterminated string literal (detected at ",
+        "n_response_tokens": 384,
+        "wall_s": 14.367155046667904
+      },
+      {
+        "task_id": "HumanEval/143",
+        "passed": false,
+        "completion": "    # Your code here\n    pass\n\nwords_in_sentence(\"This is a test\")  # Output: \"is\"\nwords_in_sentence(\"lets go for swimming\")  # Output: \"go for\"\n```\n\n### Solution\nTo solve this problem, we need to determine which words in a given sentence have lengths that are prime numbers. The order of the words in the resulting string should remain the same as the original sentence.\n\n### Approach\n1. **Identify Prime Numbers**: First, we need to determine which prime numbers are less than or equal to the maximum length of the words in the sentence. This is because the length of a word can't be more than the ",
+        "error": "  File \"/tmp/tmpy_6s03_4.py\", line 33\n    1. **Identify Prime Numbers**: First, we need to determine which prime numbers are less than or equal to the maximum length of the words in the sentence. This",
+        "n_response_tokens": 384,
+        "wall_s": 14.32400188734755
+      }
+    ]
+  }
+}

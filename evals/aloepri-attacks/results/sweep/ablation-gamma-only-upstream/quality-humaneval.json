@@ -1,0 +1,225 @@
+{
+  "endpoint": "http://127.0.0.1:8063",
+  "key_path": null,
+  "plain_mode": true,
+  "tokenizer": "Qwen/Qwen3-1.7B",
+  "quality": {
+    "prompts": [
+      {
+        "idx": 0,
+        "prompt": "The capital of France is",
+        "response": " Paris. The capital of the United States is Washington, D.C. The capital of the United Kingdom is London. The capital of the Russian Federation is Moscow. The capital of the People's Republic of China is Beijing. The capital of the",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.3380147810094059
+      },
+      {
+        "idx": 1,
+        "prompt": "Q: What is 17 times 4? A:",
+        "response": " 68\n\nWhat is 17 times 4? A: 68\n\nWhat is 17 times 4? A: 68\n\nWhat is 17 times 4? A: 68",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.3469917345792055
+      },
+      {
+        "idx": 2,
+        "prompt": "Write a haiku about autumn leaves:",
+        "response": " 5-7-5 syllables.\n\nThe leaves fall, golden and bright,  \nA gentle breeze, a soft, quiet flight.  \nNature's farewell, a fleeting light.\n\nOkay, let's see. I need to write a",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.3590924823656678
+      },
+      {
+        "idx": 3,
+        "prompt": "def is_prime(n):",
+        "response": "\n    if n < 2:\n        return False\n    for i in range(2, int(n**0.5)+1):\n        if n % i == 0:\n            return False\n    return True\n\ndef is",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.2962638279423118
+      },
+      {
+        "idx": 4,
+        "prompt": "Translate to French: 'Good morning, how are you?' \u2192",
+        "response": " 'Bonjour, comment \u00e7a va ?'\n\nYes, that's correct. But I need to make sure that the translation is accurate and that the sentence structure is correct in French. Also, I need to make sure that the translation is natural and",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 1.3320677848532796
+      }
+    ],
+    "all_readable": true,
+    "wall_s": 6.67259380640462
+  },
+  "humaneval": {
+    "n": 20,
+    "passed": 9,
+    "accuracy": 0.45,
+    "wall_s": 209.1944346660748,
+    "details": [
+      {
+        "task_id": "HumanEval/163",
+        "passed": false,
+        "completion": "    # Your code here\n    result = []\n    for num in range(a, b + 1):\n        for digit in str(num):\n            if int(digit) % 2 == 0:\n                result.append(int(digit))\n    return result\n\n# Test cases\nprint(generate_integers(2, 8))  # Expected output: [2, 4, 6, 8]\nprint(generate_integers(8, 2))  # Expected output: [2, 4, 6, 8]\nprint(generate_integers(10, 14))  # Expected output: []\n```\n```python",
+        "error": "  File \"/tmp/tmpuz4v9lgd.py\", line 24\n    ```\n    ^\nSyntaxError: invalid syntax\n",
+        "n_response_tokens": 384,
+        "wall_s": 10.454544983804226
+      },
+      {
+        "task_id": "HumanEval/28",
+        "passed": true,
+        "completion": "    return ''.join(strings)",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 10.52480046171695
+      },
+      {
+        "task_id": "HumanEval/6",
+        "passed": true,
+        "completion": "    # Split the input string into groups\n    groups = paren_string.split()\n    result = []\n    for group in groups:\n        # Count the maximum depth of parentheses in the group\n        max_depth = 0\n        current_depth = 0\n        for char in group:\n            if char == '(':\n                current_depth += 1\n                if current_depth > max_depth:\n                    max_depth = current_depth\n            elif char == ')':\n                current_depth -= 1\n        result.append(max_depth)\n    return result",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 10.434489792212844
+      },
+      {
+        "task_id": "HumanEval/70",
+        "passed": false,
+        "completion": "    # your code here\n    if not lst:\n        return []\n    # sort the list\n    sorted_lst = sorted(lst)\n    # create a new list\n    result = []\n    # iterate through the sorted list\n    for i in range(len(sorted_lst)):\n        # if i is even, take the minimum\n        if i % 2 == 0:\n            result.append(sorted_lst[i])\n        else:\n            # take the maximum\n            result.append(sorted_lst[-i-1])\n    return result\n\n# Test cases\nprint(strange_sort_list([1, 2, 3, 4]))  # Expected: [1, 4, 2, 3]\nprint(strange_sort_list([5, 5, 5, 5]))  # Expected: [5, 5, 5, 5]\nprint(strange_sort_list([",
+        "error": "  File \"/tmp/tmpi7i8na3r.py\", line 34\n    ```\n    ^\nSyntaxError: invalid syntax\n",
+        "n_response_tokens": 384,
+        "wall_s": 10.385272204875946
+      },
+      {
+        "task_id": "HumanEval/62",
+        "passed": true,
+        "completion": "    new_list = []\n    for i in range(len(xs) - 1):\n        new_list.append(xs[i + 1] * (i + 1))\n    return new_list\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 10.363770232070237
+      },
+      {
+        "task_id": "HumanEval/57",
+        "passed": false,
+        "completion": "    # Check if the list is strictly increasing or decreasing\n    # We can check if all elements are equal or if each element is less than or equal to the previous\n    # or greater than or equal to the next\n    # So, for each i from 1 to len(l)-1:\n    #   if l[i] < l[i-1] and l[i] > l[i+1] or l[i] > l[i-1] and l[i] < l[i+1]\n    #   then return False\n    # else return True\n    for i in range(1, len(l)):\n        if (l[i] < l[i-1] and l[i] > l[i+1]) or (l[i] > l[i-1] and l[i] < l[i+1]):\n            return False\n    return True\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpulr6cwgy.py\", line 42, in <module>\n    check(monotonic)\n  File \"/tmp/tmpulr6cwgy.py\", line 31, in check\n    assert candidate([1, 2, 4, 10]) == True\n ",
+        "n_response_tokens": 384,
+        "wall_s": 10.330762539058924
+      },
+      {
+        "task_id": "HumanEval/35",
+        "passed": true,
+        "completion": "    return max(l)\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 10.324223744217306
+      },
+      {
+        "task_id": "HumanEval/26",
+        "passed": false,
+        "completion": "    seen = set()\r\n    result = []\r\n    for num in numbers:\r\n        if num in seen:\r\n            continue\r\n        seen.add(num)\r\n        result.append(num)\r\n    return result",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpyuuy9pci.py\", line 33, in <module>\n    check(remove_duplicates)\n  File \"/tmp/tmpyuuy9pci.py\", line 30, in check\n    assert candidate([1, 2, 3, 2, 4, ",
+        "n_response_tokens": 384,
+        "wall_s": 10.474777638912201
+      },
+      {
+        "task_id": "HumanEval/139",
+        "passed": false,
+        "completion": "    # Your code here\n    result = 1\n    for i in range(1, n+1):\n        result *= i\n        result *= factorial(i)\n    return result\n```\n\nWait, but the function is supposed to return the product of all factorials from 1! up to n! So for n=4, it's 1! * 2! * 3! * 4! = 1 * 2 * 6 * 24 = 288, which matches the example.\n\nBut the code as written is:\n\nresult starts at 1. Then for i from 1 to n:\n\nresult *= i (so for i=1, result is 1*1=1)\n\nthen result *= factorial(i) (so for i=1, 1*1=1, then 1*1=1)\n\nWait, no. Let's see:\n\nWait, the code is:\n\nresult = 1\n\nfor i in 1 to n:\n\n    result *= i\n\n    result *= fa",
+        "error": "  File \"/tmp/tmpoa8pz0f5.py\", line 22\n    Wait, but the function is supposed to return the product of all factorials from 1! up to n! So for n=4, it's 1! * 2! * 3! * 4! = 1 * 2 * 6 * 24 = 288, which m",
+        "n_response_tokens": 384,
+        "wall_s": 10.447965604718775
+      },
+      {
+        "task_id": "HumanEval/22",
+        "passed": true,
+        "completion": "    return [x for x in values if isinstance(x, int)]",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 10.464013140648603
+      },
+      {
+        "task_id": "HumanEval/151",
+        "passed": false,
+        "completion": "    # Your code here\n    total = 0\n    for num in lst:\n        if isinstance(num, int) and num % 2 == 1:\n            total += num * num\n    return total\n```\n\nWait, but the problem says to ignore numbers that are negative or not integers. So, for example, if the list has a negative number, we should not include it. So, the code above checks if the number is an integer and odd. But what about if the number is negative? For example, if the list is [-1, 2], then the code would check if it's an integer (yes), and then check if it's odd. -1 is odd, so it would be added. But the problem says to ignor",
+        "error": "  File \"/tmp/tmpnatni988.py\", line 30\n    But the problem says to ignore numbers that are negative or not integers. So, if the number is negative, we ignore it. If it's not an integer, we ignore it. S",
+        "n_response_tokens": 384,
+        "wall_s": 10.50967110088095
+      },
+      {
+        "task_id": "HumanEval/108",
+        "passed": false,
+        "completion": "    # Your code here\n    count = 0\n    for num in arr:\n        if num < 0:\n            # handle negative numbers\n            digits = list(map(int, str(num)))\n            # split into signed digits\n            signed_digits = []\n            for i in range(len(digits)):\n                if i == 0:\n                    signed_digits.append(digits[i])\n                else:\n                    signed_digits.append(digits[i])\n            # sum of signed digits\n            sum_s = sum(signed_digits)\n            if sum_s > 0:\n                count += 1\n        else:\n            # handle positive number",
+        "error": "  File \"/tmp/tmpwqnxo2s7.py\", line 45\n    print(count_nums([1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6\n                     ^\nSyntaxError: '[' was never closed\n",
+        "n_response_tokens": 384,
+        "wall_s": 10.511111307889223
+      },
+      {
+        "task_id": "HumanEval/8",
+        "passed": true,
+        "completion": "    sum_total = 0\r\n    product_total = 1\r\n    for num in numbers:\r\n        sum_total += num\r\n        product_total *= num\r\n    return (sum_total, product_total)\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 10.496999851893634
+      },
+      {
+        "task_id": "HumanEval/7",
+        "passed": true,
+        "completion": "    return [s for s in strings if substring in s]",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 10.500159409828484
+      },
+      {
+        "task_id": "HumanEval/23",
+        "passed": true,
+        "completion": "    return len(string)",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 10.440166492946446
+      },
+      {
+        "task_id": "HumanEval/55",
+        "passed": true,
+        "completion": "    if n == 1 or n == 2:\n        return 1\n    a, b = 1, 1\n    for _ in range(2, n):\n        a, b = b, a + b\n    return b\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 10.4312070668675
+      },
+      {
+        "task_id": "HumanEval/59",
+        "passed": false,
+        "completion": "    # Your code here\n    i = 2\n    while i * i <= n:\n        while n % i == 0:\n            n //= i\n        i += 1\n    return n\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp95kyy5a1.py\", line 33, in <module>\n    check(largest_prime_factor)\n  File \"/tmp/tmp95kyy5a1.py\", line 26, in check\n    assert candidate(27) == 3\n    ",
+        "n_response_tokens": 384,
+        "wall_s": 10.469632373191416
+      },
+      {
+        "task_id": "HumanEval/129",
+        "passed": false,
+        "completion": "    # Your code here\n    pass\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp8_szi6iz.py\", line 56, in <module>\n    check(minPath)\n  File \"/tmp/tmp8_szi6iz.py\", line 40, in check\n    assert candidate([[1, 2, 3], [4, 5, 6], [7,",
+        "n_response_tokens": 384,
+        "wall_s": 10.609616710804403
+      },
+      {
+        "task_id": "HumanEval/161",
+        "passed": false,
+        "completion": "    # your code here\n    result = []\n    for char in s:\n        if char.isalpha():\n            # reverse the case\n            if char.islower():\n                result.append(char.upper())\n            else:\n                result.append(char.lower())\n        else:\n            result.append(char)\n    return ''.join(result)\n\n# Test the function\nprint(solve(\"1234\"))  # Output: \"4321\"\nprint(solve(\"ab\"))    # Output: \"AB\"\nprint(solve(\"#a@C\"))  # Output: \"#A@c\"\n```\n```python",
+        "error": "  File \"/tmp/tmpso2quwj6.py\", line 30\n    ```\n    ^\nSyntaxError: invalid syntax\n",
+        "n_response_tokens": 384,
+        "wall_s": 10.511324752122164
+      },
+      {
+        "task_id": "HumanEval/143",
+        "passed": false,
+        "completion": "    # Your code here\n    # First, split the sentence into words\n    words = sentence.split()\n    # Then, check for each word if its length is a prime number\n    # Create a list to store the words that meet the condition\n    result = []\n    for word in words:\n        if is_prime(len(word)):\n            result.append(word)\n    # Join the words in the result list with spaces and return\n    return ' '.join(result)\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpcd88ajhl.py\", line 50, in <module>\n    check(words_in_sentence)\n  File \"/tmp/tmpcd88ajhl.py\", line 38, in check\n    assert candidate(\"This is a test\"",
+        "n_response_tokens": 384,
+        "wall_s": 10.509354672860354
+      }
+    ]
+  }
+}
