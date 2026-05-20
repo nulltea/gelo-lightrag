@@ -1,15 +1,21 @@
 # Handoff — AloePri attacks: measured status + paired-data attacker is the load-bearing limit
 
-**Date:** 2026-05-20
-**Branch:** `path-2-aloepri-gemma` (clean, merged with master at commit
-`4c7aff5`).
+**Date:** 2026-05-20 (updated late afternoon — Direction 1 sweep + bf16 default + Path-B untying landed)
+**Branch:** `path-2-aloepri-gemma` (dirty — all today's afternoon work is uncommitted; see "Update 2026-05-20 PM" below for the file list)
 **Supersedes:** `2026-05-19-aloepri-attack-surface-followups.md` —
 threads 1-3 of that doc are resolved; threads 4-5 evolved into the
 "paired-data attacker" framing below.
-**Status:** Full attack re-eval landed on two ae0.1 cells (no Alg 2,
-+ Alg 2 + matrix-Γ). Three gates remain open. Static-obfuscation
-tuning has hit the structural ceiling at d=2048; further progress
-requires either a higher-d model or a different threat model.
+**Status:** Direction 1 sweep complete on Qwen3-4B + Qwen3-8B. 4B
+substantially improves on 1.7B (HumanEval 30 % at α_e=1.0,
+IMA-EmbedRow-ridge 99.22 % → 57.03 %). 8B is the highest-accuracy
+deployment (HE 8/20 = 40 %) but **IMA-EmbedRow-ridge unexpectedly
+regressed to 96.88 %** — the dimensional-headroom argument doesn't
+hold cleanly at d=4096 and needs root-cause work. 8B IMA-L0-transformer
+still pending (~10 min). bf16 is the new obfuscator default; Path-B
+untying utility shipped for tied-embedding Qwen3-4B; the static-attack
+loader was patched to handle 8B without OOM. Doc §07 + §08 of the
+prototype are current. See "Update 2026-05-20 PM" section below for
+the full delta.
 
 ## What landed since 2026-05-19
 
@@ -372,7 +378,220 @@ design.
 - Companion handoffs from today's session:
   - `docs/handoffs/2026-05-20-aloepri-pi-special-token-fix.md` —
     full diagnostic record for the Π fix
+  - `docs/handoffs/2026-05-20-ima-embedrow-transformer-investigation.md` —
+    the broken-attack diagnosis that justified removing the
+    IMA-EmbedRow-transformer row from the public table.
 - Public docs: `docs/prototype/aloepri-llm.html` §03–§09 — all in
   sync with the current measurements
 - Threat-model doc: `docs/research/aloepri-qk-norm-matrix-gamma-threat-model.md`
 - Per-cell attack JSONs: `evals/aloepri-attacks/results/sweep/cell-ae0.1-{ah0.033-final,alg2}/`
+
+---
+
+## Update 2026-05-20 PM — Direction 1 sweep results + bf16 default + Path-B untying
+
+This section captures what happened *after* the morning handoff above
+was written. The Direction 1 cells (Qwen3-4B and Qwen3-8B) have been
+built and measured; bf16 became the obfuscator default; a Path-B
+untying utility was needed for Qwen3-4B (the morning handoff
+implicitly assumed all Qwen3 sizes are untied — they aren't).
+
+### Headline (vs the morning's predictions)
+
+| Cell | Predicted (table above) | Measured |
+|---|---|---|
+| **Qwen3-4B @ α_e=1.0, h=128, λ=0.3** | IMA-EmbedRow-ridge ~80–90 %, HE ~40–50 % | **IMA-EmbedRow-ridge 57.03 %**, HE 30 % — better than predicted on ridge; HE within band |
+| **Qwen3-8B @ α_e=1.0, h=128, λ=0.3** | IMA-EmbedRow-ridge **~10–20 % (likely close gate)**, HE ~55–65 % | **IMA-EmbedRow-ridge 96.88 % ✗ regression**, HE 40 % (best of any cell) |
+| Qwen3-1.7B (untied, fp32, original) | (baseline) | HE 35 %, IMA-EmbedRow-ridge 99.22 % |
+
+The 4B → 8B IMA-EmbedRow-ridge non-monotonicity is the key open
+question. Per the morning's "effective ridge sample-budget at
+d=4096/d=5120" item: the answer at d=4096 appears to be **yes, the
+ridge still recovers clean closed-form** — the dimensional argument is
+incomplete in exactly the way that bullet anticipated. Best ridge α
+went from 0.01 (4B) → 1.0 (8B), suggesting the inverter found a
+different qualitative solution at the higher d, not a continuation of
+the d=2048 → d=2560 trend.
+
+**HumanEval at α_e=1.0** held cleanly on both 4B and 8B (no gibberish
+collapse), refuting the prior worry that "α_e=1.0 destroys generation
+at d=2560" was load-bearing. 4B's earlier α_e=1.0 collapse was caused
+by the Path-B issue, not by the noise level — see below.
+
+### Path-B untying for tied-embedding Qwen3-4B
+
+Discovered mid-session: **Qwen3-4B ships with `tie_word_embeddings:
+true`** (no separate `output.weight` tensor in the safetensors release;
+GGUFs reflect this). The obfuscator's separate P̂_R / Q̂_R^T transforms
+are *mathematically invalid* on a shared `token_embd` — when the LM
+head re-uses the keymat-transformed embedding without the matching
+Q̂_R^T application, the forward pass produces gibberish.
+
+Empirical proof: noise-free keymat-only obfuscation on tied 4B → multi-
+language repetition output ("出现出现…"). The first 4B sweep at α_e=1.0
+collapsed to 0/20 HumanEval for this reason, not because of noise.
+
+Fix: `python/path-2/untie_qwen3_gguf.py` (new utility). Reads a tied
+GGUF, duplicates `token_embd.weight` byte-for-byte into a fresh
+`output.weight` slot, writes a new GGUF that llama.cpp treats as
+untied. Plain inference on the untied copy is byte-equivalent to the
+tied original. The obfuscator now has two distinct tensors to act on
+and the P̂_R / Q̂_R^T math holds.
+
+Qwen3-8B is **natively untied** (separate `output.weight` in the
+bartowski bf16 release); no Path-B step needed. Qwen3-1.7B is also
+untied. The 0.6B variant is tied — would need the same fix if
+attempted.
+
+### bf16 became the obfuscator default
+
+The previous default was fp32 because Q8_0 / Q6_K / Q5_K_M all
+collapsed the obfuscation chain (heavy-tailed per-row distribution).
+fp16 also collapses — newly discovered this session: fp16's smallest
+normal is ~6e-5, but the keymat's λ-perturbation creates a long
+lower-magnitude tail down to ~3e-10 in `attn_q.weight`. ~1.15 % of
+attn_q entries flush to zero in fp16, breaking the `P̂·Q̂ = I_d`
+cancellation. HumanEval 6/20 fp32 → 0/20 fp16, byte-identical to the
+tied-embedding gibberish failure mode.
+
+**bf16 works** because it keeps fp32's 8-bit exponent (range down to
+~1e-38) at the cost of mantissa precision. Cancellation survives;
+individual element values shift by ~1e-3 relative which is below the
+keymat's noise floor. Empirically: bf16 matches fp32 byte-for-byte on
+HumanEval (4B: 6/20 ↔ 6/20 with identical pass-id set), all attacks
+pass with negligible drift (IMA-EmbedRow-ridge: 57.81 % fp32 → 57.03 %
+bf16 on 4B).
+
+`obfuscate_qwen3_gguf.py` now defaults to `--output-dtype bf16`. fp16
+is rejected explicitly. Norm tensors and the matrix-Γ Γ_q/Γ_k tensors
+stay F32 regardless of the flag — they're small and orthogonality-
+precision-sensitive.
+
+### Attack-harness loader fix
+
+`evals/aloepri-attacks/m2_7/extract_gguf_weights.py` now uses a
+bf16-native lazy loader (via `ml_dtypes.bfloat16`) instead of eagerly
+expanding every GGUF tensor to fp32. For 8B static attacks this cuts
+peak RAM from ~66 GB (plain fp32 32 GB + obfuscated fp32 34 GB) to
+~33 GB (bf16). Without this, `run_static_attacks.py` (VMA + IA) on 8B
+OOM-kills on a 58 GB host.
+
+Also added: `embed_only=True` flag on `load_model` to skip per-layer
+dequantisation for attacks that only need W_e pairs (IMA-EmbedRow).
+
+### Docker spawn fix — Vulkan was silently CPU
+
+The patched `aloepri-llama-server:option-c` container was running on
+CPU for the entire morning's session because `--group-add video`
+exposes `/dev/dri/card1` (display, gid 44) but **not** `/dev/dri/
+renderD128` (compute, gid 992 on this host). The Vulkan backend prints
+"no usable GPU found" and falls back to CPU silently.
+
+Fix landed in `evals/aloepri-attacks/m2_7/spawn_obfuscated_server.sh`:
+adds `--user 1000:1000 --group-add $(getent group render)` so the
+container can open renderD128. Inference jumped from 6.3 tps (CPU) →
+22.1 tps (4B Vulkan) → 12.2 tps (8B Vulkan). All today's later
+measurements use the GPU path.
+
+### Public-docs refresh
+
+`docs/prototype/aloepri-llm.html` updated:
+
+- **§07 Performance**: bf16 documented as the production default; fp16
+  documented as unsafe (with the denormal-flush mechanism); the
+  fp16/Q8_0 collapse story moved into a "Production-precision
+  validation" table. Latency table reduced to plain Q8_0 4B / obf 4B
+  bf16 / obf 8B bf16 — fp32 + 1.7B columns dropped (1.7B legacy story
+  lives in the "1.7B request breakdown (kept for historical context)"
+  sub-section).
+- **§08 Attack-harness table**: Obfuscated (1.7B) column retired
+  (development-scaffold role); current shape is `Attack | Scope |
+  Paper | Plain | Obfuscated (4B) | Obfuscated (8B) | Notes`. The
+  IMA-EmbedRow-transformer row was removed entirely — the attack
+  fails plain-side identity control (per
+  `2026-05-20-ima-embedrow-transformer-investigation.md`). The table
+  is widened on viewports ≥ 1320 px via a `.spec--wide` CSS modifier
+  that uses balanced negative inline margins (does not affect flow,
+  does not push the masthead colophon).
+- Masthead colophon: "current artifacts" updated to mention 4B + 8B
+  bf16 + best HumanEval. (An earlier version of this line was too
+  long under `white-space: nowrap` and dragged the masthead past the
+  1240 px sheet cap — now split into two short lines.)
+
+### Measurement ledger (post-PM updates)
+
+All cells live in `evals/aloepri-attacks/results/sweep/`. Current
+canonical cells (referenced from §08):
+
+| Cell | Purpose | Doc reference |
+|---|---|---|
+| `cell-qwen3-4b-untied-bf16-native-ae1.0-alg2/` | **4B canonical (Obfuscated 4B column in §08)** | §08 table, §07 latency |
+| `cell-qwen3-8b-bf16-ae1.0-alg2/` | **8B canonical (Obfuscated 8B column in §08)** | §08 table, §07 latency |
+
+Historical / diagnostic cells (retained for the investigation trail):
+
+| Cell | Role |
+|---|---|
+| `cell-qwen3-4b-ae1.0-alg2/`, `cell-qwen3-4b-ae0.3-h256-alg2/` | Pre-Path-B (tied) — recorded the gibberish output that motivated the untying utility |
+| `cell-qwen3-4b-identity-pad-ae{0.2,1.0}/` | Ablations isolating the tied-embedding bug from the noise effect |
+| `cell-qwen3-4b-keymat-only-noise-free/` | The smoking-gun "α_e=0 + tied + keymat → gibberish" cell |
+| `cell-qwen3-4b-untied-plain/` | Path-B sanity (no obfuscation): untied GGUF generates identically to the tied original |
+| `cell-qwen3-4b-untied-ae1.0-alg2/` | First successful Path-B + fp32 measurement |
+| `cell-qwen3-4b-untied-bf16-ae1.0-alg2/` | Post-q llama-quantize bf16 — used to validate the native bf16 obfuscator output |
+
+Per-attack 4B + 8B numbers are all in §08 of the prototype. The two
+trained-inverter attacks deferred this session:
+
+- **8B IMA-L0-transformer**: ~8–10 min to run. Needs server spawn with
+  `--tensor-filter '^attn_norm-0$' --tensor-dump-path` + 256-prompt
+  capture (`capture_hidden_states.py --max-prompts 256 --mode hidden`)
+  + `run_hidden_state_attacks.py --include-paper-like-ima`. The 4B
+  equivalent landed at 0.09 % — whether 8B at d=4096 holds the
+  pattern is the open question.
+- **N=256 re-measurement** of activation-side Q/K surfaces for both
+  4B and 8B. The current N=16 numbers (`Qcur_normed-0` /
+  `Kcur_normed-0` / `Qcur_normed-30` / `Kcur_normed-30`) all sit at
+  19–26 % which is within small-sample noise of the 7/31 = 22.58 %
+  random-coincidence band. The 4B `attn_norm-0` re-measurement at
+  N=256 went 22.58 % → 72.66 % — the small-sample numbers are
+  systematically under-reporting.
+
+### Open questions (updates to the morning's "Open questions deferred" list)
+
+| Morning question | Status after PM session |
+|---|---|
+| Eigendecomposition-leak empirical number for Γ_q | still TBD (still ~30 s of `numpy.linalg.eig` work; kernel identical 4B → 8B so one measurement covers both) |
+| Per-prompt fresh-mask handshake design for Direction 2C | unchanged |
+| Effective ridge sample-budget at d=4096/d=5120 | **Empirically: ridge still recovers cleanly at d=4096 (8B's 96.88 %)**. Dimensional argument is incomplete. Open root-cause: pool-size sensitivity (current 2048 candidate pool may be too small for d=4096; try 4096–8192), λ-perturbation conditioning across model sizes, or ridge-α regime change at higher d. |
+
+### Suggested next-session focus
+
+1. **Re-run the canonical 4B attack plan against the current code** —
+   The 4B numbers currently in §08 were collected across several
+   intermediate states this afternoon (Path-B untying landed first,
+   then bf16 default, then the lazy `_dequantize_to_native` loader,
+   then `ml_dtypes` install, then the spawn-script render-group fix).
+   A clean re-run on the canonical
+   `cell-qwen3-4b-untied-bf16-native-ae1.0-alg2/` GGUF using the
+   final committed code is needed to confirm every cell in §08 is
+   self-consistent with what the harness actually does today. Should
+   take ~15 min end-to-end (all attacks already wired). Expected:
+   no numerical change — but the regression test is the point.
+2. **Run 8B IMA-L0-transformer** (the easy remaining measurement).
+3. **Diagnose the 8B IMA-EmbedRow-ridge regression** (the hard remaining measurement). Three pursuits in priority order: candidate-pool sweep; SVD of `W_e_obf @ W_e_plain.pinv()` across 1.7B / 4B / 8B; fp32 8B as a control to rule out a precision interaction with bf16.
+4. **Bring the 4B/8B Q/K-side activation attacks to N=256**. ~30 min of capture + attack-run work; closes the small-sample gap in §08.
+5. **Re-measure 1.7B at bf16** to confirm parity at d=2048 (the §07 lede flags this as a TODO).
+
+### Uncommitted state (snapshot)
+
+Modified:
+- `docs/prototype/aloepri-llm.html`
+- `docs/prototype/css/site.css`
+- `python/path-2/obfuscate_qwen3_gguf.py`
+- `python/path-2/untie_qwen3_gguf.py` (new file)
+- `evals/aloepri-attacks/m2_7/extract_gguf_weights.py`
+- `evals/aloepri-attacks/m2_7/run_ima_embedrow_attacks.py`
+- `evals/aloepri-attacks/m2_7/spawn_obfuscated_server.sh`
+- `evals/aloepri-attacks/attack_drivers/run_ima.py`
+
+Plus eleven untracked `evals/aloepri-attacks/results/sweep/cell-qwen3-{4b,8b}-*/` directories.
