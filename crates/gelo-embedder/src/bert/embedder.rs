@@ -13,11 +13,6 @@ use super::weights::BertWeights;
 use crate::common::pool;
 use crate::common::tokenizer::HfTokenizer;
 
-#[cfg(feature = "dp-forward")]
-use rand::SeedableRng;
-#[cfg(feature = "dp-forward")]
-use rand_chacha::ChaCha20Rng;
-
 /// A BERT-class embedding model whose Q/K/V/O + FFN GEMMs are routed
 /// through a GELO-style `TrustedExecutor`.
 pub struct GeloBertEmbedder<X: TrustedExecutor> {
@@ -26,23 +21,10 @@ pub struct GeloBertEmbedder<X: TrustedExecutor> {
     weights: Arc<BertWeights>,
     exec: X,
     max_len: usize,
-    /// Hex-encoded `sha256(safetensors_bytes)`, optionally extended by
-    /// `sha256(weights ‖ dp_cfg.config_digest())` if [`Self::with_dp_forward`]
-    /// is called. Rides through `AttestationEvidence::model_identity` so a
-    /// relying party can pin `(weights, ε, δ, C, σ)`.
+    /// Hex-encoded `sha256(safetensors_bytes)`. Rides through
+    /// `AttestationEvidence::model_identity` so a relying party can pin the
+    /// loaded weights.
     model_identity: String,
-    /// Raw sha256 of the weights, before any DP-config mixing. Cached so
-    /// `with_dp_forward` can re-derive `model_identity` deterministically.
-    #[cfg(feature = "dp-forward")]
-    weights_identity: [u8; 32],
-    /// Recipe-B aMGM config applied to the pooled embedding inside this
-    /// embedder before `embed()` returns.
-    #[cfg(feature = "dp-forward")]
-    dp_forward: Option<dp_forward::DpForwardConfig>,
-    /// Dedicated RNG for DP noise sampling. Seeded from `OsRng` at
-    /// construction; not deterministic (DP noise must be unique per call).
-    #[cfg(feature = "dp-forward")]
-    dp_rng: ChaCha20Rng,
 }
 
 impl<X: TrustedExecutor> GeloBertEmbedder<X> {
@@ -76,32 +58,11 @@ impl<X: TrustedExecutor> GeloBertEmbedder<X> {
         Ok(Self {
             cfg,
             tokenizer,
-            #[cfg(feature = "dp-forward")]
-            weights_identity: weights.model_identity,
             weights,
             exec,
             max_len,
             model_identity,
-            #[cfg(feature = "dp-forward")]
-            dp_forward: None,
-            #[cfg(feature = "dp-forward")]
-            dp_rng: ChaCha20Rng::from_os_rng(),
         })
-    }
-
-    /// Enable Recipe-B aMGM noise (DP-Forward) on the pooled embedding.
-    /// See [`crate::decoder::embedder::GeloQwenEmbedder::with_dp_forward`]
-    /// for the full rationale; behaviour is identical for the BERT path.
-    #[cfg(feature = "dp-forward")]
-    pub fn with_dp_forward(mut self, cfg: dp_forward::DpForwardConfig) -> Self {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(self.weights_identity);
-        hasher.update(cfg.config_digest());
-        let combined: [u8; 32] = hasher.finalize().into();
-        self.model_identity = hex::encode(combined);
-        self.dp_forward = Some(cfg);
-        self
     }
 
     /// Download `BAAI/bge-small-en-v1.5` from the HuggingFace hub (using the
@@ -186,76 +147,8 @@ impl<X: TrustedExecutor + Clone + Send + Sync> GeloBertEmbedder<X> {
     /// its own cloned executor without touching `self.exec`.
     fn embed_one(&self, text: &str, exec: &mut X) -> anyhow::Result<Vec<f32>> {
         let ids = self.tokenizer.encode(text, self.max_len)?;
-
-        // Intermediate-layer DP-Forward hook (M7.1). When
-        // `layer_index = Some(n)`, apply aMGM per token-row at the
-        // `add_and_norm_2` position of layer n — matches the paper's
-        // released-code default (`noise_layer = 10` on BERT-base 12-layer).
-        // Otherwise noise (if any) is applied at the pooled output below.
-        let hidden = {
-            #[cfg(feature = "dp-forward")]
-            {
-                if let Some(cfg) = self.dp_forward.filter(|c| c.layer_index.is_some()) {
-                    let target = cfg.layer_index.expect("filter guarantees Some");
-                    let clip = cfg.clip_c;
-                    let sigma = cfg.sigma;
-                    let mut dp_rng = self.dp_rng.clone();
-                    forward::run_with_hook(
-                        &self.cfg,
-                        &self.weights,
-                        exec,
-                        &ids,
-                        |li, h| {
-                            if li == target {
-                                apply_dp_per_row(h, clip, sigma, &mut dp_rng);
-                            }
-                        },
-                    )?
-                } else {
-                    forward::run(&self.cfg, &self.weights, exec, &ids)?
-                }
-            }
-            #[cfg(not(feature = "dp-forward"))]
-            {
-                forward::run(&self.cfg, &self.weights, exec, &ids)?
-            }
-        };
-
+        let hidden = forward::run(&self.cfg, &self.weights, exec, &ids)?;
         let pooled = pool::mean_l2(hidden.view());
-        #[allow(unused_mut)]
-        let mut pooled_vec = pooled.to_vec();
-        #[cfg(feature = "dp-forward")]
-        if let Some(cfg) = &self.dp_forward {
-            // Legacy pooled-output application — only when no
-            // intermediate layer was specified.
-            if cfg.layer_index.is_none() {
-                let mut dp_rng = self.dp_rng.clone();
-                dp_forward::amgm::clip_l2_in_place(&mut pooled_vec, cfg.clip_c);
-                dp_forward::amgm::add_gaussian_noise(
-                    &mut pooled_vec,
-                    cfg.sigma,
-                    &mut dp_rng,
-                );
-            }
-        }
-        Ok(pooled_vec)
-    }
-}
-
-/// Apply aMGM (clip + Gaussian noise) per token-row of a hidden-state
-/// matrix. Used by the intermediate-layer DP-Forward hook (M7.1).
-#[cfg(feature = "dp-forward")]
-fn apply_dp_per_row(
-    h: &mut ndarray::Array2<f32>,
-    clip_c: f32,
-    sigma: f64,
-    rng: &mut rand_chacha::ChaCha20Rng,
-) {
-    for mut row in h.rows_mut() {
-        let slice = row
-            .as_slice_mut()
-            .expect("Array2 rows are contiguous by construction");
-        dp_forward::amgm::clip_l2_in_place(slice, clip_c);
-        dp_forward::amgm::add_gaussian_noise(slice, sigma, rng);
+        Ok(pooled.to_vec())
     }
 }

@@ -1,13 +1,16 @@
 # M1.10 Phase 4 — Long-context bench findings (2026-05-18)
 
 > **TL;DR.** The Phase 1 permuted_cached dispatch is mathematically
-> correct but **slower than the in-TEE baseline at every context
-> length** on Qwen3-1.7B / RADV iGPU. Root cause is the per-call
-> scalar Gaussian-noise sampler over the **cached K tensor** —
-> single-threaded ChaCha20 sampling can't keep up with the 4.2 M
-> f32 entries per layer × 28 layers per decode step. Phase 2
-> (fused-attention kernel) was correctly deprecated post-F1+;
-> the real bottleneck is **noise sampling**, not attention compute.
+> correct but slower than the in-TEE baseline at every context length
+> on Qwen3-1.7B / RADV iGPU. Initial diagnosis pinned the bottleneck
+> on the per-call scalar Gaussian-noise sampler over the cached K
+> tensor; the rayon-parallel rewrite (commit `<TBD>`) recovered 1.59×
+> on TPOT at n = 2 048 (1 693 → 1 063 ms) but did **not** close the
+> gap with `gpu_gelo` (371 ms TPOT). The remaining ~700 ms / decode
+> step is **permutation copies on K and V** (single-threaded scalar
+> memory traffic ~900 MB/decode-step at n_kv = 2 048) plus residual
+> noise overhead. Phase 2 (fused-attention kernel) was correctly
+> deprecated post-F1+ — confirmed by both pre- and post-opt benches.
 
 ---
 
@@ -30,6 +33,8 @@ Wall-clock: 322 s including release-build compilation.
 
 ## 2. Results
 
+### 2.1 Pre-optimisation (scalar Gaussian sampler)
+
 ```
 cell                 n_prompt   TTFT (ms)   TPOT mean ms    total (s)   vs gpu_plain
 ─────────────────────────────────────────────────────────────────────────────────────
@@ -45,6 +50,42 @@ gpu_plain                2048    6 851.0         272.9        11.217    (base)
 gpu_gelo                 2048   72 778.2         371.1        78.716   +601.8 %
 gpu_gelo_permuted        2048   91 002.6       1 692.5       118.082   +952.7 %
 ```
+
+### 2.2 Post-optimisation (rayon-parallel Gaussian sampler)
+
+After the rayon-parallel rewrite of `add_gaussian_3d_inplace`
+(commit `<TBD>` — pre-derives one ChaCha20 seed per head from
+parent RNG, parallelises across the heads axis above a 32 K-element
+threshold):
+
+```
+cell                 n_prompt   TTFT (ms)   TPOT mean ms    total (s)   vs gpu_plain
+─────────────────────────────────────────────────────────────────────────────────────
+gpu_plain                  64      226.8         125.0         2.227    (base)
+gpu_gelo                   64      463.5         199.8         3.660    +64.3 %
+gpu_gelo_permuted          64      499.1         217.2         3.975    +78.5 %
+
+gpu_plain                 512    2 860.3         153.7         5.320    (base)
+gpu_gelo                  512    5 830.4         241.1         9.688    +82.1 %
+gpu_gelo_permuted         512    8 375.1         345.6        13.904   +161.4 %
+
+gpu_plain                2048    6 443.4         271.1        10.781    (base)
+gpu_gelo                 2048   72 904.4         371.0        78.840   +631.3 %
+gpu_gelo_permuted        2048   87 527.6       1 062.8       104.532   +869.6 %
+```
+
+### 2.3 Pre→Post deltas (gpu_gelo_permuted)
+
+| Metric | n=64 | n=512 | n=2048 |
+|---|---|---|---|
+| TTFT speedup | 0.94× | 1.11× | 1.04× |
+| **TPOT speedup** | **1.17×** | **1.47×** | **1.59×** |
+
+The win lands disproportionately on TPOT, as expected — decode
+steps dominate the bench wall-clock per-iteration cost, and the
+K-noise sampler's `O(n_kv · n_heads · d_head)` cost grows with
+n_kv. TPOT at n=2048 improved 37 %; TTFT (prefill, fixed n_q) only
+4 %. **The path is still ~2.9× slower than `gpu_gelo` at n=2048.**
 
 ## 3. Diagnosis
 
@@ -130,25 +171,42 @@ on the four linear-projection batches per layer, scaling as
 (faster CPU BLIS, block-diagonal mask under security analysis, mask
 dimension reduction, or per-batch HKDF-derived A).
 
-### 4.3 The permuted_cached path needs noise-sampler perf work before it ships
+### 4.3 The permuted_cached path needs perf work before it ships
 
-Three reasonable follow-ups, in order of expected effort × payoff:
+**Done so far** — rayon-parallel Gaussian noise sampler:
+TPOT@n=2048 from 1 693 ms → 1 063 ms (**1.59×**). The expected 10-30×
+in the original projection did **not** materialise. Investigation
+post-bench identified two reasons:
+
+- Rayon work-stealing has a ~100 μs fixed cost per call. With
+  ~28 layers × 2 noise calls (Q + K) = 56 calls per decode step,
+  that's ~6 ms of pure scheduling overhead even before any work.
+- The 16-head split gives effective parallelism of ~8 cores (CCD
+  topology / thermal headroom); not the full 16-core multiplier.
+- Gaussian sampling inside each head is **still scalar** —
+  `rand_distr::StandardNormal::sample` is one Ziggurat call per
+  element, no SIMD batching.
+
+**Remaining work, in order of expected effort × payoff:**
 
 | Item | Effort | Estimated benefit |
 |---|---|---|
-| **Vectorise `add_gaussian_3d_inplace`** | ~½ day | 10-30× speedup via SIMD + `rand_distr::StandardNormal` batched draws + AVX2 |
-| **Rayon-parallelise across the heads axis** | ~½ day | Additional 4-8× on multicore CPU (orthogonal to vectorisation) |
-| **Per-head π instead of one shared π** | ~1 day | Stronger HNM property; no perf change |
-| **Empirical σ floor study at Qwen3-1.7B shapes** (M1.10.0.5) | ~1-2 days | Either confirm σ=0.01 is necessary or relax — could halve the noise cost if relaxable |
+| **Rayon-parallelise the permutation copies on K, V** in `permuted_attention_cached` (16 × 2 × n_kv × d_head ≈ 900 MB / decode at n_kv=2048; currently single-threaded scalar) | ~½ day | 1.3-1.5× on TPOT |
+| **SIMD-batched Gaussian draws** (e.g. `wide::f32x8` Ziggurat or pre-buffered noise sheet) | ~1 day | Additional 2-4× on the noise step inside each head |
+| **Per-head π instead of one shared π** | ~1 day | Stronger HNM property; no perf change (orthogonal) |
+| **Empirical σ floor study at Qwen3-1.7B shapes** (M1.10.0.5) | ~1-2 days | If σ < 0.01 is safe at our shapes, the noise compute can be reduced proportionally |
+| **Move noise from "every decode step" to "session-stateful via HKDF-derived material"** | ~1 day + sec analysis | Eliminates per-call noise sampling entirely; sec story TBD |
 
-Combined potential: noise step at n_kv=2048 from ~85 ms/layer →
-**~1-5 ms/layer**. TPOT delta vs `gpu_gelo` would collapse from
-+1 322 ms to **≤ +100 ms**, putting permuted_cached at neutral or
-slight-win compared to in-TEE attention.
+Combined potential: TPOT@n=2048 from 1 063 ms → ~400-500 ms,
+**neutral or slight-win** vs `gpu_gelo` (371 ms). At that point
+the permuted_cached path becomes deployable for the prefill-only
+case (decode stays in-TEE per the default `perm_attention_min_seq_len
+= 64` threshold).
 
-The pre-condition is the vectorisation work — Phase 0 item M1.10.0.5
-(empirical σ tuning) becomes interesting only after the noise sampler
-is fast enough that its cost doesn't dominate the bench signal.
+**Production implication today:** the default
+`use_perm_attention = false` keeps the existing in-TEE path on; the
+new dispatch is opt-in. No regression from this commit on production
+configurations.
 
 ### 4.4 Memory budget was fine
 

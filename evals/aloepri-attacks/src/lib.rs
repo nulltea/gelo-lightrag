@@ -37,8 +37,11 @@ use gelo_protocol::{
     TrustedExecutor, WeightHandle, WeightKind,
 };
 
-/// The three control conditions defined in
-/// `docs/prototype/aloepri-attack-harness.md` §2.4.
+/// The control conditions defined in
+/// `docs/prototype/aloepri-attack-harness.md` §2.4, plus the HD₃
+/// extension added for the round-3 attack-defence gate (B.3): a
+/// fourth condition that holds shield constant but swaps the mask
+/// family from Haar to the QuIP#/QuaRot HD₃ cascade.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Condition {
     /// C0 — `PlaintextExecutor` (no mask, no shield). Control that
@@ -50,9 +53,16 @@ pub enum Condition {
     /// contribution.
     C1MaskOnly,
     /// C2 — `InProcessTrustedExecutor::with_seed` defaults
-    /// (per-forward-pass mask, `ShieldConfig::new(8, 4.0)`). The
-    /// release-gate target: IMA & ISA TTRSR must be < 10%.
+    /// (per-forward-pass Haar mask, `ShieldConfig::new(8, 4.0)`).
+    /// The release-gate target: IMA & ISA TTRSR must be < 10%.
     C2Default,
+    /// C3 — same as C2 except the Haar mask is swapped for the HD₃
+    /// Hadamard cascade via `.with_hd3_mask()`. Tests whether HD₃'s
+    /// discrete `2^{3·s}`-element orbit defends as well as Haar's
+    /// continuous measure under the AloePri / GELO §4.3 attack
+    /// suites. Holding shield constant between C2 and C3 isolates
+    /// the mask family as the only variable.
+    C3Hd3,
 }
 
 impl Condition {
@@ -61,6 +71,7 @@ impl Condition {
             Condition::C0Plain => "c0_plain",
             Condition::C1MaskOnly => "c1_mask_only",
             Condition::C2Default => "c2_default",
+            Condition::C3Hd3 => "c3_hd3",
         }
     }
 
@@ -69,8 +80,9 @@ impl Condition {
             "c0" | "c0_plain" | "plain" => Ok(Condition::C0Plain),
             "c1" | "c1_mask_only" | "mask_only" => Ok(Condition::C1MaskOnly),
             "c2" | "c2_default" | "default" => Ok(Condition::C2Default),
+            "c3" | "c3_hd3" | "hd3" => Ok(Condition::C3Hd3),
             other => Err(anyhow!(
-                "unknown condition slug '{other}' (expected c0 / c1 / c2)"
+                "unknown condition slug '{other}' (expected c0 / c1 / c2 / c3)"
             )),
         }
     }
@@ -214,7 +226,16 @@ pub fn export_snapshots(
             shape
         });
 
-        let n_data = operand_shape[0].saturating_sub(shield_k);
+        // For Haar (C0/C1/C2), operand_shape[0] = n_data + shield_k, so
+        // subtracting shield_k recovers n_data correctly. For HD₃ (C3),
+        // the executor pads stacked_n to next_power_of_two(n_data +
+        // shield_k); operand_shape[0] is then s_pad, not n_data + shield_k.
+        // Trust the prompt's tokenised length instead — it always equals
+        // the original data row count regardless of mask family.
+        let n_data = prompt_token_ids
+            .get(prompt_idx)
+            .map(|ids| ids.len())
+            .unwrap_or_else(|| operand_shape[0].saturating_sub(shield_k));
         snapshot_metas.push(SnapshotMeta {
             seq_idx: snap.seq_idx,
             layer: snap.layer,

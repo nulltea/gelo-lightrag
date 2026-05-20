@@ -14,11 +14,6 @@ use super::weights::DecoderWeights;
 use crate::common::pool;
 use crate::common::tokenizer::HfTokenizer;
 
-#[cfg(feature = "dp-forward")]
-use rand::SeedableRng;
-#[cfg(feature = "dp-forward")]
-use rand_chacha::ChaCha20Rng;
-
 /// Qwen3-class decoder-LLM-as-embedder driven through a GELO `TrustedExecutor`.
 ///
 /// Pooling: last-token + L2 normalize (matches Qwen3-Embedding / E5-Mistral
@@ -30,27 +25,11 @@ pub struct GeloQwenEmbedder<X: TrustedExecutor> {
     rope: Arc<RopeTables>,
     exec: X,
     max_len: usize,
-    /// Hex-encoded `sha256(concat of all shard bytes)`, then extended by
-    /// `sha256(weights ‖ dp_cfg.config_digest())` if [`Self::with_dp_forward`]
-    /// is called. Stored as UTF-8 so it rides through
-    /// `AttestationEvidence::model_identity` (a `String`); the relying party
-    /// recomputes the same hash chain over the expected weights / DP config
-    /// and compares.
+    /// Hex-encoded `sha256(concat of all shard bytes)`. Stored as UTF-8 so it
+    /// rides through `AttestationEvidence::model_identity` (a `String`); the
+    /// relying party recomputes the same hash over the expected weights and
+    /// compares.
     model_identity: String,
-    /// Raw sha256 of the weights, before any DP-config mixing. Cached so
-    /// `with_dp_forward` can re-derive `model_identity` deterministically.
-    #[cfg(feature = "dp-forward")]
-    weights_identity: [u8; 32],
-    /// Recipe-B aMGM config applied to the pooled embedding inside this
-    /// embedder before `embed()` returns. When `Some(_)`, the SEV-SNP
-    /// attestation report's `model_identity` commits to these parameters.
-    #[cfg(feature = "dp-forward")]
-    dp_forward: Option<dp_forward::DpForwardConfig>,
-    /// Dedicated RNG for DP noise sampling. Seeded from `OsRng` at
-    /// construction; not deterministic across runs (DP noise must not be
-    /// reproducible — that would invalidate the privacy guarantee).
-    #[cfg(feature = "dp-forward")]
-    dp_rng: ChaCha20Rng,
 }
 
 impl<X: TrustedExecutor> GeloQwenEmbedder<X> {
@@ -91,37 +70,12 @@ impl<X: TrustedExecutor> GeloQwenEmbedder<X> {
         Ok(Self {
             cfg,
             tokenizer,
-            #[cfg(feature = "dp-forward")]
-            weights_identity: weights.model_identity,
             weights,
             rope,
             exec,
             max_len,
             model_identity,
-            #[cfg(feature = "dp-forward")]
-            dp_forward: None,
-            #[cfg(feature = "dp-forward")]
-            dp_rng: ChaCha20Rng::from_os_rng(),
         })
-    }
-
-    /// Enable Recipe-B aMGM noise (DP-Forward) on the pooled embedding.
-    ///
-    /// When set, every call to [`Embedder::embed`] clips each pooled
-    /// embedding to L2 norm ≤ `cfg.clip_c` and adds `N(0, cfg.sigma² · I)`
-    /// before returning. The `model_identity` is rebound so a SEV-SNP
-    /// attestation report commits to *(weights, ε, δ, C, σ)* — this is the
-    /// defence-in-depth path described in `docs/prototype/gelo.md`.
-    #[cfg(feature = "dp-forward")]
-    pub fn with_dp_forward(mut self, cfg: dp_forward::DpForwardConfig) -> Self {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(self.weights_identity);
-        hasher.update(cfg.config_digest());
-        let combined: [u8; 32] = hasher.finalize().into();
-        self.model_identity = hex::encode(combined);
-        self.dp_forward = Some(cfg);
-        self
     }
 
     /// Download from the HuggingFace hub (uses local cache when present).
@@ -308,94 +262,11 @@ impl<X: TrustedExecutor + Clone + Send + Sync> GeloQwenEmbedder<X> {
     ///
     /// `&self` (not `&mut`) because all model state (`cfg`, `tokenizer`,
     /// `weights`, `rope`) is read-only or `Arc`-shared. The mutable bits
-    /// (executor session mask + RNG, optional DP-Forward RNG) live on
-    /// the caller's `exec` argument and on a temporary worker-local
-    /// `dp_rng` derived below (only relevant when the `dp-forward`
-    /// feature is enabled).
+    /// (executor session mask + RNG) live on the caller's `exec` argument.
     fn embed_one(&self, text: &str, exec: &mut X) -> anyhow::Result<Vec<f32>> {
         let ids = self.tokenizer.encode(text, self.max_len)?;
-
-        // Resolve DP-Forward configuration once per text.
-        #[cfg(feature = "dp-forward")]
-        let dp_cfg = self.dp_forward;
-        #[cfg(not(feature = "dp-forward"))]
-        let dp_cfg: Option<()> = None;
-
-        // Intermediate-layer hook (M7.1): if `layer_index = Some(n)`,
-        // apply aMGM per token-row at the end of layer n. Otherwise the
-        // hook is a no-op and noise is applied at the pooled output
-        // below (legacy / not-recommended-for-retrieval path).
-        let hidden = {
-            #[cfg(feature = "dp-forward")]
-            {
-                if let Some(cfg) = dp_cfg.filter(|c| c.layer_index.is_some()) {
-                    let target = cfg.layer_index.expect("filter guarantees Some");
-                    let clip = cfg.clip_c;
-                    let sigma = cfg.sigma;
-                    // Per-text DP RNG clone — keeps the parallel embed
-                    // path deterministic given the base seed, at the
-                    // cost of identical noise across workers within a
-                    // batch when called via the par_iter path.
-                    let mut dp_rng = self.dp_rng.clone();
-                    forward::run_with_hook(
-                        &self.cfg,
-                        &self.weights,
-                        &self.rope,
-                        exec,
-                        &ids,
-                        |li, h| {
-                            if li == target {
-                                apply_dp_per_row(h, clip, sigma, &mut dp_rng);
-                            }
-                        },
-                    )?
-                } else {
-                    forward::run(&self.cfg, &self.weights, &self.rope, exec, &ids)?
-                }
-            }
-            #[cfg(not(feature = "dp-forward"))]
-            {
-                let _ = dp_cfg;
-                forward::run(&self.cfg, &self.weights, &self.rope, exec, &ids)?
-            }
-        };
-
+        let hidden = forward::run(&self.cfg, &self.weights, &self.rope, exec, &ids)?;
         let pooled = pool::last_l2(hidden.view());
-        #[allow(unused_mut)]
-        let mut pooled_vec = pooled.to_vec();
-        #[cfg(feature = "dp-forward")]
-        if let Some(cfg) = &self.dp_forward {
-            // Legacy pooled-output application — only when no
-            // intermediate layer was specified.
-            if cfg.layer_index.is_none() {
-                let mut dp_rng = self.dp_rng.clone();
-                dp_forward::amgm::clip_l2_in_place(&mut pooled_vec, cfg.clip_c);
-                dp_forward::amgm::add_gaussian_noise(
-                    &mut pooled_vec,
-                    cfg.sigma,
-                    &mut dp_rng,
-                );
-            }
-        }
-        Ok(pooled_vec)
-    }
-}
-
-/// Apply aMGM (clip + Gaussian noise) per token-row of a hidden-state
-/// matrix. Used by the intermediate-layer DP-Forward hook (M7.1) — the
-/// paper-faithful `add_and_norm_2` position.
-#[cfg(feature = "dp-forward")]
-fn apply_dp_per_row(
-    h: &mut ndarray::Array2<f32>,
-    clip_c: f32,
-    sigma: f64,
-    rng: &mut rand_chacha::ChaCha20Rng,
-) {
-    for mut row in h.rows_mut() {
-        let slice = row
-            .as_slice_mut()
-            .expect("Array2 rows are contiguous by construction");
-        dp_forward::amgm::clip_l2_in_place(slice, clip_c);
-        dp_forward::amgm::add_gaussian_noise(slice, sigma, rng);
+        Ok(pooled.to_vec())
     }
 }

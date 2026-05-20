@@ -113,7 +113,14 @@ impl DecoderWeights {
                 let view = lookup_view(&full)
                     .with_context(|| format!("missing tensor {full}"))?;
                 let m = tensor_to_2d(view)?;
-                Ok(m.t().to_owned())
+                // `.t().to_owned()` would preserve column-major strides
+                // (logically `(in, out)` but stored col-major). ndarray's
+                // `.dot()` tolerates that; `cblas_sgemm` does not. Force a
+                // standard-layout copy at load time so every consumer
+                // (including `mask::matmul_blis` via `tee_matmul`) sees a
+                // row-major contiguous buffer. Cost: ~one extra memcpy per
+                // weight tensor at startup, fixed.
+                Ok(m.t().as_standard_layout().to_owned())
             };
 
             layers.push(DecoderLayerWeights {

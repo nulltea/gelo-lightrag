@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>private-rag · reranking (GELO)</title>
+<title>private-rag — reranking (GELO)</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,300..900,0..100,0..1&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap" rel="stylesheet">
@@ -15,26 +15,14 @@
   <span class="crosshair tr"></span>
   <span class="crosshair bl"></span>
   <span class="crosshair br"></span>
-
-  <!-- ─── TOP NAV ─── -->
-  <nav class="topnav">
-    <a class="brand" href="index.html">
-      private-rag<span class="dot">·</span><span class="rev">prototype</span>
-    </a>
-    <div class="links">
-      <a href="index.html">Overview</a>
-      <a href="embedding.html">Embedding · GELO</a>
-      <a href="storage.html">Storage · CAPRISE</a>
-      <a class="current" href="reranking.html">Reranking · GELO</a>
-      <a href="graphrag.html">GraphRAG · Compass</a>
-      <a href="aloepri-llm.html">Generation · AloePri</a>
-    </div>
-  </nav>
+  <!-- ─── TOP NAV (shared, see _nav.js) ─── -->
+  <div id="topnav-mount"></div>
+  <script src="_nav.js" defer></script>
 
   <!-- ─── MASTHEAD ─── -->
   <header class="masthead">
     <div>
-      <h1 class="title">reranking<br><em>· GELO</em></h1>
+      <h1 class="title">reranking<br><em>— GELO</em></h1>
       <p class="subtitle">Two architecture-typed rerank services share one trait, both ride the same GELO mask + TwinShield primitives the embedder validated. Scores never leave the TEE — the only wire emission is a fixed-shape, shuffled, AES-GCM-encrypted bundle whose rank is sealed inside each ciphertext.</p>
     </div>
     <div class="colophon">
@@ -87,10 +75,33 @@
     </div>
   </section>
 
-  <!-- ═════ § 2 THREAT MODEL ═════ -->
-  <section id="threats">
+  <!-- ═════ § 2 DEFINITIONS ═════ -->
+  <section id="defs">
     <header class="section-head">
       <div class="section-num">§02</div>
+      <h2 class="section-title">Definitions &amp; glossary</h2>
+      <div class="section-meta">rerank-specific terms · protocol terms cross-referenced</div>
+    </header>
+    <p class="lede">Protocol primitives (mask, shield, U-Verify, OutAttnMult) are defined in <a href="embedding.html#defs">embedding §02</a>. Only rerank-specific additions are listed here.</p>
+    <table class="spec">
+      <thead>
+        <tr><th style="width:22%">Term</th><th>Definition</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Cross-encoder</strong></td><td>Reranker family that concatenates <code>(query, candidate)</code> as one sequence and runs a single forward pass to produce a relevance score. Higher accuracy than dual-encoder cosine; higher cost. Today's example: <code>BAAI/bge-reranker-v2-m3</code> (XLM-RoBERTa-large, 24 layers).</td></tr>
+        <tr><td><strong>Causal-LM discriminator</strong></td><td>Reranker family that uses a causal decoder to score whether the candidate answers the query. Example: <code>Qwen3-Reranker-0.6B</code> — Qwen3 backbone, 28 layers, sigmoid-of-yes-token at the last position.</td></tr>
+        <tr><td><strong><code>k_max</code></strong></td><td>Fixed bundle size emitted on every rerank request. The TEE returns exactly <code>k_max</code> shuffled, AES-GCM-sealed score items regardless of true <code>top_k</code> — the wire pattern reveals nothing about how many candidates actually scored above threshold.</td></tr>
+        <tr><td><strong>Bundle ciphertext</strong></td><td>Per-candidate AES-GCM seal of <code>(rank, score, candidate_id)</code> under <code>QueryKey = HKDF(SessionKey, "rerank.score.v1", query_id)</code>. Rank is sealed <em>inside</em> each ciphertext — order on the wire is shuffled, so an observer cannot read rank from position.</td></tr>
+        <tr><td><strong><code>QueryKey</code></strong></td><td>Per-query symmetric key derived in-TEE from the session secret. Disposed at request end so a future TEE break cannot retroactively open old bundles.</td></tr>
+        <tr><td><strong>Stage-1 / Stage-2</strong></td><td>Stage-1 = the embedder's ANN candidate set (top <code>k′</code> by ciphertext cosine). Stage-2 = the reranker re-scores those candidates with a heavier model.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ═════ § 3 THREAT MODEL ═════ -->
+  <section id="threats">
+    <header class="section-head">
+      <div class="section-num">§03</div>
       <h2 class="section-title">Threat model</h2>
       <div class="section-meta">what each component sees · what it cannot</div>
     </header>
@@ -155,7 +166,7 @@
   <!-- ═════ § 3 MODEL ARCHITECTURES ═════ -->
   <section id="models">
     <header class="section-head">
-      <div class="section-num">§03</div>
+      <div class="section-num">§04</div>
       <h2 class="section-title">Supported model architectures</h2>
       <div class="section-meta">two architecture-typed services under one RerankService trait</div>
     </header>
@@ -213,7 +224,7 @@
   <!-- ═════ § 4 COMPONENTS ═════ -->
   <section id="components">
     <header class="section-head">
-      <div class="section-num">§04</div>
+      <div class="section-num">§05</div>
       <h2 class="section-title">Components</h2>
       <div class="section-meta">crate-side · 6 implementation units</div>
     </header>
@@ -262,7 +273,7 @@
           <dt>policy</dt><dd>SessionKeyPolicy::V1 · salt <code>"gelo-rerank.session.v1"</code> · info <code>"gelo-rerank.query.v1"</code></dd>
           <dt>derivation</dt><dd><code>QueryKey = HKDF(salt=SessionKey, ikm=query_id, info="gelo-rerank.query.v1")</code></dd>
           <dt>uniqueness</dt><dd>caller must guarantee unique <code>query_id</code> per session — AES-GCM does not survive key+nonce reuse</dd>
-          <dt>future</dt><dd>M5.9 swaps the manual session secret for an ECDH-derived one bound to the attestation report; API surface unchanged</dd>
+          <dt>future</dt><dd>attestation-bound ECDH KEX will replace the manual session secret; API surface unchanged</dd>
         </dl>
       </article>
 
@@ -287,24 +298,13 @@
         </dl>
       </article>
 
-      <article class="card">
-        <span class="tag http">http</span>
-        <h3>/rerank<span class="alias">gelo-snp-runner :: main</span></h3>
-        <p class="one">Axum route alongside the existing <code>/health · /attest · /ingest · /query · /rotate</code>. Returns 501 when no reranker model is loaded; otherwise dispatches via a <code>Box&lt;dyn RerankService + Send&gt;</code> trait object behind an <code>Arc&lt;Mutex&gt;</code>.</p>
-        <dl>
-          <dt>request</dt><dd><code>{ session_secret, query_id_b64, query, candidates[{id,text}], top_k, k_max }</code></dd>
-          <dt>response</dt><dd><code>{ scheme, items[{nonce_b64, ciphertext_b64}; k_max], family, model_identity_b64 }</code></dd>
-          <dt>tests</dt><dd>integration tests in <code>main.rs::tests</code> cover both 501-unconfigured and full-bundle-round-trip paths</dd>
-        </dl>
-      </article>
-
     </div>
   </section>
 
   <!-- ═════ § 5 COMPUTE FLOW ═════ -->
   <section id="flow">
     <header class="section-head">
-      <div class="section-num">§05</div>
+      <div class="section-num">§06</div>
       <h2 class="section-title">Compute flow &amp; trust boundaries</h2>
       <div class="section-meta">per-request, external-generator deployment</div>
     </header>
@@ -703,62 +703,10 @@
     <p class="prose"><b>Why per-forward + shield is the default.</b> Per-offload's correlation safety is real but the cost is the Haar-QR over an <code>(n+k)×(n+k)</code> matrix, which is <code>O((n+k)³)</code>. Reranker inputs at <code>n≈256–512</code> push the QR cost to 17–23 ms per call — at ~100 calls per forward that is most of the wall-clock. Per-forward sampling does the QR once, then the same <code>A</code> participates in every offload's mix/unmix GEMM (which is GEMM-fast and CBLAS-tractable). Shield rows are sampled fresh per offload regardless (cheap — k Gaussians), and that per-offload freshness is what stops cross-offload ICA without paying the per-offload QR tax. The paper's §3.2 + §4.2 pairing is exactly this trade.</p>
   </section>
 
-  <!-- ═════ § 6 INTERFACES ═════ -->
-  <section id="interfaces">
-    <header class="section-head">
-      <div class="section-num">§06</div>
-      <h2 class="section-title">Interfaces</h2>
-      <div class="section-meta">trait · constructors · HTTP</div>
-    </header>
-    <p class="lede">
-      Two surfaces: the Rust trait that <code>gelo-snp-runner</code> dispatches through, and the HTTP route the client talks to.
-    </p>
-
-    <h4>Trait</h4>
-    <pre class="code-block">pub trait RerankService {
-    fn model_identity(&amp;self) -&gt; &amp;[u8];
-    fn family(&amp;self) -&gt; &amp;'static str;
-    fn rerank(
-        &amp;mut self,
-        session: &amp;SessionKey,
-        request: &amp;RerankRequest&lt;'_&gt;,
-    ) -&gt; Result&lt;EncryptedRerankBundle, RerankError&gt;;
-}</pre>
-
-    <h4>Constructors</h4>
-    <pre class="code-block">CrossEncoderRerankService::from_pretrained("BAAI/bge-reranker-v2-m3", exec)
-CrossEncoderRerankService::from_local(&amp;model_dir, exec)
-CausalDiscriminatorRerankService::from_pretrained("Qwen/Qwen3-Reranker-0.6B", exec)
-CausalDiscriminatorRerankService::from_local(&amp;cfg_path, &amp;tokenizer_path, &amp;shards, exec)</pre>
-    <p class="prose"><code>X = InProcessTrustedExecutor&lt;WgpuVulkanEngine&gt;</code> in production. <code>PlaintextExecutor</code> / <code>RayonCpuEngine</code> variants in tests. Both also expose <code>new(cfg, tokenizer, weights, head, exec)</code> for synthetic-weight tests and a <code>score_input_ids</code> helper that bypasses tokenisation.</p>
-
-    <h4>HTTP request</h4>
-    <pre class="code-block">POST /rerank
-Content-Type: application/json
-{
-  "session_secret":  "<base64 &ge; 16 B>",
-  "query_id_b64":    "<base64>",
-  "query":           "...",
-  "candidates":      [{ "id": "...", "text": "..." }, ...],
-  "top_k":           10,
-  "k_max":           20
-}</pre>
-
-    <h4>HTTP response</h4>
-    <pre class="code-block">200 OK
-{
-  "scheme":             "aes-256-gcm.v1",
-  "items":              [{ "nonce_b64": "...", "ciphertext_b64": "..." }; k_max],
-  "family":             "cross-encoder" | "causal-discriminator",
-  "model_identity_b64": "<base64-32B>"
-}</pre>
-    <p class="prose"><code>501 Not Implemented</code> when the runner was started without a reranker model loaded. <code>500</code> on internal failure. The <code>/attest</code> route covers the model+scheme binding that lets a client verify which family + which weights are actually serving.</p>
-  </section>
-
   <!-- ═════ § 7 PERFORMANCE ═════ -->
   <section id="numbers">
     <header class="section-head">
-      <div class="section-num">§07</div>
+      <div class="section-num">§08</div>
       <h2 class="section-title">Performance &amp; correctness</h2>
       <div class="section-meta">measured on AMD Strix Halo iGPU</div>
     </header>
@@ -897,7 +845,7 @@ Content-Type: application/json
   <!-- ═════ § 8 STATUS & GAPS ═════ -->
   <section id="status">
     <header class="section-head">
-      <div class="section-num">§08</div>
+      <div class="section-num">§09</div>
       <h2 class="section-title">Status &amp; gaps</h2>
       <div class="section-meta">what's landed · what's next · what's deferred</div>
     </header>
@@ -984,7 +932,7 @@ Content-Type: application/json
       <li><strong>jina-reranker-v3</strong> — listwise n≈16k forwards need <code>gelo-llm.md</code> §3's fused permuted attention + FlashAttention to land first. License is CC-BY-NC-4.0. Revisit alongside the LLM-serving stack.</li>
       <li><strong>Shredder at the pooled activation</strong> — round-2 §6 follow-up. Only relevant if a deployment needs to <em>export</em> scores for downstream use (calibrated cutoffs, hybrid fusion). Default TEE-internal architecture already keeps scores sealed.</li>
       <li><strong>Score-DP accountant</strong> — formal <code>(ε, δ)</code> budget over rerank score exports. Same trigger as Shredder.</li>
-      <li><strong>ECDH-bound session-key handshake</strong> — currently <code>session_secret</code> is a 32-byte token the client supplies per request. M5.9 swaps in an attestation-bound ECDH KEX; the <code>SessionKey::derive</code> API surface stays identical.</li>
+      <li><strong>ECDH-bound session-key handshake</strong> — currently <code>session_secret</code> is a 32-byte token the client supplies per request. An attestation-bound ECDH KEX will replace it; the <code>SessionKey::derive</code> API surface stays identical.</li>
       <li><strong>Game-of-Arrows attack bench in reranker mode</strong> — round-2 §4.3. The construction is safe by the same argument that protects the embedder; the empirical confirmation is gated on lifting the attack reference into a workspace test.</li>
     </ul>
   </section>

@@ -144,6 +144,19 @@ impl Qwen3Variant {
             hidden_act: "silu".into(),
             tie_word_embeddings: true,
             max_seq_len: self.max_position_embeddings(),
+            // Sensitive-layer exclusion (paper §3.2 + DP-Forward §5.2) is
+            // a security recommendation we would like to honour by default,
+            // but on this substrate it currently costs ~234 ms TPOT per
+            // decode step at n=2048 — the in-TEE direct matmul falls back
+            // to `ndarray::dot()` at the decode shape `(1, d)·(d, p)` which
+            // hits a slow path in matrixmultiply (~1 GFLOP/s observed at
+            // m=1 vs ~125 GFLOP/s nominal). The `tee_matmul` BLIS-mt routing
+            // closes the *prefill* side of the cost (saves ~1.0 s TTFT) but
+            // not the decode side because BLIS at m=1 has too much
+            // per-call thread overhead. See
+            // `memory/tee_direct_m1_gemv_slowness.md` for the open
+            // optimisation surface. Default stays off until the m=1 GEMV
+            // path is fast enough that decode TPOT doesn't regress.
             skip_first_layers: 0,
             skip_last_layer: false,
             // Match existing GeloQwenEmbedder defaults: OutAttnMult on

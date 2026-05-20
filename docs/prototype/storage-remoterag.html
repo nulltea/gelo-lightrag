@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>private-rag · RemoteRAG (alternative · not pursued)</title>
+<title>private-rag — RemoteRAG (alternative — not pursued)</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,300..900,0..100,0..1&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap" rel="stylesheet">
@@ -51,26 +51,14 @@
   <span class="crosshair tr"></span>
   <span class="crosshair bl"></span>
   <span class="crosshair br"></span>
-
-  <!-- ─── TOP NAV (no current marker — page intentionally not featured in nav) ─── -->
-  <nav class="topnav">
-    <a class="brand" href="index.html">
-      private-rag<span class="dot">·</span><span class="rev">prototype</span>
-    </a>
-    <div class="links">
-      <a href="index.html">Overview</a>
-      <a href="embedding.html">Embedding · GELO</a>
-      <a href="storage.html">Storage · CAPRISE</a>
-      <a href="reranking.html">Reranking · GELO</a>
-      <a href="graphrag.html">GraphRAG · Compass</a>
-      <a href="aloepri-llm.html">Generation · AloePri</a>
-    </div>
-  </nav>
+  <!-- ─── TOP NAV (shared, see _nav.js) ─── -->
+  <div id="topnav-mount"></div>
+  <script src="_nav.js" defer></script>
 
   <!-- ─── MASTHEAD ─── -->
   <header class="masthead">
     <div>
-      <h1 class="title">RemoteRAG<br><em>· alternative</em></h1>
+      <h1 class="title">RemoteRAG<br><em>— alternative</em></h1>
       <p class="subtitle">A second storage strategy explored during the prototype: keep the index plaintext on the server, give the query formal <code>(n, ε)</code>-DistanceDP via planar-Laplace noise, recover exact ranking with a Paillier homomorphic dot-product. Implemented and benchmarked — not the chosen production path.</p>
     </div>
     <div class="colophon">
@@ -107,10 +95,33 @@
     </div>
   </section>
 
-  <!-- ═════ § 2 WHY NOT CHOSEN ═════ -->
-  <section id="why-not">
+  <!-- ═════ § 2 DEFINITIONS ═════ -->
+  <section id="defs">
     <header class="section-head">
       <div class="section-num">§02</div>
+      <h2 class="section-title">Definitions &amp; glossary</h2>
+      <div class="section-meta">terms used on this page</div>
+    </header>
+    <table class="spec">
+      <thead>
+        <tr><th style="width:22%">Term</th><th>Definition</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>RemoteRAG</strong></td><td>Cheng et al., ACL Findings 2025 (<span class="mono">arXiv 2412.12775</span>). Two-stage retrieval: planar-Laplace DP on the query for Stage-1 ANN, Paillier homomorphic dot-product for Stage-2 rerank.</td></tr>
+        <tr><td><strong>DistanceDP</strong></td><td><code>(n, ε)</code>-Distance Differential Privacy. Any two queries within radius <code>n/ε</code> in embedding space are formally indistinguishable to the server. <code>n</code> is the embedding dimension, not a cluster count.</td></tr>
+        <tr><td><strong>Planar-Laplace mechanism</strong></td><td>Stage-1 noise: sample radius <code>r ~ Γ(n, 1/ε)</code> and direction <code>v ~ U(Sⁿ⁻¹)</code>; ship <code>q′ = q + r·v</code>. Implements DistanceDP on the embedding.</td></tr>
+        <tr><td><strong>Paillier PHE</strong></td><td>Paillier partially homomorphic encryption (additive). Lets the server compute <code>Enc(⟨q, d⟩)</code> from <code>Enc(qᵢ)</code> and plaintext <code>dᵢ</code> via <code>∏ᵢ Enc(qᵢ)^{dᵢ}</code>.</td></tr>
+        <tr><td><strong>HNSW</strong></td><td>Hierarchical Navigable Small World (Malkov &amp; Yashunin) — the graph-based ANN index the Stage-1 search runs over.</td></tr>
+        <tr><td><strong>CAPRISE</strong></td><td>Distance-preserving encryption (Ye et al. 2026) — the production path on <a href="storage.html">storage</a>. Mentioned here as the contrast: CAPRISE keeps doc embeddings encrypted at rest, RemoteRAG keeps them plaintext.</td></tr>
+        <tr><td><strong>Vec2Text</strong></td><td>Morris et al., EMNLP 2023. Inverts embedding vectors back to near-exact source text — the inversion attack that motivates encrypting doc embeddings at rest.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ═════ § 3 WHY NOT CHOSEN ═════ -->
+  <section id="why-not">
+    <header class="section-head">
+      <div class="section-num">§03</div>
       <h2 class="section-title">Why this isn't the production path</h2>
       <div class="section-meta">decision rationale</div>
     </header>
@@ -159,7 +170,7 @@
   <!-- ═════ § 3 THREAT MODEL ═════ -->
   <section id="threats">
     <header class="section-head">
-      <div class="section-num">§03</div>
+      <div class="section-num">§04</div>
       <h2 class="section-title">Threat model</h2>
       <div class="section-meta">what each party sees</div>
     </header>
@@ -177,14 +188,14 @@
       <strong>Formal guarantee.</strong> <code>(n, ε)</code>-DistanceDP on the query against any non-colluding adversary observing only Stage-1 traffic. At <code>ε ≈ 10n</code> on a 1024-dim embedding the radius of indistinguishability is ~100 unit-norm steps — large enough to hide individual queries, small enough that Stage-2 PHE rerank recovers ranking exactly.
     </p>
     <p class="lede">
-      <strong>Gaps vs. our project threat model.</strong> (1) Doc-side breach (server compromise) exposes plaintext doc embeddings — the corpus itself. (2) DP budget exhausts after many queries against the same vector; doc-side aMGM noise at ingest helps but doesn't eliminate the issue. (3) A compromised client leaks the Paillier <code>sk</code>, after which the server's stored ciphertexts become decryptable.
+      <strong>Gaps vs. our project threat model.</strong> (1) Doc-side breach (server compromise) exposes plaintext doc embeddings — the corpus itself. (2) DP budget exhausts after many queries against the same vector. (3) A compromised client leaks the Paillier <code>sk</code>, after which the server's stored ciphertexts become decryptable.
     </p>
   </section>
 
   <!-- ═════ § 4 COMPONENTS ═════ -->
   <section id="components">
     <header class="section-head">
-      <div class="section-num">§04</div>
+      <div class="section-num">§05</div>
       <h2 class="section-title">Components</h2>
       <div class="section-meta">RemoteRAG-specific units · all in <code>crates/remote-rag</code></div>
     </header>
@@ -245,7 +256,7 @@
   <!-- ═════ § 5 COMPUTE FLOW ═════ -->
   <section id="flow">
     <header class="section-head">
-      <div class="section-num">§05</div>
+      <div class="section-num">§06</div>
       <h2 class="section-title">Compute flow &amp; trust boundaries</h2>
       <div class="section-meta">two-stage protocol · client ↔ plaintext-index server</div>
     </header>
@@ -346,41 +357,10 @@
     </table>
   </section>
 
-  <!-- ═════ § 6 INTERFACES ═════ -->
-  <section id="interfaces">
-    <header class="section-head">
-      <div class="section-num">§06</div>
-      <h2 class="section-title">Interfaces</h2>
-      <div class="section-meta">what <code>RemoteRagService</code> exposes</div>
-    </header>
-
-    <div class="two-col">
-      <div>
-        <h4>Constructor + ingest / query</h4>
-        <ul>
-          <li><code>new(embedder, planar_laplace_cfg)</code></li>
-          <li><code>.with_paillier_bits(256)</code> · <code>.with_over_fetch_factor(3)</code> · <code>.with_seed([..32])</code></li>
-          <li><code>ingest_chunks(Vec&lt;DocumentChunk&gt;)</code> — embed → AES-chunk-encrypt → index <em>plaintext</em> embedding + ciphertext chunk</li>
-          <li><code>query(text, top_k) → Vec&lt;RetrievalHit&gt;</code> — Stage 1 + Stage 2 + client-side decrypt</li>
-        </ul>
-      </div>
-      <div>
-        <h4>Index entry shape · key custody</h4>
-        <ul>
-          <li>Internal <code>IndexEntry { chunk_ct: ChunkCiphertext, embedding: Vec&lt;f32&gt; }</code> — plaintext embedding</li>
-          <li>HNSW <code>Hnsw&lt;f32, DistCosine&gt;</code> built on first ingest past <code>LINEAR_THRESHOLD = 256</code></li>
-          <li><code>HNSW_M = 16</code> · <code>HNSW_EF_CONSTRUCTION = 200</code> · <code>HNSW_EF_SEARCH = max(64, k′)</code></li>
-          <li>Paillier private key + chunk AES key live <strong>only</strong> on the client</li>
-          <li>Paillier nonces sampled per ciphertext (must be unique; per-thread ChaCha20 RNGs in rayon hot path)</li>
-        </ul>
-      </div>
-    </div>
-  </section>
-
   <!-- ═════ § 7 PERFORMANCE ═════ -->
   <section id="numbers">
     <header class="section-head">
-      <div class="section-num">§07</div>
+      <div class="section-num">§08</div>
       <h2 class="section-title">Performance &amp; correctness</h2>
       <div class="section-meta">measured at 10k docs</div>
     </header>
@@ -418,7 +398,7 @@
   <!-- ═════ § 8 STATUS ═════ -->
   <section id="status">
     <header class="section-head">
-      <div class="section-num">§08</div>
+      <div class="section-num">§09</div>
       <h2 class="section-title">Status &amp; gaps</h2>
       <div class="section-meta">parked — what would be needed to revive</div>
     </header>
@@ -431,7 +411,6 @@
         <tr><td>Paillier (keygen / Enc / Dec / hom. ops)</td><td class="accent">working</td><td>pure-Rust on <code>num-bigint</code>; CRT factor table; ~750 ms encrypt of 1024-dim query is the dominant cost</td></tr>
         <tr><td><code>RemoteRagService</code></td><td class="accent">working</td><td>full two-stage protocol; HNSW Stage-1 + Paillier rerank; 96% recall at 10k docs</td></tr>
         <tr><td>Runner wiring</td><td>not done</td><td>SEV-SNP runner ships only the CAPRISE path. A parallel HTTP route would be ~150 LOC if revived.</td></tr>
-        <tr><td>Doc-side aMGM noise (defence-in-depth)</td><td>not enabled</td><td><code>dp-forward</code> would compose with RemoteRAG at ingest, but adds the same retrieval-quality cost we documented for CAPRISE+DP-Forward; not pursued.</td></tr>
         <tr><td>Multi-tenancy / per-tenant Paillier keys</td><td>not done</td><td>Would mirror the <code>GeloRagTwoPartyService</code> shape but with per-tenant Paillier keypairs instead of HKDF-derived material.</td></tr>
       </tbody>
     </table>

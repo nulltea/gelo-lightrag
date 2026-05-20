@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>private-rag · embedding (GELO)</title>
+<title>private-rag — embedding (GELO)</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,300..900,0..100,0..1&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap" rel="stylesheet">
@@ -15,26 +15,14 @@
   <span class="crosshair tr"></span>
   <span class="crosshair bl"></span>
   <span class="crosshair br"></span>
-
-  <!-- ─── TOP NAV ─── -->
-  <nav class="topnav">
-    <a class="brand" href="index.html">
-      private-rag<span class="dot">·</span><span class="rev">prototype</span>
-    </a>
-    <div class="links">
-      <a href="index.html">Overview</a>
-      <a class="current" href="embedding.html">Embedding · GELO</a>
-      <a href="storage.html">Storage · CAPRISE</a>
-      <a href="reranking.html">Reranking · GELO</a>
-      <a href="graphrag.html">GraphRAG · Compass</a>
-      <a href="aloepri-llm.html">Generation · AloePri</a>
-    </div>
-  </nav>
+  <!-- ─── TOP NAV (shared, see _nav.js) ─── -->
+  <div id="topnav-mount"></div>
+  <script src="_nav.js" defer></script>
 
   <!-- ─── MASTHEAD ─── -->
   <header class="masthead">
     <div>
-      <h1 class="title">embedding<br><em>· GELO</em></h1>
+      <h1 class="title">embedding<br><em>— GELO</em></h1>
       <p class="subtitle">An attested SEV-SNP CVM runs the embedding model. Every Q/K/V/O + FFN matmul rides through a Haar-uniform mask before crossing PCIe to a commodity Vulkan GPU. The GPU is information-theoretically blind.</p>
     </div>
     <div class="colophon">
@@ -62,10 +50,36 @@
     </div>
   </section>
 
-  <!-- ═════ § 2 THREAT MODEL ═════ -->
-  <section id="threats">
+  <!-- ═════ § 2 DEFINITIONS ═════ -->
+  <section id="defs">
     <header class="section-head">
       <div class="section-num">§02</div>
+      <h2 class="section-title">Definitions &amp; glossary</h2>
+      <div class="section-meta">protocol-side terms used on this page</div>
+    </header>
+    <table class="spec">
+      <thead>
+        <tr><th style="width:18%">Term</th><th>Definition</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>GELO</strong></td><td>The per-forward orthogonal-mask split-inference protocol used by this codebase. Hidden states <code>H</code> cross PCIe as <code>U = A·H</code> where <code>A = Σ·Q</code> is a fresh Haar-uniform orthogonal matrix (with a positive-diagonal sign-shield <code>Σ</code>) sampled inside the TEE. Mask material exists only for one forward pass.</td></tr>
+        <tr><td><strong>Mask <code>A</code></strong></td><td>The per-forward orthogonal matrix that crosses with each offloaded activation. Cancels at the next non-linearity by re-mixing inside the TEE (<code>A⁻¹ · masked_result</code>).</td></tr>
+        <tr><td><strong>Shield <code>Σ</code></strong></td><td>Sign-shield: a diagonal of ±1 entries with magnitude tuned so the mask preserves the activation's typical norm. The <code>shield(8, 4.0)</code> default uses 8-block scale with 4.0 σ.</td></tr>
+        <tr><td><strong>TwinShield</strong></td><td>Xue et al. 2025. Pair-of-projections defence the embedder validated alongside GELO; cited as the security baseline the protocol composes with.</td></tr>
+        <tr><td><strong>U-Verify</strong></td><td>Freivalds-style randomised matmul integrity check. Issues <code>k</code> probes against the GPU's masked output to detect malicious matmul tampering.</td></tr>
+        <tr><td><strong>HD₃ mask</strong></td><td>Optional Hadamard-cascade mask <code>A = D₃·H·D₂·H·D₁·H</code> (QuIP# / QuaRot family). Opt-in via <code>with_hd3_mask()</code>; reduces CPU mask-GEMM cost at power-of-two dimensions.</td></tr>
+        <tr><td><strong>CAPRISE</strong></td><td>Distance-preserving encryption for the at-rest path — see <a href="storage.html">storage</a>. The embedder hands off the pooled vector to CAPRISE before it leaves the TEE.</td></tr>
+        <tr><td><strong>SEV-SNP / CVM</strong></td><td>AMD Secure Encrypted Virtualization · Secure Nested Paging. The confidential VM technology this codebase targets for the TEE half.</td></tr>
+        <tr><td><strong>RATLS</strong></td><td>Remote-Attested TLS. The TLS handshake validates the SEV-SNP attestation report before any plaintext is sent.</td></tr>
+        <tr><td><strong>BEIR</strong></td><td>Heterogeneous IR benchmark (Thakur et al. 2021). Used here for end-to-end retrieval-accuracy parity checks against unmasked baselines.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ═════ § 3 THREAT MODEL ═════ -->
+  <section id="threats">
+    <header class="section-head">
+      <div class="section-num">§03</div>
       <h2 class="section-title">Threat model</h2>
       <div class="section-meta">what each component sees · what it cannot</div>
     </header>
@@ -130,7 +144,7 @@
   <!-- ═════ § 3 MODEL ARCHITECTURES ═════ -->
   <section id="models">
     <header class="section-head">
-      <div class="section-num">§03</div>
+      <div class="section-num">§04</div>
       <h2 class="section-title">Supported model architectures</h2>
       <div class="section-meta">two encoder shells under one TrustedExecutor</div>
     </header>
@@ -192,7 +206,7 @@
   <!-- ═════ § 4 COMPONENTS ═════ -->
   <section id="components">
     <header class="section-head">
-      <div class="section-num">§04</div>
+      <div class="section-num">§05</div>
       <h2 class="section-title">Components</h2>
       <div class="section-meta">GELO-side · 11 implementation units</div>
     </header>
@@ -285,7 +299,7 @@
         <h3>GeloBertEmbedder<span class="alias">gelo_embedder :: bert</span></h3>
         <p class="one">12-layer BERT encoder driven through a <code>TrustedExecutor</code>. Q/K/V/O + FFN GEMMs route through the protocol; embedding lookup, LayerNorm, GELU, residual, mean-L2 pooling stay TEE-side.</p>
         <dl>
-          <dt>method</dt><dd><code>tokenizers 0.21</code> · weights as <code>Arc&lt;BertWeights&gt;</code> · <code>provision_weight_shared</code> Arc-shares with U-Verify cache · optional <code>with_dp_forward(cfg)</code> rebinds <code>model_identity</code></dd>
+          <dt>method</dt><dd><code>tokenizers 0.21</code> · weights as <code>Arc&lt;BertWeights&gt;</code> · <code>provision_weight_shared</code> Arc-shares with U-Verify cache</dd>
           <dt>source</dt><dd>in-house · defaults to <code>BAAI/bge-base-en-v1.5</code> via <code>hf-hub</code></dd>
           <dt>secures</dt><dd>protocol fidelity vs the plain reference — bit-exact in fp32 modulo float associativity</dd>
           <dt>threat</dt><dd>see GELO / Shield / U-Verify cards</dd>
@@ -332,26 +346,13 @@
         </dl>
       </article>
 
-      <article class="card">
-        <span class="tag crypto">DP layer</span>
-        <h3>DP-Forward<span class="alias">dp_forward</span></h3>
-        <p class="one">Analytic Matrix Gaussian Mechanism on the pooled embedding — irreversible Gaussian noise giving formal <code>(ε, δ)</code>-Sequence-LDP. Survives any downstream encryption.</p>
-        <dl>
-          <dt>method</dt><dd>Per-row L2 clip to <code>C</code> · Balle–Wang analytic-Gaussian σ at <code>(ε, δ, Δ=2C)</code> · isotropic <code>N(0, σ²I)</code> on pooled output. Applied inside the embedder so the SEV-SNP report binds to <code>(ε, δ, C, σ)</code>.</dd>
-          <dt>source</dt><dd>Yue et al. · arXiv <span class="mono">2309.06746</span> · CCS 2023</dd>
-          <dt>secures</dt><dd>the residual after a key-holder decrypts the CAPRISE index. Only <code>e + DP_noise</code> ever leaves the embedder.</dd>
-          <dt>threat</dt><dd>compromised CAPRISE key (TEE breach, legal compulsion, key-rotation bug)</dd>
-          <dt>cost</dt><dd><span class="overhead good">µs per pooled vector</span> · <strong>empirically destroys NFCorpus retrieval at ε=4</strong> — kept available, not on by default</dd>
-        </dl>
-      </article>
-
     </div>
   </section>
 
   <!-- ═════ § 5 COMPUTE FLOW ═════ -->
   <section id="flow">
     <header class="section-head">
-      <div class="section-num">§05</div>
+      <div class="section-num">§06</div>
       <h2 class="section-title">Compute flow &amp; trust boundaries</h2>
       <div class="section-meta">per-layer · TEE ⇄ GPU mask round-trip</div>
     </header>
@@ -715,92 +716,11 @@
     </table>
   </section>
 
-  <!-- ═════ § 6 INTERFACES ═════ -->
-  <section id="interfaces">
-    <header class="section-head">
-      <div class="section-num">§06</div>
-      <h2 class="section-title">Interfaces</h2>
-      <div class="section-meta">substrate-agnostic seams</div>
-    </header>
-    <p class="lede">
-      Two trait pairs define every seam. The split is deliberately narrow — the GPU engine knows nothing about masking, the trusted executor knows nothing about retrieval.
-    </p>
-
-    <table class="spec">
-      <thead>
-        <tr>
-          <th>Seam</th>
-          <th>Trait</th>
-          <th>Crate</th>
-          <th>Boundary</th>
-          <th>Implementors</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td><b>GPU offload</b></td>
-          <td class="code">GpuOffloadEngine</td>
-          <td class="code">gelo-protocol</td>
-          <td>untrusted accelerator API · sees masked activations only</td>
-          <td><code>RayonCpuEngine</code> · <code>WgpuVulkanEngine</code></td>
-        </tr>
-        <tr>
-          <td><b>Trusted protocol</b></td>
-          <td class="code">TrustedExecutor</td>
-          <td class="code">gelo-protocol</td>
-          <td>mask RNG · shield · U-Verify · sensitive-layer policy</td>
-          <td><code>PlaintextExecutor</code> · <code>InProcessTrustedExecutor</code> · <code>SnpTrustedExecutor</code></td>
-        </tr>
-        <tr>
-          <td><b>Embedder</b></td>
-          <td class="code">Embedder</td>
-          <td class="code">core (rag_core)</td>
-          <td>text → vector + <code>model_identity</code> for attestation binding</td>
-          <td><code>FastEmbedEmbedder</code> · <code>GeloBertEmbedder</code> · <code>GeloQwenEmbedder</code></td>
-        </tr>
-        <tr>
-          <td><b>Attestation</b></td>
-          <td class="code">AttestationVerifier · AttestationIssuer</td>
-          <td class="code">gelo-rag · gelo-tee-sev-snp</td>
-          <td>relying party ⇄ CVM evidence · report bytes opaque to the service</td>
-          <td><code>NoopAttestationVerifier</code> · <code>SnpVerifierAdapter</code> · <code>HardwareReportIssuer</code> · <code>MockReportIssuer</code></td>
-        </tr>
-      </tbody>
-    </table>
-
-    <div class="two-col">
-      <div>
-        <h4>TrustedExecutor — what flows across the GELO seam</h4>
-        <ul>
-          <li><code>provision_weight(handle, W)</code> — public weight upload at model load (once)</li>
-          <li><code>begin_forward_pass(n)</code> / <code>end_forward_pass</code> — paper-parity mask lifecycle</li>
-          <li><code>offload_linear(handle, H) → H·W</code> — single masked GEMM</li>
-          <li><code>offload_qkv(layer, H) → (Q, K, V)</code> — shared-mask 3-way</li>
-          <li><code>offload_linear_many(handles, H)</code> — SwiGLU gate+up bundled</li>
-          <li><code>offload_attention_qkt(Q, Kᵀ) → Q·Kᵀ</code> — OutAttnMult path</li>
-          <li><code>offload_attention_permuted(Q, K, V, scale, mask)</code> — Amulet-style</li>
-          <li><code>set_rng_stream(stream)</code> — rayon-worker independence</li>
-        </ul>
-      </div>
-      <div>
-        <h4>GpuOffloadEngine — what the GPU side promises</h4>
-        <ul>
-          <li><code>register_weight(handle, W)</code> — model-load · public</li>
-          <li><code>matmul(handle, U) → U·W</code> — engine's only required compute</li>
-          <li><code>matmul_many(handles, U)</code> — shared upload + sync across N GEMMs</li>
-          <li><code>matmul_dynamic(L, R)</code> — both operands runtime (OutAttnMult)</li>
-          <li><code>matmul_dynamic_batched(L, R)</code> — batched dynamic for fused dispatch</li>
-          <li><code>softmax_batched(X)</code> — permuted-attention path</li>
-          <li>Engine has <strong>no notion of correctness</strong>; integrity is the executor's job</li>
-        </ul>
-      </div>
-    </div>
-  </section>
 
   <!-- ═════ § 7 PERFORMANCE & CORRECTNESS ═════ -->
   <section id="numbers">
     <header class="section-head">
-      <div class="section-num">§07</div>
+      <div class="section-num">§08</div>
       <h2 class="section-title">Performance &amp; correctness</h2>
       <div class="section-meta">measured · AMD Ryzen AI Max+ 395 · 2026-05-14</div>
     </header>
@@ -843,7 +763,6 @@
         <tr><td>FastEmbed MiniLM-L6 plain (MTEB sanity)</td><td class="num">≈ 0.30</td><td class="num">1.00</td><td>asserted within ±0.05 of published MTEB</td></tr>
         <tr><td>GELO/BGE-base + mask + CAPRISE</td><td class="num">≈ plain BGE</td><td class="num">≥ 0.95</td><td>protocol-fidelity asserted</td></tr>
         <tr><td>GELO/Qwen3 + mask + CAPRISE</td><td class="num">≈ plain Qwen3</td><td class="num">≥ 0.95</td><td>model-gap reported separately</td></tr>
-        <tr><td>+ DP-Forward(ε=4) on pooled output</td><td class="num" style="color:var(--tee)">≪ plain</td><td class="num">—</td><td>destroys NFCorpus retrieval — documented finding, not on by default</td></tr>
       </tbody>
     </table>
 
@@ -864,7 +783,7 @@
   <!-- ═════ § 8 STATUS & GAPS ═════ -->
   <section id="status">
     <header class="section-head">
-      <div class="section-num">§08</div>
+      <div class="section-num">§09</div>
       <h2 class="section-title">Status &amp; gaps</h2>
       <div class="section-meta">tier matrix · open levers · out of scope</div>
     </header>
@@ -875,7 +794,7 @@
       <tbody>
         <tr><td><b>T1 — in-process</b></td><td>any x86_64 Linux</td><td><code>cargo test --features mock</code></td><td class="accent">green</td><td>protocol math · report format · parser/verifier round-trip · tamper rejection</td></tr>
         <tr><td><b>T2 — VM-sim CVM</b></td><td>regular QEMU/KVM</td><td><code>SNP_MODE=mock</code></td><td class="accent">green</td><td>OS boundary · systemd lifecycle · weight loading · full HTTP service</td></tr>
-        <tr><td><b>T3 — real silicon</b></td><td>Hetzner EPYC + VFIO GPU</td><td><code>SNP_MODE=production</code></td><td>deferred (M5.9)</td><td>real <code>/dev/sev-guest</code> · ARK chain · RMP · SWIOTLB · GPU passthrough</td></tr>
+        <tr><td><b>T3 — real silicon</b></td><td>Hetzner EPYC + VFIO GPU</td><td><code>SNP_MODE=production</code></td><td>deferred</td><td>real <code>/dev/sev-guest</code> · ARK chain · RMP · SWIOTLB · GPU passthrough</td></tr>
       </tbody>
     </table>
 
@@ -896,7 +815,7 @@
           <li><b>Private model weights</b> — would need STIP-style weight masking; whole stack is built on openweight assumption</li>
           <li><b>FHE / MPC inference</b> — orders of magnitude too slow for the embedding workload</li>
           <li><b>Side-channels in the TEE</b> — SEV-SNP isolates memory but not cache / timing / power; <code>subtle</code> constant-time hardening deferred</li>
-          <li><b>Hosted generation</b> — out of scope for Approach 4; client-side LLM expected per the design doc</li>
+          <li><b>Hosted generation</b> — out of scope for the retrieval prototype; client-side LLM expected per the design doc</li>
           <li><b>Hybrid BM25 + dense retrieval</b> — open research gap; no private scheme ships it</li>
         </ul>
       </div>
@@ -919,7 +838,6 @@
       <ul>
         <li><code>docs/prototype/gelo.md</code></li>
         <li><code>docs/prototype/inference-optimization.md</code></li>
-        <li><code>docs/prototype/dp-forward.md</code></li>
       </ul>
     </div>
     <div>

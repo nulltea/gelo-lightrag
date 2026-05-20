@@ -49,6 +49,7 @@ use gelo_embedder::decoder::qwen3::Qwen3Variant;
 use gelo_embedder::decoder::rope::RopeTables;
 use gelo_embedder::decoder::weights::DecoderWeights;
 use gelo_gpu_wgpu::WgpuVulkanEngine;
+use gelo_protocol::profile;
 use gelo_protocol::rng::MaskSeed;
 use gelo_protocol::{
     InProcessTrustedExecutor, PlaintextExecutor, TrustedExecutor, WeightHandle, WeightKind,
@@ -56,8 +57,52 @@ use gelo_protocol::{
 use hf_hub::api::sync::{ApiBuilder, ApiRepo};
 
 const VARIANT: Qwen3Variant = Qwen3Variant::Q1_7B;
-const PROMPT_LENGTHS: &[usize] = &[64, 512, 2048];
-const MAX_TOKENS: usize = 16;
+const DEFAULT_PROMPT_LENGTHS: &[usize] = &[64, 512, 2048];
+const DEFAULT_MAX_TOKENS: usize = 16;
+
+fn prompt_lengths_from_env() -> Vec<usize> {
+    match std::env::var("GELO_BENCH_LENGTHS") {
+        Ok(s) => s
+            .split(',')
+            .filter_map(|t| t.trim().parse::<usize>().ok())
+            .collect(),
+        Err(_) => DEFAULT_PROMPT_LENGTHS.to_vec(),
+    }
+}
+
+fn max_tokens_from_env() -> usize {
+    std::env::var("GELO_BENCH_MAX_TOKENS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_MAX_TOKENS)
+}
+
+/// Skip the gpu_gelo_permuted cell (the slow one) during perf-lever
+/// sweeps where only the GELO mask path is changing. `GELO_BENCH_SKIP_PERMUTED=1`
+/// halves wall-clock at long n.
+fn skip_permuted_from_env() -> bool {
+    std::env::var("GELO_BENCH_SKIP_PERMUTED")
+        .ok()
+        .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Opt into HD₃ Hadamard-cascade mask via `GELO_BENCH_MASK_KIND=hd3`.
+/// Default (any other value, or unset) uses the paper-parity Haar
+/// mask. The `gpu_gelo` cell honours this — `gpu_plain` is unaffected
+/// (no mask) and `gpu_gelo_permuted` keeps Haar (its protocol assumes
+/// the dense mask).
+fn mask_kind_from_env() -> gelo_protocol::MaskKind {
+    match std::env::var("GELO_BENCH_MASK_KIND")
+        .ok()
+        .as_deref()
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("hd3") => gelo_protocol::MaskKind::Hd3,
+        _ => gelo_protocol::MaskKind::Haar,
+    }
+}
 
 /// Long-ish source text we tokenise and truncate to hit a target token count.
 /// Content is irrelevant for perf measurement — only the resulting token
@@ -97,6 +142,12 @@ struct CellTiming {
     n_prompt: usize,
     ttft: Duration,
     decode_steps: Vec<Duration>,
+    /// Profile bucket snapshot for the prefill call (post-`run_prefill`).
+    /// All `profile::time` regions executed during the prefill are
+    /// aggregated here; `decode_profile` captures the same buckets across
+    /// all `run_decode_step` calls in this generate.
+    prefill_profile: profile::Profile,
+    decode_profile: profile::Profile,
 }
 
 impl CellTiming {
@@ -156,13 +207,16 @@ fn time_generate<X: TrustedExecutor>(
     let max_cache_len = prompt_ids.len() + max_tokens;
     let mut kv_cache = KvCache::new(weights.layers.len(), max_cache_len, cfg.kv_dim());
 
+    profile::reset();
     let t_prefill = Instant::now();
     let hidden = run_prefill(cfg, weights, rope, exec, prompt_ids, &mut kv_cache)?;
     let ttft = t_prefill.elapsed();
+    let prefill_profile = profile::snapshot();
 
     let mut h_last = hidden.row(hidden.nrows() - 1).to_owned();
     let mut decode_steps = Vec::with_capacity(max_tokens);
 
+    profile::reset();
     for _ in 0..max_tokens {
         // Inline greedy argmax (avoids exporting compute_logits from the
         // generation module just for the bench).
@@ -182,12 +236,15 @@ fn time_generate<X: TrustedExecutor>(
         h_last = run_decode_step(cfg, weights, rope, exec, best_idx, &mut kv_cache)?;
         decode_steps.push(t_step.elapsed());
     }
+    let decode_profile = profile::snapshot();
 
     Ok(CellTiming {
         cell,
         n_prompt: prompt_ids.len(),
         ttft,
         decode_steps,
+        prefill_profile,
+        decode_profile,
     })
 }
 
@@ -292,11 +349,22 @@ fn build_prompt_ids(tokenizer: &HfTokenizer, target_tokens: usize) -> Result<Vec
 #[test]
 #[ignore = "downloads ~3.4 GB Qwen3-1.7B; requires Vulkan GPU; ~2-4 min wall-clock"]
 fn qwen3_1_7b_long_context_breakdown() -> Result<()> {
+    let prompt_lengths = prompt_lengths_from_env();
+    let max_tokens = max_tokens_from_env();
+    let skip_permuted = skip_permuted_from_env();
+    let mask_kind = mask_kind_from_env();
     eprintln!("RSS before any load: {}", fmt_gib(rss_bytes()));
     eprintln!(
-        "Qwen3-1.7B long-context bench — model={} lengths={:?} max_tokens={MAX_TOKENS}",
+        "Qwen3-1.7B long-context bench — model={} lengths={:?} max_tokens={} skip_permuted={} mask_kind={:?}",
         VARIANT.hf_model_id(),
-        PROMPT_LENGTHS,
+        prompt_lengths,
+        max_tokens,
+        skip_permuted,
+        mask_kind,
+    );
+    eprintln!(
+        "Mask GEMM backend: {}",
+        gelo_protocol::mask_backend_description()
     );
 
     let (cfg, tokenizer, weights, rope) = load_pretrained()?;
@@ -327,11 +395,21 @@ fn qwen3_1_7b_long_context_breakdown() -> Result<()> {
     eprintln!("RSS after gpu_plain provision: {}", fmt_gib(rss_bytes()));
 
     // 2. gpu_gelo (paper-parity defaults: per-forward A + shield(8, 4.0)).
-    eprintln!("[gpu_gelo] provisioning (per-forward A + shield(8,4.0))...");
+    //    Mask family chosen by `GELO_BENCH_MASK_KIND` (Haar by default;
+    //    `hd3` opts into the structured-orthogonal cascade — pads the
+    //    stacked-with-shield operand to the next power of two before
+    //    each apply, so the GPU sees `s_pad ≈ 2× n` rows at non-pow2 n).
+    eprintln!(
+        "[gpu_gelo] provisioning (per-forward A + shield(8,4.0), mask_kind={:?})...",
+        mask_kind
+    );
     let mut gpu_gelo = InProcessTrustedExecutor::with_seed(
         gpu_root.clone_shared(),
         MaskSeed::from_bytes([13u8; 32]),
     );
+    if mask_kind == gelo_protocol::MaskKind::Hd3 {
+        gpu_gelo = gpu_gelo.with_hd3_mask();
+    }
     provision_decoder_weights(&cfg_offload, &weights, &mut gpu_gelo)?;
     eprintln!("RSS after gpu_gelo provision: {}", fmt_gib(rss_bytes()));
 
@@ -341,34 +419,38 @@ fn qwen3_1_7b_long_context_breakdown() -> Result<()> {
     //    and disables OutAttnMult (cached path doesn't call it anyway,
     //    but `perm_attention_enabled_for` consults the OutAttnMult
     //    threshold as a tiebreaker; explicit disable makes the bench
-    //    cell unambiguous).
-    eprintln!("[gpu_gelo_permuted] provisioning (M1.10 Phase 1 permuted_cached path)...");
+    //    cell unambiguous). Skipped when GELO_BENCH_SKIP_PERMUTED=1.
     let mut cfg_permuted = cfg_offload.clone();
     cfg_permuted.use_perm_attention = true;
     cfg_permuted.perm_attention_min_seq_len = Some(0);
     cfg_permuted.use_out_attn_mult = false;
-    let mut gpu_gelo_permuted = InProcessTrustedExecutor::with_seed(
-        gpu_root.clone_shared(),
-        MaskSeed::from_bytes([29u8; 32]),
-    );
-    // Hidden-No-More-class noise on Q/K under permutation;
-    // F1+ soft causal mask C=30 is enabled by default.
-    gpu_gelo_permuted.set_perm_attention(
-        gelo_protocol::PermAttnConfig::HIDDEN_NO_MORE,
-    );
-    provision_decoder_weights(&cfg_permuted, &weights, &mut gpu_gelo_permuted)?;
-    eprintln!(
-        "RSS after gpu_gelo_permuted provision: {}",
-        fmt_gib(rss_bytes())
-    );
+    let mut gpu_gelo_permuted_opt = if skip_permuted {
+        eprintln!("[gpu_gelo_permuted] skipped (GELO_BENCH_SKIP_PERMUTED=1)");
+        None
+    } else {
+        eprintln!("[gpu_gelo_permuted] provisioning (M1.10 Phase 1 permuted_cached path)...");
+        let mut e = InProcessTrustedExecutor::with_seed(
+            gpu_root.clone_shared(),
+            MaskSeed::from_bytes([29u8; 32]),
+        );
+        // Hidden-No-More-class noise on Q/K under permutation;
+        // F1+ soft causal mask C=30 is enabled by default.
+        e.set_perm_attention(gelo_protocol::PermAttnConfig::HIDDEN_NO_MORE);
+        provision_decoder_weights(&cfg_permuted, &weights, &mut e)?;
+        eprintln!(
+            "RSS after gpu_gelo_permuted provision: {}",
+            fmt_gib(rss_bytes())
+        );
+        Some(e)
+    };
 
     // Pre-build all prompts. Reused across both cells so the timing
     // measures protocol overhead, not tokenisation.
-    let prompts: Vec<Vec<u32>> = PROMPT_LENGTHS
+    let prompts: Vec<Vec<u32>> = prompt_lengths
         .iter()
         .map(|&n| build_prompt_ids(&tokenizer, n))
         .collect::<Result<Vec<_>>>()?;
-    for (n_target, ids) in PROMPT_LENGTHS.iter().zip(prompts.iter()) {
+    for (n_target, ids) in prompt_lengths.iter().zip(prompts.iter()) {
         eprintln!(
             "  prompt n={n_target}: tokenised to {} tokens",
             ids.len(),
@@ -385,25 +467,29 @@ fn qwen3_1_7b_long_context_breakdown() -> Result<()> {
     let _ = time_generate(
         "warm_gelo", &cfg_offload, &weights, &rope, &mut gpu_gelo, warm_ids, 2,
     )?;
-    let _ = time_generate(
-        "warm_gelo_permuted",
-        &cfg_permuted,
-        &weights,
-        &rope,
-        &mut gpu_gelo_permuted,
-        warm_ids,
-        2,
-    )?;
+    if let Some(e) = gpu_gelo_permuted_opt.as_mut() {
+        let _ = time_generate(
+            "warm_gelo_permuted",
+            &cfg_permuted,
+            &weights,
+            &rope,
+            e,
+            warm_ids,
+            2,
+        )?;
+    }
     eprintln!("RSS after warmup: {}", fmt_gib(rss_bytes()));
 
-    // Measure — interleave (cell, length) triples so system-wide noise
-    // (FS, thermal) hits all cells equivalently at each shape.
-    eprintln!("[measure] timed generate({MAX_TOKENS}) per (cell, length)...");
-    let mut results: Vec<CellTiming> = Vec::with_capacity(PROMPT_LENGTHS.len() * 3);
-    for (n_target, ids) in PROMPT_LENGTHS.iter().zip(prompts.iter()) {
+    // Measure — interleave (cell, length) so system-wide noise (FS, thermal)
+    // hits all cells equivalently at each shape. When skip_permuted=true the
+    // chunk size is 2 (plain + gelo) instead of 3.
+    eprintln!("[measure] timed generate({max_tokens}) per (cell, length)...");
+    let cells_per_n: usize = if skip_permuted { 2 } else { 3 };
+    let mut results: Vec<CellTiming> = Vec::with_capacity(prompt_lengths.len() * cells_per_n);
+    for (n_target, ids) in prompt_lengths.iter().zip(prompts.iter()) {
         eprintln!("  --- n={n_target} ---");
         let r_plain = time_generate(
-            "gpu_plain", &cfg_offload, &weights, &rope, &mut gpu_plain, ids, MAX_TOKENS,
+            "gpu_plain", &cfg_offload, &weights, &rope, &mut gpu_plain, ids, max_tokens,
         )?;
         eprintln!(
             "    gpu_plain          n={n_target}: TTFT {:.0} ms · TPOT {:.1} ms",
@@ -411,37 +497,39 @@ fn qwen3_1_7b_long_context_breakdown() -> Result<()> {
             r_plain.decode_mean_ms(),
         );
         let r_gelo = time_generate(
-            "gpu_gelo", &cfg_offload, &weights, &rope, &mut gpu_gelo, ids, MAX_TOKENS,
+            "gpu_gelo", &cfg_offload, &weights, &rope, &mut gpu_gelo, ids, max_tokens,
         )?;
         eprintln!(
             "    gpu_gelo           n={n_target}: TTFT {:.0} ms · TPOT {:.1} ms",
             r_gelo.ttft.as_secs_f64() * 1000.0,
             r_gelo.decode_mean_ms(),
         );
-        let r_permuted = time_generate(
-            "gpu_gelo_permuted",
-            &cfg_permuted,
-            &weights,
-            &rope,
-            &mut gpu_gelo_permuted,
-            ids,
-            MAX_TOKENS,
-        )?;
-        eprintln!(
-            "    gpu_gelo_permuted  n={n_target}: TTFT {:.0} ms · TPOT {:.1} ms",
-            r_permuted.ttft.as_secs_f64() * 1000.0,
-            r_permuted.decode_mean_ms(),
-        );
         results.push(r_plain);
         results.push(r_gelo);
-        results.push(r_permuted);
+        if let Some(e) = gpu_gelo_permuted_opt.as_mut() {
+            let r_permuted = time_generate(
+                "gpu_gelo_permuted",
+                &cfg_permuted,
+                &weights,
+                &rope,
+                e,
+                ids,
+                max_tokens,
+            )?;
+            eprintln!(
+                "    gpu_gelo_permuted  n={n_target}: TTFT {:.0} ms · TPOT {:.1} ms",
+                r_permuted.ttft.as_secs_f64() * 1000.0,
+                r_permuted.decode_mean_ms(),
+            );
+            results.push(r_permuted);
+        }
     }
 
     eprintln!();
     eprintln!("{}", "=".repeat(118));
     eprintln!("Vulkan adapter: {adapter_line}");
     eprintln!(
-        "Model: {} · greedy · max_tokens={MAX_TOKENS} · global attention runs in-TEE at every n (cached path, see decoder/forward.rs:355-370)",
+        "Model: {} · greedy · max_tokens={max_tokens} · global attention runs in-TEE at every n (cached path, see decoder/forward.rs:355-370)",
         VARIANT.hf_model_id(),
     );
     eprintln!("{}", "=".repeat(118));
@@ -451,14 +539,11 @@ fn qwen3_1_7b_long_context_breakdown() -> Result<()> {
         "total (s)", "vs gpu_plain"
     );
     eprintln!("{}", "-".repeat(118));
-    for chunk in results.chunks_exact(3) {
+    for chunk in results.chunks_exact(cells_per_n) {
         let plain = &chunk[0];
         let gelo = &chunk[1];
-        let permuted = &chunk[2];
         let gelo_overhead =
             100.0 * (gelo.total().as_secs_f64() / plain.total().as_secs_f64() - 1.0);
-        let permuted_overhead =
-            100.0 * (permuted.total().as_secs_f64() / plain.total().as_secs_f64() - 1.0);
         eprintln!(
             "{:<20} {:>9} {:>11.1} {:>13.1} {:>11.1} {:>12.1} {:>15.3} {:>13}",
             plain.cell,
@@ -481,6 +566,9 @@ fn qwen3_1_7b_long_context_breakdown() -> Result<()> {
             gelo.total().as_secs_f64(),
             gelo_overhead,
         );
+        if let Some(permuted) = chunk.get(2) {
+        let permuted_overhead =
+            100.0 * (permuted.total().as_secs_f64() / plain.total().as_secs_f64() - 1.0);
         eprintln!(
             "{:<20} {:>9} {:>11.1} {:>13.1} {:>11.1} {:>12.1} {:>15.3} {:>+12.1}%",
             permuted.cell,
@@ -492,9 +580,40 @@ fn qwen3_1_7b_long_context_breakdown() -> Result<()> {
             permuted.total().as_secs_f64(),
             permuted_overhead,
         );
+        }
         eprintln!();
     }
     eprintln!("{}", "=".repeat(118));
+
+    // Per-(cell, n) profile breakdown — one bucket dump per CellTiming.
+    // Buckets are populated by `profile::time` regions inside
+    // `gelo-protocol` (mask_sample, mask_apply, mask_unapply, shield_*,
+    // engine:matmul*, perm_attention_cached, …). The prefill section is
+    // the most informative for asymptotic scaling; the decode section is
+    // mostly relevant for the permuted_cached path.
+    eprintln!();
+    eprintln!("{}", "#".repeat(118));
+    eprintln!("# Per-bucket profile breakdowns (use these for FLOP / scaling analysis)");
+    eprintln!("{}", "#".repeat(118));
+    for r in &results {
+        let header_pref = format!(
+            "{} · n={} · prefill (TTFT={:.1} ms)",
+            r.cell,
+            r.n_prompt,
+            r.ttft.as_secs_f64() * 1000.0,
+        );
+        r.prefill_profile.dump(&header_pref);
+        let header_dec = format!(
+            "{} · n={} · decode (TPOT mean={:.1} ms, {} step{})",
+            r.cell,
+            r.n_prompt,
+            r.decode_mean_ms(),
+            r.decode_steps.len(),
+            if r.decode_steps.len() == 1 { "" } else { "s" },
+        );
+        r.decode_profile.dump(&header_dec);
+    }
+    eprintln!();
     eprintln!(
         "Notes: every cell runs global attention in-TEE on CPU/BLIS (cached path, locked M1.3 design)."
     );

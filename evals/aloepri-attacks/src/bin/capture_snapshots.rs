@@ -68,6 +68,9 @@ enum ConditionArg {
     C0,
     C1,
     C2,
+    /// HD₃ Hadamard-cascade mask + default shield (round-3 gate B.3
+    /// extension; mirrors C2 except `.with_hd3_mask()`).
+    C3,
     All,
 }
 
@@ -91,10 +94,12 @@ impl ConditionArg {
             ConditionArg::C0 => vec![Condition::C0Plain],
             ConditionArg::C1 => vec![Condition::C1MaskOnly],
             ConditionArg::C2 => vec![Condition::C2Default],
+            ConditionArg::C3 => vec![Condition::C3Hd3],
             ConditionArg::All => vec![
                 Condition::C0Plain,
                 Condition::C1MaskOnly,
                 Condition::C2Default,
+                Condition::C3Hd3,
             ],
         }
     }
@@ -439,6 +444,10 @@ where
         Condition::C0Plain => (0_usize, 0.0_f32, false),
         Condition::C1MaskOnly => (0_usize, 0.0_f32, false),
         Condition::C2Default => (8_usize, 4.0_f32, true),
+        // C3 mirrors C2 on shield + per-forward-pass cadence; the mask
+        // family is the only variable. Same numbers go into meta.json
+        // so the Python loader treats C2 and C3 as comparable rows.
+        Condition::C3Hd3 => (8_usize, 4.0_f32, true),
     };
 
     let mut executor: ExecVariant<E> = match cond {
@@ -457,6 +466,20 @@ where
             )
             .with_snapshot_capture(snapshot_cfg);
             debug_assert_eq!(exec.shield_config().k, 8);
+            ExecVariant::InProc(exec)
+        }
+        Condition::C3Hd3 => {
+            // Same builder as C2 except `.with_hd3_mask()` swaps the
+            // mask family. Per-forward-pass cadence + shield(8, 4.0)
+            // are inherited from `with_seed` defaults.
+            let exec = InProcessTrustedExecutor::with_seed(
+                engine,
+                MaskSeed::from_bytes([seed_byte; 32]),
+            )
+            .with_hd3_mask()
+            .with_snapshot_capture(snapshot_cfg);
+            debug_assert_eq!(exec.shield_config().k, 8);
+            debug_assert_eq!(exec.mask_kind(), gelo_protocol::MaskKind::Hd3);
             ExecVariant::InProc(exec)
         }
     };

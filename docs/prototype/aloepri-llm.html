@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>private-rag · generation (AloePri)</title>
+    <title>private-rag — generation (AloePri)</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -18,27 +18,14 @@
       <span class="crosshair tr"></span>
       <span class="crosshair bl"></span>
       <span class="crosshair br"></span>
-
-      <!-- ─── TOP NAV ─── -->
-      <nav class="topnav">
-        <a class="brand" href="index.html">
-          private-rag<span class="dot">·</span
-          ><span class="rev">prototype</span>
-        </a>
-        <div class="links">
-          <a href="index.html">Overview</a>
-          <a href="embedding.html">Embedding · GELO</a>
-          <a href="storage.html">Storage · CAPRISE</a>
-          <a href="reranking.html">Reranking · GELO</a>
-          <a href="graphrag.html">GraphRAG · Compass</a>
-          <a class="current" href="aloepri-llm.html">Generation · AloePri</a>
-        </div>
-      </nav>
+  <!-- ─── TOP NAV (shared, see _nav.js) ─── -->
+  <div id="topnav-mount"></div>
+  <script src="_nav.js" defer></script>
 
       <!-- ─── MASTHEAD ─── -->
       <header class="masthead">
         <div>
-          <h1 class="title">generation<br /><em>· AloePri</em></h1>
+          <h1 class="title">generation<br /><em>— AloePri</em></h1>
           <p class="subtitle">
             Generative inference without a TEE in the loop. Qwen3 1.7B is
             rewritten once, offline, into an obfuscated GGUF that an unmodified
@@ -592,7 +579,7 @@
                 and K (with repaired M<sub>k</sub> construction so
                 M<sub>q</sub>·M<sub>k</sub><sup>T</sup> = I holds). ISA HS at
                 <code>attn_norm-23</code> now passes the 15 % gate.
-                IMA-L0-activation (path-2-specific attack at
+                IMA-L0-activation (AloePri-specific attack at
                 <code>attn_norm-0</code>) does not move under Algorithm 2
                 because that surface is pre-W<sub>q</sub>. See §08 ledger.
               </td>
@@ -901,7 +888,7 @@
             <span class="tag client">offline</span>
             <h3>
               obfuscate_qwen3_gguf<span class="alias"
-                >python/path-2 :: rewriter</span
+                >python/aloepri :: rewriter</span
               >
             </h3>
             <p class="one">
@@ -993,7 +980,7 @@
             <span class="tag client">client</span>
             <h3>
               AloePriClient<span class="alias"
-                >python/path-2 :: aloepri_client</span
+                >python/aloepri :: aloepri_client</span
               >
             </h3>
             <p class="one">
@@ -1073,7 +1060,7 @@
             <p class="one">
               12-attack prompt-inversion benchmark adapted from the AloePri
               reference (<code>vendor/aloepri-py/src/security_qwen/</code>) plus
-              path-2 surface variants. Three surface families: static obfuscated
+              AloePri surface variants. Three surface families: static obfuscated
               weights (VMA, IA, IMA-EmbedRow-ridge, IMA-EmbedRow-transformer,
               QK-norm Γ eigendecomposition); forward-pass activations (NN,
               IMA-L0-activation across 3 surfaces, IMA-L0-transformer, ISA
@@ -1092,9 +1079,8 @@
               </dd>
               <dt>specific watchpoint</dt>
               <dd>
-                ISA on the partial-Algorithm-2 artifact — the M2.7 run is what
-                tells us whether head-shuffle alone is enough or whether
-                per-norm-site κ tuning is needed (§09).
+                ISA on the partial-Algorithm-2 artifact tells us whether head-shuffle
+                alone is enough or whether per-norm-site κ tuning is needed (§09).
               </dd>
             </dl>
           </article>
@@ -1102,7 +1088,7 @@
           <article class="card">
             <span class="tag tee">eval</span>
             <h3>
-              accuracy-harness<span class="alias">python/path-2/evals/</span>
+              accuracy-harness<span class="alias">python/aloepri/evals/</span>
             </h3>
             <p class="one">
               Mini accuracy benchmark: MMLU 0-shot (200 prompts), PIQA 0-shot
@@ -2411,7 +2397,7 @@
           obfuscated token ids — so all are prompt-inversion attacks against the
           deployment.
           <strong
-            >M2.7 captures + attacks complete 2026-05-19; static-weight
+            >Captures + attacks complete 2026-05-19; static-weight
             prompt-inversion baselines added 2026-05-20.</strong
           >
         </p>
@@ -2433,7 +2419,7 @@
             recipes against the obfuscated embedding-row surface:
             <code>IMA-EmbedRow-ridge</code> (paper §F.1's IMA basic) and
             <code>IMA-EmbedRow-transformer</code> (paper §F.1's IMA paper-like).
-            Two activation-surface variants from the path-2 harness apply the
+            Two activation-surface variants from the AloePri harness apply the
             same recipes to layer-0 hidden-state captures:
             <code>IMA-L0-activation</code> (ridge) and
             <code>IMA-L0-transformer</code> (trained transformer). All four
@@ -2490,7 +2476,7 @@
                 via matrix-Γ kernel)
               </td>
               <td>
-                The current path-2 deployment. Closest available approximation
+                The current AloePri deployment. Closest available approximation
                 to paper full Algorithm 2 under the matrix-Γ kernel
                 construction. Acceptance threshold per paper §6.3:
                 <b>TTRSR ≤ 15 % per attack</b>.
@@ -2692,7 +2678,7 @@
                 Recovers τ. Same ridge primitive as IMA-L0-activation but at
                 layer 23 — deep residual stream after 22 layers of attention +
                 FFN. Paper measures at
-                <code>attn_norm-23</code>; Q/K post-norm surfaces are path-2
+                <code>attn_norm-23</code>; Q/K post-norm surfaces are AloePri
                 additions to observe Algorithm 2's intra-head defence directly.
                 Internal-state-attack family (AloePri §F.1).
               </td>
@@ -2886,7 +2872,7 @@
                 <div class="alias">
                   eigendecompose
                   <code>blk.*.attn_q_norm.weight</code> /
-                  <code>attn_k_norm.weight</code>; path-2 matrix-Γ deployment,
+                  <code>attn_k_norm.weight</code>; AloePri matrix-Γ deployment,
                   2026-05-19
                 </div>
               </td>
@@ -2899,7 +2885,7 @@
                 is a similarity transform of a diagonal matrix, eigenvalues
                 recover γ<sub>qk</sub> and eigenvectors recover M up to head_dim
                 permutation in ms; defeats R̂<sub>qk</sub> + Ẑ<sub>block</sub> +
-                Ĥ<sub>qk</sub> at every layer. Path-2-specific surface (no paper
+                Ĥ<sub>qk</sub> at every layer. AloePri-specific surface (no paper
                 analogue);
                 <code
                   >docs/research/aloepri-qk-norm-matrix-gamma-threat-model.md</code
@@ -2919,7 +2905,7 @@
                 Defending it requires per-prompt fresh M (GELO-style masking,
                 which breaks AloePri's "static obfuscation, no infra change"
                 thesis) or additive Γ noise tuned to confound eig without
-                breaking generation — neither is path-2's mission.
+                breaking generation — neither is AloePri's mission.
               </td>
             </tr>
             <tr>
@@ -3032,7 +3018,7 @@
                 <td>
                   <code>ima_l0_activation_below_15pct</code><br /><span
                     style="font-size: 11px; color: #888"
-                    >(path-2-specific, attn_norm-0 surface)</span
+                    >(AloePri-specific, attn_norm-0 surface)</span
                   >
                 </td>
                 <td>IMA-L0-activation ≤ 15 %</td>
@@ -3054,7 +3040,7 @@
                 <td>
                   <code>ima_l0_transformer_below_15pct</code><br /><span
                     style="font-size: 11px; color: #888"
-                    >(path-2-specific, trained transformer inverter on
+                    >(AloePri-specific, trained transformer inverter on
                     attn_norm-0)</span
                   >
                 </td>
@@ -3290,7 +3276,7 @@
         </p>
         <p class="prose">
           Implementation: <code>evals/aloepri-attacks/</code>. Operator runbook:
-          <code>evals/aloepri-attacks/README.md</code>. The M2.7 follow-up is a
+          <code>evals/aloepri-attacks/README.md</code>. The wire-side follow-up is a
           capture binary that drives <code>llama-server</code> against the
           obfuscated GGUF, records wire-side observables, and feeds them to the
           same Python attack drivers.
@@ -3514,7 +3500,7 @@
             >q</sub
           >
           — Algorithm 2's intra-head M<sub>q</sub> acts post-W<sub>q</sub>
-          and structurally cannot reach this surface. This is a path-2-specific
+          and structurally cannot reach this surface. This is an AloePri-specific
           attack the paper does not measure; closing it requires Algorithm 1 /
           §5.2.2 levers, not Algorithm 2.
         </p>
@@ -3556,7 +3542,7 @@
             <b>Per-prompt fresh noise on W<sub>e</sub>.</b> Sample a fresh noise
             vector each inference instead of baking it at obfuscation time.
             Strong defence but breaks the "static obfuscation, no infra change"
-            thesis — equivalent to moving toward GELO-style masking on path-1.
+            thesis — equivalent to moving toward GELO-style masking on the in-TEE protocol.
           </li>
           <li>
             <b>Per-head distinct M<sub>q</sub>[h]</b> in Algorithm 2. Currently

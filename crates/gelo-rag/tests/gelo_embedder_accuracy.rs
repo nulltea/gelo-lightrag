@@ -118,7 +118,7 @@ fn queries() -> Vec<(&'static str, &'static str)> {
 
 // ─────────────────────────────────────────────────────────────────────
 // Direct-cosine retrieval over any `Embedder`. Skips the
-// gelo-rag/remote-rag services so we measure pure inference + cosine
+// gelo-rag service so we measure pure inference + cosine
 // without protocol-side encryption distortion in the mix.
 // ─────────────────────────────────────────────────────────────────────
 

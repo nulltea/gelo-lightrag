@@ -38,51 +38,14 @@ use std::collections::HashMap;
 use gelo_rag::{GeloRagInMemoryService, NoopAttestationVerifier};
 use common::beir::{BeirDataset, load_nfcorpus};
 use common::embed_cache::CachingEmbedder;
-use dp_forward::DpForwardConfig;
 use gelo_embedder::{GeloBertEmbedder, GeloQwenEmbedder};
 use gelo_gpu_wgpu::WgpuVulkanEngine;
 use gelo_protocol::{InProcessTrustedExecutor, MaskSeed, PlaintextExecutor, ShieldConfig};
 use rag_core::{Caprise, CapriseKey, Embedder, FastEmbedEmbedder};
-use rand::{RngCore, SeedableRng};
-use rand_chacha::ChaCha20Rng;
-use remote_rag::{PlanarLaplaceConfig, RemoteRagService};
 
 const K_NDCG: usize = 10;
 const K_RECALL: usize = 100;
 const DEFAULT_QUERY_SAMPLE: usize = 100;
-
-// ─────────────────────────────────────────────────────────────────────
-// DP-Forward wrapper for the M7.3 bench.
-// ─────────────────────────────────────────────────────────────────────
-
-struct DpForwardWrapper<E: Embedder> {
-    inner: E,
-    cfg: DpForwardConfig,
-    rng: ChaCha20Rng,
-}
-
-impl<E: Embedder> DpForwardWrapper<E> {
-    fn new(inner: E, cfg: DpForwardConfig) -> Self {
-        let mut seed = [0u8; 32];
-        rand::rng().fill_bytes(&mut seed);
-        Self {
-            inner,
-            cfg,
-            rng: ChaCha20Rng::from_seed(seed),
-        }
-    }
-}
-
-impl<E: Embedder> Embedder for DpForwardWrapper<E> {
-    fn embed(&mut self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
-        let mut out = self.inner.embed(texts)?;
-        for row in out.iter_mut() {
-            dp_forward::amgm::clip_l2_in_place(row, self.cfg.clip_c);
-            dp_forward::amgm::add_gaussian_noise(row, self.cfg.sigma, &mut self.rng);
-        }
-        Ok(out)
-    }
-}
 
 /// `BEIR_EMBED_CACHE=1` opt-in: wrap every embedder in CachingEmbedder
 /// so re-runs of the bench replay previously-computed embeddings from
@@ -91,8 +54,8 @@ impl<E: Embedder> Embedder for DpForwardWrapper<E> {
 ///
 /// Default OFF because the cache silently turns wall-clock measurement
 /// into "what's on disk". It's the right choice for ranking-only
-/// validation where determinism-given-same-embeddings is the goal
-/// (M7.1/M7.3 protocol-fidelity work), the wrong choice for perf A/B.
+/// validation where determinism-given-same-embeddings is the goal,
+/// the wrong choice for perf A/B.
 fn embed_cache_enabled() -> bool {
     std::env::var("BEIR_EMBED_CACHE")
         .map(|v| v == "1")
@@ -315,21 +278,6 @@ fn run_via_gelo_rag<E: Embedder, S: rag_core::EmbeddingEncryptionScheme>(
     Ok(out)
 }
 
-fn run_via_remote_rag<E: Embedder>(
-    mut service: RemoteRagService<E>,
-    dataset: &BeirDataset,
-    queries: &[(String, String)],
-    k: usize,
-) -> anyhow::Result<HashMap<String, Vec<String>>> {
-    service.ingest_chunks(dataset.docs.clone())?;
-    let mut out = HashMap::with_capacity(queries.len());
-    for (qid, text) in queries.iter() {
-        let hits = service.query(text, k)?;
-        out.insert(qid.clone(), hits.into_iter().map(|h| h.id.0).collect());
-    }
-    Ok(out)
-}
-
 fn print_row(label: &str, m: &MetricSummary) {
     eprintln!(
         "{:<48} {:>7.3} {:>9.3} {:>7.3} {:>10.3} {:>13.3}",
@@ -420,47 +368,8 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
     )?;
     let caprise_metrics = aggregate(&queries, &caprise_rankings, &dataset, &baseline.rankings);
 
-    eprintln!("[run] CAPRISE + DP-Forward(ε=4) at pooled output...");
-    let dp_cfg = DpForwardConfig::calibrate(4.0, 1e-5, 1.0);
-    let caprise_dp_rankings = run_via_gelo_rag(
-        GeloRagInMemoryService::new(
-            DpForwardWrapper::new(
-                cached_fastembed("fastembed-minilm-l6-plain")?,
-                dp_cfg,
-            ),
-            Caprise::new(CapriseKey::generate(32.0, 0.15)),
-            NoopAttestationVerifier,
-        ),
-        &dataset,
-        &queries,
-        K_RECALL,
-    )?;
-    let caprise_dp_metrics =
-        aggregate(&queries, &caprise_dp_rankings, &dataset, &baseline.rankings);
-
-    eprintln!("[run] RemoteRAG (planar-Laplace ε = 10·n)...");
-    let probe_dim = baseline.doc_embeds[0].1.len();
-    let planar_eps = 10.0 * probe_dim as f64;
-    let rrag_rankings = run_via_remote_rag(
-        RemoteRagService::new(
-            cached_fastembed("fastembed-minilm-l6-plain")?,
-            PlanarLaplaceConfig::new(planar_eps, probe_dim),
-        )
-        .with_paillier_bits(256)
-        .with_over_fetch_factor(3)
-        .with_seed([19u8; 32]),
-        &dataset,
-        &queries,
-        K_RECALL,
-    )?;
-    let rrag_metrics = aggregate(&queries, &rrag_rankings, &dataset, &baseline.rankings);
-
-    // ─── GELO+BGE configurations (M7.1 validation at scale) ───
-    // BGE-base is 12-layer BERT — exactly the architecture the
-    // DP-Forward paper validates `noise_layer=10` against. We compare:
-    //   - BGE plain (no DP)                  ← BGE-only baseline
-    //   - BGE + CAPRISE + DP at layer 10     ← M7.1 intermediate-layer
-    //   - BGE + CAPRISE + DP at pooled out   ← legacy (control)
+    // ─── GELO+BGE configurations ───
+    // BGE-base is 12-layer BERT.
     //
     // BGE embeddings are NOT cached on disk by this bench — earlier
     // runs used a CachingEmbedder wrapper but it silently turned every
@@ -468,23 +377,15 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
     // Re-embed every run; if you need ranking-only validation use the
     // common::embed_cache helper directly.
     let run_bge = std::env::var("BEIR_BGE").map(|v| v != "0").unwrap_or(true);
-    // BGE sub-config gates. Default is now: only GELO+mask runs.
-    //   - BGE plain (no mask) and the two BGE+DP variants are skipped
-    //     unless explicitly re-enabled; they already validated their
-    //     hypotheses in M7.1, and their embeddings are cached on disk
-    //     under `target/embed-cache/` — re-running them adds wall-clock
-    //     without changing results during Tier 2 perf work.
+    // BGE sub-config gates. Default: only GELO+mask runs.
+    //   - BGE plain (no mask) is skipped unless explicitly re-enabled.
     //   - GELO+mask is the only path that exercises the full mask
-    //     round-trip + engine matmul stack; that's what Tier 2 is
-    //     optimising.
+    //     round-trip + engine matmul stack.
     let run_bge_plain = std::env::var("BEIR_BGE_PLAIN").map(|v| v == "1").unwrap_or(false);
-    let run_bge_dp = std::env::var("BEIR_BGE_DP").map(|v| v == "1").unwrap_or(false);
     let run_bge_mask = std::env::var("BEIR_BGE_MASK").map(|v| v != "0").unwrap_or(true);
 
     struct BgeRunMetrics {
         plain: Option<MetricSummary>,
-        dp_layer: Option<MetricSummary>,
-        dp_pooled: Option<MetricSummary>,
         mask: Option<MetricSummary>,
     }
 
@@ -542,59 +443,6 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
         } else {
             eprintln!("[run] BGE-base plain SKIPPED (set BEIR_BGE_PLAIN=1 to enable)");
             None
-        };
-
-        let (bge_dp_layer, bge_dp_pooled) = if run_bge_dp {
-            eprintln!("[run] BGE-base + CAPRISE + DP-Forward(ε=4) at LAYER 10 (M7.1 path)...");
-            let dp_layer_cfg =
-                DpForwardConfig::calibrate(4.0, 1e-5, 1.0).with_layer_index(Some(10));
-            let bge_dp_layer_emb = maybe_cache(
-                GeloBertEmbedder::from_pretrained(
-                    "BAAI/bge-base-en-v1.5",
-                    PlaintextExecutor::new(gpu.clone_shared()),
-                )?
-                .with_dp_forward(dp_layer_cfg),
-                "bge-base-en-v1.5-dp-layer10",
-            )?;
-            let bge_dp_layer_rankings = run_via_gelo_rag(
-                GeloRagInMemoryService::new(
-                    bge_dp_layer_emb,
-                    Caprise::new(CapriseKey::generate(32.0, 0.15)),
-                    NoopAttestationVerifier,
-                ),
-                &dataset,
-                &queries,
-                K_RECALL,
-            )?;
-            let bge_dp_layer =
-                aggregate(&queries, &bge_dp_layer_rankings, &dataset, &baseline.rankings);
-
-            eprintln!("[run] BGE-base + CAPRISE + DP-Forward(ε=4) at POOLED output (control)...");
-            let dp_pooled_cfg = DpForwardConfig::calibrate(4.0, 1e-5, 1.0); // layer_index = None
-            let bge_dp_pooled_emb = maybe_cache(
-                GeloBertEmbedder::from_pretrained(
-                    "BAAI/bge-base-en-v1.5",
-                    PlaintextExecutor::new(gpu.clone_shared()),
-                )?
-                .with_dp_forward(dp_pooled_cfg),
-                "bge-base-en-v1.5-dp-pooled",
-            )?;
-            let bge_dp_pooled_rankings = run_via_gelo_rag(
-                GeloRagInMemoryService::new(
-                    bge_dp_pooled_emb,
-                    Caprise::new(CapriseKey::generate(32.0, 0.15)),
-                    NoopAttestationVerifier,
-                ),
-                &dataset,
-                &queries,
-                K_RECALL,
-            )?;
-            let bge_dp_pooled =
-                aggregate(&queries, &bge_dp_pooled_rankings, &dataset, &baseline.rankings);
-            (Some(bge_dp_layer), Some(bge_dp_pooled))
-        } else {
-            eprintln!("[run] BGE-base + DP-Forward configs SKIPPED (set BEIR_BGE_DP=1 to enable)");
-            (None, None)
         };
 
         // Full GELO mask round-trip via InProcessTrustedExecutor (Vulkan +
@@ -665,8 +513,6 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
 
         Some(BgeRunMetrics {
             plain: bge_plain,
-            dp_layer: bge_dp_layer,
-            dp_pooled: bge_dp_pooled,
             mask: bge_mask,
         })
     } else {
@@ -828,9 +674,7 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
     );
     eprintln!("{}", "-".repeat(100));
     print_row("Plaintext baseline (FastEmbed MiniLM-L6)", &baseline_metrics);
-    print_row("CAPRISE (no DP)", &caprise_metrics);
-    print_row("CAPRISE + DP-Forward(ε=4) pooled output", &caprise_dp_metrics);
-    print_row("RemoteRAG (planar-Laplace ε=10·n)", &rrag_metrics);
+    print_row("CAPRISE", &caprise_metrics);
     if let Some(bge) = &bge_metrics {
         eprintln!();
         if let Some(p) = &bge.plain {
@@ -838,13 +682,6 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
         }
         if let Some(m) = &bge.mask {
             print_row("GELO/BGE-base + GELO mask + CAPRISE", m);
-        }
-        if let (Some(dp_layer), Some(dp_pooled)) = (&bge.dp_layer, &bge.dp_pooled) {
-            eprintln!(
-                "M7.1 validation — DP-Forward position comparison on BGE-base (12-layer BERT, 768-d):"
-            );
-            print_row("  + DP-Forward(ε=4) @ layer 10 (M7.1)", dp_layer);
-            print_row("  + DP-Forward(ε=4) @ pooled output", dp_pooled);
         }
     }
     if qwen3_plain_metrics.is_some() || qwen3_mask_metrics.is_some() {
@@ -872,37 +709,13 @@ fn beir_nfcorpus_accuracy_comparison() -> anyhow::Result<()> {
             "CAPRISE should preserve baseline rank-1 closely; got top1_base = {:.3}",
             caprise_metrics.top1_base_match,
         );
-        assert!(
-            rrag_metrics.top1_base_match >= 0.85,
-            "RemoteRAG with PHE rerank should preserve baseline rank-1; got top1_base = {:.3}",
-            rrag_metrics.top1_base_match,
-        );
     }
     if let Some(bge) = &bge_metrics {
-        // M7.1 detail print only when both DP variants ran alongside the
-        // plain baseline.
-        if let (Some(plain), Some(dp_layer), Some(dp_pooled)) =
-            (&bge.plain, &bge.dp_layer, &bge.dp_pooled)
-        {
-            eprintln!(
-                "[m7.1] BGE plain    nDCG@10 = {:.3}\n[m7.1] BGE @layer10 nDCG@10 = {:.3} ({:.1}% of plain)\n[m7.1] BGE @pooled  nDCG@10 = {:.3} ({:.1}% of plain)",
-                plain.ndcg10,
-                dp_layer.ndcg10,
-                100.0 * dp_layer.ndcg10 / plain.ndcg10.max(1e-9),
-                dp_pooled.ndcg10,
-                100.0 * dp_pooled.ndcg10 / plain.ndcg10.max(1e-9),
-            );
-            // M7.1 plan §Verification §2 hypothesised that intermediate-
-            // layer DP would recover meaningful retrieval utility.
-            // Empirically (ε=4, C=1.0, noise_layer=10 on BGE-base) BOTH
-            // paths destroy retrieval to near-random level. Documented in
-            // docs/prototype/dp-forward.md §6. Assert only that BGE-plain
-            // nDCG@10 is meaningful (sanity: BGE inference pipeline
-            // produces useful embeddings).
+        if let Some(plain) = &bge.plain {
             if !perf_only {
                 assert!(
                     plain.ndcg10 >= 0.30,
-                    "BGE-base plain nDCG@10 = {:.3} below 0.30 — BGE inference pipeline broken, not a DP finding",
+                    "BGE-base plain nDCG@10 = {:.3} below 0.30 — BGE inference pipeline broken",
                     plain.ndcg10,
                 );
             }
