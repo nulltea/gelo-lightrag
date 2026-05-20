@@ -231,49 +231,46 @@ def run_ima_embedrow_ridge(
 
 
 class _InverterBlock(nn.Module):
-    """Pre-LN MHA + GELU FFN. Same shape as
-    `attack_drivers/run_ima_paper_like.py::_InverterBlock` so the
-    architectural surface is identical between activation-side and
-    weight-side IMA-paper-like."""
+    """Pre-LN GELU FFN residual block with identity-init.
 
-    def __init__(self, hidden: int, n_heads: int, ffn_mult: int = 4) -> None:
+    No MHA — the attack target is a per-row mapping (each obfuscated
+    embedding row → its plain partner), so sequence attention adds
+    capacity without useful inductive bias and the optimiser settles
+    on memorising solutions that don't transfer to vocab-disjoint
+    test rows. We keep the trunk pure residual MLP so the block has
+    a single learnable path (the FFN delta) and zero-init the FFN's
+    second Linear so the block ≡ identity at t = 0.
+    """
+
+    def __init__(self, hidden: int, ffn_mult: int = 4) -> None:
         super().__init__()
-        self.ln1 = nn.LayerNorm(hidden)
-        self.attn = nn.MultiheadAttention(hidden, n_heads, batch_first=True, bias=False)
-        self.ln2 = nn.LayerNorm(hidden)
+        self.ln = nn.LayerNorm(hidden)
         self.ffn = nn.Sequential(
             nn.Linear(hidden, hidden * ffn_mult, bias=False),
             nn.GELU(),
             nn.Linear(hidden * ffn_mult, hidden, bias=False),
         )
+        nn.init.zeros_(self.ffn[2].weight)  # block ≡ x at t=0
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x_norm = self.ln1(x)
-        attn_out, _ = self.attn(x_norm, x_norm, x_norm, need_weights=False)
-        x = x + attn_out
-        x = x + self.ffn(self.ln2(x))
-        return x
+        return x + self.ffn(self.ln(x))
 
 
-class _SequenceInverter(nn.Module):
-    """`(B, T, observed_dim) → (B, T, output_dim)` sequence inverter.
+class _RowInverter(nn.Module):
+    """`(B, observed_dim) → (B, output_dim)` row inverter.
 
-    Matches the AloePri reference `_PaperLikeIMAInverter` design:
+    No input bottleneck: `inverter_hidden` defaults to `observed_dim`,
+    so the input projection is an Identity (or a small mixing matrix
+    only when obs ≠ hidden by user override). The first version of
+    this driver hard-coded `inverter_hidden=256` against a 2 304-dim
+    input — that discarded 89 % of the row signal at the input layer
+    and the trunk could only produce rank-256 projections of the
+    target, collapsing every prediction to the corpus centroid.
 
-    * **No input bottleneck.** `inverter_hidden` defaults to
-      `observed_dim` so the input projection is identity (or a small
-      mixing matrix when `obs_dim != hidden`). The first version of
-      this driver hard-coded `inverter_hidden=256` against a 2 304-dim
-      input — that discarded 89 % of the row signal at the input layer
-      and the trunk could only produce rank-256 projections of the
-      target, collapsing every prediction to the corpus centroid (val
-      top-1 ≈ 0 even when ridge solves the same problem at 99 % on the
-      plain identity-τ control).
-    * **Real sequence input.** Random token rows are packed into
-      sequences of length T so MHA actually attends across positions.
-      Mirrors the reference's <code>sequence_length=32</code> design;
-      the per-position regression target is independent per row but the
-      MHA + FFN capacity matches the reference impl.
+    Trunk is a stack of identity-init residual MLP blocks (no
+    cross-row attention). The output projection then has to learn an
+    approximate inverse of the obfuscation — initialised randomly,
+    refined by AdamW under MSE + weight decay.
     """
 
     def __init__(
@@ -282,7 +279,6 @@ class _SequenceInverter(nn.Module):
         observed_dim: int,
         inverter_hidden: int,
         n_layers: int = 2,
-        n_heads: int = 8,
         output_dim: int,
         ffn_mult: int = 4,
     ) -> None:
@@ -293,29 +289,16 @@ class _SequenceInverter(nn.Module):
         else:
             self.input_proj = nn.Identity()
         self.blocks = nn.ModuleList(
-            [_InverterBlock(inverter_hidden, n_heads, ffn_mult) for _ in range(n_layers)]
+            [_InverterBlock(inverter_hidden, ffn_mult) for _ in range(n_layers)]
         )
         self.output_proj = nn.Linear(inverter_hidden, output_dim, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x : (B, T, observed_dim).
-        h = self.input_proj(x)  # (B, T, hidden)
+        # x : (B, observed_dim).
+        h = self.input_proj(x)
         for blk in self.blocks:
             h = blk(h)
-        return self.output_proj(h)  # (B, T, output_dim)
-
-
-def _pack_sequences(
-    x: torch.Tensor, y_ids: torch.Tensor, seq_len: int
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Reshape a flat `(N, dim)` row pair into `(N // seq_len, seq_len, dim)`.
-
-    Discards the trailing remainder if `N` isn't a multiple of seq_len.
-    """
-    n = (x.shape[0] // seq_len) * seq_len
-    x = x[:n].view(n // seq_len, seq_len, x.shape[-1])
-    y_ids = y_ids[:n].view(n // seq_len, seq_len)
-    return x, y_ids
+        return self.output_proj(h)
 
 
 def run_ima_embedrow_transformer(
@@ -330,21 +313,23 @@ def run_ima_embedrow_transformer(
     candidate_pool_size: int = 2048,
     inverter_hidden: int | None = None,
     n_layers: int = 2,
-    n_heads: int = 8,
-    seq_len: int = 32,
-    epochs: int = 8,
-    batch_size: int = 8,
-    lr: float = 3e-4,
-    weight_decay: float = 0.0,
+    epochs: int = 16,
+    batch_size: int = 64,
+    lr: float = 1e-3,
+    weight_decay: float = 1e-3,
     topk: int = 10,
     seed: int = 20260518,
 ) -> AttackResult:
-    """Trained-inverter version matching the AloePri reference design.
+    """Trained-inverter version on flat row pairs (no sequence packing).
 
-    Pack `train_size` random token rows into sequences of length
-    `seq_len`; train a 2-layer pre-LN MHA+FFN trunk; predict plain rows.
-    `inverter_hidden` defaults to `observed_dim` to avoid the input
-    bottleneck that collapsed v1 to the centroid.
+    Architecture: input_proj → n_layers × identity-init residual MLP
+    blocks → output_proj. With <code>inverter_hidden = observed_dim</code>
+    by default, the input projection is identity; the trunk starts as
+    exact identity (FFN deltas zero-init); the output projection is
+    random and the optimiser learns the obfuscation inverse via MSE +
+    weight-decay AdamW. Sequence-input + MHA were removed because they
+    let the optimiser memorise sequence-level patterns that don't
+    transfer to vocab-disjoint test rows.
     """
     t0 = time.perf_counter()
     torch.manual_seed(seed)
@@ -367,36 +352,26 @@ def run_ima_embedrow_transformer(
     test_ids = torch.from_numpy(splits["test_plain_ids"])
     candidate_ids = torch.from_numpy(splits["candidate_plain_ids"])
 
-    x_train_flat = obs_W_e[tau_t[train_ids]]
-    x_val_flat = obs_W_e[tau_t[val_ids]]
-    x_test_flat = obs_W_e[tau_t[test_ids]]
+    x_train = obs_W_e[tau_t[train_ids]]
+    y_train = plain_W_e[train_ids]
+    x_val = obs_W_e[tau_t[val_ids]]
+    x_test = obs_W_e[tau_t[test_ids]]
 
     val_candidate_ids = torch.unique(torch.cat([val_ids, candidate_ids]))
-
-    # Pack rows into sequences. Eval-side seq_len defaults to the train
-    # seq_len; remainders are dropped so the test/val splits below show
-    # the actual evaluated row count.
-    x_train_seq, ytr_id_seq = _pack_sequences(x_train_flat, train_ids, seq_len)
-    x_val_seq, yval_id_seq = _pack_sequences(x_val_flat, val_ids, seq_len)
-    x_test_seq, ytest_id_seq = _pack_sequences(x_test_flat, test_ids, seq_len)
-
-    # Match plain-row targets per position.
-    y_train_seq = plain_W_e[ytr_id_seq]  # (B_tr, T, plain_dim)
 
     if inverter_hidden is None:
         inverter_hidden = obs_W_e.shape[1]  # no bottleneck
 
     device = torch.device("cpu")
-    model = _SequenceInverter(
+    model = _RowInverter(
         observed_dim=obs_W_e.shape[1],
         inverter_hidden=inverter_hidden,
         n_layers=n_layers,
-        n_heads=n_heads,
         output_dim=plain_W_e.shape[1],
     ).to(device)
 
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-    n_seqs = x_train_seq.shape[0]
+    n = x_train.shape[0]
 
     best_val_top1 = -1.0
     best_state: dict[str, torch.Tensor] | None = None
@@ -404,13 +379,13 @@ def run_ima_embedrow_transformer(
 
     for epoch in range(int(epochs)):
         model.train()
-        order = torch.randperm(n_seqs)
+        order = torch.randperm(n)
         total_loss = 0.0
         n_batches = 0
-        for start in range(0, n_seqs, batch_size):
+        for start in range(0, n, batch_size):
             batch_idx = order[start : start + batch_size]
-            x_batch = x_train_seq[batch_idx].to(device)  # (B, T, obs)
-            y_batch = y_train_seq[batch_idx].to(device)  # (B, T, plain)
+            x_batch = x_train[batch_idx].to(device)
+            y_batch = y_train[batch_idx].to(device)
             pred = model(x_batch)
             loss = nn.functional.mse_loss(pred, y_batch)
             opt.zero_grad(set_to_none=True)
@@ -422,12 +397,10 @@ def run_ima_embedrow_transformer(
 
         model.eval()
         with torch.no_grad():
-            val_pred_seq = model(x_val_seq.to(device)).cpu()  # (B_val, T, plain)
-        val_pred_flat = val_pred_seq.reshape(-1, val_pred_seq.shape[-1])
-        val_ids_flat = yval_id_seq.reshape(-1)
+            val_pred = model(x_val.to(device)).cpu()
         val_metrics = _evaluate_inversion_predictions(
-            predicted_embeddings=val_pred_flat,
-            true_plain_ids=val_ids_flat,
+            predicted_embeddings=val_pred,
+            true_plain_ids=val_ids,
             candidate_plain_ids=val_candidate_ids,
             baseline_embed=plain_W_e,
             topk=topk,
@@ -448,13 +421,11 @@ def run_ima_embedrow_transformer(
     model.load_state_dict(best_state)
     model.eval()
     with torch.no_grad():
-        test_pred_seq = model(x_test_seq.to(device)).cpu()
-    test_pred_flat = test_pred_seq.reshape(-1, test_pred_seq.shape[-1])
-    test_ids_flat = ytest_id_seq.reshape(-1)
+        test_pred = model(x_test.to(device)).cpu()
 
     metrics = _evaluate_inversion_predictions(
-        predicted_embeddings=test_pred_flat,
-        true_plain_ids=test_ids_flat,
+        predicted_embeddings=test_pred,
+        true_plain_ids=test_ids,
         candidate_plain_ids=candidate_ids,
         baseline_embed=plain_W_e,
         topk=topk,
@@ -468,21 +439,18 @@ def run_ima_embedrow_transformer(
         condition="obfuscated",
         model_id=str(obfuscated.path.name),
         n_prompts=0,
-        n_train=int(test_ids_flat.shape[0] * (n_seqs / max(x_test_seq.shape[0], 1))),
-        n_test=int(test_ids_flat.shape[0]),
+        n_train=int(train_ids.shape[0]),
+        n_test=int(test_ids.shape[0]),
         ttrsr_top1=top1,
         ttrsr_top10=top10,
         risk_level=classify_risk_level(top1),
         extra={
             "inverter_hidden": inverter_hidden,
             "n_layers": n_layers,
-            "n_heads": n_heads,
-            "seq_len": seq_len,
             "epochs": epochs,
             "batch_size": batch_size,
             "lr": lr,
-            "n_train_sequences": int(n_seqs),
-            "n_train_rows": int(n_seqs * seq_len),
+            "weight_decay": weight_decay,
             "epoch_summaries": epoch_summaries,
             "embedding_cosine_similarity": float(metrics["embedding_cosine_similarity"]),
             "candidate_pool_size": int(candidate_ids.shape[0]),
@@ -521,16 +489,13 @@ def main() -> int:
     p.add_argument("--transformer-val-size", type=int, default=256)
     p.add_argument("--transformer-test-size", type=int, default=256)
     p.add_argument("--transformer-candidate-pool-size", type=int, default=2048)
-    p.add_argument("--transformer-epochs", type=int, default=8)
-    p.add_argument("--transformer-seq-len", type=int, default=32,
-                   help="Sequence length for the MHA-equipped trunk; matches "
-                        "AloePri reference's sequence_length=32 default.")
+    p.add_argument("--transformer-epochs", type=int, default=16)
     p.add_argument("--transformer-hidden", type=int, default=0,
                    help="Inverter hidden dim. 0 (default) = observed_dim (no "
                         "bottleneck). Setting this below observed_dim drops "
                         "input dims and the model collapses to centroid — "
-                        "see docstring on _SequenceInverter for the v1 bug "
-                        "that motivated the default.")
+                        "see docstring on _RowInverter for the v1 bug that "
+                        "motivated the default.")
     p.add_argument(
         "--skip-transformer",
         action="store_true",
@@ -613,7 +578,6 @@ def main() -> int:
             test_size=args.transformer_test_size,
             candidate_pool_size=args.transformer_candidate_pool_size,
             epochs=args.transformer_epochs,
-            seq_len=args.transformer_seq_len,
             inverter_hidden=(args.transformer_hidden if args.transformer_hidden > 0 else None),
         )
         print(
