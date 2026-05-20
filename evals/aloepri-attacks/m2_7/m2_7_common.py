@@ -32,6 +32,7 @@ from pathlib import Path
 
 PHASE_MIN_GB: dict[str, float] = {
     "static_attacks": 25.0,    # ≥ 22 GB peak + safety margin
+    "ima_embedrow_attacks": 25.0,  # same two-GGUF working set as static_attacks
     "token_capture": 4.0,
     "token_attacks": 3.0,
     "hidden_capture": 4.0,

@@ -79,6 +79,12 @@ def main() -> int:
     p.add_argument("--min-mem-gb", type=float, default=20.0)
     p.add_argument("--allow-token-stream", action="store_true",
                    help="Opt in to the token-stream step (requires llama-server up)")
+    p.add_argument("--skip-ima-embedrow", action="store_true",
+                   help="Skip the IMA-EmbedRow-ridge / IMA-EmbedRow-transformer step "
+                        "(both attacks load both GGUFs again; ~5 min extra).")
+    p.add_argument("--skip-ima-embedrow-transformer", action="store_true",
+                   help="Run IMA-EmbedRow-ridge only; skip the slow "
+                        "trained-inverter variant.")
     args = p.parse_args()
 
     print("[M2.7 orchestrator] pre-flight checks")
@@ -135,6 +141,34 @@ def main() -> int:
     if rc != 0:
         print(f"[M2.7 orchestrator] static-weight step failed (rc={rc})")
         return rc
+
+    # ── Step 1b: IMA-EmbedRow static-weight attacks ────────────────
+    # Two prompt-inversion attacks on the obfuscated embedding-row
+    # surface: ridge + trained-inverter on (W_e_plain, W_e_obf, τ).
+    # See docs/handoffs/2026-05-19-aloepri-attack-surface-followups.md
+    # thread 1 for why they're in-scope (recovering τ decodes every
+    # wire-side prompt).
+    if not args.skip_ima_embedrow:
+        if args.key is None:
+            print("[M2.7 orchestrator] IMA-EmbedRow skipped — no --key supplied "
+                  "(τ must come from the obfuscator's .key.npz)")
+        else:
+            embedrow_out = args.output_dir / "m2_7-ima-embedrow.json"
+            print(f"\n[M2.7 orchestrator] step 1b: IMA-EmbedRow attacks → {embedrow_out}")
+            cmd = [
+                sys.executable,
+                str(Path(__file__).parent / "run_ima_embedrow_attacks.py"),
+                "--plain", str(args.plain),
+                "--obfuscated", str(args.obfuscated),
+                "--key", str(args.key),
+                "--output", str(embedrow_out),
+            ]
+            if args.skip_ima_embedrow_transformer:
+                cmd.append("--skip-transformer")
+            rc = subprocess.run(cmd, check=False).returncode
+            if rc != 0:
+                print(f"[M2.7 orchestrator] IMA-EmbedRow step failed (rc={rc})")
+                return rc
 
     # ── Step 2: token-stream attacks (opt-in) ──────────────────────
     if args.allow_token_stream:
