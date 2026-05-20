@@ -1,0 +1,225 @@
+{
+  "endpoint": "http://127.0.0.1:8062",
+  "key_path": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-8b/keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-bf16.gguf.key.npz",
+  "plain_mode": false,
+  "tokenizer": "Qwen/Qwen3-8B",
+  "quality": {
+    "prompts": [
+      {
+        "idx": 0,
+        "prompt": "The capital of France is",
+        "response": " located in which country?\nOptions:\nA. Germany\nB. Italy\nC. Spain\nD. United Kingdom\nAnswer: The capital of France is located in which country?\nAnswer: A. Germany\n\nWait, that doesn't make",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 4.020631039980799
+      },
+      {
+        "idx": 1,
+        "prompt": "Q: What is 17 times 4? A:",
+        "response": " 68. Q: What is 17 times 5? A: 85. Q: What is 17 times 6? A: 102. Q: What is 17 times ",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 4.017565550748259
+      },
+      {
+        "idx": 2,
+        "prompt": "Write a haiku about autumn leaves:",
+        "response": " first line 7 syllables, second line 5 syllables, third line 7 syllables.\nSure, here's a haiku about",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 29,
+        "wall_s": 2.6318098651245236
+      },
+      {
+        "idx": 3,
+        "prompt": "def is_prime(n):",
+        "response": "\n    if n < 2:\n        return False\n    for i in range(2, int(n ** 0.5) + 1):\n        if n % i == 0:\n            return False\n    return True",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 4.047062064055353
+      },
+      {
+        "idx": 4,
+        "prompt": "Translate to French: 'Good morning, how are you?' \u2192",
+        "response": " 'Bonjour, comment allez-vous?' (formal, written, in a conversation with a stranger, in a situation where you need to be polite, like in a job interview, when you're applying for a job, or when you",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 4.013377849943936
+      }
+    ],
+    "all_readable": true,
+    "wall_s": 18.730708037037402
+  },
+  "humaneval": {
+    "n": 20,
+    "passed": 8,
+    "accuracy": 0.4,
+    "wall_s": 573.0899349316023,
+    "details": [
+      {
+        "task_id": "HumanEval/163",
+        "passed": false,
+        "completion": "    # YOUR CODE HERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOURCODEHERE\n    # YOU",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpfp3co9zu.py\", line 91, in <module>\n    check(generate_integers)\n  File \"/tmp/tmpfp3co9zu.py\", line 81, in check\n    assert candidate(2, 10) == [2, 4,",
+        "n_response_tokens": 384,
+        "wall_s": 32.09660045290366
+      },
+      {
+        "task_id": "HumanEval/28",
+        "passed": true,
+        "completion": "    return ''.join(strings)",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 32.00525414198637
+      },
+      {
+        "task_id": "HumanEval/6",
+        "passed": false,
+        "completion": "    # Split the input string into individual groups\n    groups = paren_string.split()\n    # Initialize a list to store the maximum nesting level for each group\n    max_nesting = []\n    # Iterate over each group\n    for group in groups:\n        # Initialize a variable to track the current level of nesting\n        current_level = 0\n        # Iterate over each character in the group\n        for char in group:\n            # If the character is an opening parenthesis, increment the current level\n            if char == '(':\n                current_level += 1\n            # If the character is a closi",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpf17y76yv.py\", line 50, in <module>\n    check(parse_nested_parens)\n  File \"/tmp/tmpf17y76yv.py\", line 45, in check\n    assert candidate('(()()) ((()))",
+        "n_response_tokens": 268,
+        "wall_s": 22.64811955112964
+      },
+      {
+        "task_id": "HumanEval/70",
+        "passed": false,
+        "completion": "    # Your code\n    if not lst:\n        return []\n    # Create a copy of the list to avoid modifying the original\n    lst = list(lst)\n    # Create a new list to store the",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpz0qyqqms.py\", line 38, in <module>\n    check(strange_sort_list)\n  File \"/tmp/tmpz0qyqqms.py\", line 23, in check\n    assert candidate([1, 2, 3, 4]) ==",
+        "n_response_tokens": 42,
+        "wall_s": 3.979849354363978
+      },
+      {
+        "task_id": "HumanEval/62",
+        "passed": false,
+        "completion": "    # create a new list for the derivative\n    derivative = []\n    # iterate over the coefficients, skipping the first one\n    for i in range(1, len(xs)):\n        # multiply each coefficient by its exponent\n        derivative.append( xs[i] * i )\n    return derivative\n\nWait, but in the first example, the input is [3, 1, 2, 4, 5], and the output is [1, 4, 12, 20]. But according to the code, for the first example, the derivative of 3 + 1x + 2x^2 + 4x^3 +5x^4 is 1 + 4x + 12x^2 + 20x^3, which is [1,4,12,20], but the code for the first example would be:\n\nfor i in range(1, len(xs)):\n    derivative.ap",
+        "error": "  File \"/tmp/tmpt3zuu52b.py\", line 20\n    Wait, but in the first example, the input is [3, 1, 2, 4, 5], and the output is [1, 4, 12, 20]. But according to the code, for the first example, the derivati",
+        "n_response_tokens": 384,
+        "wall_s": 32.16033429419622
+      },
+      {
+        "task_id": "HumanEval/57",
+        "passed": false,
+        "completion": "    # check if list is increasing or decreasing\n    # check if all elements are same\n    # check if list is increasing\n    # check if list is decreasing\n    # check if list is same\n    # check if list is empty\n    # check if list has only one element\n    # check if list has only two elements\n    # check if list has more than two elements\n    # check if list has elements in same order\n    # check if list has elements in different order\n    # check if list has elements in same order but not all same\n    # check if list has elements in different order but not all same\n    # check if list has elem",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmprjigmc60.py\", line 60, in <module>\n    check(monotonic)\n  File \"/tmp/tmprjigmc60.py\", line 49, in check\n    assert candidate([1, 2, 4, 10]) == True\n ",
+        "n_response_tokens": 384,
+        "wall_s": 32.101342376321554
+      },
+      {
+        "task_id": "HumanEval/35",
+        "passed": true,
+        "completion": "    max = l[0]\n    for i in range(1, len(l)):\n        if l[i] > max:\n            max = l[i]\n    return max\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 32.08794926805422
+      },
+      {
+        "task_id": "HumanEval/26",
+        "passed": true,
+        "completion": "    counts = {}\n    for number in numbers:\n        counts[number] = counts.get(number, 0) + 1\n    return [number for number in numbers if counts[number] == 1]",
+        "error": "",
+        "n_response_tokens": 72,
+        "wall_s": 6.430196592118591
+      },
+      {
+        "task_id": "HumanEval/139",
+        "passed": false,
+        "completion": "    # Handle cases where n is not a positive integer\n    if not isinstance(n, int) or n <= 0:\n        return None\n    # Handle cases where n is a positive integer\n    # The special factorial of n is defined as:\n    # brazilian_factorial(n) = n! * (n-1)! * (n-2)! * ... * 1!\n    # where n > 0\n    # So, for n = 0, the special factorial is 1\n    # So, for n = 1, the special factorial is 1! = 1\n    # So, for n = 2, the special factorial is 2! * 1! = 2 * 1 = 2\n    # So, for n = 3, the special factorial is 3! * \n    # So, for n = 4, the special factorial is 4! * 3! * 2! * 1! = 24 * 6 * 2 * 1 = 288\n  ",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpbrafvg94.py\", line 41, in <module>\n    check(special_factorial)\n  File \"/tmp/tmpbrafvg94.py\", line 32, in check\n    assert candidate(4) == 288, \"Test",
+        "n_response_tokens": 384,
+        "wall_s": 32.12971520423889
+      },
+      {
+        "task_id": "HumanEval/22",
+        "passed": true,
+        "completion": "    return [value for value in values if isinstance(value, int)]",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 32.07102141017094
+      },
+      {
+        "task_id": "HumanEval/151",
+        "passed": false,
+        "completion": "    # Write your code here\n    total = 0\n    for num in lst:\n        if num % 2 == 1:\n            total += num **2\n    return total\n\n# Test cases\nprint(double_the_difference([1, 3, 2, 0])) # 10\nprint(double_the_difference([-1, -2, 0])) # 0\nprint(double_the_difference([9, -2])) # 81\nprint(double_the_difference([0])) # 0\nprint(double_the_difference([])) # 0\n\nprint(double_the_difference([1, 2, 3, 4, 5])) # 1 + 9 +25 = 35\nprint(double_the_difference([1, -2, 3, 0])) # 1 + 9 = 10\nprint(double_the_difference([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])) # 1 + 9 +25 +49 = 84\nprint(double_the_difference([1, 2, 3, ",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpu896j3ck.py\", line 53, in <module>\n    check(double_the_difference)\n  File \"/tmp/tmpu896j3ck.py\", line 45, in check\n    assert candidate([-1, -2, 8])",
+        "n_response_tokens": 384,
+        "wall_s": 32.3869781200774
+      },
+      {
+        "task_id": "HumanEval/108",
+        "passed": false,
+        "completion": "    # Write a function count_nums which takes an array of integers and returns\n    # the number of elements which has a sum of digits > 0.\n    # If a number is negative, then its first signed digit will be negative:\n    # e.g. -123 has signed digits -1, 2, and 3.\n    # >>> count_nums([]) == 0\n    # >>> count_nums([-1, 11, -11]) == 1\n    # >>> count_nums([1, 1, 2]) == 3\n    # Write a function count_nums which takes an array of integers and returns\n    # the number of elements which has a sum of digits > 0.\n    # If a number is negative, then its first signed digit will be negative:\n    # e.g. -",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmprsnv5577.py\", line 53, in <module>\n    check(count_nums)\n  File \"/tmp/tmprsnv5577.py\", line 39, in check\n    assert candidate([]) == 0\n           ^^^",
+        "n_response_tokens": 384,
+        "wall_s": 32.12386277504265
+      },
+      {
+        "task_id": "HumanEval/8",
+        "passed": true,
+        "completion": "    sum_total = 0\n    product_total = 1\n    for number in numbers:\n        sum_total += number\n        product_total *= number\n    return sum_total, product_total",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 32.13692686101422
+      },
+      {
+        "task_id": "HumanEval/7",
+        "passed": true,
+        "completion": "    return [string for string in strings if substring in string]",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 32.09072249615565
+      },
+      {
+        "task_id": "HumanEval/23",
+        "passed": true,
+        "completion": "    return len(string)\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 31.974925508722663
+      },
+      {
+        "task_id": "HumanEval/55",
+        "passed": true,
+        "completion": "    if n == 1:\n        return 1\n    elif n == 2:\n        return 1\n    else:\n        return fib(n-1) + fib(n-2)\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 31.97189256316051
+      },
+      {
+        "task_id": "HumanEval/59",
+        "passed": false,
+        "completion": "    # find the largest prime factor of n\n    # first, check if n is even, if so, divide by 2 until it is odd\n    # then check for factors from 3 upwards\n    # then check if any of those factors are prime\n    # then return the largest one\n    # first, check if n is even, if so, divide by 2 until it is odd\n    # then check for factors from 3 upwards\n    # then check if any of those factors are prime\n    # then return the largest one\n    # first, check if n is even, if so, divide by 2 until it is odd\n    # then check for factors from 3 upwards\n    # then check if any of those factors are prime\n  ",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp_234tlr7.py\", line 55, in <module>\n    check(largest_prime_factor)\n  File \"/tmp/tmp_234tlr7.py\", line 47, in check\n    assert candidate(15) == 5\n    ",
+        "n_response_tokens": 384,
+        "wall_s": 31.972764540929347
+      },
+      {
+        "task_id": "HumanEval/129",
+        "passed": false,
+        "completion": "    # YOUR CODE_HERE\n    # YOURCODE_HERE\n    # YOURCODE_HERE\n    # YOURCODE_HERE\n    # YOURCODE_HERE\n    # YOURCODE_HERE\n    # YOURCODE_HERE\n    # YOURCODE_HERE\n    # YOURCODE_HERE\n    # YOURCODE_HERE\n    # YOURCODE_HERE\n    # YOURCODE_HERE\n    # YOURCODE_HERE\n    # YOURCODE_HERE\n    # YOURCODE_HERE\n    # YOURCODE_HERE\n    # YOUR\n\n    # YOURCODE_HERE\n    # YOURCODE_HERE\n    # YOURCODE_HERE\n    # YOURCODE_HERE\n    # YOURCODE_HERE\n    # YOURCODE_HERE\n    # YOURCODE_HERE\n    # YOURCODE_HERE\n    # YOURCODE_HERE\n    # YOURCODE_HERE\n    # YOURCODE_HERE\n    # YOURCODE_HERE\n    # YOURCODE_HERE\n    # Y",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpwcu7nb8a.py\", line 119, in <module>\n    check(minPath)\n  File \"/tmp/tmpwcu7nb8a.py\", line 103, in check\n    assert candidate([[1, 2, 3], [4, 5, 6], [",
+        "n_response_tokens": 384,
+        "wall_s": 33.152466964907944
+      },
+      {
+        "task_id": "HumanEval/161",
+        "passed": false,
+        "completion": "    # Your code\n    # Handle the case where the string contains no letters, reverse the string.\n    # So, first check if the string contains any letters.\n    # Then, for each character, if it is a letter, reverse its case.\n    # Otherwise, keep it as it is.\n    # Then, if there are no letters, reverse the string.\n    # So, first, check if there are any letters.\n    # Then, for each character, if it is a letter, reverse its case.\n    # Otherwise, keep it as it is.\n    # Then, if there are no letters, reverse the string.\n    # So, first, check if there are any letters.\n    # Then, for each chara",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp_mkdrfds.py\", line 60, in <module>\n    check(solve)\n  File \"/tmp/tmp_mkdrfds.py\", line 46, in check\n    assert candidate(\"AsDf\") == \"aSdF\"\n          ",
+        "n_response_tokens": 384,
+        "wall_s": 32.19042332377285
+      },
+      {
+        "task_id": "HumanEval/143",
+        "passed": false,
+        "completion": "    # Convert the sentence to lowercase and split into words\n    words = sentence.lower().split()\n    # Filter words whose lengths are prime numbers\n    prime_words = [word for word in words if is_prime(len(word))]\n    # Join the words with a single space and return\n    return ' '.join(prime_words)\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpdrbo1z4t.py\", line 45, in <module>\n    check(words_in_sentence)\n  File \"/tmp/tmpdrbo1z4t.py\", line 33, in check\n    assert candidate(\"This is a test\"",
+        "n_response_tokens": 297,
+        "wall_s": 25.37792018055916
+      }
+    ]
+  }
+}

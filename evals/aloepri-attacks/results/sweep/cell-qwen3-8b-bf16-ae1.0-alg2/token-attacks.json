@@ -1,0 +1,44 @@
+{
+  "format": "aloepri_m2_7_token_v1",
+  "captured": "/home/timo/repos/private-rag-path-2/evals/aloepri-attacks/results/sweep/cell-qwen3-8b-bf16-ae1.0-alg2/token-streams.jsonl",
+  "attacks": {
+    "tfma": {
+      "attack": "tfma",
+      "condition": "obfuscated_\u00a705",
+      "model_id": "keymat-h128-pi-noise-alg2-fp32.gguf",
+      "n_prompts": 64,
+      "n_train": 64,
+      "n_test": 63,
+      "ttrsr_top1": 0.00390625,
+      "ttrsr_top10": 0.04296875,
+      "risk_level": "low",
+      "primary_metric_name": "token_top1_recovery_rate",
+      "extra": {
+        "candidate_pool_size": 256,
+        "n_observed_unique_tokens": 256,
+        "matching_strategy": "paper_frequency_rank",
+        "token_top1_recovery_rate": 0.00390625,
+        "token_top10_recovery_rate": 0.04296875,
+        "token_top100_recovery_rate": 0.16015625,
+        "evaluated_obfuscated_token_count": 256.0
+      }
+    },
+    "sda": {
+      "attack": "sda",
+      "condition": "obfuscated_\u00a705",
+      "model_id": "keymat-h128-pi-noise-alg2-fp32.gguf",
+      "n_prompts": 64,
+      "n_train": 64,
+      "n_test": 63,
+      "ttrsr_top1": null,
+      "ttrsr_top10": null,
+      "risk_level": "low",
+      "primary_metric_name": "token_top1_recovery_rate",
+      "extra": {
+        "bleu4": 1.636592944331153e-05,
+        "candidate_pool_size": 256,
+        "matching_strategy": "paper_bigram_signature_substitution"
+      }
+    }
+  }
+}

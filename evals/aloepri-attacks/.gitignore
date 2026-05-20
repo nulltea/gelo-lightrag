@@ -14,3 +14,11 @@ results/*
 # Raw server tensor-dump binary files (intermediate; the per-prompt
 # safetensors next to them is the canonical derived artifact).
 results/sweep/**/*.bin
+# Per-prompt hidden-state / attention captures. Multi-MB each
+# (paper-like + attn-l30 captures can exceed 100 MB on Qwen3-4B/8B
+# and tripped GitHub's hard file-size limit on the 2026-05-20 push).
+# Reproducible by re-running the attack drivers; the small JSON
+# summaries next to them are the canonical evidence.
+results/sweep/**/*.safetensors
+results/sweep/**/*.safetensors.meta.json
+captures-*/
