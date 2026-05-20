@@ -1,50 +1,65 @@
-"""Gram-error driver — GELO paper §4.3.4 leakage metric.
+"""Gram-fingerprint driver — row-Gram side-channel leakage metric.
 
-A *metric*, not an attack. Quantifies how much row-Gram structure
-of the plaintext hidden state ``H`` survives the mask round-trip
-``U = A·H``. For an exactly-orthogonal ``A``:
+A *side-channel probe*, not a recovery attack. Tests whether the
+attacker can fingerprint the plaintext prompt by comparing the
+row-Gram of the masked observation ``G_U = U·Uᵀ`` to the row-Gram
+of a candidate plaintext ``G_H = H·Hᵀ``. For orthogonal ``A``:
+``G_U = A·G_H·Aᵀ`` (similarity transform) — eigenvalues preserved,
+entries scrambled.
 
-* **Column Gram is preserved exactly**: ``Uᵀ·U = Hᵀ·A·Aᵀ·H = Hᵀ·H``.
-  Orthogonality sanity check — must read ~0 for any orthogonal
-  mask, modulo f32 noise.
-* **Row Gram is similarity-transformed**:
-  ``U·Uᵀ = A·(H·Hᵀ)·Aᵀ``. Eigenvalues are preserved, off-diagonal
-  entries are scrambled by ``A``. The Hungarian-matched row-Gram
-  error tests whether the attacker can recover the row-permutation
-  cheat — if low, the mask is leaking row-identity structure.
+The attacker can extract:
 
-For the round-3 B.3 gate, the question is whether HD₃'s discrete
-``2^{3·s}``-element orbit leaks more row structure than Haar's
-continuous measure. Three sub-metrics get reported:
+* prompt length (trivial; ``n`` is visible in U's shape anyway)
+* repetition structure (off-diagonal of ``G_H`` peaks at token
+  repeats)
+* phrase / sentence boundaries (block structure of ``G_H``)
+* template / system-prompt fingerprinting via closed-vocabulary
+  Gram matching against a library
 
-1. ``col_gram_error`` — ``‖Uᵀ·U − Hᵀ·H‖_F / ‖Hᵀ·H‖_F``. Should
-   be ~0 for both Haar and HD₃ (orthogonality holds in both
-   cases). A non-zero value indicates a protocol bug, not a
-   security gap.
-2. ``row_gram_spectrum_error`` —
-   ``‖sort(eig(U·Uᵀ)) − sort(eig(H·Hᵀ))‖₂ / ‖sort(eig(H·Hᵀ))‖₂``.
-   Similarity-invariance sanity. Must be ~0 for either mask.
-3. ``hungarian_row_gram_error`` — solve the row-assignment
-   ``π : [s] → [s]`` minimising the off-diagonal Frobenius
-   distance, then report
-   ``‖G_U[π,π] − G_H‖_F / ‖G_H‖_F``. Approximates the cheat the
-   attacker can mount with side-channel knowledge of an oracle
-   ranking of plaintext row norms. **This is the leakage metric**
-   for the gate.
+These don't reveal individual tokens — that's BSS / anchor_ica /
+JADE territory. But they DO reveal prompt-shape information that
+matters for proprietary system prompts and template detection.
 
-The driver runs over every captured (layer, kind) tuple and
-aggregates: median across snapshots, plus per-(layer, kind) detail
-in ``extra.per_op``.
+Primary metric (cos-normalised structural distance):
 
-Threat-model alignment:
+  ``gram_fingerprint = ‖ G_U / ‖G_U‖_F − G_H / ‖G_H‖_F ‖_F``
 
-* C0 plain — ``U = H``; all three metrics are 0 by construction.
-* C1 mask-only / C2 / C3 — col_gram_error and
-  row_gram_spectrum_error must stay near 0 (mask is orthogonal);
-  hungarian_row_gram_error reads the leakage level. Lower is
-  worse (mask leaks more). HD₃ ships parity-with-Haar if
-  ``hungarian_row_gram_error(C3) ≥ hungarian_row_gram_error(C2) − 0.20``
-  (paper's noise/error reporting tolerance).
+Range ``[0, √2]``. **Lower = more fingerprintable = worse defence.**
+Pad-size and mask-family invariant in the orthogonal limit — what
+varies is the *structural* similarity between Gram matrices after
+energy is normalised away.
+
+Reference values (n=10, d=2048, k=8, energy=4.0; 50-seed median
+over both Haar and HD₃ mask families at any pow2-pad ≥ n+k):
+
+  - C0 plain     ~0.0       (U = H, identical Gram up to scale)
+  - C1/C2/C3     ~0.71      (orthogonal mask, mask-family-invariant)
+  - random       ~1.41      (G_U structurally orthogonal to G_H)
+
+The metric saturates around `√(2 − 2/n)` ≈ 1.34 for large `n`
+under an idealised "G_U has no structural correlation with G_H"
+assumption.
+
+Three sub-metrics still reported in ``extra``:
+
+* ``cos_norm_distance`` — the primary metric above.
+* ``col_gram_error`` — ``‖Uᵀ·U − Hᵀ·H‖_F / ‖Hᵀ·H‖_F``.
+  Orthogonality sanity check: must read ~0 for any orthogonal mask.
+  A non-zero value indicates a protocol bug.
+* ``row_gram_spectrum_error`` —
+  ``‖sort(eig(U·Uᵀ)) − sort(eig(H·Hᵀ))‖₂ / ‖sort(eig(H·Hᵀ))‖₂``.
+  Similarity-invariance sanity. Also ~0 for orthogonal mask.
+* ``hungarian_row_gram_error`` — the legacy raw-Frobenius metric
+  for backward compatibility / diagnostics. **Pad-size sensitive**;
+  do not use as the primary gate signal.
+
+For the round-3 B.3 gate, HD₃ passes the structural side channel
+if its ``cos_norm_distance`` is **within ±0.05** of Haar at the
+same pad size (`c2_pad_haar` calibration condition recommended)
+AND ``cos_norm_distance ≥ 0.5`` absolute (well clear of the
+``= 0`` perfect-fingerprint pole). The ±0.05 band is the same
+tolerance used by the BSS recovery attacks since cos_norm is
+cosine-distance-like.
 """
 
 from __future__ import annotations
@@ -67,13 +82,44 @@ class _OpAccumulator:
 
     layer: int
     kind: str
+    cos_norm_distances: list[float]
     col_gram_errors: list[float]
     spectrum_errors: list[float]
     hungarian_errors: list[float]
 
     @classmethod
     def empty(cls, layer: int, kind: str) -> "_OpAccumulator":
-        return cls(layer=layer, kind=kind, col_gram_errors=[], spectrum_errors=[], hungarian_errors=[])
+        return cls(
+            layer=layer,
+            kind=kind,
+            cos_norm_distances=[],
+            col_gram_errors=[],
+            spectrum_errors=[],
+            hungarian_errors=[],
+        )
+
+
+def _cos_norm_distance(u: np.ndarray, h: np.ndarray) -> float:
+    """Cos-normalised structural distance between row Grams.
+
+    ``‖ G_U/‖G_U‖_F − G_H/‖G_H‖_F ‖_F`` where ``G_U = U·Uᵀ``
+    and ``G_H = H·Hᵀ``. Range ``[0, √2]``; pad-size invariant
+    for orthogonal masks (the energy difference between G_U and
+    G_H is normalised away, leaving only structural similarity).
+
+    Lower = more fingerprintable.
+    """
+    if u.shape[0] == 0 or h.shape[0] == 0:
+        return float("nan")
+    eps = 1e-12
+    g_u = u @ u.T
+    g_h = h @ h.T
+    n_u = np.linalg.norm(g_u)
+    n_h = np.linalg.norm(g_h)
+    if n_u < eps or n_h < eps:
+        return float("nan")
+    diff = g_u / n_u - g_h / n_h
+    return float(np.linalg.norm(diff))
 
 
 def _col_gram_error(u: np.ndarray, h: np.ndarray) -> float:
@@ -256,6 +302,7 @@ def run(
             h = h[:, feat_sel]
         op_key = (meta.layer, meta.kind)
         acc = accumulators.setdefault(op_key, _OpAccumulator.empty(meta.layer, meta.kind))
+        acc.cos_norm_distances.append(_cos_norm_distance(u, h))
         acc.col_gram_errors.append(_col_gram_error(u, h))
         acc.spectrum_errors.append(_row_gram_spectrum_error(u, h))
         acc.hungarian_errors.append(_hungarian_row_gram_error(u, h))
@@ -272,7 +319,7 @@ def run(
             ttrsr_top1=None,
             ttrsr_top10=None,
             risk_level="unknown",
-            primary_metric_name="hungarian_row_gram_error",
+            primary_metric_name="gram_fingerprint_cos_norm",
             extra={
                 "note": "no paired (prompt, layer, kind) tuples found between protected and plain snapshots",
                 "n_skipped_unpaired": n_skipped_unpaired,
@@ -280,20 +327,31 @@ def run(
         )
 
     # Aggregate: median across all paired snapshots.
+    all_cos = np.array([v for acc in accumulators.values() for v in acc.cos_norm_distances], dtype=np.float64)
     all_col = np.array([v for acc in accumulators.values() for v in acc.col_gram_errors], dtype=np.float64)
     all_spec = np.array([v for acc in accumulators.values() for v in acc.spectrum_errors], dtype=np.float64)
     all_hung = np.array([v for acc in accumulators.values() for v in acc.hungarian_errors], dtype=np.float64)
 
-    median_hung = float(np.nanmedian(all_hung))
+    median_cos = float(np.nanmedian(all_cos))
     per_op = {
         f"layer{layer:03d}.{kind}": {
-            "n": len(acc.col_gram_errors),
+            "n": len(acc.cos_norm_distances),
+            "cos_norm_distance_median": float(np.nanmedian(acc.cos_norm_distances)),
             "col_gram_error_median": float(np.nanmedian(acc.col_gram_errors)),
             "row_gram_spectrum_error_median": float(np.nanmedian(acc.spectrum_errors)),
             "hungarian_row_gram_error_median": float(np.nanmedian(acc.hungarian_errors)),
         }
         for (layer, kind), acc in sorted(accumulators.items())
     }
+
+    # Risk classification for cos_norm: cos_norm ≥ 0.5 = "low" risk
+    # (defence clearing the absolute threshold for the gate),
+    # 0.3 ≤ cos_norm < 0.5 = "medium" (close to threshold),
+    # cos_norm < 0.3 = "high" (fingerprintable). The shared
+    # classify_risk_level helper indexes the OPPOSITE direction
+    # (high value = high risk), so we map via (1 − cos_norm/√2).
+    SQRT2 = float(np.sqrt(2.0))
+    fingerprintability = 1.0 - (median_cos / SQRT2)
 
     return AttackResult(
         attack="gram_error",
@@ -302,26 +360,29 @@ def run(
         n_prompts=snapshots.n_prompts(),
         n_train=0,
         n_test=n_paired,
-        # We repurpose ttrsr_top1 as the primary numeric so existing
-        # consumers (acceptance-gate threshold checks) can read it
-        # without a schema change. The semantic name is in
-        # `primary_metric_name`.
-        ttrsr_top1=median_hung,
+        # ttrsr_top1 is repurposed as the primary numeric so the
+        # acceptance-gate code reads it without a schema change.
+        # The semantic name is gram_fingerprint_cos_norm.
+        ttrsr_top1=median_cos,
         ttrsr_top10=None,
-        risk_level=classify_risk_level(1.0 - median_hung),
-        primary_metric_name="hungarian_row_gram_error",
+        risk_level=classify_risk_level(fingerprintability),
+        primary_metric_name="gram_fingerprint_cos_norm",
         extra={
+            "cos_norm_distance_median": median_cos,
             "col_gram_error_median": float(np.nanmedian(all_col)),
             "row_gram_spectrum_error_median": float(np.nanmedian(all_spec)),
-            "hungarian_row_gram_error_median": median_hung,
+            "hungarian_row_gram_error_median": float(np.nanmedian(all_hung)),
             "n_paired": n_paired,
             "n_skipped_unpaired": n_skipped_unpaired,
             "per_op": per_op,
             "note": (
-                "primary metric = hungarian_row_gram_error_median; lower means "
-                "more leakage. C0 plain ≈ 0 by definition. For HD₃ default "
-                "promotion, C3 must be within 20 % of C2 on this metric (round-3 "
-                "B.3 gate tolerance)."
+                "primary metric = cos_norm_distance_median (range [0, √2]); "
+                "lower = more fingerprintable. C0 plain ≈ 0. For HD₃ default "
+                "promotion, C3 must be (a) within ±0.05 of C2 (parity check) "
+                "AND (b) ≥ 0.5 absolute (well clear of the perfect-fingerprint "
+                "pole at 0). The hungarian_row_gram_error_median in extra is "
+                "the legacy raw-Frobenius metric — pad-size sensitive, kept "
+                "for diagnostics only."
             ),
         },
     )
