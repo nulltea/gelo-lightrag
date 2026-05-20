@@ -11,3 +11,6 @@ snapshots/
 # evidence we want to version.
 results/*
 !results/sweep/
+# Raw server tensor-dump binary files (intermediate; the per-prompt
+# safetensors next to them is the canonical derived artifact).
+results/sweep/**/*.bin
