@@ -42,6 +42,7 @@ rand.workspace = true
 rand_chacha.workspace = true
 rand_distr.workspace = true
 rayon.workspace = true
+rustdct.workspace = true
 thiserror.workspace = true
 blas-src = { workspace = true, optional = true }
 blis-src = { workspace = true, optional = true }

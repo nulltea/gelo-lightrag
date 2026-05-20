@@ -4,6 +4,7 @@ use rand_distr::{Distribution, StandardNormal};
 
 pub use crate::rng::MaskSeed;
 
+use crate::dct4::Dct4Mask;
 use crate::hd3::Hd3Mask;
 
 /// Mask family used by [`crate::sim::InProcessTrustedExecutor`].
@@ -12,22 +13,28 @@ use crate::hd3::Hd3Mask;
 /// `O(s²·d)` per apply/unapply). `Hd3` is the QuIP#/QuaRot-style
 /// structured-orthogonal cascade `D₃·H·D₂·H·D₁·H` with `O(s)` sample
 /// and `O(s·d·log s)` per apply/unapply at power-of-two `s` — see
-/// [`crate::hd3`] for the math + security trade.
+/// [`crate::hd3`] for the math + security trade. `Dct4` is the
+/// arbitrary-order analog `D₃·C·D₂·C·D₁·C` with DCT-IV as the inner
+/// orthogonal — works at any `n` so the caller skips the pow2 pad —
+/// see [`crate::dct4`] for the math + security argument.
 #[derive(Debug, Clone)]
 pub enum MaskFamily {
     Haar(GeloMask),
     Hd3(Hd3Mask),
+    Dct4(Dct4Mask),
 }
 
 impl MaskFamily {
     /// Side length the mask operates on. For `Haar` this matches the
     /// stacked-with-shield row count `n + k`; for `Hd3` this is
     /// `(n + k).next_power_of_two()` (the caller must arrange the
-    /// pow2 padding before constructing the mask).
+    /// pow2 padding before constructing the mask); for `Dct4` it is
+    /// exactly `n + k` (no padding needed).
     pub fn n(&self) -> usize {
         match self {
             Self::Haar(m) => m.n(),
             Self::Hd3(m) => m.n(),
+            Self::Dct4(m) => m.n(),
         }
     }
 
@@ -35,6 +42,7 @@ impl MaskFamily {
         match self {
             Self::Haar(m) => m.apply(hidden),
             Self::Hd3(m) => m.apply(hidden),
+            Self::Dct4(m) => m.apply(hidden),
         }
     }
 
@@ -42,18 +50,88 @@ impl MaskFamily {
         match self {
             Self::Haar(m) => m.unapply(masked),
             Self::Hd3(m) => m.unapply(masked),
+            Self::Dct4(m) => m.unapply(masked),
+        }
+    }
+
+    /// Consume `masked` and return the unmasked output. For [`Self::Hd3`]
+    /// and [`Self::Dct4`] runs `Aᵀ` in place on the input buffer —
+    /// saving the `(s, p)` allocation + copy that the allocating
+    /// [`Self::unapply`] pays per call. For [`Self::Haar`] falls back
+    /// to the allocating path because the dense `Aᵀ · M` GEMM needs a
+    /// separate output workspace anyway.
+    pub fn unapply_take(&self, masked: Array2<f32>) -> Array2<f32> {
+        match self {
+            Self::Haar(m) => m.unapply(masked.view()),
+            Self::Hd3(m) => {
+                let mut buf = masked;
+                m.unapply_in_place(&mut buf);
+                buf
+            }
+            Self::Dct4(m) => {
+                let mut buf = masked;
+                m.unapply_in_place(&mut buf);
+                buf
+            }
         }
     }
 }
 
 /// Which mask family `InProcessTrustedExecutor` should use. Default
 /// is [`MaskKind::Haar`] (paper-parity). Switch to [`MaskKind::Hd3`]
-/// via [`crate::sim::InProcessTrustedExecutor::with_hd3_mask`].
+/// via [`crate::sim::InProcessTrustedExecutor::with_hd3_mask`], to
+/// [`MaskKind::Dct4`] via `with_dct4_mask` for arbitrary-order
+/// (non-pow2) shapes, or to [`MaskKind::Auto`] via `with_auto_mask`
+/// for shape-adaptive dispatch (HD₃ when pad penalty is small,
+/// DCT-IV otherwise). See `docs/research/hd3-non-pow2-fix.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MaskKind {
     #[default]
     Haar,
     Hd3,
+    Dct4,
+    /// Per-call dispatch between [`Self::Hd3`] and [`Self::Dct4`]
+    /// based on the pad penalty `s_pad / s` where `s = n + k_shield`
+    /// and `s_pad = s.next_power_of_two()`. HD₃ is picked when the
+    /// pad ratio is ≤ [`HD3_AUTO_MAX_PAD_RATIO_NUM`] /
+    /// [`HD3_AUTO_MAX_PAD_RATIO_DEN`] (default 4/3 ≈ 33 % pad max,
+    /// empirically derived for Qwen3-4B on Strix Halo iGPU); DCT-IV
+    /// otherwise. The choice is per-forward-pass (recorded in the
+    /// session mask) or per-offload depending on the executor's
+    /// `per_forward_mask` setting.
+    Auto,
+}
+
+/// Numerator of the HD₃-vs-DCT-IV pad-ratio threshold used by
+/// [`MaskKind::Auto`]. HD₃ is selected when
+/// `s_pad * HD3_AUTO_MAX_PAD_RATIO_DEN <= s * HD3_AUTO_MAX_PAD_RATIO_NUM`,
+/// i.e., when the pad fraction `(s_pad − s) / s_pad ≤ 1/4`.
+///
+/// Empirical crossover from the 2026-05-20 Qwen3-4B bench is ~1.39;
+/// 4/3 ≈ 1.333 is a conservative pick that ensures HD₃ is selected
+/// only when clearly faster, with a small "either is fine" zone
+/// between 1.333 and 1.4.
+pub const HD3_AUTO_MAX_PAD_RATIO_NUM: usize = 4;
+pub const HD3_AUTO_MAX_PAD_RATIO_DEN: usize = 3;
+
+/// Resolve a configured [`MaskKind`] (possibly [`MaskKind::Auto`]) to
+/// a concrete physical kind given the stacked size `s = n + k_shield`.
+/// For non-Auto kinds this is the identity; for Auto it applies the
+/// pad-ratio rule documented above.
+pub fn resolve_mask_kind_for_shape(kind: MaskKind, s: usize) -> MaskKind {
+    match kind {
+        MaskKind::Auto => {
+            let s_pad = s.next_power_of_two().max(2);
+            if s_pad.saturating_mul(HD3_AUTO_MAX_PAD_RATIO_DEN)
+                <= s.saturating_mul(HD3_AUTO_MAX_PAD_RATIO_NUM)
+            {
+                MaskKind::Hd3
+            } else {
+                MaskKind::Dct4
+            }
+        }
+        kind => kind,
+    }
 }
 
 /// Token-axis orthogonal mask used to obfuscate hidden states before the

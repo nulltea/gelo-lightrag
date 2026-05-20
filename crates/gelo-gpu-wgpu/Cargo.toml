@@ -41,3 +41,8 @@ rand_chacha.workspace = true
 rand_distr.workspace = true
 hf-hub.workspace = true
 serde_json.workspace = true
+# ROCm/HIP runtime — only pulled in for the Q4-on-HIP spike test
+# (`tests/q4_hip_kernel_spike.rs`). Requires ROCm 6.x installed
+# at /opt/rocm; build will fail loudly if not.
+cubecl-hip.workspace = true
+cubecl-hip-sys.workspace = true

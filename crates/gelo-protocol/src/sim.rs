@@ -277,6 +277,51 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
         self
     }
 
+    /// Switch to the DCT-IV cascade mask `A = D₃·C·D₂·C·D₁·C` (where
+    /// `C` is the orthonormal DCT-IV). Works at **arbitrary `n`** — no
+    /// power-of-two padding required — so the GPU sees the same row
+    /// count as Haar with no pad regression. CPU mask cost is ~3× HD₃-
+    /// at-pow2 but skips the 2× GPU GEMM penalty HD₃ pays when padding
+    /// `n+k` up to the next pow2.
+    ///
+    /// **Security caveat:** DCT-IV cascade preserves orthogonality and
+    /// QuIP#-style incoherence (entry bound `√(2/n)`), but the
+    /// BSS-distinguishing-game security proof for DCT-IV is not in the
+    /// published literature — only HD₃ has the QuIP#/QuaRot incoherence
+    /// argument. **Treat as research-grade** until the attack-suite
+    /// gate at `c5_dct4` passes; see
+    /// `docs/research/hd3-non-pow2-fix.md` §6.2 for the design.
+    pub fn with_dct4_mask(mut self) -> Self {
+        self.mask_kind = MaskKind::Dct4;
+        self.session = None;
+        self.stacked_scratch.clear();
+        self
+    }
+
+    /// Switch to the shape-adaptive mask dispatch: picks HD₃ when the
+    /// pad penalty `s_pad / s` is small (≤ 4/3 ≈ 33 % pad), DCT-IV
+    /// otherwise. Resolution happens at `begin_forward_pass` (per-
+    /// forward-pass mode) or per-call (per-offload mode), so the
+    /// physical mask family used at each call adapts to the shape
+    /// without caller intervention.
+    ///
+    /// Use this as the default for production workloads with mixed
+    /// prompt sizes — both HD₃ at pow2-aligned shapes and DCT-IV at
+    /// non-pow2 shapes beat Haar; the crossover is at ~40 % pad and
+    /// the 4/3 threshold sits safely on the HD₃ side.
+    ///
+    /// Inherits the security caveats of both [`Self::with_hd3_mask`]
+    /// and [`Self::with_dct4_mask`] — neither has a published
+    /// BSS-game proof at our shapes; both clear the empirical
+    /// attack-suite gate (HD₃ at `c3_hd3`, DCT-IV at `c5_dct4`
+    /// pending). Default stays Haar until both gates close.
+    pub fn with_auto_mask(mut self) -> Self {
+        self.mask_kind = MaskKind::Auto;
+        self.session = None;
+        self.stacked_scratch.clear();
+        self
+    }
+
     pub fn mask_kind(&self) -> MaskKind {
         self.mask_kind
     }
@@ -482,9 +527,19 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
         // for HD₃ it must be a power of two, so we round up. The extra rows
         // (between `n_data + k` and `stacked_n`) get zero-padded — they sit
         // in the HD₃ mask's output and round-trip exactly (orthogonality).
-        let stacked_n = match self.mask_kind {
+        // Resolve `Auto` to a concrete kind based on `s = n+k`'s pad
+        // ratio; non-Auto kinds pass through unchanged.
+        let resolved_kind = crate::mask::resolve_mask_kind_for_shape(self.mask_kind, n_data + k);
+        let stacked_n = match resolved_kind {
             MaskKind::Haar => n_data + k,
             MaskKind::Hd3 => (n_data + k).next_power_of_two().max(2),
+            // DCT-IV works at arbitrary `n` so no pow2 pad — operand
+            // shape stays `(n_data + k, d)`, GPU sees same row count
+            // as Haar (no pad regression at non-pow2 prompts).
+            MaskKind::Dct4 => n_data + k,
+            // Auto was already resolved by the call above; the match
+            // is exhaustive on the resolved kind.
+            MaskKind::Auto => unreachable!("Auto was resolved above"),
         };
 
         // Resolve the mask first (cheap; clone of session mask in
@@ -507,9 +562,13 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
                 ),
             }
         } else {
-            profile::time("gelo:mask_sample", || match self.mask_kind {
+            profile::time("gelo:mask_sample", || match resolved_kind {
                 MaskKind::Haar => MaskFamily::Haar(GeloMask::fresh(stacked_n, &mut self.rng)),
                 MaskKind::Hd3 => MaskFamily::Hd3(Hd3Mask::fresh(stacked_n, &mut self.rng)),
+                MaskKind::Dct4 => {
+                    MaskFamily::Dct4(crate::dct4::Dct4Mask::fresh(stacked_n, &mut self.rng))
+                }
+                MaskKind::Auto => unreachable!("Auto was resolved above"),
             })
         };
 
@@ -546,6 +605,27 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
                         }
                     });
                     profile::time("gelo:mask_apply", || hd3.apply_in_place(&mut buf));
+                    buf
+                }
+                MaskFamily::Dct4(dct4) => {
+                    // Same scratch-reuse pattern as HD₃; DCT-IV is also
+                    // in-place capable. stacked_n == n_data + k for DCT-IV
+                    // (no pow2 padding), so shield_end == stacked_n and
+                    // no zero-pad section to clear.
+                    let mut buf = self
+                        .stacked_scratch
+                        .remove(&d)
+                        .filter(|b| b.shape() == [stacked_n, d])
+                        .unwrap_or_else(|| Array2::<f32>::zeros((stacked_n, d)));
+                    profile::time("gelo:shield_stack", || {
+                        buf.slice_mut(ndarray::s![..n_data, ..]).assign(&hidden);
+                        fill_shield_rows_inline(
+                            buf.slice_mut(ndarray::s![n_data..stacked_n, ..]),
+                            sigma,
+                            &mut self.rng,
+                        );
+                    });
+                    profile::time("gelo:mask_apply", || dct4.apply_in_place(&mut buf));
                     buf
                 }
                 MaskFamily::Haar(_) => {
@@ -588,12 +668,17 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
                 }
                 stacked
             });
-            // HD₃ can mask in place on the owned `stacked` buffer (saves
-            // the fresh 32 MB allocation `mask.apply` would have done).
-            // Haar still allocates a separate (n+k)×d output.
+            // HD₃ and DCT-IV can both mask in place on the owned
+            // `stacked` buffer (saves the fresh 32 MB allocation
+            // `mask.apply` would have done). Haar still allocates a
+            // separate (n+k)×d output.
             profile::time("gelo:mask_apply", || match &mask {
                 MaskFamily::Hd3(hd3) => {
                     hd3.apply_in_place(&mut stacked);
+                    stacked
+                }
+                MaskFamily::Dct4(dct4) => {
+                    dct4.apply_in_place(&mut stacked);
                     stacked
                 }
                 MaskFamily::Haar(_) => mask.apply(stacked.view()),
@@ -606,21 +691,26 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
     /// Re-insert a masked buffer into `stacked_scratch` after the offload
     /// completed. Called by every `offload_*` method before returning, to
     /// counterbalance the `remove(&d)` that `build_shielded_and_apply`
-    /// performs on the HD₃ paper-parity path.
+    /// performs on the HD₃ / DCT-IV paper-parity paths.
     ///
-    /// No-op outside the paper-parity HD₃ regime — the Haar path keeps
-    /// the borrow in place across `apply`, and per-offload mode owns its
-    /// `stacked` buffer outright (dropped at end of call).
+    /// No-op outside the paper-parity HD₃/DCT-IV regime — the Haar
+    /// path keeps the borrow in place across `apply`, and per-offload
+    /// mode owns its `stacked` buffer outright (dropped at end of call).
     fn return_apply_scratch(&mut self, buf: Array2<f32>) {
+        // The scratch-reuse path fires for HD₃, DCT-IV, and Auto
+        // (which always resolves to one of those two). Haar keeps the
+        // scratch by borrow inside `build_shielded_and_apply` and per-
+        // offload mode owns the buffer outright.
         if self.per_forward_mask
             && self.shield.enabled()
-            && matches!(self.mask_kind, MaskKind::Hd3)
+            && matches!(
+                self.mask_kind,
+                MaskKind::Hd3 | MaskKind::Dct4 | MaskKind::Auto
+            )
         {
             let d = buf.ncols();
             self.stacked_scratch.insert(d, buf);
         }
-        // Else: drop. Either Haar (kept its scratch by borrow) or
-        // per-offload mode (buffer is single-use).
     }
 }
 
@@ -666,13 +756,19 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
             return Ok(());
         }
         let stacked_n = n + self.shield.k;
-        let mask = profile::time("gelo:mask_sample", || match self.mask_kind {
+        let resolved_kind = crate::mask::resolve_mask_kind_for_shape(self.mask_kind, stacked_n);
+        let mask = profile::time("gelo:mask_sample", || match resolved_kind {
             MaskKind::Haar => MaskFamily::Haar(GeloMask::fresh(stacked_n, &mut self.rng)),
             MaskKind::Hd3 => {
                 // HD₃ requires power-of-two side length.
                 let s_pad = stacked_n.next_power_of_two().max(2);
                 MaskFamily::Hd3(Hd3Mask::fresh(s_pad, &mut self.rng))
             }
+            MaskKind::Dct4 => {
+                // DCT-IV works at any positive integer — no pad.
+                MaskFamily::Dct4(crate::dct4::Dct4Mask::fresh(stacked_n, &mut self.rng))
+            }
+            MaskKind::Auto => unreachable!("Auto resolved above"),
         });
         self.session = Some(SessionMask { mask, data_n: n });
         // Stale scratches from a prior forward with a different `n` are
@@ -740,7 +836,7 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
                 )
             })?;
         }
-        let unmasked = profile::time("gelo:mask_unapply", || mask.unapply(masked_out.view()));
+        let unmasked = profile::time("gelo:mask_unapply", || mask.unapply_take(masked_out));
         let strip = profile::time("gelo:strip_shield", || {
             unmasked.slice(ndarray::s![..n_data, ..]).to_owned()
         });
@@ -809,9 +905,9 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         // working set thrashes L2 vs matrixmultiply's tile-tuned
         // separate (stacked_n × hidden_size) calls. FLOPs are equal;
         // cache behaviour is not.
-        let q_full = profile::time("gelo:mask_unapply", || mask.unapply(mq.view()));
-        let k_full = profile::time("gelo:mask_unapply", || mask.unapply(mk.view()));
-        let v_full = profile::time("gelo:mask_unapply", || mask.unapply(mv.view()));
+        let q_full = profile::time("gelo:mask_unapply", || mask.unapply_take(mq));
+        let k_full = profile::time("gelo:mask_unapply", || mask.unapply_take(mk));
+        let v_full = profile::time("gelo:mask_unapply", || mask.unapply_take(mv));
 
         let slice_n = ndarray::s![..n_data, ..];
         let triple = profile::time("gelo:strip_shield", || {
@@ -873,8 +969,8 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         // our shapes a stacked Aᵀ · [V₁ | V₂ | …] GEMM thrashes L2 vs
         // matrixmultiply's tile-tuned per-call GEMMs).
         let unmasked: Vec<Array2<f32>> = masked_outs
-            .iter()
-            .map(|m| profile::time("gelo:mask_unapply", || mask.unapply(m.view())))
+            .into_iter()
+            .map(|m| profile::time("gelo:mask_unapply", || mask.unapply_take(m)))
             .collect();
 
         let slice_n = ndarray::s![..n_data, ..];
@@ -1079,6 +1175,7 @@ impl<E: GpuOffloadEngine> TrustedExecutor for PlaintextExecutor<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mask::resolve_mask_kind_for_shape;
     use ndarray::Array2;
     use rand_distr::{Distribution, StandardNormal};
 
@@ -1265,6 +1362,235 @@ mod tests {
             MaskSeed::from_bytes([27u8; 32]),
         )
         .with_hd3_mask();
+        for (kind, w) in [
+            (WeightKind::Q, &wq),
+            (WeightKind::K, &wk),
+            (WeightKind::V, &wv),
+        ] {
+            exec.provision_weight(WeightHandle::new(0, kind), w.view())
+                .unwrap();
+        }
+
+        exec.begin_forward_pass(n).unwrap();
+        let (q, k, v) = exec.offload_qkv(0, hidden.view()).unwrap();
+        exec.end_forward_pass().unwrap();
+
+        let expected_q = hidden.dot(&wq);
+        let expected_k = hidden.dot(&wk);
+        let expected_v = hidden.dot(&wv);
+        for ((i, j), e) in expected_q.indexed_iter() {
+            assert!((q[[i, j]] - e).abs() < 5e-3);
+        }
+        for ((i, j), e) in expected_k.indexed_iter() {
+            assert!((k[[i, j]] - e).abs() < 5e-3);
+        }
+        for ((i, j), e) in expected_v.indexed_iter() {
+            assert!((v[[i, j]] - e).abs() < 5e-3);
+        }
+    }
+
+    /// `with_dct4_mask()` produces the same downstream output as
+    /// `PlaintextExecutor` to f32 noise. Uses a **non-pow2** `n` to
+    /// exercise the path DCT-IV was added for (HD₃ at n=12 would pad
+    /// to s_pad=16; DCT-IV operates at n=20 exactly without padding).
+    #[test]
+    fn dct4_executor_agrees_with_plaintext() {
+        let mut rng = ChaCha20Rng::from_seed([41u8; 32]);
+        let normal = StandardNormal;
+        let n = 20; // non-pow2 — DCT-IV's reason for existing
+        let d = 12;
+        let p = 8;
+
+        let hidden = Array2::<f32>::from_shape_fn((n, d), |_| normal.sample(&mut rng));
+        let weight = Array2::<f32>::from_shape_fn((d, p), |_| normal.sample(&mut rng));
+        let handle = WeightHandle::new(0, WeightKind::Q);
+
+        let mut plain = PlaintextExecutor::new(RayonCpuEngine::new());
+        plain.provision_weight(handle, weight.view()).unwrap();
+        let plain_out = plain.offload_linear(handle, hidden.view()).unwrap();
+
+        let mut dct = InProcessTrustedExecutor::with_seed(
+            RayonCpuEngine::new(),
+            MaskSeed::from_bytes([43u8; 32]),
+        )
+        .with_dct4_mask();
+        assert_eq!(dct.mask_kind(), MaskKind::Dct4);
+        dct.provision_weight(handle, weight.view()).unwrap();
+        dct.begin_forward_pass(n).unwrap();
+        let dct_out = dct.offload_linear(handle, hidden.view()).unwrap();
+        dct.end_forward_pass().unwrap();
+
+        assert_eq!(dct_out.dim(), plain_out.dim());
+        for ((i, j), &e) in plain_out.indexed_iter() {
+            let got = dct_out[[i, j]];
+            // DCT-IV cascade + shield + matmul + unapply accumulates
+            // noise comparable to HD₃: same cascade depth, similar
+            // condition number. Same tolerance as the HD₃ parity test.
+            assert!(
+                (got - e).abs() < 5e-3,
+                "({i},{j}): plain={e} dct4={got} diff={}",
+                (got - e).abs()
+            );
+        }
+    }
+
+    /// DCT-IV executor in per-offload mode (shield disabled, fresh
+    /// mask per call) — exercises the legacy/owned-`stacked` branch.
+    #[test]
+    fn dct4_per_offload_agrees_with_plaintext() {
+        let mut rng = ChaCha20Rng::from_seed([47u8; 32]);
+        let normal = StandardNormal;
+        let n = 20;
+        let d = 12;
+        let p = 8;
+
+        let hidden = Array2::<f32>::from_shape_fn((n, d), |_| normal.sample(&mut rng));
+        let weight = Array2::<f32>::from_shape_fn((d, p), |_| normal.sample(&mut rng));
+        let handle = WeightHandle::new(0, WeightKind::Q);
+
+        let mut plain = PlaintextExecutor::new(RayonCpuEngine::new());
+        plain.provision_weight(handle, weight.view()).unwrap();
+        let plain_out = plain.offload_linear(handle, hidden.view()).unwrap();
+
+        let mut dct = InProcessTrustedExecutor::with_seed(
+            RayonCpuEngine::new(),
+            MaskSeed::from_bytes([53u8; 32]),
+        )
+        .with_per_offload_mask()
+        .with_dct4_mask();
+        dct.provision_weight(handle, weight.view()).unwrap();
+        let dct_out = dct.offload_linear(handle, hidden.view()).unwrap();
+
+        assert_eq!(dct_out.dim(), plain_out.dim());
+        for ((i, j), &e) in plain_out.indexed_iter() {
+            let got = dct_out[[i, j]];
+            assert!(
+                (got - e).abs() < 1e-3,
+                "({i},{j}): plain={e} dct4={got} diff={}",
+                (got - e).abs()
+            );
+        }
+    }
+
+    /// `MaskKind::Auto` resolves to HD₃ at pow2-aligned and near-pow2
+    /// shapes and to DCT-IV at "far-from-pow2" shapes. Verifies the
+    /// pad-ratio dispatch boundary at the 4/3 ≈ 1.333 threshold.
+    #[test]
+    fn auto_dispatch_resolves_by_pad_ratio() {
+        // Pow2 exact: s_pad/s = 1.0 → HD₃.
+        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 2048), MaskKind::Hd3);
+        // Near pow2 (1 row of pad): s_pad/s = 2048/2047 ≈ 1.0005 → HD₃.
+        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 2047), MaskKind::Hd3);
+        // s=2055 → s_pad=2048? no, 2055 > 2048 → s_pad=4096, ratio 1.99 → DCT-IV.
+        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 2055), MaskKind::Dct4);
+        // s=3072 → s_pad=4096, ratio 4096/3072 ≈ 1.333 (exact threshold).
+        // s_pad * 3 = 12288, s * 4 = 12288 → 12288 ≤ 12288 → HD₃ (inclusive).
+        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 3072), MaskKind::Hd3);
+        // s=3071 → s_pad=4096, ratio 4096/3071 > 4/3 → DCT-IV.
+        // Check: s_pad * 3 = 12288, s * 4 = 12284 → 12288 > 12284 → DCT-IV.
+        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 3071), MaskKind::Dct4);
+        // Non-Auto kinds pass through.
+        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Haar, 2056), MaskKind::Haar);
+        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Hd3, 2056), MaskKind::Hd3);
+        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Dct4, 2056), MaskKind::Dct4);
+    }
+
+    /// `with_auto_mask()` executor agrees with plaintext at a non-pow2
+    /// shape (resolves to DCT-IV path internally).
+    #[test]
+    fn auto_dct4_path_agrees_with_plaintext() {
+        let mut rng = ChaCha20Rng::from_seed([67u8; 32]);
+        let normal = StandardNormal;
+        // n=20 + k=8 = 28; s_pad = 32, ratio 1.6 > 4/3 → DCT-IV.
+        let n = 20;
+        let d = 12;
+        let p = 8;
+        let hidden = Array2::<f32>::from_shape_fn((n, d), |_| normal.sample(&mut rng));
+        let weight = Array2::<f32>::from_shape_fn((d, p), |_| normal.sample(&mut rng));
+        let handle = WeightHandle::new(0, WeightKind::Q);
+
+        let mut plain = PlaintextExecutor::new(RayonCpuEngine::new());
+        plain.provision_weight(handle, weight.view()).unwrap();
+        let plain_out = plain.offload_linear(handle, hidden.view()).unwrap();
+
+        let mut auto = InProcessTrustedExecutor::with_seed(
+            RayonCpuEngine::new(),
+            MaskSeed::from_bytes([71u8; 32]),
+        )
+        .with_auto_mask();
+        auto.provision_weight(handle, weight.view()).unwrap();
+        auto.begin_forward_pass(n).unwrap();
+        let auto_out = auto.offload_linear(handle, hidden.view()).unwrap();
+        auto.end_forward_pass().unwrap();
+
+        for ((i, j), &e) in plain_out.indexed_iter() {
+            let got = auto_out[[i, j]];
+            assert!(
+                (got - e).abs() < 5e-3,
+                "({i},{j}): plain={e} auto={got} diff={}",
+                (got - e).abs()
+            );
+        }
+    }
+
+    /// `with_auto_mask()` executor agrees with plaintext at a pow2-
+    /// aligned shape (resolves to HD₃ path internally).
+    #[test]
+    fn auto_hd3_path_agrees_with_plaintext() {
+        let mut rng = ChaCha20Rng::from_seed([79u8; 32]);
+        let normal = StandardNormal;
+        // n=24 + k=8 = 32 (pow2 exact) → HD₃ path.
+        let n = 24;
+        let d = 12;
+        let p = 8;
+        let hidden = Array2::<f32>::from_shape_fn((n, d), |_| normal.sample(&mut rng));
+        let weight = Array2::<f32>::from_shape_fn((d, p), |_| normal.sample(&mut rng));
+        let handle = WeightHandle::new(0, WeightKind::Q);
+
+        let mut plain = PlaintextExecutor::new(RayonCpuEngine::new());
+        plain.provision_weight(handle, weight.view()).unwrap();
+        let plain_out = plain.offload_linear(handle, hidden.view()).unwrap();
+
+        let mut auto = InProcessTrustedExecutor::with_seed(
+            RayonCpuEngine::new(),
+            MaskSeed::from_bytes([83u8; 32]),
+        )
+        .with_auto_mask();
+        auto.provision_weight(handle, weight.view()).unwrap();
+        auto.begin_forward_pass(n).unwrap();
+        let auto_out = auto.offload_linear(handle, hidden.view()).unwrap();
+        auto.end_forward_pass().unwrap();
+
+        for ((i, j), &e) in plain_out.indexed_iter() {
+            let got = auto_out[[i, j]];
+            assert!(
+                (got - e).abs() < 5e-3,
+                "({i},{j}): plain={e} auto={got} diff={}",
+                (got - e).abs()
+            );
+        }
+    }
+
+    /// DCT-IV executor at `offload_qkv`: all three projections agree
+    /// with plaintext. Verifies the shared-mask path (3× unapply on
+    /// one apply) at non-pow2 `n`.
+    #[test]
+    fn dct4_qkv_agrees_with_plaintext() {
+        let mut rng = ChaCha20Rng::from_seed([59u8; 32]);
+        let normal = StandardNormal;
+        let n = 20;
+        let d = 12;
+
+        let hidden = Array2::<f32>::from_shape_fn((n, d), |_| normal.sample(&mut rng));
+        let wq = Array2::<f32>::from_shape_fn((d, d), |_| normal.sample(&mut rng));
+        let wk = Array2::<f32>::from_shape_fn((d, d), |_| normal.sample(&mut rng));
+        let wv = Array2::<f32>::from_shape_fn((d, d), |_| normal.sample(&mut rng));
+
+        let mut exec = InProcessTrustedExecutor::with_seed(
+            RayonCpuEngine::new(),
+            MaskSeed::from_bytes([61u8; 32]),
+        )
+        .with_dct4_mask();
         for (kind, w) in [
             (WeightKind::Q, &wq),
             (WeightKind::K, &wk),
