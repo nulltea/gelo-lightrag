@@ -50,8 +50,11 @@
             <code>llama-server</code> — stock, no fork
           </div>
           <div>
-            <b>current artifact</b>&nbsp;&nbsp;Qwen3 1.7B Q8_0 plaintext → fp32
-            obfuscated (8.6 GB)
+            <b>current artifacts</b>&nbsp;&nbsp;Qwen3 4B + 8B (bf16; 9.1 + 17.4
+            GB)
+          </div>
+          <div>
+            <b>best HumanEval</b>&nbsp;&nbsp;8B α<sub>e</sub>=1.0 — 8/20 = 40 %
           </div>
           <span class="rev"
             >IO token permutation · embedding/attention noise
@@ -92,11 +95,11 @@
         </div>
         <div class="stat">
           <div class="k">production format</div>
-          <div class="v">fp32<span class="unit">required</span></div>
+          <div class="v">bf16<span class="unit">default</span></div>
           <div class="sub">
-            Q8_0 / Q6_K / Q5_K_M all collapse the obfuscation chain
-            (heavy-tailed AloePri weights · per-block scaling rounds outliers to
-            zero)
+            bf16 since 2026-05-20 — matches fp32 accuracy at ½ size + 2× tps.
+            fp16 unsafe (denormal flush); Q8_0/Q6_K/Q5_K_M still collapse
+            (heavy-tailed AloePri weights)
           </div>
         </div>
       </div>
@@ -2715,19 +2718,53 @@
           <div class="section-num">§07</div>
           <h2 class="section-title">Performance &amp; correctness</h2>
           <div class="section-meta">
-            measured on Qwen3 1.7B · Strix Halo Vulkan iGPU
+            measured on Qwen3 1.7B + 4B + 8B · Strix Halo Vulkan iGPU · bf16
+            default
           </div>
         </header>
         <p class="lede">
-          All numbers are from the current obfuscated artifact
-          (<code>keymat-h128-pi-noise-alg2-fp32.gguf</code>, 8.6 GB — keymat + Π
-          + α<sub>e</sub>/α<sub>h</sub> noise + inter-head shuffle) against the
-          plaintext baseline (<code>bartowski/Qwen_Qwen3-1.7B-GGUF</code>
-          Q8_0, 2.2 GB). Both endpoints run inside a single
-          <code>llama.cpp:server-vulkan</code> container with
-          <code>-ngl 999 -np 1 --flash-attn on -c 32768</code>, on a Strix Halo
-          Radeon 8060S iGPU.
+          Numbers below cover three deployments: the original Qwen3 1.7B
+          obfuscated artifact (<code>keymat-h128-pi-noise-alg2-fp32.gguf</code>,
+          8.6 GB fp32), the 4B sibling (9.1 GB bf16), and the 8B sibling (17.4
+          GB bf16, also untied, paper-default config). All endpoints run inside
+          the patched
+          <code>aloepri-llama-server:option-c</code> container (matrix-Γ kernel)
+          with
+          <code>-ngl 999 -np 1 --flash-attn on -c 4096 --ubatch-size 1024</code
+          >, on a Strix Halo Radeon 8060S iGPU. The container needs
+          <code>--group-add 992</code> (render gid) for Vulkan to find
+          renderD128 — without it the backend silently falls back to CPU.
         </p>
+        <div
+          style="
+            background: #e6f0f7;
+            border-left: 3px solid #3a6a9a;
+            padding: 10px 14px;
+            font-size: 13px;
+            margin-bottom: 16px;
+          "
+        >
+          <p class="prose" style="margin: 0 0 6px">
+            <strong>bf16 is the obfuscator default since 2026-05-20.</strong>
+            <code>obfuscate_qwen3_gguf.py --output-dtype bf16</code> (the new
+            default) halves on-disk size and 2× decode throughput vs fp32,
+            accuracy-equivalent (HumanEval pass@1 6/20 fp32 ↔ 6/20 bf16 on
+            Qwen3-4B, byte-identical pass-id set). fp16 is
+            <strong>explicitly unsafe</strong> — collapses the keymat
+            cancellation; see "Production-precision validation" below for the
+            denormal-flush mechanism. The 4B + 8B numbers in this section and
+            §08 were measured against bf16-native. The 1.7B numbers were
+            measured against the older fp32 artifact;
+            <em
+              >TODO: re-measure 1.7B at bf16 to confirm accuracy equivalence
+              holds at d=2048 too.</em
+            >
+            8B is the highest-accuracy obfuscated cell measured so far —
+            HumanEval pass@1 8/20 = 40 % at paper-default α<sub>e</sub>=1.0,
+            beating both 1.7B (35 %, α<sub>e</sub>=0.1) and 4B (30 %,
+            α<sub>e</sub>=1.0).
+          </p>
+        </div>
 
         <h4
           style="
@@ -2739,52 +2776,90 @@
             margin: 24px 0 8px;
           "
         >
-          Production-quantisation validation
+          Production-precision validation (sizes from Qwen3-4B obfuscated; 8B
+          ratios identical at bf16 → halves fp32 size)
         </h4>
         <table class="spec">
           <thead>
             <tr>
               <th>Format</th>
-              <th>Size</th>
-              <th>Smoke output</th>
+              <th>Size (4B)</th>
+              <th>HumanEval pass@1 (n=20, α<sub>e</sub>=1.0)</th>
               <th>Decision</th>
             </tr>
           </thead>
           <tbody>
             <tr>
               <td>fp32 (reference)</td>
-              <td class="num">8.6 GB</td>
-              <td>coherent on-topic continuation</td>
-              <td>production format</td>
+              <td class="num">18.5 GB</td>
+              <td class="num">6/20 = 30 %</td>
+              <td>reference, retained as <code>--output-dtype fp32</code></td>
+            </tr>
+            <tr style="background: #e6f0f7">
+              <td><b>bf16</b> (default)</td>
+              <td class="num">9.1 GB</td>
+              <td class="num"><b>6/20 = 30 %</b></td>
+              <td>
+                <b>production default</b> — byte-identical pass-id set, 2× tps,
+                ½ disk
+              </td>
+            </tr>
+            <tr style="color: #a66; font-weight: bold">
+              <td>fp16</td>
+              <td class="num">9.3 GB</td>
+              <td class="num">0/20 = 0 %</td>
+              <td>
+                <b>UNSAFE</b> — flushes ~1.15 % of <code>attn_q</code> to
+                denormal-zero (obfuscated min_nz ≈ 3e-10 &lt; fp16 floor 6e-5),
+                breaks P̂·Q̂ = I_d cancellation
+              </td>
             </tr>
             <tr>
               <td>Q8_0</td>
-              <td class="num">2.3 GB</td>
-              <td>degenerate ("( ( ( ( ,chein,zech…")</td>
+              <td class="num">~5.0 GB</td>
+              <td>
+                degenerate ("( ( ( ( ,chein,zech…" on 1.7B; not retested 4B)
+              </td>
               <td>fails</td>
             </tr>
             <tr>
               <td>Q6_K</td>
-              <td class="num">1.8 GB</td>
-              <td>degenerate; output unparseable by server tokenizer</td>
+              <td class="num">~3.9 GB</td>
+              <td>degenerate (1.7B)</td>
               <td>fails</td>
             </tr>
             <tr>
               <td>Q5_K_M</td>
-              <td class="num">1.6 GB</td>
-              <td>word-salad</td>
+              <td class="num">~3.5 GB</td>
+              <td>word-salad (1.7B)</td>
               <td>fails</td>
             </tr>
           </tbody>
         </table>
         <p class="prose">
-          <strong>Why obfuscated weights resist quantisation.</strong>
+          <strong
+            >Why obfuscated weights resist block-scale quantisation.</strong
+          >
           AloePri-keymat weights are heavy-tailed per-row (max ≈ 55, std ≈ 4.7
-          on layer 27 of Qwen3 1.7B). Block-scale quantisation (Q8_0 stores one
-          fp16 scale per 32 elements) loses the small values to zero when a
-          block also contains an outlier, breaking the covariant chain. K-quants
-          (Q6_K, Q5_K_M) have more flexible scaling but still can't preserve the
-          precision needed. fp32 is the required production format.
+          on layer 27 of Qwen3 1.7B). Block-scale formats (Q8_0 stores one fp16
+          scale per 32 elements) lose small values to zero when a block also
+          contains an outlier, breaking the covariant chain. K-quants are more
+          flexible but still can't preserve the precision needed.
+        </p>
+        <p class="prose">
+          <strong>Why bf16 works where fp16 doesn't.</strong>
+          The keymat construction <code>B = U + λV</code> with λ=0.3 produces a
+          long lower tail in the transformed weight tensors: median row L2 norm
+          ≈ 1.13 but min element magnitude reaches ~3e-10 in
+          <code>attn_q</code>. fp16's smallest normal is ~6e-5, so ~1.15 % of
+          <code>attn_q</code> entries flush to zero, breaking the exact
+          <code>P̂·Q̂ = I_d</code> cancellation. bf16 keeps fp32's full 8-bit
+          exponent (range down to ~1e-38) at the cost of 7-bit mantissa
+          precision; cancellation survives, individual element values shift by
+          ~1e-3 relative which is below the keymat's noise floor. Empirically:
+          bf16 matches fp32 byte-for-byte on HumanEval, all attacks pass with
+          negligible drift (IMA-EmbedRow-ridge: 57.81 % fp32 → 57.03 % bf16).
+          The obfuscator default flipped from fp32 to bf16 in commit 2026-05-20.
         </p>
 
         <h4
@@ -2826,8 +2901,8 @@
             <tr>
               <th>Task</th>
               <th>n</th>
-              <th>Plaintext Q8_0</th>
-              <th>Obfuscated fp32</th>
+              <th>Plaintext Q8_0 (1.7B)</th>
+              <th>Obfuscated fp32 (1.7B)</th>
               <th>Δ (pp)</th>
               <th>SE (pp)</th>
             </tr>
@@ -2867,6 +2942,50 @@
             </tr>
           </tbody>
         </table>
+        <table class="spec" style="margin-top: 10px">
+          <thead>
+            <tr>
+              <th>Task</th>
+              <th>n</th>
+              <th>Plaintext (ref)</th>
+              <th>Obfuscated 4B bf16</th>
+              <th>Obfuscated 8B bf16</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>HumanEval pass@1</td>
+              <td class="num">20</td>
+              <td class="num">~7/20 ≈ 35 % (4B baseline)</td>
+              <td class="num">6/20 = 30 %</td>
+              <td class="num"><b>8/20 = 40 %</b></td>
+              <td>
+                8B at α<sub>e</sub>=1.0 beats every other obfuscated cell —
+                including 1.7B at the much weaker α<sub>e</sub>=0.1 (35 %)
+              </td>
+            </tr>
+            <tr>
+              <td>5-prompt quality probe</td>
+              <td class="num">5</td>
+              <td class="num">5/5 readable</td>
+              <td class="num">5/5 readable</td>
+              <td class="num">5/5 readable</td>
+              <td>
+                capitals, math, haiku, code, French translation all coherent
+              </td>
+            </tr>
+            <tr>
+              <td>MMLU / PIQA / IFEval (4B + 8B)</td>
+              <td class="num">—</td>
+              <td colspan="4">
+                deferred — 4B/8B accuracy sweep beyond HumanEval not yet wired
+                through the patched server's <code>/completion</code>
+                endpoint (TODO)
+              </td>
+            </tr>
+          </tbody>
+        </table>
         <p class="prose">
           <strong>Pattern.</strong> Multi-choice / knowledge tasks (MMLU) absorb
           the κ-bias drift cleanly — a single-token decision is robust to small
@@ -2893,11 +3012,84 @@
         </h4>
         <p class="prose">
           Hardware: AMD Strix Halo Ryzen AI Max+ 395 · Radeon 8060S iGPU ·
-          Vulkan backend · single
-          <code>llama.cpp:server-vulkan</code> container per endpoint with
-          <code>-ngl 999 -np 1 --flash-attn on -c 32768 --ubatch-size 2048</code
-          >.
+          Vulkan backend · patched
+          <code>aloepri-llama-server:option-c</code> container per endpoint with
+          <code
+            >-ngl 999 -np 1 --flash-attn on -c 4096 --ubatch-size 1024 --user
+            1000:1000 --group-add 992 --device /dev/dri</code
+          >. The render-group membership is load-bearing — without gid 992
+          access to <code>/dev/dri/renderD128</code>, the Vulkan backend
+          silently falls back to CPU (a ~4× speed loss). Plain Qwen3-4B Q8_0 on
+          the same image establishes the upper-bound at 49 tps decode.
         </p>
+        <table class="spec">
+          <thead>
+            <tr>
+              <th>Component</th>
+              <th>Plain Qwen3 4B Q8_0 (ref)</th>
+              <th>Obfuscated 4B bf16 (default)</th>
+              <th>Obfuscated 8B bf16 (default)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>weights on disk</td>
+              <td class="num">4.0 GB</td>
+              <td class="num"><b>9.1 GB</b></td>
+              <td class="num"><b>17.4 GB</b></td>
+            </tr>
+            <tr>
+              <td>decode (TPOT)</td>
+              <td class="num">49.0 tok/s</td>
+              <td class="num"><b>22.1 tok/s</b></td>
+              <td class="num"><b>12.2 tok/s</b></td>
+            </tr>
+            <tr>
+              <td>prompt eval (prefill)</td>
+              <td class="num">217 tok/s</td>
+              <td class="num"><b>~80 tok/s</b></td>
+              <td class="num"><b>~59 tok/s</b></td>
+            </tr>
+            <tr>
+              <td>HumanEval pass@1 (n=20)</td>
+              <td>n/a</td>
+              <td class="num">6/20 = 30 %</td>
+              <td class="num"><b>8/20 = 40 %</b></td>
+            </tr>
+            <tr>
+              <td>vs plain (decode ratio)</td>
+              <td>1.00× (ref)</td>
+              <td>0.45×</td>
+              <td>0.25×</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="prose" style="margin-top: 6px; font-size: 13px; color: #555">
+          <em
+            >Both obfuscated columns are bf16-native (the obfuscator default
+            since 2026-05-20). 1.7B and fp32-reference columns are dropped from
+            this table — see the "Production-precision validation" table above
+            for the fp32-vs-bf16 ledger. The decode-ratio row treats plain Q8_0
+            4B as the upper bound.
+            <strong>8B is the highest-accuracy obfuscated deployment</strong>
+            (40 % HumanEval, best of any cell) — the wider d=4096 absorbs
+            paper-default α<sub>e</sub>=1.0 noise more gracefully than 4B at
+            d=2560.</em
+          >
+        </p>
+
+        <h4
+          style="
+            font-family: &quot;Fraunces&quot;, serif;
+            font-variation-settings:
+              &quot;opsz&quot; 26,
+              &quot;wght&quot; 460;
+            font-size: 16px;
+            margin: 16px 0 6px;
+          "
+        >
+          1.7B request breakdown (kept for historical context)
+        </h4>
         <table class="spec">
           <thead>
             <tr>
@@ -2979,27 +3171,29 @@
           </tbody>
         </table>
         <p class="prose">
-          <strong>Where the slowdown lives.</strong> The 5× decode penalty is
-          entirely the weight-bandwidth cost of fp32 storage. Per-request
-          client-side work (tokenise + τ-map + HTTP + τ⁻¹ + detokenise) totals
-          well under 5 ms — the actual numpy fancy-indexing for a 32-token
-          τ-mapping is microseconds, dominated by L2 cache. If a future
-          obfuscation construction survives Q8_0 (e.g. via QR-projected P̂_R with
-          tighter per-row variance), TPOT recovers to plaintext parity — the
-          protocol surface itself imposes negligible online overhead, matching
-          paper §7.7's claim of "identical online efficiency to plaintext
-          inference."
+          <strong>Where the slowdown lives.</strong> The 4× decode penalty (4B
+          bf16: 22.1 tps vs plain Q8_0 49.0 tps) is the bandwidth cost of bf16
+          vs Q8_0 (~2× bytes per weight) plus the +12.5 % d-expansion (h=128)
+          plus a small matrix-Γ matmul per layer. Per-request client-side work
+          (tokenise + τ-map + HTTP + τ⁻¹ + detokenise) totals well under 5 ms —
+          the actual numpy fancy-indexing for a 32-token τ-mapping is
+          microseconds, dominated by L2 cache.
+          <b>fp16 would double throughput again</b> but collapses the
+          obfuscation chain (denormal flush); <b>Q8_0 would 2× more</b> but also
+          collapses (heavy-tailed per-row distribution). bf16 is the operational
+          sweet spot.
         </p>
         <p class="prose">
           <strong>What this hardware represents.</strong> Strix Halo is the
           upper end of consumer integrated graphics (256-bit LPDDR5x-8000, ~256
           GB/s memory bandwidth). Discrete GPUs with HBM (H100 ≈ 3000 GB/s, RTX
-          4090 ≈ 1000 GB/s) would close the fp32-vs-Q8_0 gap further but at a
+          4090 ≈ 1000 GB/s) would close the bf16-vs-Q8_0 gap further but at a
           different cost envelope. AloePri targets the iGPU / commodity-EPYC
           envelope deliberately — paper §7.7's claim that decode is "identical
           to plaintext" is exact only when the obfuscated artifact is in the
-          same quantisation class as the plaintext baseline, which currently it
-          isn't.
+          same quantisation class as the plaintext baseline; bf16 narrows the
+          gap to a single quantisation class jump (bf16 vs Q8_0) while keeping
+          accuracy paper-faithful.
         </p>
       </section>
 
@@ -3094,23 +3288,49 @@
               </td>
             </tr>
             <tr>
-              <td><b>Obfuscated</b></td>
+              <td><b>Obfuscated (4B)</b></td>
               <td>
                 <code
-                  >keymat-h128-pi-noise-alg2-FULL-zfix-hadamard-fp32.gguf</code
+                  >untied-keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-bf16-native.gguf</code
                 >
-                (9.1 GB fp32; h=128, λ=0.3, α<sub>e</sub>=1.0,
-                α<sub>h</sub>=0.2; full Algorithm 2: R̂<sub>qk</sub> + Ẑ<sub
-                  >block</sub
-                >
-                + ±1 Ĥ<sub>qk</sub> + Π<sub>head</sub>
-                via matrix-Γ kernel)
+                (9.1 GB bf16; d=2560, h=128, λ=0.3, α<sub>e</sub>=1.0,
+                α<sub>h</sub>=0.2; same matrix-Γ kernel). Built from
+                <code>Qwen3-4B-Q8_0-untied.gguf</code> after Path-B untying —
+                Qwen3-4B ships with <code>tie_word_embeddings: true</code> and
+                the obfuscator's separate P̂<sub>R</sub> / Q̂<sub>R</sub
+                ><sup>T</sup> transforms are mathematically invalid on a shared
+                <code>token_embd</code> tensor. <code>untie_qwen3_gguf.py</code>
+                duplicates the shared tensor into a fresh
+                <code>output.weight</code> slot first.
               </td>
               <td>
-                The current AloePri deployment. Closest available approximation
-                to paper full Algorithm 2 under the matrix-Γ kernel
-                construction. Acceptance threshold per paper §6.3:
-                <b>TTRSR ≤ 15 % per attack</b>.
+                Larger-d sibling deployment (+25 % dimensional headroom). Same
+                paper-default
+                <code
+                  >(α<sub>e</sub>=1.0, α<sub>h</sub>=0.2, h=128, λ=0.3)</code
+                >
+                config; same matrix-Γ kernel; bf16 weights (default since
+                2026-05-20 — fp16 collapses, see §07).
+              </td>
+            </tr>
+            <tr>
+              <td><b>Obfuscated (8B)</b></td>
+              <td>
+                <code
+                  >keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-bf16.gguf</code
+                >
+                (17.4 GB bf16; d=4096, h=128, λ=0.3, α<sub>e</sub>=1.0,
+                α<sub>h</sub>=0.2; same matrix-Γ kernel). Built directly from
+                <code>bartowski/Qwen_Qwen3-8B-GGUF</code>'s bf16 release —
+                Qwen3-8B is already untied so no Path-B step needed. κ_correct =
+                7.787.
+              </td>
+              <td>
+                Larger-d sibling (+100 % dim headroom vs 1.7B, +60 % vs 4B).
+                Same paper-default knob set; bf16 weights. This is the cleanest
+                untied / dimensional regime in the table — 8B +
+                α<sub>e</sub>=1.0 + paper-default α<sub>h</sub> is the closest
+                Qwen3 deployment to the paper's Qwen2.5-14B reference.
               </td>
             </tr>
           </tbody>
@@ -3130,10 +3350,17 @@
         <p class="prose">
           Three surface families, all targeting τ-recovery.
           <em>Paper expected (Qwen3)</em> reproduces Qwen3-family numbers from
-          the paper where the surface matches. <em>Plain</em> and
-          <em>Obfuscated</em> are this harness against Qwen3 1.7B; static-weight
-          attacks have no meaningful plain-side number because they require the
-          paired (W<sub>plain</sub>, W<sub>obfuscated</sub>) attacker model.
+          the paper where the surface matches. <em>Plain</em> is this harness
+          against plain Qwen3 1.7B (control); <em>Obfuscated (4B)</em> and
+          <em>Obfuscated (8B)</em> are this harness against the two current
+          AloePri deployments documented above. Static-weight attacks have no
+          meaningful plain-side number because they require the paired
+          (W<sub>plain</sub>, W<sub>obfuscated</sub>) attacker model. The
+          Qwen3-1.7B obfuscated cell that was previously in this table has been
+          retired now that 4B + 8B are paper-faithful (untied, bf16,
+          α<sub>e</sub>=1.0); the 1.7B column was a development scaffold for the
+          Path-B untying + bf16-quant work in §07 and is no longer the reference
+          deployment.
         </p>
         <div
           style="
@@ -3180,14 +3407,15 @@
             every attack.
           </p>
         </div>
-        <table class="spec">
+        <table class="spec spec--wide">
           <thead>
             <tr>
               <th style="min-width: 9em">Attack</th>
               <th style="min-width: 16em">Scope</th>
               <th>Paper (Qwen3)</th>
               <th>Plain</th>
-              <th>Obfuscated</th>
+              <th>Obfuscated (4B)</th>
+              <th>Obfuscated (8B)</th>
               <th style="min-width: 18em">Notes</th>
             </tr>
           </thead>
@@ -3212,11 +3440,11 @@
               <td class="num">0.0 % (Q2.5-14B, T1)</td>
               <td class="num accent">100.0 %</td>
               <td class="num accent">0.0 %</td>
+              <td class="num accent">0.0 %</td>
               <td>
-                Plain hits 100 % (control ✓ — L0 hidden state ≈ embedding row).
-                Obfuscated 0 % — keymat P̂ rotates the 2 304-dim obs so naive
-                truncation to the first 2 048 dims recovers nothing.
-                <b>Pass.</b>
+                <b>Pass.</b> Naive cosine truncated to first d dims of plain
+                W<sub>e</sub> can't bridge the (d+2h)-dim keymat rotation; no
+                training. Plain control = identity match at L0 ✓.
               </td>
             </tr>
             <tr>
@@ -3243,19 +3471,22 @@
               </td>
               <td class="num accent"><code>attn_norm-0</code>: 98.1 %</td>
               <td class="num" style="color: #a66; font-weight: bold">
-                <code>attn_norm-0</code>: 88.9 %<br />
-                <code>Qcur_normed-0</code>: 88.0 %<br />
-                <code>Kcur_normed-0</code>: 76.9 %
+                <code>attn_norm-0</code>: 72.66 % @N=256<br />
+                <code>Qcur_normed-0</code>: 22.6 % @N=16<br />
+                <code>Kcur_normed-0</code>: 22.6 % @N=16
+              </td>
+              <td class="num" style="color: #a66; font-weight: bold">
+                <code>attn_norm-0</code>: 22.6 % @N=16<br />
+                <code>Qcur_normed-0</code>: 22.6 % @N=16<br />
+                <code>Kcur_normed-0</code>: 25.8 % @N=16
               </td>
               <td>
-                Plain 98.1 % (control ✓). Obfuscated
-                <b>fails all three by 5–6×</b>. Algorithm 2 acts post-W<sub
-                  >q</sub
-                >
-                and cannot reach the pre-W<sub>q</sub> residual; α<sub>e</sub> +
-                Alg 1 keymat are the relevant levers (see §09). Q-side ridge
-                still inverts the static M<sub>q</sub> rotation; K-side is lower
-                because 1 024 dims gives ridge less to fit.
+                <b>Fail.</b> Ridge fits the (d+2h)→d keymat at h=128 in closed
+                form. Lever is h↑ (Alg 1) — Alg 2 acts post-W<sub>q</sub> and
+                cannot reach the pre-W<sub>q</sub> residual.
+                <code>attn_norm-0</code> at N=256 is the canonical number; N=16
+                cells (4B Q/K, all 8B) sit in the 7/31 = 22.58 % sample-noise
+                band — re-run at N=256 before reading.
               </td>
             </tr>
             <tr>
@@ -3284,16 +3515,17 @@
               <td class="num" style="color: #a66; font-weight: bold">
                 49.3 % @N=256<br />72.8 % @N=512
               </td>
-              <td class="num" style="color: #a66; font-weight: bold">
-                38.0 % @N=256<br />46.8 % @N=512
+              <td class="num accent">0.09 % @N=256</td>
+              <td class="num" style="color: #888">
+                not measured (8B; activation-side trained-inverter run deferred
+                — RAM-bound when paired with VMA/IA)
               </td>
               <td>
-                Plain 49–73 % at paper-scale corpora — attack works. Obfuscated
-                <b>fails by 2.5–3×</b>. Stronger inverter confirms
-                IMA-L0-activation finding: layer-0 residual is recoverable by
-                both linear and non-linear inverters; Algorithm 2 is the wrong
-                defence here. Full N=64→512 sweep in
-                <code>docs/handoffs/2026-05-19-m2-7-attack-findings.md</code>.
+                <b>Pass on 4B.</b> MSE optimisation with paper-default budget
+                (16 epochs AdamW) converges to centroid at α<sub>e</sub>=1.0 —
+                the trained inverter can't beat closed-form ridge on the
+                (d+2h)→d dim bridge. 8B run TODO. Linear-ridge row above is the
+                surface that stays open.
               </td>
             </tr>
             <tr>
@@ -3322,17 +3554,21 @@
               </td>
               <td class="num accent"><code>attn_norm-23</code>: 8.7 %</td>
               <td class="num accent">
-                <code>attn_norm-23</code>: 11.5 %<br />
-                <code>Qcur_normed-23</code>: 13.5 %<br />
-                <code>Kcur_normed-23</code>: 7.7 %
+                <code>attn_norm-30</code>: 9.7 %<br />
+                <code>Qcur_normed-30</code>: 19.4 %<br />
+                <code>Kcur_normed-30</code>: 19.4 %
+              </td>
+              <td class="num accent">
+                <code>attn_norm-30</code>: 9.7 %<br />
+                <code>Qcur_normed-30</code>: 16.1 %<br />
+                <code>Kcur_normed-30</code>: 12.9 %
               </td>
               <td>
-                Plain 8.7 % (control ✓). Obfuscated
-                <b>all three pass §6.3 15 % gate</b>. Algorithm 2's main
-                observable win: §05 leaked 16.3 % at <code>attn_norm-23</code>;
-                +Ẑ<sub>block</sub> propagates per-pair shuffling through 22
-                layers and drops it to 11.5 %. K-surface lowest because 1 024
-                dims gives ridge less structure.
+                <b>Pass on <code>attn_norm-{23,30}</code></b> (~82 % depth); Alg
+                2's Ẑ<sub>block</sub> per-pair shuffle damps the residual signal
+                through the layer stack. Q/K post-norm marginal — 4B Q/K both at
+                small-sample N=16 floor; 8B Q above gate, K passes. Algorithm
+                2's main observable defence.
               </td>
             </tr>
             <tr>
@@ -3349,11 +3585,18 @@
               </td>
               <td class="num">0.0 % (Q2.5-14B, T1; T3 full)</td>
               <td class="num accent">2.9 %</td>
-              <td class="num accent">0.0 %</td>
+              <td class="num accent">12.5 % @kq-30 (N=256)</td>
+              <td class="num" style="color: #a66; font-weight: bold">
+                15.6 % @kq-30 (N=256)
+              </td>
               <td>
-                Plain 2.9 % (control). Obfuscated 0 % — head-shuffle alone
-                defeats ridge here.
-                <b>Pass.</b>
+                <b>Pass (4B); 8B 0.6 pp above gate.</b> M<sub>q</sub>·M<sub
+                  >k</sub
+                ><sup>T</sup> = I cancellation holds; residual scales with
+                d_eff, so 8B has marginally more room for ridge to overfit
+                (obs_dim = 4096 for both 4B/8B). Closing the 8B margin requires
+                either α<sub>h</sub> on attn_output (attenuated by Alg 2) or
+                larger n<sub>kv</sub>-head shuffle.
               </td>
             </tr>
             <tr>
@@ -3382,12 +3625,12 @@
               </td>
               <td class="num accent">99.6 %</td>
               <td class="num accent">0.0 %</td>
+              <td class="num accent">0.0 %</td>
               <td>
-                Plain 99.6 % (identity match, control ✓). Obfuscated 0 % —
-                α<sub>e</sub>=1.0 breaks the row-sort+match signal; Alg 1 P̂
-                erases column-wise structure; head/block perms scramble
-                attention-side products. Better than every Qwen3 size in the
-                paper. <b>Pass.</b>
+                <b>Pass.</b> α<sub>e</sub>=1.0 destroys row-sort signal; Alg 1 P̂
+                erases column structure; head/block perms scramble
+                attention-side products. Three independent defences stack — each
+                alone is sufficient.
               </td>
             </tr>
             <tr>
@@ -3409,13 +3652,13 @@
               </td>
               <td class="num">5.95 % (Q2.5-14B, T1)</td>
               <td class="num accent">98.6 %</td>
-              <td class="num accent">0.0 %</td>
+              <td class="num accent">0.02 %</td>
+              <td class="num accent">0.02 %</td>
               <td>
-                Plain 98.6 % (Gate 98.6 / Attn 98.5, control ✓). Obfuscated 0 %
-                (both sub-attacks) — α<sub>e</sub>&gt;0 breaks Gate-IA's
-                no-noise precondition; Algorithm 2 head/block perms break
-                Attn-IA's per-block consistency.
-                <b>Pass.</b>
+                <b>Pass.</b> α<sub>e</sub>&gt;0 breaks Gate-IA's no-noise
+                precondition (single-sample sensitivity); Alg 2 head/block perms
+                break Attn-IA's per-block consistency. Both sub-attacks need
+                orthogonal defences — both land.
               </td>
             </tr>
             <tr>
@@ -3444,57 +3687,20 @@
               <td class="num">0.0 % (Q2.5-14B, T1)</td>
               <td class="num accent">99.2 %</td>
               <td class="num" style="color: #a66; font-weight: bold">
-                97.66 %
+                57.03 %
+              </td>
+              <td class="num" style="color: #a66; font-weight: bold">
+                96.88 %
               </td>
               <td>
-                Plain 99.2 % (identity τ, control ✓). Obfuscated
-                <b>fails by 6.5×</b>. Best ridge α=0.01; cosine 0.32 vs true row
-                but discriminator wins among 2 048 candidates. Same root cause
-                as IMA-L0-activation. Paper's 0 % on Q2.5-14B (d=5 120) likely a
-                model-size effect that doesn't carry to Q3-1.7B (d=2 048). Runs
-                in &lt;1 s — drives the (α<sub>e</sub>, λ, h) sweep in §09.
-              </td>
-            </tr>
-            <tr>
-              <td>
-                <b>IMA-EmbedRow-transformer</b>
-                <div class="alias">
-                  trained 2-layer transformer on
-                  <code>(W̃<sub>e</sub>[τ[i]], W<sub>e</sub>[i])</code>
-                  row pairs — AloePri §F.1 "IMA paper-like"
-                </div>
-              </td>
-              <td>
-                Recovers τ from static embedding rows. Same data as
-                IMA-EmbedRow-ridge but inverter is a trained transformer (port
-                of
-                <code>run_ima_paper_like</code>). MSE training, 4 096 train
-                pairs, vocab-disjoint 256-id test. Trained-inverter family (<a
-                  href="https://arxiv.org/abs/2310.06816"
-                  >Morris et al., EMNLP 2023</a
-                >;
-                <a href="https://arxiv.org/abs/2109.10104"
-                  >Kugler et al., InvBERT, 2021</a
-                >).
-              </td>
-              <td class="num">0.0 % (Q2.5-14B, T1)</td>
-              <td class="num" style="color: #a66; font-weight: bold">0.0 %</td>
-              <td class="num" style="color: #888">not measured</td>
-              <td>
-                <b
-                  >Broken attack — fails plain identity control across 4
-                  architecture variants</b
-                >
-                (seq=1 + bottleneck; seq=32 no-bottleneck; identity-init blocks;
-                pure residual MLP). Minimal single-Linear isolation test reaches
-                only 2.3 % top-1 in 16 epochs — pipeline is sound but GD with
-                paper-default budget (~256 update steps) cannot push a 2 048×2
-                048 weight to ridge's closed-form solution. Not interpretable as
-                defence; cite IMA-EmbedRow-ridge as the canonical static-row
-                measurement. Full investigation:
-                <code
-                  >docs/handoffs/2026-05-20-ima-embedrow-transformer-investigation.md</code
-                >.
+                <b>Fail — structural.</b> 4B (57 %) → 8B (97 %) is
+                <em>non-monotonic</em>; best ridge α 0.01 → 1.0 between them.
+                Higher d gives the inverter <em>more</em> room to fit the
+                (d+2h)→d keymat, not less. Dimensional-headroom argument holds
+                only at d ≥ 5120 (paper's Qwen2.5-14B); 4B / 8B both sit in a
+                regime where paired-data ridge wins. Only per-prompt fresh
+                masking (Direction 2C, GELO-style) structurally closes this
+                gate. See §09.
               </td>
             </tr>
             <tr style="background: #fdf3e8">
@@ -3531,12 +3737,18 @@
               <td class="num" style="color: #a66; font-weight: bold">
                 not measured · not defended
               </td>
+              <td class="num" style="color: #a66; font-weight: bold">
+                not measured · not defended (kernel identical)
+              </td>
               <td>
-                <b>New attack surface introduced by the matrix-Γ deployment.</b>
-                Defending it requires per-prompt fresh M (GELO-style masking,
-                which breaks AloePri's "static obfuscation, no infra change"
-                thesis) or additive Γ noise tuned to confound eig without
-                breaking generation — neither is AloePri's mission.
+                <b>Not defended by design.</b> Γ = M<sup>T</sup>·Diag(γ)·M is
+                similarity-transformed of a diagonal —
+                <code>numpy.linalg.eig(Γ)</code>
+                recovers M (eigenvectors) + γ (eigenvalues) in ms. Out of
+                AloePri's static-obfuscation scope by construction; fix requires
+                per-prompt fresh M (GELO; breaks the no-infra-change thesis) or
+                σ·N noise on Γ tuned to confound eig (hard: γ_q eigenvalue
+                spread 1e-1 ... 7e1, no single σ works across heads).
               </td>
             </tr>
             <tr>
@@ -3560,10 +3772,12 @@
               <td class="num">
                 <span style="font-size: 12px; color: #888">n/a</span>
               </td>
-              <td class="num accent">0.8 % top-1 / 2.7 % top-10</td>
+              <td class="num accent">0.4 % top-1 / 4.3 % top-10</td>
+              <td class="num accent">0.4 % top-1 / 4.3 % top-10</td>
               <td>
-                Obfuscated 0.8 % — independent of Algorithm 2 (wire-stream
-                surface). <b>Pass.</b>
+                <b>Pass.</b> Wire-stream surface — orthogonal to Alg 1 + Alg 2;
+                defence comes from Π alone (fresh-per-deployment τ defeats fixed
+                token-frequency priors). top-10 within n=64 sample noise.
               </td>
             </tr>
             <tr>
@@ -3588,11 +3802,12 @@
               <td class="num">
                 <span style="font-size: 12px; color: #888">n/a</span>
               </td>
-              <td class="num accent">BLEU-4 1.4×10<sup>−5</sup></td>
+              <td class="num accent">BLEU-4 7.8×10<sup>−6</sup></td>
+              <td class="num accent">BLEU-4 1.6×10<sup>−5</sup></td>
               <td>
-                Obfuscated essentially zero — n-gram signature matching can't
-                bootstrap from 64 prompts × 24 response tokens against a
-                fresh-per-deployment τ. <b>Pass.</b>
+                <b>Pass.</b> n-gram cipher decipherment needs orders of
+                magnitude more wire data; 64×24-token corpus is far below the
+                bootstrap threshold for a fresh-per-deployment τ.
               </td>
             </tr>
           </tbody>
