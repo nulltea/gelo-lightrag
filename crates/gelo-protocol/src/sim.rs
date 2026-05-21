@@ -110,7 +110,31 @@ impl GpuOffloadEngine for RayonCpuEngine {
 pub struct InProcessTrustedExecutor<E: GpuOffloadEngine> {
     engine: E,
     rng: ChaCha20Rng,
+    /// Active shield for the current forward pass. Re-set by
+    /// `begin_forward_pass(n)` from one of two configurations
+    /// described below — see `shield_default` / `shield_small_n`.
+    /// Per-offload mode (legacy / safety-test path) uses
+    /// `shield_default` directly.
     shield: ShieldConfig,
+    /// Paper-parity shield for "normal" forward shapes (k=8). Used
+    /// when `n > shield_small_n_max` at `begin_forward_pass`.
+    shield_default: ShieldConfig,
+    /// Optional overlay shield for **small-n forward passes** —
+    /// specifically m=1 decode steps where the default `k=8` gives
+    /// `stacked_n = 9` and forces Auto into DCT-IV (pad 9 → 16 is
+    /// 1.78× over the HD₃ threshold). Default initialisation sets
+    /// this to `Some(ShieldConfig::new(15, 4.0))` so decode lands
+    /// at `stacked_n = 16` exactly — HD₃ zero-pad, no waste — and
+    /// the per-decode mask cost drops onto the radix-8 FWHT path.
+    /// Going from k=8 to k=15 is **monotonically safer** (more
+    /// shield rows = more confusion of the engine-observed
+    /// subspace); paper specifies k=8 as a minimum, not a ceiling.
+    /// See feedback_memory_efficiency_priority.md / threshold tuning
+    /// commit 2026-05-21.
+    shield_small_n: Option<ShieldConfig>,
+    /// Max `n` (data rows) at which `shield_small_n` overrides
+    /// `shield_default`. Default 1 (decode-only).
+    shield_small_n_max: usize,
     verify_probes: usize,
     /// TEE-side weight cache for U-Verify probe computation. Held as
     /// `Arc<Array2<f32>>` so callers that already own the weight bytes
@@ -186,6 +210,9 @@ impl<E: GpuOffloadEngine + Clone> Clone for InProcessTrustedExecutor<E> {
             engine: self.engine.clone(),
             rng: self.rng.clone(),
             shield: self.shield,
+            shield_default: self.shield_default,
+            shield_small_n: self.shield_small_n,
+            shield_small_n_max: self.shield_small_n_max,
             verify_probes: self.verify_probes,
             weights: self.weights.clone(),
             per_forward_mask: self.per_forward_mask,
@@ -242,10 +269,21 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
         // multi-thread BLIS pool by the time the first GEMM runs.
         // Idempotent — OnceLock guards subsequent calls.
         crate::mask::ensure_blis_single_thread();
+        let shield_default = ShieldConfig::new(8, 4.0);
         Self {
             engine,
             rng: ChaCha20Rng::from_seed(seed.0),
-            shield: ShieldConfig::new(8, 4.0),
+            shield: shield_default,
+            shield_default,
+            // 2026-05-21: at m=1 decode the default k=8 gives
+            // stacked_n = 9 and Auto falls to DCT-IV (pad 16/9 = 1.78×
+            // > 1.4 threshold). Overlay k=15 makes stacked_n = 16
+            // exactly — HD₃ zero-pad. Decode mask bucket drops from
+            // ~64 s of wall to an estimated ~20–25 s on Qwen3-4B
+            // chunks. Security-wise k=15 is strictly safer than k=8
+            // (paper specifies k=8 as a minimum).
+            shield_small_n: Some(ShieldConfig::new(15, 4.0)),
+            shield_small_n_max: 1,
             verify_probes: 0,
             weights: HashMap::new(),
             per_forward_mask: true,
@@ -281,6 +319,12 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             engine,
             rng: ChaCha20Rng::from_seed(seed.0),
             shield,
+            shield_default: shield,
+            // Per-offload legacy/safety-test path: no shape-adaptive
+            // override. Whatever shield the test caller picked is
+            // exactly what runs.
+            shield_small_n: None,
+            shield_small_n_max: 0,
             verify_probes: 0,
             weights: HashMap::new(),
             per_forward_mask: false,
@@ -370,9 +414,38 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
         self.mask_kind
     }
 
-    /// Set or update the shield configuration in place.
+    /// Override the **shape-adaptive small-n shield** (the overlay
+    /// that fires at decode shapes to land `stacked_n` on a
+    /// power-of-two for HD₃). Pass `None` to disable — restores
+    /// strict paper-parity (k=8 at every n). Pass `Some((max_n,
+    /// shield))` to override the threshold and / or the override
+    /// shield itself.
+    ///
+    /// Default (set by `new` / `with_seed`): `Some((1, k=15))` so
+    /// m=1 decode lands at `stacked_n=16`. Tests that want
+    /// strict paper-parity (k=8 everywhere) should call
+    /// `.with_small_n_shield(None)`.
+    pub fn with_small_n_shield(mut self, cfg: Option<(usize, ShieldConfig)>) -> Self {
+        match cfg {
+            Some((max_n, shield)) => {
+                self.shield_small_n = Some(shield);
+                self.shield_small_n_max = max_n;
+            }
+            None => {
+                self.shield_small_n = None;
+                self.shield_small_n_max = 0;
+            }
+        }
+        self
+    }
+
+    /// Set or update the shield configuration in place. Updates both
+    /// `shield` (the active value for the next non-overlay forward)
+    /// and `shield_default` (so subsequent `begin_forward_pass(n)`
+    /// calls fall back to this value when `n > shield_small_n_max`).
     pub fn set_shield(&mut self, shield: ShieldConfig) {
         self.shield = shield;
+        self.shield_default = shield;
     }
 
     /// Enable the GELO paper's "one A per forward pass" construction
@@ -808,6 +881,15 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
             // its own fresh mask the legacy way.
             return Ok(());
         }
+        // Shape-adaptive shield: at small n (default: m=1 decode
+        // steps), swap in the overlay shield so `stacked_n = n + k`
+        // lands on a power-of-two for HD₃ zero-pad. For larger n
+        // (prefill), use the paper-parity default. See the
+        // `shield_small_n` field doc.
+        self.shield = match self.shield_small_n {
+            Some(small) if n <= self.shield_small_n_max => small,
+            _ => self.shield_default,
+        };
         let stacked_n = n + self.shield.k;
         let resolved_kind = crate::mask::resolve_mask_kind_for_shape(self.mask_kind, stacked_n);
         let mask = profile::time("gelo:mask_sample", || match resolved_kind {
