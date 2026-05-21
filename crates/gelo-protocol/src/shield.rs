@@ -9,7 +9,8 @@
 
 use ndarray::{Array2, ArrayView2};
 use rand::RngCore;
-use rand_distr::{Distribution, StandardNormal};
+
+use crate::gaussian::fill_gaussian;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ShieldConfig {
@@ -65,17 +66,19 @@ pub fn stack_shield<R: RngCore>(
         0.0
     };
 
-    let normal = StandardNormal;
     let mut stacked = Array2::<f32>::zeros((n + cfg.k, d));
     for i in 0..n {
         stacked.row_mut(i).assign(&hidden.row(i));
     }
-    for i in 0..cfg.k {
-        let mut row = stacked.row_mut(n + i);
-        for v in row.iter_mut() {
-            let z: f32 = normal.sample(rng);
-            *v = z * per_component_sigma;
-        }
+    // Fill the trailing `k × d` shield rows with `N(0, σ²)` in one
+    // bulk SIMD pass.  `Array2::zeros` is always row-major contiguous,
+    // so the shield slab is a contiguous `k·d` slice.
+    if cfg.k > 0 && d > 0 {
+        let shield_slab = stacked
+            .slice_mut(ndarray::s![n.., ..])
+            .into_slice()
+            .expect("Array2 row-major shield slab is contiguous");
+        fill_gaussian(shield_slab, per_component_sigma, rng);
     }
     (stacked, n)
 }

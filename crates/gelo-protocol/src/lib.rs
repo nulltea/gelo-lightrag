@@ -19,6 +19,7 @@ use blas_src as _;
 
 pub mod attention;
 pub mod dct4;
+pub mod gaussian;
 pub mod hd3;
 pub mod integrity;
 pub mod mask;

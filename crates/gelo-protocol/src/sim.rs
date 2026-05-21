@@ -342,6 +342,19 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
         }
     }
 
+    /// Pin the mask family to the GELO paper's dense Householder-QR
+    /// Haar sample. Reverses any prior `with_hd3_mask` /
+    /// `with_dct4_mask` / `with_auto_mask` switch. Provided for
+    /// symmetry with the other family setters and for tests that
+    /// hard-code stacked-row counts (Haar never pads; HD₃ rounds
+    /// stacked_n up to the next power of two).
+    pub fn with_haar_mask(mut self) -> Self {
+        self.mask_kind = MaskKind::Haar;
+        self.session = None;
+        self.stacked_scratch.clear();
+        self
+    }
+
     /// Opt into the HD₃ Hadamard-cascade mask
     /// ([`crate::hd3::Hd3Mask`]) instead of the default Haar mask.
     /// Eliminates the per-forward `O(s³)` Haar QR sampler and drops
@@ -845,17 +858,38 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
 /// `sigma = energy_scale × mean_row_norm(hidden) / sqrt(d)` once and
 /// passes it in; this lets the helper avoid re-borrowing `hidden`
 /// against the scratch buffer slice in the paper-parity path.
+///
+/// Delegates to [`crate::gaussian::fill_gaussian`], which uses a bulk
+/// RNG draw + SIMD Box-Muller (`wide::f32x8`). At d=2560, k=15 (decode)
+/// this is ~1.6× faster than the prior per-element
+/// `rand_distr::StandardNormal::sample` loop — see the
+/// `shield_gaussian` criterion bench.  When `shield_dest` is contiguous
+/// (the always-true case in `build_shielded_and_apply`'s scratch-reuse
+/// buffer) we hit the fast path with a single `fill_gaussian` call over
+/// the whole `k·d` slab.  We fall back to a per-row loop on non-
+/// contiguous views to keep the helper general.
 fn fill_shield_rows_inline<R: rand::RngCore>(
     mut shield_dest: ndarray::ArrayViewMut2<'_, f32>,
     sigma: f32,
     rng: &mut R,
 ) {
-    use rand_distr::{Distribution, StandardNormal};
-    let normal = StandardNormal;
-    for mut row in shield_dest.rows_mut() {
-        for v in row.iter_mut() {
-            let z: f32 = normal.sample(rng);
-            *v = z * sigma;
+    if let Some(slab) = shield_dest.as_slice_mut() {
+        crate::gaussian::fill_gaussian(slab, sigma, rng);
+    } else {
+        for mut row in shield_dest.rows_mut() {
+            if let Some(row_slice) = row.as_slice_mut() {
+                crate::gaussian::fill_gaussian(row_slice, sigma, rng);
+            } else {
+                // Strided row: fall back to scalar Box-Muller. This
+                // path is unreachable from the executor's scratch-
+                // reuse paths but kept for defensive generality.
+                use rand_distr::{Distribution, StandardNormal};
+                let normal = StandardNormal;
+                for v in row.iter_mut() {
+                    let z: f32 = normal.sample(rng);
+                    *v = z * sigma;
+                }
+            }
         }
     }
 }
@@ -1650,21 +1684,29 @@ mod tests {
 
     /// `MaskKind::Auto` resolves to HD₃ at pow2-aligned and near-pow2
     /// shapes and to DCT-IV at "far-from-pow2" shapes. Verifies the
-    /// pad-ratio dispatch boundary at the 4/3 ≈ 1.333 threshold.
+    /// pad-ratio dispatch boundary at the 7/5 = 1.4 threshold
+    /// (tightened from 4/3 in commit b49ba7a after the per-family
+    /// profile-split tuning).
     #[test]
     fn auto_dispatch_resolves_by_pad_ratio() {
         // Pow2 exact: s_pad/s = 1.0 → HD₃.
         assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 2048), MaskKind::Hd3);
         // Near pow2 (1 row of pad): s_pad/s = 2048/2047 ≈ 1.0005 → HD₃.
         assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 2047), MaskKind::Hd3);
-        // s=2055 → s_pad=2048? no, 2055 > 2048 → s_pad=4096, ratio 1.99 → DCT-IV.
+        // s=2055 → s_pad=4096, ratio ≈ 1.99 → DCT-IV.
         assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 2055), MaskKind::Dct4);
-        // s=3072 → s_pad=4096, ratio 4096/3072 ≈ 1.333 (exact threshold).
-        // s_pad * 3 = 12288, s * 4 = 12288 → 12288 ≤ 12288 → HD₃ (inclusive).
+        // s=3072 → s_pad=4096, ratio = 4/3 ≈ 1.333 < 7/5 → HD₃.
+        // s_pad * 5 = 20480, s * 7 = 21504 → 20480 ≤ 21504 → HD₃.
         assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 3072), MaskKind::Hd3);
-        // s=3071 → s_pad=4096, ratio 4096/3071 > 4/3 → DCT-IV.
-        // Check: s_pad * 3 = 12288, s * 4 = 12284 → 12288 > 12284 → DCT-IV.
-        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 3071), MaskKind::Dct4);
+        // s=3071 → s_pad=4096, ratio ≈ 1.334 < 7/5 → HD₃.
+        // Check: s_pad * 5 = 20480, s * 7 = 21497 → 20480 ≤ 21497 → HD₃.
+        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 3071), MaskKind::Hd3);
+        // s=2925 → s_pad=4096, ratio ≈ 1.400 (exact 7/5).
+        // s_pad * 5 = 20480, s * 7 = 20475 → 20480 > 20475 → DCT-IV.
+        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 2925), MaskKind::Dct4);
+        // s=2926 → s_pad=4096, ratio just under 7/5.
+        // s_pad * 5 = 20480, s * 7 = 20482 → 20480 ≤ 20482 → HD₃.
+        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 2926), MaskKind::Hd3);
         // Non-Auto kinds pass through.
         assert_eq!(resolve_mask_kind_for_shape(MaskKind::Haar, 2056), MaskKind::Haar);
         assert_eq!(resolve_mask_kind_for_shape(MaskKind::Hd3, 2056), MaskKind::Hd3);

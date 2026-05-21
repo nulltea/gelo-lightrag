@@ -46,9 +46,21 @@ rand_distr.workspace = true
 rayon.workspace = true
 rustdct.workspace = true
 thiserror.workspace = true
+# Portable SIMD vector types (f32x8, etc.) for the bulk Gaussian
+# generator used by shield row sampling (`gaussian.rs`). Stable Rust,
+# auto-detects AVX-512 / AVX2 / NEON at compile-time via `target-feature`
+# and falls back to scalar otherwise. ~6× faster shield_stack at the
+# decode shape (d=2560, k=15) on Zen 5 vs. the per-element
+# `rand_distr::StandardNormal::sample` loop.
+wide = "0.7"
 blas-src = { workspace = true, optional = true }
 blis-src = { workspace = true, optional = true }
 cblas-sys = { version = "0.1", optional = true }
 
 [dev-dependencies]
 half.workspace = true
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "shield_gaussian"
+harness = false
