@@ -170,6 +170,19 @@ impl<E: GpuOffloadEngine> ExtractionDecoder for DecoderRuntime<E> {
         if prompt_ids.is_empty() {
             anyhow::bail!("tokenizer produced empty prompt id list");
         }
+        // Diagnostic — surface the tokenised prompt size BEFORE
+        // generate fires. n = prompt_tokens is what the GELO mask
+        // operates on (plus shield_k=8). Useful for pre-empting
+        // the "is this an unexpected prefill shape" question that
+        // shows up in profile dumps.
+        tracing::info!(
+            target: "gelo_snp_runner::extraction",
+            prompt_tokens = prompt_ids.len(),
+            max_tokens,
+            prompt_plus_budget = prompt_ids.len() + max_tokens.max(1),
+            max_position_embeddings = self.cfg.max_position_embeddings,
+            "decoder: prefill shape"
+        );
         let budget = max_tokens.max(1);
         let prompt_plus_budget = prompt_ids.len().saturating_add(budget);
         if prompt_plus_budget > self.cfg.max_position_embeddings {

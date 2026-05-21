@@ -157,6 +157,7 @@ async fn main() -> Result<()> {
     let min_chunk_size = env_usize("BENCH_MIN_CHUNK_SIZE_TOKENS", 50);
     let max_tokens_per_chunk = env_usize("BENCH_MAX_TOKENS_PER_CHUNK", 512);
     let num_queries = env_usize("BENCH_NUM_QUERIES", 5);
+    let max_chunks = env_usize("BENCH_MAX_CHUNKS", usize::MAX);
     let top_k_e = env_usize("BENCH_TOP_K_E", 5);
     let top_k_r = env_usize("BENCH_TOP_K_R", 5);
     let top_k_c = env_usize("BENCH_TOP_K_C", 2);
@@ -217,12 +218,16 @@ async fn main() -> Result<()> {
     );
     let chunk_inputs: Vec<ChunkInput> = raw
         .into_iter()
+        .take(max_chunks)
         .enumerate()
         .map(|(i, text)| ChunkInput {
             id: format!("chunk-{i:06}"),
             text,
         })
         .collect();
+    if max_chunks < chunk_inputs.len().saturating_add(usize::MAX - chunk_inputs.len()) {
+        eprintln!("      bench cap: extracting {} of available chunks", chunk_inputs.len());
+    }
 
     // ── 3. Extract ──────────────────────────────────────────────────
     eprintln!(

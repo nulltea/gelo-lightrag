@@ -648,7 +648,10 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
                             buf.slice_mut(ndarray::s![shield_end.., ..]).fill(0.0);
                         }
                     });
-                    profile::time("gelo:mask_apply", || hd3.apply_in_place(&mut buf));
+                    profile::time(
+                        "gelo:mask_apply:hd3",
+                        || hd3.apply_in_place(&mut buf),
+                    );
                     buf
                 }
                 MaskFamily::Dct4(dct4) => {
@@ -669,7 +672,10 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
                             &mut self.rng,
                         );
                     });
-                    profile::time("gelo:mask_apply", || dct4.apply_in_place(&mut buf));
+                    profile::time(
+                        "gelo:mask_apply:dct4",
+                        || dct4.apply_in_place(&mut buf),
+                    );
                     buf
                 }
                 MaskFamily::Haar(_) => {
@@ -692,7 +698,10 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
                             buf.slice_mut(ndarray::s![shield_end.., ..]).fill(0.0);
                         }
                     });
-                    profile::time("gelo:mask_apply", || mask.apply(buf.view()))
+                    profile::time(
+                        "gelo:mask_apply:haar",
+                        || mask.apply(buf.view()),
+                    )
                 }
             }
         } else {
@@ -716,7 +725,7 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             // `stacked` buffer (saves the fresh 32 MB allocation
             // `mask.apply` would have done). Haar still allocates a
             // separate (n+k)×d output.
-            profile::time("gelo:mask_apply", || match &mask {
+            profile::time(mask.apply_profile_category(), || match &mask {
                 MaskFamily::Hd3(hd3) => {
                     hd3.apply_in_place(&mut stacked);
                     stacked
@@ -909,7 +918,9 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
                 )
             })?;
         }
-        let unmasked = profile::time("gelo:mask_unapply", || mask.unapply_take(masked_out));
+        let unmasked = profile::time(mask.unapply_profile_category(), || {
+            mask.unapply_take(masked_out)
+        });
         let strip = profile::time("gelo:strip_shield", || {
             unmasked.slice(ndarray::s![..n_data, ..]).to_owned()
         });
@@ -978,9 +989,10 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         // working set thrashes L2 vs matrixmultiply's tile-tuned
         // separate (stacked_n × hidden_size) calls. FLOPs are equal;
         // cache behaviour is not.
-        let q_full = profile::time("gelo:mask_unapply", || mask.unapply_take(mq));
-        let k_full = profile::time("gelo:mask_unapply", || mask.unapply_take(mk));
-        let v_full = profile::time("gelo:mask_unapply", || mask.unapply_take(mv));
+        let unapply_cat = mask.unapply_profile_category();
+        let q_full = profile::time(unapply_cat, || mask.unapply_take(mq));
+        let k_full = profile::time(unapply_cat, || mask.unapply_take(mk));
+        let v_full = profile::time(unapply_cat, || mask.unapply_take(mv));
 
         let slice_n = ndarray::s![..n_data, ..];
         let triple = profile::time("gelo:strip_shield", || {
@@ -1041,9 +1053,10 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         // Separate unapply per output (same reasoning as offload_qkv: at
         // our shapes a stacked Aᵀ · [V₁ | V₂ | …] GEMM thrashes L2 vs
         // matrixmultiply's tile-tuned per-call GEMMs).
+        let unapply_cat = mask.unapply_profile_category();
         let unmasked: Vec<Array2<f32>> = masked_outs
             .into_iter()
-            .map(|m| profile::time("gelo:mask_unapply", || mask.unapply_take(m)))
+            .map(|m| profile::time(unapply_cat, || mask.unapply_take(m)))
             .collect();
 
         let slice_n = ndarray::s![..n_data, ..];

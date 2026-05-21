@@ -186,6 +186,14 @@ where
     let mut merge_acc = Duration::ZERO;
     let total_chunks = live_chunks.len();
     for (idx, chunk) in live_chunks.iter().enumerate() {
+        // Per-chunk GELO+forward profile breakdown — reset
+        // gelo_protocol::profile thread-local before the chunk so
+        // the dump below reflects exactly this chunk's mask /
+        // attention / matmul stages. Decode runs on the same thread
+        // as the orchestrator loop (`extract_kg_from_chunks` is
+        // called directly, no `spawn_blocking`), so the thread-local
+        // captures the decoder's `profile::time` calls.
+        gelo_protocol::profile::reset();
         tracing::info!(
             target: "lightrag_private::extract",
             chunk_idx = idx + 1,
@@ -245,6 +253,13 @@ where
         merge_relations(&mut relations, draft_relations, &chunk.id, cfg.merge);
         merge_acc += t.elapsed();
 
+        // Mask shape diagnostic — `s = n + k_shield` with k_shield = 8
+        // (paper-parity default in `InProcessTrustedExecutor`).
+        // s_pad is the pow2 mask side HD₃ would use. Auto picks HD₃
+        // when `s_pad * 3 <= s * 4` (pad ratio ≤ 4/3), DCT-IV
+        // otherwise. See `mask.rs::resolve_mask_kind_for_shape`.
+        let s = timing.decoder_sub.prompt_tokens + 8;
+        let s_pad = s.next_power_of_two().max(2);
         tracing::info!(
             target: "lightrag_private::extract",
             chunk_idx = idx + 1,
@@ -254,11 +269,22 @@ where
             generate_ms = timing.decoder_sub.generate.as_millis() as u64,
             prompt_tokens = timing.decoder_sub.prompt_tokens,
             output_tokens = timing.decoder_sub.output_tokens,
+            mask_s_prefill = s,
+            mask_s_pad_prefill = s_pad,
+            mask_pad_ratio_x1000 = (s_pad * 1000 / s.max(1)) as u64,
             entities = timing.entities_extracted,
             relations = timing.relations_extracted,
             stopped_on_eos = timing.stopped_on_eos,
             "extract: chunk done"
         );
+        // Dump the per-chunk profile breakdown to stderr — GELO
+        // mask cost, TEE-side ops (RMSNorm, RoPE, attention,
+        // qkv_direct, embed_lookup), GPU offload duration. The
+        // GPU util observed at the OS level (nvtop) is the
+        // (GPU bucket) / (total wall) ratio; this dump pinpoints
+        // which non-GPU buckets are eating wall time.
+        gelo_protocol::profile::snapshot()
+            .dump(&format!("chunk-{:06} gelo+forward profile", idx));
 
         report.chunk_timings.push(timing);
         report.chunks_processed += 1;

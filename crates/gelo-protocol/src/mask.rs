@@ -75,6 +75,29 @@ impl MaskFamily {
             }
         }
     }
+
+    /// `&'static str` profile category for `gelo:mask_apply` that
+    /// splits by mask family. Used by `InProcessTrustedExecutor` to
+    /// make the per-stage profile dump distinguish Haar / HD₃ /
+    /// DCT-IV cost — otherwise Auto's runtime choice is invisible
+    /// in the breakdown.
+    pub fn apply_profile_category(&self) -> &'static str {
+        match self {
+            Self::Haar(_) => "gelo:mask_apply:haar",
+            Self::Hd3(_) => "gelo:mask_apply:hd3",
+            Self::Dct4(_) => "gelo:mask_apply:dct4",
+        }
+    }
+
+    /// Same as [`Self::apply_profile_category`] but for the unapply
+    /// path.
+    pub fn unapply_profile_category(&self) -> &'static str {
+        match self {
+            Self::Haar(_) => "gelo:mask_unapply:haar",
+            Self::Hd3(_) => "gelo:mask_unapply:hd3",
+            Self::Dct4(_) => "gelo:mask_unapply:dct4",
+        }
+    }
 }
 
 /// Which mask family `InProcessTrustedExecutor` should use. Default
@@ -111,8 +134,13 @@ pub enum MaskKind {
 /// 4/3 ≈ 1.333 is a conservative pick that ensures HD₃ is selected
 /// only when clearly faster, with a small "either is fine" zone
 /// between 1.333 and 1.4.
-pub const HD3_AUTO_MAX_PAD_RATIO_NUM: usize = 4;
-pub const HD3_AUTO_MAX_PAD_RATIO_DEN: usize = 3;
+// 2026-05-21: relaxed from 4/3 (1.333) to 7/5 (1.4). The empirical
+// crossover documented in `qwen3_4b_perf_2026_05_20.md` is ~1.39; at
+// 4/3 Auto rejected HD₃ at the prefill ratio 1.36 observed on Qwen3-4B
+// (s=753, s_pad=1024) even though HD₃ was the faster choice. 7/5 puts
+// the empirical crossover inside the "HD₃ wins" band with ~1 % margin.
+pub const HD3_AUTO_MAX_PAD_RATIO_NUM: usize = 7;
+pub const HD3_AUTO_MAX_PAD_RATIO_DEN: usize = 5;
 
 /// Resolve a configured [`MaskKind`] (possibly [`MaskKind::Auto`]) to
 /// a concrete physical kind given the stacked size `s = n + k_shield`.
@@ -122,13 +150,28 @@ pub fn resolve_mask_kind_for_shape(kind: MaskKind, s: usize) -> MaskKind {
     match kind {
         MaskKind::Auto => {
             let s_pad = s.next_power_of_two().max(2);
-            if s_pad.saturating_mul(HD3_AUTO_MAX_PAD_RATIO_DEN)
+            let picked = if s_pad.saturating_mul(HD3_AUTO_MAX_PAD_RATIO_DEN)
                 <= s.saturating_mul(HD3_AUTO_MAX_PAD_RATIO_NUM)
             {
                 MaskKind::Hd3
             } else {
                 MaskKind::Dct4
-            }
+            };
+            // Diagnostic — surfaces what Auto picked for every
+            // begin_forward_pass(n). Enable with
+            // `RUST_LOG=gelo_protocol=debug` (or trace). Cheap: one
+            // small kv-record per forward, never per offload.
+            tracing::debug!(
+                target: "gelo_protocol::mask",
+                s,
+                s_pad,
+                pad_ratio_x1000 = (s_pad * 1000 / s.max(1)) as u64,
+                threshold_x1000 = (HD3_AUTO_MAX_PAD_RATIO_NUM * 1000
+                    / HD3_AUTO_MAX_PAD_RATIO_DEN) as u64,
+                picked = ?picked,
+                "auto-mask resolved"
+            );
+            picked
         }
         kind => kind,
     }

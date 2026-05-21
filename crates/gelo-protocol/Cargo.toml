@@ -38,6 +38,7 @@ blas-ndarray = ["blas", "ndarray/blas"]
 [dependencies]
 anyhow.workspace = true
 half.workspace = true
+tracing.workspace = true
 ndarray = { workspace = true, features = ["rayon"] }
 rand.workspace = true
 rand_chacha.workspace = true
