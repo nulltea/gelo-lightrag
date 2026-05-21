@@ -4,48 +4,56 @@
 //! the KV cache lives entirely in encrypted CVM DRAM. The GPU never
 //! touches cached K/V bytes — attention's `Q · Kᵀ_cache` math at decode
 //! stays in-TEE (the per-step compute is microseconds-scale at
-//! `n_q = 1`). The cache is a plain `ndarray::Array2` allocated on the
+//! `n_q = 1`). The cache is a plain `ndarray::Array3` allocated on the
 //! Rust heap inside the trusted process; encryption is the SEV-SNP
 //! page-level RMP, not anything this struct manages.
 //!
-//! Layout: one storage slot per layer, with a `len` counter tracking
-//! how many of its rows are populated. The slot is either:
+//! **M1.11 D1.2** — layout is `(B, max_cache_len, kv_dim)` per layer
+//! and a per-layer `Vec<usize>` of per-sequence valid lengths. Single-
+//! sequence callers (`KvCache::new`) get the degenerate `B = 1` case
+//! and the legacy `.append() / .view() / .len()` API still works.
 //!
-//! - [`LayerKvStore::Separate`] — distinct `K` and `V` arrays, the
-//!   default for Qwen3 / Llama and Gemma 4 local layers.
+//! Layout per layer:
+//!
+//! - [`LayerKvStore::Separate`] — distinct `K` and `V` arrays of
+//!   shape `(B, max_cache_len, kv_dim)`, the default for Qwen3 /
+//!   Llama and Gemma 4 local layers.
 //! - [`LayerKvStore::Shared`] — a single `KV` array used for both K
 //!   and V, the M1.4 optimisation for Gemma 4 global layers where
 //!   the trained model satisfies `W_k = W_v` (the "K equals V" trick).
 //!   Halves the per-layer cache footprint.
 //!
-//! Indexing is `(layer_idx, position)`. The `(layer_idx, head_idx)`
-//! grouping is implicit — `kv_dim = num_kv_heads × head_dim` and
-//! per-head slicing happens at the attention call site.
+//! Indexing is `(layer_idx, batch_idx, position)`. The
+//! `(layer_idx, head_idx)` grouping is implicit — `kv_dim =
+//! num_kv_heads × head_dim` and per-head slicing happens at the
+//! attention call site.
 
 use anyhow::{Result, anyhow};
-use ndarray::{Array2, ArrayView2, s};
+use ndarray::{Array3, ArrayView2, s};
 
 /// Backing storage for one layer's K/V.
 enum LayerKvStore {
     Separate {
-        k: Array2<f32>,
-        v: Array2<f32>,
+        /// Shape `(B, max_cache_len, kv_dim)`.
+        k: Array3<f32>,
+        v: Array3<f32>,
     },
     Shared {
-        kv: Array2<f32>,
+        /// Shape `(B, max_cache_len, kv_dim)`.
+        kv: Array3<f32>,
     },
 }
 
 impl LayerKvStore {
-    fn separate(max_cache_len: usize, kv_dim: usize) -> Self {
+    fn separate(batch_size: usize, max_cache_len: usize, kv_dim: usize) -> Self {
         Self::Separate {
-            k: Array2::<f32>::zeros((max_cache_len, kv_dim)),
-            v: Array2::<f32>::zeros((max_cache_len, kv_dim)),
+            k: Array3::<f32>::zeros((batch_size, max_cache_len, kv_dim)),
+            v: Array3::<f32>::zeros((batch_size, max_cache_len, kv_dim)),
         }
     }
-    fn shared(max_cache_len: usize, kv_dim: usize) -> Self {
+    fn shared(batch_size: usize, max_cache_len: usize, kv_dim: usize) -> Self {
         Self::Shared {
-            kv: Array2::<f32>::zeros((max_cache_len, kv_dim)),
+            kv: Array3::<f32>::zeros((batch_size, max_cache_len, kv_dim)),
         }
     }
 }
@@ -53,23 +61,24 @@ impl LayerKvStore {
 /// One transformer layer's K and V cache.
 pub struct LayerKvCache {
     storage: LayerKvStore,
-    /// Number of currently-populated rows. Same value for K and V
-    /// regardless of storage layout.
-    len: usize,
+    /// Per-sequence valid-prefix lengths. `lens.len() == batch_size`.
+    /// All sequences share the same `max_cache_len` capacity (the
+    /// outer `KvCache::max_cache_len`).
+    lens: Vec<usize>,
 }
 
 impl LayerKvCache {
-    fn new_separate(max_cache_len: usize, kv_dim: usize) -> Self {
+    fn new_separate(batch_size: usize, max_cache_len: usize, kv_dim: usize) -> Self {
         Self {
-            storage: LayerKvStore::separate(max_cache_len, kv_dim),
-            len: 0,
+            storage: LayerKvStore::separate(batch_size, max_cache_len, kv_dim),
+            lens: vec![0; batch_size],
         }
     }
 
-    fn new_shared(max_cache_len: usize, kv_dim: usize) -> Self {
+    fn new_shared(batch_size: usize, max_cache_len: usize, kv_dim: usize) -> Self {
         Self {
-            storage: LayerKvStore::shared(max_cache_len, kv_dim),
-            len: 0,
+            storage: LayerKvStore::shared(batch_size, max_cache_len, kv_dim),
+            lens: vec![0; batch_size],
         }
     }
 
@@ -78,26 +87,29 @@ impl LayerKvCache {
         matches!(self.storage, LayerKvStore::Shared { .. })
     }
 
-    /// Valid prefix length (number of cached positions).
-    pub fn len(&self) -> usize {
-        self.len
+    /// Per-sequence valid prefix lengths.
+    pub fn lens(&self) -> &[usize] {
+        &self.lens
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
+    /// Valid prefix length of sequence `b`.
+    pub fn len_b(&self, b: usize) -> usize {
+        self.lens[b]
     }
 
-    /// Read the valid prefix of K and V as views into the backing
-    /// store. For shared layers, both views alias the same buffer.
-    pub fn view(&self) -> (ArrayView2<'_, f32>, ArrayView2<'_, f32>) {
+    /// Read the valid prefix of sequence `b`'s K and V as views into
+    /// the backing store. For shared layers, both views alias the
+    /// same buffer.
+    pub fn view_b(&self, b: usize) -> (ArrayView2<'_, f32>, ArrayView2<'_, f32>) {
+        let len = self.lens[b];
         match &self.storage {
             LayerKvStore::Separate { k, v } => (
-                k.slice(s![..self.len, ..]),
-                v.slice(s![..self.len, ..]),
+                k.slice(s![b, ..len, ..]),
+                v.slice(s![b, ..len, ..]),
             ),
             LayerKvStore::Shared { kv } => (
-                kv.slice(s![..self.len, ..]),
-                kv.slice(s![..self.len, ..]),
+                kv.slice(s![b, ..len, ..]),
+                kv.slice(s![b, ..len, ..]),
             ),
         }
     }
@@ -115,27 +127,46 @@ impl LayerKvCache {
 
 /// KV cache for an entire decoder, one entry per layer.
 ///
-/// Construct with [`KvCache::new`] for an all-separate cache (the
-/// existing Qwen3 / Llama path) or [`KvCache::new_with_sharing`] for
-/// Gemma 4 hybrid models that tie K and V on global layers.
+/// Construct with [`KvCache::new`] for an all-separate single-sequence
+/// cache, [`KvCache::new_batched`] for a B-sequence batched cache, or
+/// [`KvCache::new_with_sharing`] for Gemma 4 hybrid models that tie K
+/// and V on global layers.
 pub struct KvCache {
     layers: Vec<LayerKvCache>,
     max_cache_len: usize,
     kv_dim: usize,
+    batch_size: usize,
 }
 
 impl KvCache {
     /// Allocate `num_layers` empty caches with separate K and V
     /// storage per layer (no K=V tying). Pre-sized to `max_cache_len`
     /// rows. `kv_dim = num_kv_heads × head_dim`.
+    ///
+    /// Single-sequence — equivalent to `new_batched(1, ...)`. The
+    /// legacy `.len()` / `.append()` / `.view()` API is supported on
+    /// the returned cache.
     pub fn new(num_layers: usize, max_cache_len: usize, kv_dim: usize) -> Self {
+        Self::new_batched(1, num_layers, max_cache_len, kv_dim)
+    }
+
+    /// Allocate `num_layers` empty caches with separate K and V
+    /// storage per layer, batched across `batch_size` sequences. Each
+    /// sequence shares the same `max_cache_len` capacity.
+    pub fn new_batched(
+        batch_size: usize,
+        num_layers: usize,
+        max_cache_len: usize,
+        kv_dim: usize,
+    ) -> Self {
         let layers = (0..num_layers)
-            .map(|_| LayerKvCache::new_separate(max_cache_len, kv_dim))
+            .map(|_| LayerKvCache::new_separate(batch_size, max_cache_len, kv_dim))
             .collect();
         Self {
             layers,
             max_cache_len,
             kv_dim,
+            batch_size,
         }
     }
 
@@ -144,6 +175,17 @@ impl KvCache {
     /// store for layer `li` (Gemma 4 global layers); false builds a
     /// Separate store. `shared.len()` must equal `num_layers`.
     pub fn new_with_sharing(
+        num_layers: usize,
+        max_cache_len: usize,
+        kv_dim: usize,
+        shared: &[bool],
+    ) -> Self {
+        Self::new_with_sharing_batched(1, num_layers, max_cache_len, kv_dim, shared)
+    }
+
+    /// Batched variant of [`Self::new_with_sharing`].
+    pub fn new_with_sharing_batched(
+        batch_size: usize,
         num_layers: usize,
         max_cache_len: usize,
         kv_dim: usize,
@@ -159,9 +201,9 @@ impl KvCache {
         let layers = (0..num_layers)
             .map(|li| {
                 if shared[li] {
-                    LayerKvCache::new_shared(max_cache_len, kv_dim)
+                    LayerKvCache::new_shared(batch_size, max_cache_len, kv_dim)
                 } else {
-                    LayerKvCache::new_separate(max_cache_len, kv_dim)
+                    LayerKvCache::new_separate(batch_size, max_cache_len, kv_dim)
                 }
             })
             .collect();
@@ -169,6 +211,7 @@ impl KvCache {
             layers,
             max_cache_len,
             kv_dim,
+            batch_size,
         }
     }
 
@@ -187,19 +230,48 @@ impl KvCache {
         self.kv_dim
     }
 
-    /// Current valid length. All layers grow in lockstep — this returns
-    /// layer 0's length; debug builds assert all layers agree.
+    /// Number of sequences in this batched cache. `1` for the
+    /// single-sequence default.
+    pub fn batch_size(&self) -> usize {
+        self.batch_size
+    }
+
+    /// **Legacy** — single-sequence current valid length. Returns
+    /// `lens[0]` and asserts batch_size == 1. Use [`Self::lens`] /
+    /// [`Self::len_b`] for batched callers.
     pub fn len(&self) -> usize {
-        let len = self.layers.first().map(|l| l.len).unwrap_or(0);
+        assert_eq!(
+            self.batch_size, 1,
+            "KvCache::len() is single-sequence only; batched cache has batch_size={}",
+            self.batch_size,
+        );
+        let len = self.layers.first().map(|l| l.lens[0]).unwrap_or(0);
         debug_assert!(
-            self.layers.iter().all(|l| l.len == len),
+            self.layers.iter().all(|l| l.lens[0] == len),
             "KvCache layers got out of sync — all layers must grow together",
         );
         len
     }
 
+    /// Per-sequence current lens of layer `li`. All layers grow in
+    /// lockstep; debug-asserts cross-layer agreement.
+    pub fn lens(&self, li: usize) -> &[usize] {
+        debug_assert!(
+            self.layers.iter().all(|l| l.lens == self.layers[0].lens),
+            "KvCache: per-sequence lens diverged across layers",
+        );
+        self.layers[li].lens()
+    }
+
+    /// Per-sequence current len of sequence `b` at layer `li`.
+    pub fn len_b(&self, li: usize, b: usize) -> usize {
+        self.layers[li].len_b(b)
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.layers
+            .iter()
+            .all(|l| l.lens.iter().all(|&n| n == 0))
     }
 
     pub fn is_layer_shared(&self, li: usize) -> bool {
@@ -214,13 +286,99 @@ impl KvCache {
         self.layers.iter().map(LayerKvCache::bytes).sum()
     }
 
-    /// Append `new_k.nrows()` positions to layer `li`. For Separate
-    /// layers `new_k` and `new_v` may differ; for Shared layers they
-    /// must point to identical content (caller's responsibility — the
-    /// K=V branch in `decoder_block_cached` computes one tensor and
-    /// passes it for both arguments). When shared, only `new_k` is
-    /// actually written.
+    /// **Legacy single-sequence append** — appends `new_k.nrows()`
+    /// positions to layer `li` of sequence 0. Asserts batch_size == 1.
+    /// Equivalent to `append_prefill(li, 0, new_k, new_v)`.
     pub fn append(
+        &mut self,
+        li: usize,
+        new_k: ArrayView2<'_, f32>,
+        new_v: ArrayView2<'_, f32>,
+    ) -> Result<()> {
+        assert_eq!(
+            self.batch_size, 1,
+            "KvCache::append() is single-sequence only; batched cache has batch_size={}",
+            self.batch_size,
+        );
+        self.append_prefill(li, 0, new_k, new_v)
+    }
+
+    /// **Batched prefill append** — appends `new_k.nrows()` rows for
+    /// sequence `b` at layer `li`, starting at the sequence's
+    /// current `lens[b]`. Used by the prefill phase when each
+    /// sequence has its own prompt length.
+    pub fn append_prefill(
+        &mut self,
+        li: usize,
+        b: usize,
+        new_k: ArrayView2<'_, f32>,
+        new_v: ArrayView2<'_, f32>,
+    ) -> Result<()> {
+        let layer = self
+            .layers
+            .get_mut(li)
+            .ok_or_else(|| anyhow!("KvCache layer index {li} out of range"))?;
+        if b >= self.batch_size {
+            return Err(anyhow!(
+                "KvCache append_prefill: batch_idx {b} out of range (batch_size={})",
+                self.batch_size
+            ));
+        }
+        let added = new_k.nrows();
+        if new_v.nrows() != added {
+            return Err(anyhow!(
+                "KvCache append_prefill: K rows {} != V rows {}",
+                added,
+                new_v.nrows()
+            ));
+        }
+        if new_k.ncols() != self.kv_dim {
+            return Err(anyhow!(
+                "KvCache append_prefill: K width {} != kv_dim {}",
+                new_k.ncols(),
+                self.kv_dim
+            ));
+        }
+        if new_v.ncols() != self.kv_dim {
+            return Err(anyhow!(
+                "KvCache append_prefill: V width {} != kv_dim {}",
+                new_v.ncols(),
+                self.kv_dim
+            ));
+        }
+        let cur = layer.lens[b];
+        let new_len = cur + added;
+        if new_len > self.max_cache_len {
+            return Err(anyhow!(
+                "KvCache overflow: layer {li} sequence {b} cur {} + {} > max_cache_len {}",
+                cur,
+                added,
+                self.max_cache_len,
+            ));
+        }
+        match &mut layer.storage {
+            LayerKvStore::Separate { k, v } => {
+                k.slice_mut(s![b, cur..new_len, ..]).assign(&new_k);
+                v.slice_mut(s![b, cur..new_len, ..]).assign(&new_v);
+            }
+            LayerKvStore::Shared { kv } => {
+                debug_assert!(
+                    arrays_equal(&new_k, &new_v),
+                    "KvCache: layer {li} is K=V shared but append got K != V",
+                );
+                kv.slice_mut(s![b, cur..new_len, ..]).assign(&new_k);
+            }
+        }
+        layer.lens[b] = new_len;
+        Ok(())
+    }
+
+    /// **Batched decode append** — appends ONE row per sequence at
+    /// layer `li`. `new_k` and `new_v` have shape `(B, kv_dim)`; row
+    /// `b` of each is appended at the current `lens[b]` and `lens[b]`
+    /// is advanced. Used by the decode-step phase where every
+    /// sequence contributes exactly one new token row.
+    pub fn append_decode(
         &mut self,
         li: usize,
         new_k: ArrayView2<'_, f32>,
@@ -230,69 +388,103 @@ impl KvCache {
             .layers
             .get_mut(li)
             .ok_or_else(|| anyhow!("KvCache layer index {li} out of range"))?;
-        let added = new_k.nrows();
-        if new_v.nrows() != added {
+        if new_k.nrows() != self.batch_size {
             return Err(anyhow!(
-                "KvCache append: K rows {} != V rows {}",
-                added,
-                new_v.nrows()
+                "KvCache append_decode: K rows {} != batch_size {}",
+                new_k.nrows(),
+                self.batch_size
+            ));
+        }
+        if new_v.nrows() != self.batch_size {
+            return Err(anyhow!(
+                "KvCache append_decode: V rows {} != batch_size {}",
+                new_v.nrows(),
+                self.batch_size
             ));
         }
         if new_k.ncols() != self.kv_dim {
             return Err(anyhow!(
-                "KvCache append: K width {} != kv_dim {}",
+                "KvCache append_decode: K width {} != kv_dim {}",
                 new_k.ncols(),
                 self.kv_dim
             ));
         }
         if new_v.ncols() != self.kv_dim {
             return Err(anyhow!(
-                "KvCache append: V width {} != kv_dim {}",
+                "KvCache append_decode: V width {} != kv_dim {}",
                 new_v.ncols(),
                 self.kv_dim
             ));
         }
-        let new_len = layer.len + added;
-        if new_len > self.max_cache_len {
-            return Err(anyhow!(
-                "KvCache overflow: layer {li} cur_len {} + {} > max_cache_len {}",
-                layer.len,
-                added,
-                self.max_cache_len,
-            ));
-        }
-        match &mut layer.storage {
-            LayerKvStore::Separate { k, v } => {
-                k.slice_mut(s![layer.len..new_len, ..]).assign(&new_k);
-                v.slice_mut(s![layer.len..new_len, ..]).assign(&new_v);
+        for b in 0..self.batch_size {
+            let cur = layer.lens[b];
+            if cur + 1 > self.max_cache_len {
+                return Err(anyhow!(
+                    "KvCache overflow: layer {li} sequence {b} cur {} + 1 > max_cache_len {}",
+                    cur,
+                    self.max_cache_len,
+                ));
             }
-            LayerKvStore::Shared { kv } => {
-                // Caller must guarantee K == V at the call site.
-                // Debug asserts catch misuse.
-                debug_assert!(
-                    arrays_equal(&new_k, &new_v),
-                    "KvCache: layer {li} is K=V shared but append got K != V",
-                );
-                kv.slice_mut(s![layer.len..new_len, ..]).assign(&new_k);
+            let new_k_row = new_k.slice(s![b, ..]);
+            let new_v_row = new_v.slice(s![b, ..]);
+            match &mut layer.storage {
+                LayerKvStore::Separate { k, v } => {
+                    k.slice_mut(s![b, cur..cur + 1, ..])
+                        .assign(&new_k_row.insert_axis(ndarray::Axis(0)));
+                    v.slice_mut(s![b, cur..cur + 1, ..])
+                        .assign(&new_v_row.insert_axis(ndarray::Axis(0)));
+                }
+                LayerKvStore::Shared { kv } => {
+                    debug_assert!(
+                        (0..self.kv_dim).all(|d| (new_k_row[d] - new_v_row[d]).abs() < 1e-9),
+                        "KvCache: layer {li} is K=V shared but decode append got K != V at b={b}",
+                    );
+                    kv.slice_mut(s![b, cur..cur + 1, ..])
+                        .assign(&new_k_row.insert_axis(ndarray::Axis(0)));
+                }
             }
+            layer.lens[b] = cur + 1;
         }
-        layer.len = new_len;
         Ok(())
     }
 
-    /// View the valid prefix of layer `li`'s K and V.
+    /// **Legacy** — view sequence 0's valid prefix at layer `li`.
+    /// Asserts batch_size == 1.
     pub fn view(&self, li: usize) -> Result<(ArrayView2<'_, f32>, ArrayView2<'_, f32>)> {
+        assert_eq!(
+            self.batch_size, 1,
+            "KvCache::view() is single-sequence only; batched cache has batch_size={}",
+            self.batch_size,
+        );
+        self.view_b(li, 0)
+    }
+
+    /// View sequence `b`'s valid prefix at layer `li`. Shape
+    /// `(lens[b], kv_dim)` for both K and V.
+    pub fn view_b(
+        &self,
+        li: usize,
+        b: usize,
+    ) -> Result<(ArrayView2<'_, f32>, ArrayView2<'_, f32>)> {
         let layer = self
             .layers
             .get(li)
             .ok_or_else(|| anyhow!("KvCache layer index {li} out of range"))?;
-        Ok(layer.view())
+        if b >= self.batch_size {
+            return Err(anyhow!(
+                "KvCache view_b: batch_idx {b} out of range (batch_size={})",
+                self.batch_size,
+            ));
+        }
+        Ok(layer.view_b(b))
     }
 
-    /// Drop all cached state. Layers stay allocated; only `len` resets.
+    /// Drop all cached state. Layers stay allocated; only `lens` reset.
     pub fn reset(&mut self) {
         for layer in &mut self.layers {
-            layer.len = 0;
+            for n in layer.lens.iter_mut() {
+                *n = 0;
+            }
         }
     }
 }
@@ -321,6 +513,7 @@ mod tests {
         assert_eq!(cache.num_layers(), 3);
         assert_eq!(cache.capacity(), 16);
         assert_eq!(cache.kv_dim(), 4);
+        assert_eq!(cache.batch_size(), 1);
         assert_eq!(cache.len(), 0);
         assert!(cache.is_empty());
         let (k, v) = cache.view(0).unwrap();
@@ -401,8 +594,6 @@ mod tests {
 
     #[test]
     fn shared_layer_halves_memory_footprint() {
-        // 4 layers, 2 shared. Each layer is max_cache_len × kv_dim × 4
-        // bytes; shared layers store one of those, separate store two.
         let max_cache_len = 8;
         let kv_dim = 16;
         let cache = KvCache::new_with_sharing(
@@ -418,13 +609,11 @@ mod tests {
 
         let all_sep = KvCache::new(4, max_cache_len, kv_dim);
         assert_eq!(all_sep.bytes(), 4 * per_separate);
-        // 75% of all-separate is the spec.
         assert_eq!(cache.bytes() * 4, all_sep.bytes() * 3);
     }
 
     #[test]
     fn shared_layer_round_trip_view_aliases() {
-        // Shared layer: appending K = V once must produce K view == V view.
         let mut cache = KvCache::new_with_sharing(1, 4, 2, &[true]);
         let kv = array![[1.0_f32, 2.0], [3.0_f32, 4.0]];
         cache.append(0, kv.view(), kv.view()).unwrap();
@@ -433,5 +622,68 @@ mod tests {
         assert_eq!(k_view, v_view);
         assert_eq!(k_view.nrows(), 2);
         assert_eq!(k_view[[1, 1]], 4.0);
+    }
+
+    /// **M1.11 D1.2** — batched cache with B=3 sequences, varying
+    /// prefill lengths via `append_prefill`, then one `append_decode`
+    /// step advancing all sequences by 1.
+    #[test]
+    fn batched_append_prefill_then_decode_round_trips() {
+        let mut cache = KvCache::new_batched(3, 1, 16, 2);
+        assert_eq!(cache.batch_size(), 3);
+
+        // Per-sequence prefill: sequences with prompts of length 4, 2, 5.
+        let prompts: [Vec<f32>; 3] = [
+            (0..4 * 2).map(|i| i as f32).collect(),
+            (100..100 + 2 * 2).map(|i| i as f32).collect(),
+            (200..200 + 5 * 2).map(|i| i as f32).collect(),
+        ];
+        let lens = [4, 2, 5];
+        for b in 0..3 {
+            let arr = ndarray::Array2::from_shape_vec((lens[b], 2), prompts[b].clone()).unwrap();
+            cache.append_prefill(0, b, arr.view(), arr.view()).unwrap();
+        }
+        assert_eq!(cache.lens(0), &[4usize, 2, 5]);
+
+        // Each sequence's view returns its own prefix.
+        for b in 0..3 {
+            let (k_view, _) = cache.view_b(0, b).unwrap();
+            assert_eq!(k_view.nrows(), lens[b]);
+            assert_eq!(k_view[[0, 0]], prompts[b][0]);
+        }
+
+        // One decode step: shape (B, kv_dim).
+        let new_k = array![[42.0_f32, 43.0], [142.0, 143.0], [242.0, 243.0]];
+        let new_v = new_k.clone();
+        cache.append_decode(0, new_k.view(), new_v.view()).unwrap();
+        assert_eq!(cache.lens(0), &[5usize, 3, 6]);
+
+        // Each sequence's tail row matches its decode contribution.
+        for b in 0..3 {
+            let (k_view, _) = cache.view_b(0, b).unwrap();
+            let last = k_view.row(k_view.nrows() - 1);
+            assert_eq!(last[0], new_k[[b, 0]]);
+            assert_eq!(last[1], new_k[[b, 1]]);
+        }
+    }
+
+    #[test]
+    fn batched_overflow_per_sequence() {
+        let mut cache = KvCache::new_batched(2, 1, 2, 1);
+        cache
+            .append_prefill(0, 0, array![[1.0_f32], [2.0]].view(), array![[1.0_f32], [2.0]].view())
+            .unwrap();
+        // Sequence 0 is full; decode-append should fail because b=0
+        // hits the overflow.
+        let nk = array![[9.0_f32], [10.0]];
+        let err = cache.append_decode(0, nk.view(), nk.view()).unwrap_err();
+        assert!(err.to_string().contains("overflow"));
+    }
+
+    #[test]
+    fn batched_view_out_of_range_rejected() {
+        let cache = KvCache::new_batched(2, 1, 4, 1);
+        let err = cache.view_b(0, 5).unwrap_err();
+        assert!(err.to_string().contains("out of range"));
     }
 }

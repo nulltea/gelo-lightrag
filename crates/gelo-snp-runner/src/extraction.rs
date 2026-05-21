@@ -14,6 +14,7 @@ use gelo_embedder::common::tokenizer::HfTokenizer;
 use gelo_embedder::decoder::config::DecoderConfig;
 use gelo_embedder::decoder::generation::{
     GenerationConfig, SamplerConfig, generate as decoder_generate,
+    generate_batched as decoder_generate_batched,
 };
 use gelo_embedder::decoder::rope::RopeTables;
 use gelo_embedder::decoder::weights::DecoderWeights;
@@ -251,6 +252,98 @@ impl<E: GpuOffloadEngine> ExtractionDecoder for DecoderRuntime<E> {
                 output_tokens: out.tokens.len(),
             },
         })
+    }
+
+    /// **M1.11 D2** — Run B extraction prompts in one batched
+    /// `generation::generate_batched` call. The B prompts share
+    /// prefill + per-step decode under the M1.11 mask topology
+    /// (per-sequence A_b by default; opt-in shared dense A via
+    /// `BATCHED_DECODE_SHARED_A=1`).
+    fn generate_extraction_batched(
+        &mut self,
+        prompts: &[&str],
+        max_tokens: usize,
+    ) -> anyhow::Result<Vec<DecoderOutput>> {
+        if prompts.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // 1. Templated + tokenised prompts.
+        let t_tok = Instant::now();
+        let templated: Vec<String> = prompts
+            .iter()
+            .map(|p| apply_qwen3_chat_template(p))
+            .collect();
+        let prompt_ids: anyhow::Result<Vec<Vec<u32>>> = templated
+            .iter()
+            .map(|p| self.tokenizer.encode(p.as_str(), self.max_prompt_tokens))
+            .collect();
+        let prompt_ids = prompt_ids?;
+        let tokenize_total = t_tok.elapsed();
+        // Per-prompt tokenise time is amortised across the batch.
+        let tokenize_per = tokenize_total / prompts.len() as u32;
+
+        // 2. Shape validation: each prompt's (prompt_len +
+        //    max_tokens) must fit max_position_embeddings.
+        let budget = max_tokens.max(1);
+        let max_prompt_len = prompt_ids.iter().map(|p| p.len()).max().unwrap_or(0);
+        if max_prompt_len == 0 {
+            anyhow::bail!("tokenizer produced empty prompt id list for all batched prompts");
+        }
+        let prompt_plus_budget = max_prompt_len.saturating_add(budget);
+        if prompt_plus_budget > self.cfg.max_position_embeddings {
+            anyhow::bail!(
+                "batched: max prompt {} + max_tokens {} exceeds max_position_embeddings {}",
+                max_prompt_len,
+                budget,
+                self.cfg.max_position_embeddings,
+            );
+        }
+        tracing::info!(
+            target: "gelo_snp_runner::extraction",
+            batch_size = prompts.len(),
+            max_prompt_tokens = max_prompt_len,
+            max_tokens = budget,
+            "decoder: batched prefill shape",
+        );
+
+        // 3. One batched generate call.
+        let gen_cfg = GenerationConfig {
+            max_tokens: budget,
+            eos_token_ids: self.eos_token_ids.clone(),
+            sampler: SamplerConfig::Greedy,
+        };
+        let t_gen = Instant::now();
+        let outs = decoder_generate_batched(
+            &self.cfg,
+            &self.weights,
+            &self.rope,
+            &mut self.exec,
+            &prompt_ids,
+            &gen_cfg,
+        )?;
+        let generate_total = t_gen.elapsed();
+        let generate_per = generate_total / prompts.len() as u32;
+
+        // 4. Decode per output.
+        let mut results = Vec::with_capacity(outs.len());
+        for (b, out) in outs.into_iter().enumerate() {
+            let t_dec = Instant::now();
+            let text = self.tokenizer.decode(&out.tokens, true)?;
+            let decode_dur = t_dec.elapsed();
+            results.push(DecoderOutput {
+                text,
+                stopped_on_eos: out.stopped_on_eos,
+                timing: DecoderTiming {
+                    tokenize: tokenize_per,
+                    generate: generate_per,
+                    decode: decode_dur,
+                    prompt_tokens: prompt_ids[b].len(),
+                    output_tokens: out.tokens.len(),
+                },
+            });
+        }
+        Ok(results)
     }
 }
 

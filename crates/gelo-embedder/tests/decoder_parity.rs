@@ -11,6 +11,9 @@ use rand_distr::{Distribution, StandardNormal};
 
 use gelo_embedder::decoder::config::DecoderConfig;
 use gelo_embedder::decoder::forward;
+use gelo_embedder::decoder::generation::{
+    self, GenerationConfig, SamplerConfig,
+};
 use gelo_embedder::decoder::rope::RopeTables;
 use gelo_embedder::decoder::weights::{DecoderLayerWeights, DecoderWeights};
 use gelo_protocol::rng::MaskSeed;
@@ -321,6 +324,338 @@ fn synthetic_batched_forward_per_sequence_matches_single_stream() {
         assert!(
             max_abs < 5e-3,
             "run_batched per-sequence b={b} diverges from single-stream: max abs {max_abs}",
+        );
+    }
+}
+
+/// **M1.11 D1.5** — `generate_batched(&[p])` at B=1 produces the
+/// same token sequence as single-stream `generate(&p)` to greedy
+/// f32-floor stability. Synthetic weights — the model emits
+/// argmax-deterministic noise tokens that are stable across the two
+/// mask topologies (single-mask vs PerSequence-of-1).
+#[test]
+fn synthetic_generate_batched_b1_matches_single_stream() {
+    // Disable shared-A so we exercise the default PerSequence
+    // decode path.
+    unsafe {
+        std::env::remove_var("BATCHED_DECODE_SHARED_A");
+    }
+
+    let cfg = tiny_decoder_config(2, 32, 4, 2, 8, 64);
+    let mut rng = ChaCha20Rng::from_seed([61u8; 32]);
+    let weights = Arc::new(synth_weights(&cfg, &mut rng));
+    let rope = RopeTables::new(
+        cfg.head_dim_value(),
+        cfg.max_position_embeddings,
+        cfg.rope_theta,
+    );
+    let prompt: Vec<u32> = vec![3, 11, 17, 22, 29];
+
+    let gen_cfg = GenerationConfig {
+        max_tokens: 6,
+        eos_token_ids: Vec::new(),
+        sampler: SamplerConfig::Greedy,
+    };
+
+    // Single-stream reference.
+    let mut single_engine = RayonCpuEngine::new();
+    provision_decoder(&weights, &cfg, &mut single_engine);
+    let mut single_exec = InProcessTrustedExecutor::with_seed(
+        single_engine,
+        MaskSeed::from_bytes([62u8; 32]),
+    );
+    let single_out =
+        generation::generate(&cfg, &weights, &rope, &mut single_exec, &prompt, &gen_cfg)
+            .expect("single generate");
+
+    // Batched at B=1.
+    let mut batched_engine = RayonCpuEngine::new();
+    provision_decoder(&weights, &cfg, &mut batched_engine);
+    let mut batched_exec = InProcessTrustedExecutor::with_seed(
+        batched_engine,
+        MaskSeed::from_bytes([63u8; 32]),
+    );
+    let batched_out = generation::generate_batched(
+        &cfg,
+        &weights,
+        &rope,
+        &mut batched_exec,
+        &[prompt.clone()],
+        &gen_cfg,
+    )
+    .expect("generate_batched B=1");
+
+    assert_eq!(batched_out.len(), 1);
+    // Tokens must match to f32 floor — greedy argmax is robust
+    // against ~1e-3 mask noise as long as the noise doesn't push a
+    // tied or near-tied logit pair over the boundary. With this
+    // synthetic config the prompt-driven argmax is well-separated
+    // for the first ~6 tokens.
+    assert_eq!(
+        batched_out[0].tokens, single_out.tokens,
+        "generate_batched(B=1) tokens diverged from single-stream: \
+         batched={:?} single={:?}",
+        batched_out[0].tokens, single_out.tokens,
+    );
+    assert_eq!(batched_out[0].stopped_on_eos, single_out.stopped_on_eos);
+}
+
+/// **M1.11 D1.5** — `generate_batched(&prompts)` at B=3 with varying
+/// prompt lengths must produce per-sequence outputs matching B
+/// dedicated `generate(&p_b)` calls. Greedy + synthetic weights;
+/// token-level parity asserted under the same robustness argument
+/// as B=1.
+#[test]
+fn synthetic_generate_batched_per_sequence_matches_single_stream() {
+    unsafe {
+        std::env::remove_var("BATCHED_DECODE_SHARED_A");
+    }
+
+    let cfg = tiny_decoder_config(2, 32, 4, 2, 8, 64);
+    let mut rng = ChaCha20Rng::from_seed([71u8; 32]);
+    let weights = Arc::new(synth_weights(&cfg, &mut rng));
+    let rope = RopeTables::new(
+        cfg.head_dim_value(),
+        cfg.max_position_embeddings,
+        cfg.rope_theta,
+    );
+
+    let prompts: Vec<Vec<u32>> = vec![
+        vec![3, 11, 17, 22, 29],
+        vec![5, 13, 19],
+        vec![2, 7, 14, 21],
+    ];
+    let gen_cfg = GenerationConfig {
+        max_tokens: 5,
+        eos_token_ids: Vec::new(),
+        sampler: SamplerConfig::Greedy,
+    };
+
+    // Reference: serial single-stream generates.
+    let mut refs: Vec<gelo_embedder::decoder::generation::GenerationOutput> =
+        Vec::with_capacity(prompts.len());
+    for prompt in &prompts {
+        let mut eng = RayonCpuEngine::new();
+        provision_decoder(&weights, &cfg, &mut eng);
+        let mut exec =
+            InProcessTrustedExecutor::with_seed(eng, MaskSeed::from_bytes([72u8; 32]));
+        refs.push(
+            generation::generate(&cfg, &weights, &rope, &mut exec, prompt, &gen_cfg)
+                .expect("ref generate"),
+        );
+    }
+
+    // Batched.
+    let mut batched_engine = RayonCpuEngine::new();
+    provision_decoder(&weights, &cfg, &mut batched_engine);
+    let mut batched_exec = InProcessTrustedExecutor::with_seed(
+        batched_engine,
+        MaskSeed::from_bytes([73u8; 32]),
+    );
+    let batched_out = generation::generate_batched(
+        &cfg,
+        &weights,
+        &rope,
+        &mut batched_exec,
+        &prompts,
+        &gen_cfg,
+    )
+    .expect("generate_batched B=3");
+
+    assert_eq!(batched_out.len(), prompts.len());
+    for (b, (got, want)) in batched_out.iter().zip(refs.iter()).enumerate() {
+        assert_eq!(
+            got.tokens, want.tokens,
+            "b={b}: batched tokens={:?} != single tokens={:?}",
+            got.tokens, want.tokens,
+        );
+        assert_eq!(got.stopped_on_eos, want.stopped_on_eos, "b={b}");
+    }
+}
+
+/// **M1.11 D1.5** — EOS-padding loop: when one sequence emits EOS
+/// early, subsequent steps must keep advancing the other sequences
+/// while the EOS'd sequence's output stays frozen.
+#[test]
+fn synthetic_generate_batched_per_sequence_eos_freezes() {
+    unsafe {
+        std::env::remove_var("BATCHED_DECODE_SHARED_A");
+    }
+    let cfg = tiny_decoder_config(2, 32, 4, 2, 8, 64);
+    let mut rng = ChaCha20Rng::from_seed([81u8; 32]);
+    let weights = Arc::new(synth_weights(&cfg, &mut rng));
+    let rope = RopeTables::new(
+        cfg.head_dim_value(),
+        cfg.max_position_embeddings,
+        cfg.rope_theta,
+    );
+
+    // Get reference single-stream tokens for both prompts so we
+    // know what to set as EOS for the early-stopping sequence.
+    let prompts: Vec<Vec<u32>> = vec![vec![3, 11, 17], vec![5, 13, 19, 23]];
+    let no_eos = GenerationConfig {
+        max_tokens: 5,
+        eos_token_ids: Vec::new(),
+        sampler: SamplerConfig::Greedy,
+    };
+    let mut refs = Vec::with_capacity(prompts.len());
+    for p in &prompts {
+        let mut eng = RayonCpuEngine::new();
+        provision_decoder(&weights, &cfg, &mut eng);
+        let mut exec =
+            InProcessTrustedExecutor::with_seed(eng, MaskSeed::from_bytes([82u8; 32]));
+        refs.push(
+            generation::generate(&cfg, &weights, &rope, &mut exec, p, &no_eos).expect("ref"),
+        );
+    }
+
+    // Pick an EOS token that:
+    //  (a) appears at SOME step in refs[0].tokens, and
+    //  (b) does NOT appear in refs[1].tokens
+    // so sequence 0 stops on EOS while sequence 1 runs to max_tokens.
+    //
+    // Synthetic weights frequently emit repeated argmax tokens, so
+    // we walk refs[0] to find the first token whose value is not in
+    // refs[1]. If no such token exists, fall back to a token from
+    // refs[0] not in refs[1] (might happen — skip the test then).
+    let eos_token = refs[0]
+        .tokens
+        .iter()
+        .copied()
+        .find(|t| !refs[1].tokens.contains(t));
+    let eos_token = match eos_token {
+        Some(t) => t,
+        None => {
+            // Degenerate fixture: refs[0] is a subset of refs[1].
+            // Skip the cross-sequence freeze assertion; just verify
+            // the no-eos parity assumptions hold (already covered by
+            // the per-sequence parity test).
+            eprintln!(
+                "skipping EOS-freeze test: refs[0]={:?} ⊆ refs[1]={:?}",
+                refs[0].tokens, refs[1].tokens
+            );
+            return;
+        }
+    };
+    let with_eos = GenerationConfig {
+        max_tokens: 5,
+        eos_token_ids: vec![eos_token],
+        sampler: SamplerConfig::Greedy,
+    };
+
+    // Find the expected stop-step for sequence 0: the first index
+    // in refs[0].tokens where the EOS token appears.
+    let expected_stop_idx = refs[0]
+        .tokens
+        .iter()
+        .position(|t| *t == eos_token)
+        .expect("eos_token came from refs[0]");
+
+    let mut batched_engine = RayonCpuEngine::new();
+    provision_decoder(&weights, &cfg, &mut batched_engine);
+    let mut batched_exec = InProcessTrustedExecutor::with_seed(
+        batched_engine,
+        MaskSeed::from_bytes([83u8; 32]),
+    );
+    let out = generation::generate_batched(
+        &cfg,
+        &weights,
+        &rope,
+        &mut batched_exec,
+        &prompts,
+        &with_eos,
+    )
+    .expect("generate_batched");
+
+    assert_eq!(out.len(), 2);
+
+    // Sequence 0 stopped on EOS at the expected index.
+    assert!(
+        out[0].stopped_on_eos,
+        "sequence 0 should have stopped on EOS (eos={eos_token}, refs={:?})",
+        refs[0].tokens,
+    );
+    assert_eq!(out[0].tokens.len(), expected_stop_idx + 1);
+    assert_eq!(*out[0].tokens.last().unwrap(), eos_token);
+
+    // Sequence 1 must NOT see the EOS (we picked it so) and so
+    // emit max_tokens worth of output.
+    assert!(!out[1].stopped_on_eos);
+    assert_eq!(out[1].tokens.len(), no_eos.max_tokens);
+    // Sequence 1's tokens must match its no-EOS reference — the
+    // padding-feed from sequence 0 must not corrupt sequence 1's
+    // trajectory.
+    assert_eq!(
+        out[1].tokens, refs[1].tokens,
+        "sequence 1 corrupted by sequence 0's EOS-padding feed",
+    );
+}
+
+/// **M1.11 D1.5** — shared-A decode topology (env-gated) also
+/// preserves per-sequence parity with single-stream `generate()`
+/// to greedy f32 floor.  Same fixture as the per-sequence test,
+/// just with `BATCHED_DECODE_SHARED_A=1` set.
+#[test]
+fn synthetic_generate_batched_shared_a_per_sequence_matches_single_stream() {
+    // SAFETY: single-threaded test.
+    unsafe {
+        std::env::set_var("BATCHED_DECODE_SHARED_A", "1");
+    }
+
+    let cfg = tiny_decoder_config(2, 32, 4, 2, 8, 64);
+    let mut rng = ChaCha20Rng::from_seed([91u8; 32]);
+    let weights = Arc::new(synth_weights(&cfg, &mut rng));
+    let rope = RopeTables::new(
+        cfg.head_dim_value(),
+        cfg.max_position_embeddings,
+        cfg.rope_theta,
+    );
+
+    let prompts: Vec<Vec<u32>> = vec![vec![3, 11, 17, 22], vec![5, 13, 19], vec![2, 7, 14, 21]];
+    let gen_cfg = GenerationConfig {
+        max_tokens: 4,
+        eos_token_ids: Vec::new(),
+        sampler: SamplerConfig::Greedy,
+    };
+
+    // Build references with env cleared (single-stream doesn't read
+    // the env var anyway, but be principled about it).
+    unsafe {
+        std::env::remove_var("BATCHED_DECODE_SHARED_A");
+    }
+    let mut refs = Vec::with_capacity(prompts.len());
+    for p in &prompts {
+        let mut eng = RayonCpuEngine::new();
+        provision_decoder(&weights, &cfg, &mut eng);
+        let mut exec =
+            InProcessTrustedExecutor::with_seed(eng, MaskSeed::from_bytes([92u8; 32]));
+        refs.push(
+            generation::generate(&cfg, &weights, &rope, &mut exec, p, &gen_cfg).expect("ref"),
+        );
+    }
+    // Now set the shared-A env back for the batched call.
+    unsafe {
+        std::env::set_var("BATCHED_DECODE_SHARED_A", "1");
+    }
+
+    let mut eng = RayonCpuEngine::new();
+    provision_decoder(&weights, &cfg, &mut eng);
+    let mut exec =
+        InProcessTrustedExecutor::with_seed(eng, MaskSeed::from_bytes([93u8; 32]));
+    let out = generation::generate_batched(&cfg, &weights, &rope, &mut exec, &prompts, &gen_cfg)
+        .expect("shared-A generate_batched");
+
+    // Restore env regardless of outcome.
+    unsafe {
+        std::env::remove_var("BATCHED_DECODE_SHARED_A");
+    }
+
+    assert_eq!(out.len(), 3);
+    for (b, (got, want)) in out.iter().zip(refs.iter()).enumerate() {
+        assert_eq!(
+            got.tokens, want.tokens,
+            "shared-A b={b}: batched={:?} single={:?}",
+            got.tokens, want.tokens,
         );
     }
 }

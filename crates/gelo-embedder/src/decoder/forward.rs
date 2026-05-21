@@ -205,6 +205,302 @@ pub fn run_decode_step(
     result
 }
 
+/// **M1.11 D1.3** — Batched decode-step forward over B sequences.
+///
+/// `token_ids` has length B — sequence `b` contributes `token_ids[b]`
+/// as its next input row. Each sequence's KV cache is appended one
+/// position at the sequence's current `kv_cache.len_b(li, b)`. Returns
+/// the final hidden states `(B, hidden)` — caller gathers per-sequence
+/// rows for logit computation.
+///
+/// Prefill must already have populated `kv_cache` per-sequence via
+/// `forward::run_batched` (or a future `run_prefill_batched` if we
+/// split it out). Each call here advances every sequence by exactly
+/// one token.
+///
+/// Per the M1.11 plan §3.4: under `BATCHED_DECODE_SHARED_A=1` the
+/// shielded operand at each layer goes through one shared dense mask
+/// `(B+k, B+k)`; default is per-sequence `A_b` of size `(1+k, 1+k)`.
+/// The executor's `begin_decode_pass(B)` handles the topology switch.
+pub fn run_decode_step_batched(
+    cfg: &DecoderConfig,
+    weights: &DecoderWeights,
+    rope: &RopeTables,
+    exec: &mut impl TrustedExecutor,
+    token_ids: &[u32],
+    kv_cache: &mut KvCache,
+) -> Result<Array2<f32>> {
+    let batch_size = token_ids.len();
+    assert!(batch_size > 0, "run_decode_step_batched: token_ids empty");
+    assert_eq!(
+        batch_size,
+        kv_cache.batch_size(),
+        "token_ids len {} != kv_cache batch_size {}",
+        batch_size,
+        kv_cache.batch_size(),
+    );
+    assert_eq!(
+        kv_cache.num_layers(),
+        weights.layers.len(),
+        "kv_cache layer count must match model layer count",
+    );
+    assert_eq!(
+        kv_cache.kv_dim(),
+        cfg.kv_dim(),
+        "kv_cache kv_dim must match cfg.kv_dim()",
+    );
+    // Per-sequence position offset: each sequence's row sits at its
+    // own absolute position `kv_cache.len_b(0, b)`. Layer 0 is the
+    // representative — debug-asserts in `lens()` catch cross-layer
+    // divergence.
+    let q_pos_offsets: Vec<usize> =
+        (0..batch_size).map(|b| kv_cache.len_b(0, b)).collect();
+    for (b, off) in q_pos_offsets.iter().enumerate() {
+        assert!(
+            off + 1 <= kv_cache.capacity(),
+            "decode would overflow kv_cache: sequence {b} cur {off} + 1 > {}",
+            kv_cache.capacity(),
+        );
+    }
+
+    // (B, hidden) — one embedding row per sequence.
+    let mut h = profile::time("tee:embed_lookup", || {
+        embedding_lookup(cfg, weights, token_ids)
+    });
+
+    exec.begin_decode_pass(batch_size)?;
+    let result = (|| -> Result<Array2<f32>> {
+        for (li, layer) in weights.layers.iter().enumerate() {
+            h = decoder_block_cached_batched(
+                cfg,
+                layer,
+                rope,
+                exec,
+                li as u16,
+                h.view(),
+                cfg.offload_layer(li),
+                kv_cache,
+                &q_pos_offsets,
+            )?;
+        }
+        Ok(profile::time("tee:rmsnorm", || {
+            rms_norm(h.view(), weights.final_norm.as_slice().unwrap(), cfg.rms_norm_eps)
+        }))
+    })();
+    exec.end_forward_pass()?;
+    result
+}
+
+/// **M1.11 D1.3** — Batched cache-aware decoder block. Mirror of
+/// [`decoder_block_cached`] for `B` parallel sequences each with their
+/// own KV cache prefix length. Differences from the single-sequence
+/// version:
+///
+/// 1. `hidden` shape is `(B, hidden)` — one new token row per sequence.
+/// 2. `q_pos_offsets[b]` is per-sequence; RoPE applies row `b`'s
+///    rotation at its own absolute position.
+/// 3. KV cache append uses `append_decode` (one row per sequence,
+///    placed at each sequence's current `lens[b]`).
+/// 4. Attention runs per-sequence in-TEE over each sequence's full
+///    cached prefix (`tee:attn_cached_inplace_many` — same stopgap
+///    pattern as `decoder_block_batched`'s prefill attention). R1.4
+///    would replace this with a single batched-kernel dispatch.
+#[allow(clippy::too_many_arguments)]
+fn decoder_block_cached_batched(
+    cfg: &DecoderConfig,
+    layer: &DecoderLayerWeights,
+    rope: &RopeTables,
+    exec: &mut impl TrustedExecutor,
+    layer_idx: u16,
+    hidden: ArrayView2<'_, f32>,
+    offload: bool,
+    kv_cache: &mut KvCache,
+    q_pos_offsets: &[usize],
+) -> Result<Array2<f32>> {
+    let batch_size = hidden.nrows();
+    debug_assert_eq!(batch_size, q_pos_offsets.len());
+
+    let h_norm = profile::time("tee:rmsnorm", || {
+        rms_norm(hidden, layer.norm_attn.as_slice().unwrap(), cfg.rms_norm_eps)
+    });
+
+    // Q/K/V: hidden has shape (B, hidden_size). Under
+    // SessionKind::PerSequence (default decode) or Single (shared-A
+    // opt-in), offload_qkv produces (B, q_dim/kv_dim) outputs.
+    let (mut q, mut k, v) = if offload {
+        exec.offload_qkv(layer_idx, h_norm.view())?
+    } else {
+        profile::time("tee:qkv_direct", || {
+            (
+                tee_matmul_bf16(
+                    h_norm.view(),
+                    layer.wq.as_ref().expect("offload=false requires layer.wq").view(),
+                ),
+                tee_matmul_bf16(
+                    h_norm.view(),
+                    layer.wk.as_ref().expect("offload=false requires layer.wk").view(),
+                ),
+                tee_matmul_bf16(
+                    h_norm.view(),
+                    layer.wv.as_ref().expect("offload=false requires layer.wv").view(),
+                ),
+            )
+        })
+    };
+
+    profile::time("tee:qk_norm", || {
+        if let Some(q_gamma) = layer.q_norm.as_ref() {
+            apply_qk_norm(
+                q.view_mut(),
+                cfg.num_attention_heads,
+                cfg.head_dim_value(),
+                q_gamma.as_slice().expect("q_norm contiguous"),
+                cfg.rms_norm_eps,
+            );
+        }
+        if let Some(k_gamma) = layer.k_norm.as_ref() {
+            apply_qk_norm(
+                k.view_mut(),
+                cfg.num_key_value_heads,
+                cfg.head_dim_value(),
+                k_gamma.as_slice().expect("k_norm contiguous"),
+                cfg.rms_norm_eps,
+            );
+        }
+    });
+
+    // RoPE: row `b` sits at absolute position `q_pos_offsets[b]`.
+    // Apply rotation per-row by slicing the single row out, calling
+    // apply_partial_at with start_pos = q_pos_offsets[b], and writing
+    // back.
+    //
+    // `rotated_dim` follows the existing decoder_block_cached logic
+    // for attention class. At decode the layer class is consistent
+    // across all sequences (it's a property of the layer, not the
+    // sequence), so resolve once outside the per-b loop.
+    let layer_class = cfg.effective_attention_class(layer_idx as usize);
+    let rotated_dim = match (layer_class, cfg.partial_rope) {
+        (AttentionClass::Global, Some(_)) => cfg.rotated_dim(),
+        _ => cfg.head_dim_value(),
+    };
+    profile::time("tee:rope", || {
+        for b in 0..batch_size {
+            let pos = q_pos_offsets[b];
+            rope.apply_partial_at(
+                q.slice_mut(ndarray::s![b..b + 1, ..]),
+                cfg.num_attention_heads,
+                pos,
+                rotated_dim,
+            );
+            rope.apply_partial_at(
+                k.slice_mut(ndarray::s![b..b + 1, ..]),
+                cfg.num_key_value_heads,
+                pos,
+                rotated_dim,
+            );
+        }
+    });
+
+    // K=V sharing (Gemma 4 global): re-derive V from K post-RoPE so
+    // that the V tensor stays identical to K after rotation.
+    let kv_shared = cfg.kv_shared_in_global
+        && matches!(layer_class, AttentionClass::Global);
+    let v = if kv_shared { k.clone() } else { v };
+
+    // Append one row per sequence to the KV cache.
+    kv_cache.append_decode(layer_idx as usize, k.view(), v.view())?;
+
+    // Per-sequence in-TEE causal attention over the full cached
+    // prefix. n_q = 1 per sequence, n_kv = lens[b]. R1.4 stopgap as
+    // in decoder_block_batched.
+    let q_dim = cfg.num_attention_heads * cfg.head_dim_value();
+    let mut ctx = Array2::<f32>::zeros((batch_size, q_dim));
+    profile::time("tee:attn_cached_inplace_many", || -> Result<()> {
+        for b in 0..batch_size {
+            let q_b = q.slice(ndarray::s![b..b + 1, ..]);
+            let (k_cached, v_cached) = kv_cache.view_b(layer_idx as usize, b)?;
+            let ctx_b = match layer_class {
+                AttentionClass::Local { window } => causal_gqa_attention_swa_cached(
+                    q_b,
+                    k_cached,
+                    v_cached,
+                    cfg.num_attention_heads,
+                    cfg.num_key_value_heads,
+                    cfg.head_dim_value(),
+                    q_pos_offsets[b],
+                    window,
+                ),
+                AttentionClass::Global => causal_gqa_attention_cached(
+                    q_b,
+                    k_cached,
+                    v_cached,
+                    cfg.num_attention_heads,
+                    cfg.num_key_value_heads,
+                    cfg.head_dim_value(),
+                    q_pos_offsets[b],
+                ),
+            };
+            ctx.slice_mut(ndarray::s![b..b + 1, ..]).assign(&ctx_b);
+        }
+        Ok(())
+    })?;
+
+    let attn_out = if offload {
+        exec.offload_linear(WeightHandle::new(layer_idx, WeightKind::O), ctx.view())?
+    } else {
+        profile::time("tee:o_direct", || {
+            tee_matmul_bf16(
+                ctx.view(),
+                layer.wo.as_ref().expect("offload=false requires layer.wo").view(),
+            )
+        })
+    };
+    let h1 = profile::time("tee:residual", || &hidden + &attn_out);
+
+    let h1_norm = profile::time("tee:rmsnorm", || {
+        rms_norm(h1.view(), layer.norm_ffn.as_slice().unwrap(), cfg.rms_norm_eps)
+    });
+
+    let (gate, up) = if offload {
+        let handles = [
+            WeightHandle::new(layer_idx, WeightKind::FfnGate),
+            WeightHandle::new(layer_idx, WeightKind::FfnUp),
+        ];
+        let mut out = exec.offload_linear_many(&handles, h1_norm.view())?;
+        let u = out.pop().expect("offload_linear_many returns 2 outputs");
+        let g = out.pop().expect("offload_linear_many returns 2 outputs");
+        (g, u)
+    } else {
+        profile::time("tee:swiglu_proj_direct", || {
+            (
+                tee_matmul_bf16(
+                    h1_norm.view(),
+                    layer.w_gate.as_ref().expect("offload=false requires layer.w_gate").view(),
+                ),
+                tee_matmul_bf16(
+                    h1_norm.view(),
+                    layer.w_up.as_ref().expect("offload=false requires layer.w_up").view(),
+                ),
+            )
+        })
+    };
+    let activated = profile::time("tee:swiglu_activate", || swiglu(gate.view(), up.view()));
+    let ffn_out = if offload {
+        exec.offload_linear(
+            WeightHandle::new(layer_idx, WeightKind::FfnDown),
+            activated.view(),
+        )?
+    } else {
+        profile::time("tee:swiglu_down_direct", || {
+            tee_matmul_bf16(
+                activated.view(),
+                layer.w_down.as_ref().expect("offload=false requires layer.w_down").view(),
+            )
+        })
+    };
+    Ok(profile::time("tee:residual", || &h1 + &ffn_out))
+}
+
 /// Cache-aware decoder block. Same compute path as the legacy
 /// [`decoder_block`] but additionally appends the post-RoPE K, V to
 /// `kv_cache` for layer `layer_idx`, and routes attention through the
@@ -500,6 +796,7 @@ pub fn run_batched(
                 n_max,
                 &seq_lens,
                 cfg.offload_layer(li),
+                None,
             )?;
         }
         Ok(profile::time("tee:rmsnorm", || {
@@ -516,6 +813,106 @@ pub fn run_batched(
     // Materialise (B, n_max, hidden) from the flat (B*n_max, hidden)
     // tensor.  Direct copy preserves contiguity guarantees that
     // downstream gather logic relies on.
+    let mut out = Array3::<f32>::zeros((batch_size, n_max, d));
+    for b in 0..batch_size {
+        out.slice_mut(ndarray::s![b, .., ..])
+            .assign(&h_final.slice(ndarray::s![b * n_max..(b + 1) * n_max, ..]));
+    }
+    Ok((out, seq_lens))
+}
+
+/// **M1.11 D1.4** — Batched prefill forward that populates the KV
+/// cache for subsequent batched decode steps.
+///
+/// Same shape contract as [`run_batched`]: returns `(B, n_max, hidden)`
+/// + per-sequence valid lengths. Additionally, each layer's
+/// post-RoPE K/V valid prefix per sequence is appended to `kv_cache`
+/// via `kv_cache.append_prefill(li, b, k_b, v_b)`. After this call,
+/// `kv_cache.len_b(li, b) == input_ids[b].len()` for every (li, b).
+///
+/// The caller then runs `run_decode_step_batched` one step at a time
+/// with `token_ids: &[u32]` of length B (typically the next sampled
+/// token per sequence; finished sequences feed a pad token, which is
+/// fine because their output rows are discarded).
+pub fn run_prefill_batched(
+    cfg: &DecoderConfig,
+    weights: &DecoderWeights,
+    rope: &RopeTables,
+    exec: &mut impl TrustedExecutor,
+    input_ids: &[Vec<u32>],
+    kv_cache: &mut KvCache,
+) -> Result<(Array3<f32>, Vec<usize>)> {
+    if input_ids.is_empty() {
+        return Err(anyhow!("run_prefill_batched: input_ids must be non-empty"));
+    }
+    let batch_size = input_ids.len();
+    assert_eq!(
+        batch_size,
+        kv_cache.batch_size(),
+        "input_ids B={} != kv_cache batch_size={}",
+        batch_size,
+        kv_cache.batch_size(),
+    );
+    assert_eq!(
+        kv_cache.num_layers(),
+        weights.layers.len(),
+        "kv_cache layer count must match model layer count",
+    );
+    assert_eq!(
+        kv_cache.kv_dim(),
+        cfg.kv_dim(),
+        "kv_cache kv_dim must match cfg.kv_dim()",
+    );
+    let seq_lens: Vec<usize> = input_ids.iter().map(|s| s.len()).collect();
+    let n_max = seq_lens.iter().copied().max().unwrap_or(0);
+    if n_max == 0 {
+        return Err(anyhow!(
+            "run_prefill_batched: at least one sequence must have length > 0"
+        ));
+    }
+    let d = cfg.hidden_size;
+
+    let mut h_flat = profile::time("tee:embed_lookup", || {
+        let mut h = Array2::<f32>::zeros((batch_size * n_max, d));
+        for (b, ids) in input_ids.iter().enumerate() {
+            for (i, &id) in ids.iter().enumerate() {
+                let row = weights.token_embedding.row(id as usize);
+                for (j, v) in row.iter().enumerate() {
+                    h[[b * n_max + i, j]] = v.to_f32();
+                }
+            }
+        }
+        h
+    });
+
+    exec.begin_prefill_pass(batch_size, n_max)?;
+    let result = (|| -> Result<Array2<f32>> {
+        for (li, layer) in weights.layers.iter().enumerate() {
+            h_flat = decoder_block_batched(
+                cfg,
+                layer,
+                rope,
+                exec,
+                li as u16,
+                h_flat.view(),
+                batch_size,
+                n_max,
+                &seq_lens,
+                cfg.offload_layer(li),
+                Some(kv_cache),
+            )?;
+        }
+        Ok(profile::time("tee:rmsnorm", || {
+            rms_norm(
+                h_flat.view(),
+                weights.final_norm.as_slice().unwrap(),
+                cfg.rms_norm_eps,
+            )
+        }))
+    })();
+    exec.end_forward_pass()?;
+    let h_final = result?;
+
     let mut out = Array3::<f32>::zeros((batch_size, n_max, d));
     for b in 0..batch_size {
         out.slice_mut(ndarray::s![b, .., ..])
@@ -543,6 +940,7 @@ pub fn run_batched(
 /// residual stream just propagates whatever the embedding lookup
 /// placed there (zero, in `run_batched`'s case).
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn decoder_block_batched(
     cfg: &DecoderConfig,
     layer: &DecoderLayerWeights,
@@ -554,6 +952,10 @@ fn decoder_block_batched(
     n_max: usize,
     seq_lens: &[usize],
     offload: bool,
+    // M1.11 D1.4: when `Some`, append each sequence's post-RoPE K/V
+    // valid prefix to the cache so subsequent `run_decode_step_batched`
+    // calls can continue from this prefill state.
+    kv_cache_prefill: Option<&mut KvCache>,
 ) -> Result<Array2<f32>> {
     debug_assert_eq!(hidden.nrows(), batch_size * n_max);
 
@@ -628,6 +1030,22 @@ fn decoder_block_batched(
             rope.apply(k_block, cfg.num_key_value_heads);
         }
     });
+
+    // M1.11 D1.4 — when running as part of a batched prefill that
+    // initialises the decode KV cache, append each sequence's
+    // post-RoPE K/V valid prefix.  Pad rows are *not* appended; the
+    // KV cache stores only real-token K/V per sequence.
+    if let Some(kv_cache) = kv_cache_prefill {
+        for b in 0..batch_size {
+            let valid_n = seq_lens[b];
+            if valid_n == 0 {
+                continue;
+            }
+            let k_b = k.slice(ndarray::s![b * n_max..b * n_max + valid_n, ..]);
+            let v_b = v.slice(ndarray::s![b * n_max..b * n_max + valid_n, ..]);
+            kv_cache.append_prefill(layer_idx as usize, b, k_b, v_b)?;
+        }
+    }
 
     // Per-sequence attention via B serial in-TEE `causal_gqa_attention`
     // calls, one per sequence's valid prefix. Pad rows get a zero

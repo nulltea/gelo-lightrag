@@ -1411,6 +1411,86 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         Ok(())
     }
 
+    /// M1.11 D1.1 — batched-decode bracket. At decode each sequence
+    /// contributes one data row, so per-sequence A_b is sized
+    /// `(1 + shield_k, 1 + shield_k)` — the shape-adaptive shield
+    /// overlay (k=15 at n=1) lands stacked_n=16 HD₃-aligned per b.
+    ///
+    /// Opt-in shared-A path (env `BATCHED_DECODE_SHARED_A=1`, gated
+    /// on AloePri `c5_batched_decode_shared_a`): one Single mask of
+    /// size `(B + k, B + k)` with `k = shield_k_for_batch(B, 8)`.
+    /// Mixes B current-token rows; HD₃-aligned at every B.
+    fn begin_decode_pass(&mut self, batch_size: usize) -> Result<()> {
+        if !self.per_forward_mask {
+            return Ok(());
+        }
+        if batch_size == 0 {
+            return Err(anyhow!("begin_decode_pass: batch_size must be > 0"));
+        }
+
+        let shared = std::env::var("BATCHED_DECODE_SHARED_A").as_deref() == Ok("1");
+
+        if shared {
+            // Shared dense A — size (B+k, B+k), HD₃ at every B.
+            let k_base = self.shield_default.k.max(1);
+            let k = crate::shield::shield_k_for_batch(batch_size, k_base);
+            // Use the default energy scale; shape is dictated by k.
+            self.shield = crate::shield::ShieldConfig::new(k, self.shield_default.energy_scale);
+            let stacked_n = batch_size + k;
+            let resolved_kind =
+                crate::mask::resolve_mask_kind_for_shape(self.mask_kind, stacked_n);
+            let mask = profile::time("gelo:mask_sample", || match resolved_kind {
+                MaskKind::Haar => MaskFamily::Haar(GeloMask::fresh(stacked_n, &mut self.rng)),
+                MaskKind::Hd3 => {
+                    let s_pad = stacked_n.next_power_of_two().max(2);
+                    MaskFamily::Hd3(Hd3Mask::fresh(s_pad, &mut self.rng))
+                }
+                MaskKind::Dct4 => {
+                    MaskFamily::Dct4(crate::dct4::Dct4Mask::fresh(stacked_n, &mut self.rng))
+                }
+                MaskKind::Auto => unreachable!("Auto resolved above"),
+            });
+            self.session = Some(SessionKind::Single(SessionMask {
+                mask,
+                data_n: batch_size,
+            }));
+            self.stacked_scratch.clear();
+            return Ok(());
+        }
+
+        // Default: per-sequence A_b at n=1. Reuses the shape-
+        // adaptive overlay (k=15 at n=1 by construction) so each
+        // A_b lands HD₃-aligned at stacked_n=16.
+        self.shield = match self.shield_small_n {
+            Some(small) if 1 <= self.shield_small_n_max => small,
+            _ => self.shield_default,
+        };
+        let stacked_n = 1 + self.shield.k;
+        let resolved_kind = crate::mask::resolve_mask_kind_for_shape(self.mask_kind, stacked_n);
+        let mut masks = Vec::with_capacity(batch_size);
+        for _b in 0..batch_size {
+            let mask = profile::time("gelo:mask_sample", || match resolved_kind {
+                MaskKind::Haar => MaskFamily::Haar(GeloMask::fresh(stacked_n, &mut self.rng)),
+                MaskKind::Hd3 => {
+                    let s_pad = stacked_n.next_power_of_two().max(2);
+                    MaskFamily::Hd3(Hd3Mask::fresh(s_pad, &mut self.rng))
+                }
+                MaskKind::Dct4 => {
+                    MaskFamily::Dct4(crate::dct4::Dct4Mask::fresh(stacked_n, &mut self.rng))
+                }
+                MaskKind::Auto => unreachable!("Auto resolved above"),
+            });
+            masks.push(mask);
+        }
+        self.session = Some(SessionKind::PerSequence {
+            masks,
+            data_n: 1,
+            batch_size,
+        });
+        self.stacked_scratch.clear();
+        Ok(())
+    }
+
     fn set_rng_stream(&mut self, stream: u64) {
         self.rng.set_stream(stream);
     }
@@ -2379,6 +2459,101 @@ mod tests {
                     (got - e).abs()
                 );
             }
+        }
+    }
+
+    /// **M1.11 D1.1** — `begin_decode_pass(B)` default path. B per-
+    /// sequence A_b each of size (1+k, 1+k) (k=15 from shape-adaptive
+    /// overlay at n=1 → stacked_n=16, HD₃-aligned). Per-block round-
+    /// trip must match plaintext within f32 mask floor.
+    #[test]
+    fn begin_decode_pass_default_per_sequence_round_trips() {
+        // Ensure the shared-A env var is OFF for this test.
+        unsafe {
+            std::env::remove_var("BATCHED_DECODE_SHARED_A");
+        }
+        let mut rng = ChaCha20Rng::from_seed([91u8; 32]);
+        let normal = StandardNormal;
+        let batch_size = 4;
+        let d_in = 6;
+        let d_out = 5;
+
+        // (B*1, d_in) — one row per sequence at decode shape.
+        let hidden = Array2::<f32>::from_shape_fn(
+            (batch_size, d_in),
+            |_| normal.sample(&mut rng),
+        );
+        let weight = Array2::<f32>::from_shape_fn((d_in, d_out), |_| normal.sample(&mut rng));
+        let handle = WeightHandle::new(0, WeightKind::Q);
+
+        let mut exec = InProcessTrustedExecutor::with_seed(
+            RayonCpuEngine::new(),
+            MaskSeed::from_bytes([93u8; 32]),
+        );
+        exec.provision_weight(handle, weight.view()).unwrap();
+        exec.begin_decode_pass(batch_size).unwrap();
+        let out = exec.offload_linear(handle, hidden.view()).unwrap();
+        exec.end_forward_pass().unwrap();
+
+        assert_eq!(out.shape(), &[batch_size, d_out]);
+        let expected = hidden.dot(&weight);
+        for ((i, j), e) in expected.indexed_iter() {
+            let got = out[[i, j]];
+            assert!(
+                (got - e).abs() < 5e-3,
+                "decode-batched per-sequence b={i} dim {j}: got {got} want {e}",
+            );
+        }
+    }
+
+    /// **M1.11 D1.1** — `begin_decode_pass(B)` shared-A path (env-
+    /// gated). One Single mask of size (B+k, B+k); mixes B current-
+    /// token rows. Same round-trip math at f32 floor.
+    #[test]
+    fn begin_decode_pass_shared_a_round_trips() {
+        // SAFETY: single-threaded test. We restore the env at end.
+        unsafe {
+            std::env::set_var("BATCHED_DECODE_SHARED_A", "1");
+        }
+        let mut rng = ChaCha20Rng::from_seed([95u8; 32]);
+        let normal = StandardNormal;
+        let batch_size = 6;
+        let d_in = 4;
+        let d_out = 7;
+
+        let hidden = Array2::<f32>::from_shape_fn(
+            (batch_size, d_in),
+            |_| normal.sample(&mut rng),
+        );
+        let weight = Array2::<f32>::from_shape_fn((d_in, d_out), |_| normal.sample(&mut rng));
+        let handle = WeightHandle::new(0, WeightKind::Q);
+
+        let mut exec = InProcessTrustedExecutor::with_seed(
+            RayonCpuEngine::new(),
+            MaskSeed::from_bytes([97u8; 32]),
+        );
+        exec.provision_weight(handle, weight.view()).unwrap();
+        exec.begin_decode_pass(batch_size).unwrap();
+        // Sanity: shared-A path lands in SessionKind::Single.
+        assert!(
+            matches!(&exec.session, Some(SessionKind::Single(_))),
+            "shared-A path must store Single, not PerSequence",
+        );
+        let out = exec.offload_linear(handle, hidden.view()).unwrap();
+        exec.end_forward_pass().unwrap();
+
+        assert_eq!(out.shape(), &[batch_size, d_out]);
+        let expected = hidden.dot(&weight);
+        for ((i, j), e) in expected.indexed_iter() {
+            let got = out[[i, j]];
+            assert!(
+                (got - e).abs() < 5e-3,
+                "decode-batched shared-A b={i} dim {j}: got {got} want {e}",
+            );
+        }
+        // Restore.
+        unsafe {
+            std::env::remove_var("BATCHED_DECODE_SHARED_A");
         }
     }
 

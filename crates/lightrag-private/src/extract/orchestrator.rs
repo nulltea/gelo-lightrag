@@ -27,6 +27,26 @@ pub trait ExtractionDecoder {
         prompt: &str,
         max_tokens: usize,
     ) -> anyhow::Result<DecoderOutput>;
+
+    /// **M1.11 D2** — Run B extraction prompts in one batched forward.
+    /// Returns one [`DecoderOutput`] per prompt in input order.
+    ///
+    /// Default impl loops over [`Self::generate_extraction`] — correct
+    /// for any backend, but slow. Production runtimes (`DecoderRuntime`
+    /// in `gelo-snp-runner`) override with `generation::generate_batched`
+    /// so the B prompts share prefill, share per-step decode, and
+    /// amortise GPU dispatch + GELO mask across the batch.
+    fn generate_extraction_batched(
+        &mut self,
+        prompts: &[&str],
+        max_tokens: usize,
+    ) -> anyhow::Result<Vec<DecoderOutput>> {
+        let mut out = Vec::with_capacity(prompts.len());
+        for p in prompts {
+            out.push(self.generate_extraction(p, max_tokens)?);
+        }
+        Ok(out)
+    }
 }
 
 #[derive(Debug, Clone, Default)]

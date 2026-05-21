@@ -531,6 +531,39 @@ pub trait TrustedExecutor {
         self.begin_forward_pass(batch_size.saturating_mul(n_max))
     }
 
+    /// **M1.11** — Begin a *batched* decode step over `B` sequences,
+    /// each contributing exactly one new token row to the per-layer
+    /// activation.
+    ///
+    /// Two mask topologies per `docs/plans/m1-11-batched-decode.md` §3.4:
+    ///
+    /// 1. **Default — per-sequence A_b.** Mirrors `begin_prefill_pass`
+    ///    with `n_max = 1`. Substrate samples `B` independent masks
+    ///    each of size `(1 + shield_k, 1 + shield_k)` (shape-adaptive
+    ///    shield overlay applies, defaulting to k=15 at n=1 so each
+    ///    A_b is `(16, 16)` HD₃-aligned). Each sequence's data row is
+    ///    masked under its own A_b — same per-row security argument as
+    ///    today's single-stream decode, just dispatched as one batched
+    ///    engine call.
+    ///
+    /// 2. **`BATCHED_DECODE_SHARED_A=1` (opt-in, post c5 gate).** One
+    ///    shared dense A of size `(B + k, B + k)` mixing B current-
+    ///    token rows + k shield rows. HD₃ fires cleanly at every B
+    ///    via `shield::shield_k_for_batch(B, 8)`. Mask-apply work is
+    ///    one HD₃ pass over `(B+k, hidden)` instead of B passes. Per
+    ///    M1.11 §7.1: gate flip pending AloePri
+    ///    `c5_batched_decode_shared_a` clearing at B=8.
+    ///
+    /// Default impl falls back to `begin_forward_pass(batch_size)` so
+    /// non-batched-aware executors produce correct math under one
+    /// shared mask (the legacy `n=B` single-mask topology — a
+    /// degenerate form of shared-A at decode shape).
+    fn begin_decode_pass(&mut self, batch_size: usize) -> Result<()> {
+        // Default: degenerate to a single-mask forward pass at row
+        // count B. Engines targeting M1.11 perf override.
+        self.begin_forward_pass(batch_size)
+    }
+
     /// Move this executor's randomness source to an independent
     /// stream. Used by the embedder's rayon-parallel `embed` path so
     /// each worker in a batch gets its own mask `A` — without this,
