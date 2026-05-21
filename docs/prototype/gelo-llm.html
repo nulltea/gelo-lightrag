@@ -3501,11 +3501,14 @@
         <p class="prose">
           Same protocol surface, the production model size, and the
           production-shape prompt length (n = 2 048 prefill + 4 decode tokens).
-          <strong>gpu_gelo</strong> here runs <code>MaskKind::Auto</code> — HD₃
-          at pow2-aligned shapes, DCT-IV cascade otherwise — which is the
-          recommended mask after the optimisation work documented in §08. Both n
-          = 2 040 (HD₃ branch) and n = 2 048 (DCT-IV branch) sit on the
-          executor's current best path. Bench code:
+          The table below records two historical
+          <code>MaskKind::Auto</code> measurements — one on the HD₃ branch (n =
+          2 040, exact pow2) and one on the DCT-IV branch (n = 2 048, non-pow2).
+          The current design retires DCT-IV in favour of universal HD₃ via
+          shield-as-padding (§08); at n = 2 048 that replaces the +93 % DCT-IV
+          row with the HD₃-with-shield-pad path (+172 %, paying the next-pow2
+          jump to s = 4 096) — the trade accepted for one mask family, one
+          kernel path. Bench code:
           <code>crates/gelo-gpu-wgpu/tests/qwen3_long_context_bench.rs</code>.
         </p>
         <table class="spec" style="margin-top: 12px">
@@ -3565,12 +3568,14 @@
           <em>BLIS:</em> AOCL-BLIS at <code>GELO_BLIS_THREADS = 16</code>.
         </p>
         <p class="prose" style="margin-top: 12px">
-          The two rows hit the two branches of <code>MaskKind::Auto</code>:
-          <code>s = n + k_shield = 2 048</code> at n = 2 040 is exactly pow2, so
-          Auto picks HD₃; <code>s = 2 056</code> at n = 2 048 is not pow2 and
-          the pad ratio 4 096 / 2 056 ≈ 1.99 exceeds the 4/3 threshold, so Auto
-          picks DCT-IV. Both branches beat the dense Haar baseline at the same
-          shape (Haar at n = 2 048: TTFT 25.87 s — see §08).
+          The two rows are pre-deprecation Auto branches:
+          <code>s = n + k_shield = 2 048</code> at n = 2 040 is exact pow2 →
+          HD₃; <code>s = 2 056</code> at n = 2 048 is not pow2 → historical Auto
+          picked DCT-IV (the +93 % row above) to skip the 4 096-row HD₃ pad.
+          Both branches beat the dense Haar baseline at the same shape (Haar at
+          n = 2 048: TTFT 25.87 s — see §08). Under the current
+          shield-as-padding design Auto reduces to HD₃ at every shape; the n = 2
+          048 row would be replaced by HD₃-pow2 (TTFT 32.01 s, +172 % vs plain).
         </p>
 
         <h4 style="margin-top: 32px">
@@ -3708,69 +3713,122 @@
         <p class="lede">
           The §07 short-prompt run is cheap on the Haar QR sample and the mask
           GEMM. Production prefill at <code>n ≥ 2k</code> flips that picture:
-          the QR alone takes seconds. The current executor swaps the Haar
-          <code>A</code> slot for two fast alternatives behind one auto-dispatch
-          — <strong>HD₃</strong> (<code>A = D₃·H·D₂·H·D₁·H</code>, retires the
-          QR bucket entirely at pow2 shapes) and
-          <strong>DCT-IV cascade</strong> (<code>A = D₃·C·D₂·C·D₁·C</code>, the
-          arbitrary-order analog that avoids the FWHT's pow2 pad penalty).
-          <code>MaskKind::Auto</code>
-          picks per shape based on the pad ratio. Three production wins compose
-          on top: AOCL-BLIS multi-thread Haar mask GEMM (5.04 ×), radix-8
-          in-place FWHT for HD₃ (~3.25 × apply), and
-          <code>unapply_take</code> + scratch reuse for both cascades (−39.5 %
-          on the unapply bucket).
-        </p>
-
-        <h4 style="margin-top: 24px">HD₃ — the pow2 construction</h4>
-        <p class="prose">
-          <code>H</code> is the unscaled Walsh-Hadamard matrix at side
-          <code>s</code>, defined recursively by
-          <code>H_{2s} = H_s ⊗ H_2</code> — hence the power-of-two requirement
-          on <code>s</code>. Each <code>D_i ∈ {-1, +1}^s</code> is an
-          independent diagonal of fresh sign bits drawn at the start of every
-          forward pass (<code>3·s</code> bits, sub-microsecond). The cascade is
-          exactly orthogonal; the mask is never materialised — applying it is
-          three in-place FWHTs interleaved with three sign-flips,
-          <code>O(s · log s)</code> per column. Kernel:
-          <code>crates/gelo-protocol/src/hd3.rs</code> — radix-8 AVX-512 fused
-          butterflies (3 stages per pass), AVX-2 + scalar fallbacks,
-          rayon-parallel butterflies within each stage.
+          the QR alone takes seconds. The current executor retires Haar in
+          favour of <strong>HD₃</strong> (<code>A = D₃·H·D₂·H·D₁·H</code>) — an
+          exactly-orthogonal cascade of three sign-flips around three in-place
+          Walsh-Hadamard transforms, no QR, mask never materialised,
+          <code>O(s · log s)</code> per column. The Walsh-Hadamard matrix only
+          exists at power-of-two side length, so the executor leans on the
+          shield rows it was going to add anyway: rather than fix
+          <code>k_shield = 8</code> and pad internally to
+          <code>next_pow2(n+k)</code> with zero rows, it picks
+          <code>k</code> directly such that <code>n + k</code> already lands on
+          a power of two. This unifies the mask path under HD₃ at every shape.
         </p>
 
         <h4 style="margin-top: 24px">
-          DCT-IV cascade — the arbitrary-<code>s</code> construction
+          HD₃ — shield-as-padding to the next pow2
         </h4>
         <p class="prose">
-          <code>A = D₃ · C · D₂ · C · D₁ · C</code> where <code>C</code> is the
-          orthonormal DCT-IV at order <code>s</code>. Same sign- cascade
-          structure as HD₃, same <code>3·s</code>-bit per-forward orbit; the
-          inner transform is DCT-IV rather than Walsh-Hadamard. DCT-IV is real,
-          symmetric (<code>C = Cᵀ</code>), self-inverse (<code>C · C = I</code>
-          in the orthonormal form), and computable in <code>O(s log s)</code> at
-          <strong>any positive integer</strong> <code>s</code> via
-          Bluestein-style chirp-z embedding into a length-2s pow2 FFT. No pad
-          penalty when <code>n + k_shield</code>
-          isn't pow2; CPU cost is ~3-4× HD₃'s FWHT at the same n. We picked
-          DCT-IV (not DCT-II) specifically because DCT-IV has no constant first
-          row — DCT-II's first row leaks
-          <code>(D₁)_0 · Σ x_i / √n</code> after one cascade stage. Kernel:
-          <code>crates/gelo-protocol/src/dct4.rs</code>, wrapping
-          <code>rustdct::Dct4</code> with per-column strided processing and
-          thread-local scratch reuse.
+          The shield row count <code>k_shield</code> is a free parameter above
+          its paper-mandated floor (<code>k ≥ 8</code>). Excess shield rows are
+          monotonically safer per GELO §4.2's shield-energy argument, so the
+          executor uses them as structural padding: pick
+          <code>k = next_pow2(n + k_base) − n</code> (where
+          <code>k_base = 8</code>). The stacked operand <code>n + k</code> is
+          then exactly a power of two for every <code>n</code>; HD₃ applies with
+          no internal zero-pad; the GPU sees exactly the rows the GELO protocol
+          needs and nothing more.
+        </p>
+        <p class="prose">
+          The cascade itself is three sign-flips
+          <code>D_i ∈ {-1, +1}^s</code> (drawn fresh per forward pass,
+          <code>3·s</code> bits, sub-microsecond) interleaved with three
+          in-place FWHTs. Kernel: radix-8 AVX-512 fused butterflies (three
+          stages per pass), AVX-2 + scalar fallbacks, rayon-parallel butterflies
+          within each stage.
         </p>
 
-        <h4 style="margin-top: 24px">Auto dispatch — the production rule</h4>
+        <h4 style="margin-top: 24px">Shield-padding under batching (M1.11)</h4>
         <p class="prose">
-          <code>MaskKind::Auto</code> resolves to HD₃ or DCT-IV per forward
-          (per-forward-pass mode) or per offload (per-offload mode) based on the
-          stacked-row pad ratio. The crossover threshold
-          <code>HD3_AUTO_MAX_PAD_RATIO_NUM/DEN = 4/3</code> picks HD₃ iff
-          <code>s_pad ≤ (4/3) · s</code> (pad ≤ 25 % of <code>s_pad</code>);
-          DCT-IV otherwise. Empirical break-even on Qwen3-4B / GFX1151 is
-          <code>s_pad / s ≈ 1.39</code>; the 4/3 = 1.333 threshold sits safely
-          on the HD₃ side. Auto is strict-monotonic-best: never worse than the
-          better of forced HD₃ vs forced DCT-IV at any shape.
+          The formula generalises directly to batched forwards. At batched
+          decode each step has <code>n = B</code> (one row per sequence) and
+          <code>k = next_pow2(B + 8) − B</code> lands the stacked axis on a
+          power of two at every batch size. <code>k</code> stays ≥ 8 (the paper
+          floor); worst-case <code>k = 2·k_base − 1 = 15</code>. At batched
+          prefill the same formula applies per-sequence block; each block
+          carries its own shield rows sized to the per-sequence
+          <code>n_max + k</code> target.
+        </p>
+        <table class="spec" style="margin-top: 8px">
+          <thead>
+            <tr>
+              <th>B (batched decode)</th>
+              <th>k (shield rows)</th>
+              <th>stacked axis</th>
+              <th>HD₃ pow2?</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>1 (single-stream decode)</td>
+              <td class="num">15</td>
+              <td class="num">16</td>
+              <td>✓</td>
+            </tr>
+            <tr>
+              <td>8</td>
+              <td class="num">8</td>
+              <td class="num">16</td>
+              <td>✓</td>
+            </tr>
+            <tr>
+              <td>12</td>
+              <td class="num">20</td>
+              <td class="num">32</td>
+              <td>✓</td>
+            </tr>
+            <tr>
+              <td>24</td>
+              <td class="num">8</td>
+              <td class="num">32</td>
+              <td>✓</td>
+            </tr>
+            <tr>
+              <td>56</td>
+              <td class="num">8</td>
+              <td class="num">64</td>
+              <td>✓</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h4 style="margin-top: 24px">vs the old Haar baseline</h4>
+        <p class="prose">
+          Haar samples a fresh dense orthogonal <code>A ∈ O(s)</code> per
+          forward via Householder QR and applies it with a dense GEMM. HD₃
+          retires the QR bucket entirely and drops the apply / unapply from
+          <code>O(s²·d)</code> to <code>O(s·d·log s)</code>, with mask storage
+          shrinking from <code>O(s²)</code> to <code>O(s)</code> (three sign
+          vectors). At Qwen3-4B prefill (n = 2 040, s = 2 048 exact pow2) HD₃
+          TTFT is <strong>16.29 s</strong> vs <strong>~25.6 s</strong> Haar at
+          the same shape (−36 %).
+        </p>
+
+        <p class="prose" style="margin-top: 16px">
+          <strong>DCT-IV cascade — tried, deprecated.</strong> An earlier design
+          avoided HD₃'s pow2 requirement with
+          <code>A = D₃·C·D₂·C·D₁·C</code> using DCT-IV (Bluestein chirp-z
+          embedding to handle any <code>s</code>). It cut the non-pow2 prefill
+          TTFT from <strong>32.01 s</strong> (HD₃-with-internal-pad) to
+          <strong>22.79 s</strong> at n = 2 048, but at the cost of a second
+          mask family, an external DCT planner cache, and a
+          <code>~3–4×</code> per-call CPU multiplier vs HD₃ at the same
+          <code>s</code>. The shield-as-padding design above subsumes it: one
+          mask family, one kernel path, HD₃ pow2 alignment at every shape by
+          construction. DCT-IV stays in the source tree under
+          <code>MaskKind::Dct4</code> for parity tests but is no longer the
+          Auto-dispatch target.
         </p>
 
         <h4 style="margin-top: 24px">Cost vs Haar</h4>
@@ -3779,8 +3837,7 @@
             <tr>
               <th>op</th>
               <th>Haar</th>
-              <th>HD₃</th>
-              <th>DCT-IV cascade</th>
+              <th>HD₃ (current)</th>
             </tr>
           </thead>
           <tbody>
@@ -3788,41 +3845,35 @@
               <td>sample (per forward)</td>
               <td><code>O(s³)</code> Householder QR</td>
               <td><code>O(s)</code> sign-bit draws</td>
-              <td><code>O(s)</code> sign-bit draws + planner cache</td>
             </tr>
             <tr>
               <td>apply / unapply (per offload)</td>
               <td><code>O(s²·d)</code> dense GEMM</td>
-              <td><code>O(s·d·log s)</code> FWHT (pow2 only)</td>
-              <td><code>O(s·d·log s)</code> Bluestein-DCT-IV (any s)</td>
+              <td><code>O(s·d·log s)</code> FWHT</td>
             </tr>
             <tr>
               <td>operand size to GPU</td>
-              <td><code>s = n + k</code></td>
-              <td><code>s_pad = next_pow2(n + k)</code></td>
-              <td><code>s = n + k</code></td>
+              <td><code>s = n + 8</code></td>
+              <td><code>s = next_pow2(n + 8)</code> via shield-as-padding</td>
             </tr>
             <tr>
               <td>mask storage</td>
               <td><code>O(s²)</code></td>
-              <td><code>O(s)</code></td>
-              <td><code>O(s)</code> + per-<code>s</code> DCT planner</td>
+              <td><code>O(s)</code> (three sign vectors)</td>
             </tr>
           </tbody>
         </table>
 
         <h4 style="margin-top: 24px">
-          Mask-family comparison — Qwen3-4B, AOCL-BLIS threads=16
+          Long-context measurement — Qwen3-4B, AOCL-BLIS threads = 16
         </h4>
         <p class="prose">
-          Same iGPU, the production-shape prompt length. Two columns of shapes
-          deliberately exercise the two branches of
-          <code>MaskKind::Auto</code>: <strong>n = 2 040</strong>
-          (s = 2 048, exact power of two — HD₃ branch) vs
-          <strong>n = 2 048</strong> (s = 2 056, would pad to 4 096 for HD₃ —
-          DCT-IV branch). Each mask family is also forced individually at each
-          shape to surface the regression the auto-dispatch is built to avoid.
-          Greedy prefill + 4 decode tokens, 1 warmup, AOCL-BLIS at
+          Same iGPU, the production-shape prompt length. Both rows are now on
+          the HD₃ branch under the current shield-as-padding design; the table
+          is kept for the historical Haar / DCT-IV comparison and for the pow2
+          vs non-pow2 contrast (n = 2 040 lands cleanly, n = 2 048 pays the
+          next-pow2 jump to s = 4 096). Greedy prefill + 4 decode tokens, 1
+          warmup,
           <code>GELO_BLIS_THREADS = 16</code>;
           <code>crates/gelo-gpu-wgpu/tests/qwen3_long_context_bench.rs</code>.
         </p>
@@ -3834,39 +3885,39 @@
               <th>plain TTFT</th>
               <th>Haar TTFT</th>
               <th>HD₃ TTFT</th>
-              <th>DCT-IV TTFT</th>
-              <th>Auto TTFT</th>
-              <th>Auto vs Haar</th>
+              <th>DCT-IV TTFT <em>(deprecated)</em></th>
+              <th>HD₃ vs Haar</th>
             </tr>
           </thead>
           <tbody>
             <tr>
               <td>n = 2 040, s = 2 048 <em>(pow2)</em></td>
               <td class="num">11 905</td>
+              <td class="num">~25 600</td>
+              <td class="num"><b>16 289</b></td>
               <td class="num">—</td>
-              <td class="num">16 289</td>
-              <td class="num">—</td>
-              <td class="num">16 289</td>
               <td><span class="accent" style="color: #1e7050">−36 %</span></td>
             </tr>
             <tr>
-              <td>n = 2 048, s = 2 056 <em>(s_pad → 4 096)</em></td>
+              <td>n = 2 048, s_pad → 4 096</td>
               <td class="num">11 764</td>
               <td class="num">25 873</td>
-              <td class="num">32 012 <em>(pad)</em></td>
+              <td class="num"><b>32 012</b></td>
               <td class="num">22 794</td>
-              <td class="num">22 691</td>
-              <td><span class="accent" style="color: #1e7050">−12 %</span></td>
+              <td><span class="accent">+24 %</span></td>
             </tr>
           </tbody>
         </table>
-        <p class="prose" style="margin-top: 6px; font-size: 13px">
-          TTFT in ms. Dashes mark cells not separately measured because Auto
-          picks the same family at that shape (HD₃ at pow2; the Haar baseline is
-          captured directly at n = 2 048 where it's the meaningful reference).
-          Both Auto cells are independently re-runnable via
-          <code>GELO_BENCH_MASK_KIND=auto</code> +
-          <code>GELO_BENCH_LENGTHS=2040,2048</code>.
+        <p class="prose" style="margin-top: 8px; font-size: 13px">
+          TTFT in ms. The bottom row exposes the cost the current design
+          accepts: at non-pow2 single-stream <code>n</code> the
+          shield-as-padding approach pays the full next-pow2 jump for HD₃ (s = 4
+          096), which gives up the 9 s DCT-IV win in exchange for one mask
+          family and one kernel path. The trade is acceptable because (a) the
+          dominant production regime under M1.11 is batched decode (small
+          <code>n + k</code> on pow2 by construction) rather than single-stream
+          long prefill, and (b) the GPU matmul bucket dominates at long
+          <code>n</code> regardless of which mask family runs.
         </p>
 
         <h4 style="margin-top: 24px">
@@ -3972,24 +4023,19 @@
           </tbody>
         </table>
         <p class="prose" style="margin-top: 12px">
-          Three things stand out.
+          Two things stand out vs the Haar baseline.
           <strong>(a) HD₃ kills mask sample entirely.</strong>
           Haar pays 3.1 s of single-thread Householder QR per forward; HD₃
           replaces it with a 6 168-bit sign-cascade draw, sub-microsecond.
           <strong>(b) HD₃ also wins the mask GEMM side</strong> — apply +
-          unapply 1.2 + 2.0 s vs Haar's 2.6 + 4.2 s, ~2× faster.
-          <strong
-            >(c) DCT-IV doesn't beat HD₃ on CPU, but wins on GPU at non-pow2
-            shapes.</strong
-          >
-          Its Bluestein-DCT-IV inner transform costs ~3-4× the memory traffic of
-          FWHT (mask CPU 10.3 s vs HD₃'s 5.0 s), but it operates on the exact
-          <code>s = n + k = 2 056</code> rows — so the GPU sees the same row
-          count Haar does. HD₃ at the same n would pad to
-          <code>s_pad = 4 096</code> and double the GPU matmul cost (engine
-          subtotal ~15.6 s vs DCT-IV's 8.1 s), giving a forced-HD₃ TTFT of 32.0
-          s — worse than every alternative. Auto's 4/3 pad-ratio threshold
-          encodes exactly this trade.
+          unapply 1.2 + 2.0 s vs Haar's 2.6 + 4.2 s, ~2× faster. The DCT-IV
+          column captures the historical non-pow2 fallback (Bluestein chirp-z at
+          exact <code>s = n + k = 2 056</code>): its GPU subtotal beats
+          HD₃-pow2-pad at n = 2 048, but the shield-as-padding design supersedes
+          it — the current path runs HD₃ at s = 4 096 (32.0 s TTFT) with no
+          second kernel family, and accepts the long-context regression because
+          the M1.11 batched path is the production target rather than
+          single-stream long prefill.
         </p>
 
         <h4 style="margin-top: 24px">Trade-offs</h4>
@@ -4010,18 +4056,20 @@
           <li>
             <strong
               >Pow2 pad on the stacked-with-shield operand — addressed by
-              <code>MaskKind::Auto</code>.</strong
+              shield-as-padding.</strong
             >
-            FWHT requires pow2 <code>s</code>. When
-            <code>n + k_shield</code> isn't pow2 the HD₃ path zero-pads to
-            <code>s_pad = next_pow2(n + k_shield)</code> and ships the padded
-            rows through the GPU matmul, paying a
-            <code>s_pad / s</code> engine-side penalty (2× at n = 2 048). DCT-IV
-            cascade runs at exact <code>s = n + k_shield</code> via
-            Bluestein-DCT-IV (<code>O(s · d · log s)</code>) and eliminates the
-            pad cost. Auto picks HD₃ when <code>s_pad / s ≤ 4/3</code> (cheap
-            pad, FWHT's per-element speed wins) and DCT-IV otherwise. Measured
-            strict-best at every shape — see the bucket table above.
+            FWHT requires pow2 <code>s</code>. The current design picks
+            <code>k_shield = next_pow2(n + k_base) − n</code> directly so
+            <code>s = n + k_shield</code> already lands on a power of two for
+            every <code>n</code>; no zero-pad rows enter the FWHT. Excess shield
+            is monotonically safer per GELO §4.2. At single-stream long prefill
+            (n = 2 048) this picks <code>k = 2 048</code> shield rows; the GPU
+            operand jumps to <code>s = 4 096</code> and the mask GEMM cost
+            doubles vs the historical DCT-IV branch — accepted as the cost of
+            unifying on one mask family. At batched decode and rerank-shape
+            prefill the formula keeps <code>k</code> in [<code>k_base</code>,
+            <code>2·k_base − 1</code>] (worst-case <code>k = 15</code>); there's
+            no padding penalty there.
           </li>
           <li>
             <strong
@@ -4099,20 +4147,20 @@
           </li>
           <li>
             <strong
-              >DCT-IV cascade + <code>MaskKind::Auto</code> dispatch
-              (2026-05-20).</strong
+              >DCT-IV cascade — tried, superseded by shield-as-padding
+              (2026-05-20 / superseded 2026-05-21).</strong
             >
-            New <code>Dct4Mask</code> primitive in
-            <code>crates/gelo-protocol/src/dct4.rs</code> — same
-            <code>D₃ · M · D₂ · M · D₁ · M</code> structure as HD₃ but with
-            DCT-IV (via <code>rustdct</code>) as the inner orthogonal, which
-            works at arbitrary <code>n</code> with no pow2 pad.
-            <code>MaskKind::Auto</code> dispatches between HD₃ and DCT-IV at
-            sample time based on <code>s_pad / s ≤ 4/3</code>. Closes the n = 2
-            048 regression where forced HD₃ pads to 4 096 and regresses 24 % vs
-            Haar; Auto picks DCT-IV instead and delivers
-            <strong>−12 % TTFT vs Haar</strong> at the same shape. Design +
-            multi-anchor security analysis at
+            An earlier non-pow2 branch added a DCT-IV cascade (<code
+              >D₃·C·D₂·C·D₁·C</code
+            >
+            via Bluestein chirp-z) so HD₃ could skip its pow2 pad at long
+            single-stream prefill. It delivered −12 % TTFT vs Haar at n = 2 048,
+            but at the cost of a second mask family, an external DCT planner
+            cache, and a ~3-4× per-call CPU multiplier. The shield-as-padding
+            design above retires it: one mask family, pow2 alignment by
+            construction, accept the long-context cost in exchange for substrate
+            simplicity (and because the M1.11 batched path is now the production
+            regime). Design + multi-anchor security analysis preserved at
             <code>docs/research/hd3-non-pow2-fix.md</code> §6.
           </li>
         </ul>
