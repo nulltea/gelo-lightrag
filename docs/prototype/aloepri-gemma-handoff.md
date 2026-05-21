@@ -125,7 +125,7 @@ residual axis (reads from residual).
 
 ### 2.5 Algorithm 1 KeyMat math verified
 
-`python/path-2/lib` (and the vendored
+`python/aloepri-llm/lib` (and the vendored
 `vendor/aloepri-py/src/keymat.py`) generate `(P̂, Q̂)` pairs
 satisfying `P̂·Q̂ = I_d` to ≤ 3·10⁻⁷ max-absolute-error at fp64.
 Tested on E2B (d=1536) and E4B (d=2560) dimensions.
@@ -146,7 +146,7 @@ issue.
 
 ### 2.7 The offline rewriter (`obfuscate_gemma4_gguf.py`) is mostly correct
 
-[`python/path-2/obfuscate_gemma4_gguf.py`](../../python/path-2/obfuscate_gemma4_gguf.py)
+[`python/aloepri-llm/obfuscate_gemma4_gguf.py`](../../python/aloepri-llm/obfuscate_gemma4_gguf.py)
 implements:
 
 - `identity-pad` mode: zero-pad expansion. Validated end-to-end —
@@ -294,7 +294,7 @@ Stop the broken ones with `docker rm -f llama-gemma4-e2b-aloepri-{keymat,gamma}`
 ### 4.3 Files of interest
 
 - Rewriter:
-  [`../../python/path-2/obfuscate_gemma4_gguf.py`](../../python/path-2/obfuscate_gemma4_gguf.py)
+  [`../../python/aloepri-llm/obfuscate_gemma4_gguf.py`](../../python/aloepri-llm/obfuscate_gemma4_gguf.py)
 - Vendored Algorithm 1 reference:
   `vendor/aloepri-py/src/keymat.py` (gitignored — clone
   `sheng1feng/Aloepri @ 60e8ea3`)

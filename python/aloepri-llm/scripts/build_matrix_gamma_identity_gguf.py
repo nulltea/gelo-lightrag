@@ -17,7 +17,7 @@ bit-identical results to the elementwise multiply.
 Token output under greedy decoding must match between the two GGUFs.
 Any difference means the kernel branch is broken.
 
-Run from python/path-2/ with:
+Run from python/aloepri-llm/ with:
   .venv/bin/python scripts/build_matrix_gamma_identity_gguf.py \
     --in  /path/to/Qwen3-1.7B.gguf \
     --out-scalar /tmp/qwen3-fp32-scalar.gguf \

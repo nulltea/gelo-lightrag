@@ -21,7 +21,7 @@ Quality probe (always runs, ~5-10 s):
 HumanEval pass@1 (default n=50, paper subset; --fast-n 20 for sweep
 crank, --skip-humaneval to omit entirely):
   Loads the HumanEval examples via the existing
-  python/path-2/evals/tasks/humaneval.py module, but routes every
+  python/aloepri-llm/evals/tasks/humaneval.py module, but routes every
   completion through AloePriClient instead of the OpenAI-compat
   endpoint. Stop sequences are post-processed on the de-obfuscated
   text (the server can't match plain-text stops because the GGUF's
@@ -50,8 +50,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-# AloePriClient lives under python/path-2 (same path used by capture_token_streams.py).
-PATH2 = Path("/home/timo/repos/private-rag-path-2/python/path-2")
+# AloePriClient lives under python/aloepri-llm (same path used by capture_token_streams.py).
+PATH2 = Path("/home/timo/repos/private-rag-path-2/python/aloepri-llm")
 sys.path.insert(0, str(PATH2))
 from aloepri_client import AloePriClient  # type: ignore
 

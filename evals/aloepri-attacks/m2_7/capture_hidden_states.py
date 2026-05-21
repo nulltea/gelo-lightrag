@@ -53,7 +53,7 @@ import numpy as np
 import requests
 
 # Import key + tokenizer machinery from the existing AloePri client.
-PATH2 = Path("/home/timo/repos/private-rag-path-2/python/path-2")
+PATH2 = Path("/home/timo/repos/private-rag-path-2/python/aloepri-llm")
 sys.path.insert(0, str(PATH2))
 from aloepri_client import AloePriClient  # type: ignore  # noqa: E402
 
@@ -207,7 +207,7 @@ def main() -> int:
         # tensor callback fires. The single generated token is discarded.
         # chat_parser=epsilon overrides llama-server's default PEG content
         # grammar so update_chat_msg never throws on strong-Π gibberish
-        # output — see python/path-2/aloepri_client.py for the rationale.
+        # output — see python/aloepri-llm/aloepri_client.py for the rationale.
         body = {
             "prompt": wire_ids,
             "n_predict": 1,

@@ -2,7 +2,7 @@
 record the resulting obfuscated-token-id streams.
 
 TFMA + SDA both consume the wire-side `τ(token_id)` stream. The
-existing `AloePriClient` (`python/path-2/aloepri_client.py`) already
+existing `AloePriClient` (`python/aloepri-llm/aloepri_client.py`) already
 implements the tokenise → τ-map → /completion → response protocol;
 we wrap it here to:
 
@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 
 # Import AloePriClient from the path-2 codebase.
-PATH2 = Path("/home/timo/repos/private-rag-path-2/python/path-2")
+PATH2 = Path("/home/timo/repos/private-rag-path-2/python/aloepri-llm")
 sys.path.insert(0, str(PATH2))
 from aloepri_client import AloePriClient, KeyMaterial  # type: ignore
 
@@ -93,7 +93,7 @@ def main() -> int:
                 "return_tokens": True,
                 "stream": False,
                 "cache_prompt": False,
-                # See python/path-2/aloepri_client.py: epsilon parser
+                # See python/aloepri-llm/aloepri_client.py: epsilon parser
                 # silences common_chat_parse under strong-Π gibberish.
                 "chat_parser": '{"parsers":[{"type":"epsilon"}],"rules":{},"root":0}',
             }

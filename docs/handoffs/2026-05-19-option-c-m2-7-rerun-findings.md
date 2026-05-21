@@ -163,12 +163,12 @@ priority for the path-2 attack harness.
 
 - `vendor/llama.cpp` (submodule, uncommitted) — matrix-Γ kernel branch:
   `src/llama-arch.{h,cpp}` + `src/llama-hparams.h` + `src/models/qwen3.cpp`.
-- `python/path-2/obfuscate_qwen3_gguf.py` — `--alg2-qk-norm-matrix` flag,
+- `python/aloepri-llm/obfuscate_qwen3_gguf.py` — `--alg2-qk-norm-matrix` flag,
   full Algorithm 2 plumbing.
-- `python/path-2/scripts/measure_gamma_qk_clusters.py` — Option B pre-flight
+- `python/aloepri-llm/scripts/measure_gamma_qk_clusters.py` — Option B pre-flight
   (used to kill Option B 2026-05-19 morning).
-- `python/path-2/scripts/check_alg2_invariance.py` — algebraic validation.
-- `python/path-2/scripts/build_matrix_gamma_identity_gguf.py` — identity-Γ
+- `python/aloepri-llm/scripts/check_alg2_invariance.py` — algebraic validation.
+- `python/aloepri-llm/scripts/build_matrix_gamma_identity_gguf.py` — identity-Γ
   smoke pair builder.
 - `evals/aloepri-attacks/m2_7/vulkan-m2_7-cli.Dockerfile` — patched
   docker image with `llama-cli` + `llama-completion` + `llama-server`.

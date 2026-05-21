@@ -6,12 +6,12 @@
 
 ## What landed
 
-1. **Obfuscator `--pi-include-specials` flag** (`python/path-2/obfuscate_qwen3_gguf.py`). When set, Π permutes all NORMAL/BYTE *and* CONTROL/USER_DEFINED/UNKNOWN/UNUSED tokens within the pi_active range, eliminating the identity-fixed corner.
+1. **Obfuscator `--pi-include-specials` flag** (`python/aloepri-llm/obfuscate_qwen3_gguf.py`). When set, Π permutes all NORMAL/BYTE *and* CONTROL/USER_DEFINED/UNKNOWN/UNUSED tokens within the pi_active range, eliminating the identity-fixed corner.
 
 2. **Strong-Π Qwen3-4B GGUF rebuilt** end-to-end: `untied-keymat-h128-pi-strong-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-bf16-native.gguf` + `.key.npz`. 9.7 GB bf16. Build took ~1 min.
 
 3. **`chat_parser=epsilon` workaround** baked into:
-   - `python/path-2/aloepri_client.py` — `_EPSILON_CHAT_PARSER` constant, sent on every `/completion` request body.
+   - `python/aloepri-llm/aloepri_client.py` — `_EPSILON_CHAT_PARSER` constant, sent on every `/completion` request body.
    - `evals/aloepri-attacks/m2_7/capture_hidden_states.py` — direct POST in the hidden-state capture path.
    - `evals/aloepri-attacks/m2_7/capture_token_streams.py` — direct POST in the token-stream capture path.
 
@@ -43,8 +43,8 @@ The `epsilon` PEG primitive matches the empty prefix and never fails. `common_ch
 
 ## Files modified (uncommitted)
 
-- `python/path-2/obfuscate_qwen3_gguf.py` — `--pi-include-specials` flag + plumbing through `rewrite_gguf`
-- `python/path-2/aloepri_client.py` — `_EPSILON_CHAT_PARSER` constant; request body now includes `chat_parser`
+- `python/aloepri-llm/obfuscate_qwen3_gguf.py` — `--pi-include-specials` flag + plumbing through `rewrite_gguf`
+- `python/aloepri-llm/aloepri_client.py` — `_EPSILON_CHAT_PARSER` constant; request body now includes `chat_parser`
 - `evals/aloepri-attacks/m2_7/capture_hidden_states.py` — same `chat_parser` field in the direct-POST body
 - `evals/aloepri-attacks/m2_7/capture_token_streams.py` — same `chat_parser` field in the direct-POST body
 - `/home/timo/.cache/huggingface/path-2-aloepri/qwen3-4b/untied-keymat-h128-pi-strong-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-bf16-native.gguf` (+ `.key.npz`) — rebuilt artifact

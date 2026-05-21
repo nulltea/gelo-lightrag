@@ -286,7 +286,7 @@ within trivial 1-element clusters). Worth measuring before committing:
 all 28 layers × 16 heads. If clusters of size ≥ 8 cover ≥ 50% of
 head_dim positions, this is a real option.
 
-**Concrete next step.** Write a 30-line `python/path-2/scripts/measure_gamma_qk_clusters.py`
+**Concrete next step.** Write a 30-line `python/aloepri-llm/scripts/measure_gamma_qk_clusters.py`
 that loads plaintext Qwen3 GGUF, extracts every `blk.*.attn_q_norm.weight`
 and `attn_k_norm.weight`, clusters within each head, and reports cluster-
 size distribution.
@@ -368,7 +368,7 @@ is a known-good fallback — only invest the week if A and B both die.
 
 ## 4a. Option B pre-flight result — DEAD (measured 2026-05-19)
 
-Ran `python/path-2/scripts/measure_gamma_qk_clusters.py` against
+Ran `python/aloepri-llm/scripts/measure_gamma_qk_clusters.py` against
 `Qwen_Qwen3-1.7B-Q8_0.gguf`. Raw output at
 `evals/aloepri-attacks/results/m2_7-gamma-qk-cluster-preflight.txt`.
 
@@ -478,18 +478,18 @@ attacker and Option A might suffice with both sides. If it closes
 
 ## Appendix — exact code sites for the fix
 
-- `python/path-2/lib/alg2.py:140-192` — `LayerAlg2Keys.build_layer_keys`
+- `python/aloepri-llm/lib/alg2.py:140-192` — `LayerAlg2Keys.build_layer_keys`
   already generates the full key set; only `q_matrix`/`k_matrix` are
   overridden to identity at the rewriter site.
-- `python/path-2/obfuscate_qwen3_gguf.py:333-376` — the dormant-wiring
+- `python/aloepri-llm/obfuscate_qwen3_gguf.py:333-376` — the dormant-wiring
   block. To enable full Algorithm 2, replace the
   `q_matrix=np.eye, k_matrix=np.eye` overrides with the real
   `full_keys.q_matrix, full_keys.k_matrix` AND emit the chosen γ_qk
   treatment (per option A/B/C above).
-- `python/path-2/obfuscate_qwen3_gguf.py:475-496` — Algorithm 2 apply
+- `python/aloepri-llm/obfuscate_qwen3_gguf.py:475-496` — Algorithm 2 apply
   block. Currently passes `None` for `dense_transform`; passing
   `_block_diag_repeat(q_matrix, num_heads)` re-enables intra-head.
-- `python/path-2/obfuscate_qwen3_gguf.py:91-101` — the
+- `python/aloepri-llm/obfuscate_qwen3_gguf.py:91-101` — the
   PER_BLOCK_FUSION_MAP. Option A would add `attn_q_norm.weight` and
   `attn_k_norm.weight` here with a new "post" direction. Option B
   leaves this map unchanged. Option C touches llama.cpp, not this
