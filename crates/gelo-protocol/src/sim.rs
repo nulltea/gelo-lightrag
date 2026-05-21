@@ -254,7 +254,17 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             perm_attn: PermAttnConfig::default(),
             ple_table: None,
             snapshot_capture: None,
-            mask_kind: MaskKind::Haar,
+            // 2026-05-21: default switched from Haar to Auto.
+            // `MaskKind::Auto` picks HD₃ when the stacked-axis size
+            // fits the pow2 pad budget, DCT-IV otherwise. Cuts the
+            // CPU-mask bottleneck dramatically vs the O(s³) Haar QR
+            // sampler, lifting GPU utilisation out of the 14%
+            // range observed at Haar. See
+            // `private_llm_inference_round_3.md` §2.1,
+            // `hd3_mask_landed.md`, and the
+            // `perf(gelo-protocol): MaskKind::Auto (HD₃ + DCT-IV)`
+            // commit (recent).
+            mask_kind: MaskKind::Auto,
         }
     }
 
@@ -279,6 +289,11 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             perm_attn: PermAttnConfig::default(),
             ple_table: None,
             snapshot_capture: None,
+            // `with_shield` is the per-offload legacy/safety-test
+            // path used by BSS-recovery and DP-Forward tests; keep
+            // Haar to preserve the explicit reference behaviour
+            // those tests target. Production paths use `new` /
+            // `with_seed` which default to `MaskKind::Auto`.
             mask_kind: MaskKind::Haar,
         }
     }

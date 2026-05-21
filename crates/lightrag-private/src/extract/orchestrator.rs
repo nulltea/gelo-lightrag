@@ -215,6 +215,28 @@ where
         timing.entities_extracted = draft_entities.len();
         timing.relations_extracted = draft_relations.len();
 
+        // Emit the decoded text at DEBUG when nothing parsed —
+        // makes silent-failure cases ("model output garbled" vs
+        // "parser bug" vs "model returned wrong format") debuggable
+        // without a separate dump pass. At INFO level we still see
+        // the chunk_done summary with the counts.
+        if draft_entities.is_empty() && draft_relations.is_empty() {
+            tracing::info!(
+                target: "lightrag_private::extract",
+                chunk_idx = idx + 1,
+                chunk_id = %chunk.id,
+                output_chars = out.text.chars().count(),
+                "extract: 0 entities + 0 relations — model output follows"
+            );
+            tracing::info!(
+                target: "lightrag_private::extract",
+                chunk_idx = idx + 1,
+                chunk_id = %chunk.id,
+                output_preview = %out.text.chars().take(800).collect::<String>(),
+                "extract: decoded output (first 800 chars)"
+            );
+        }
+
         report.malformed_records_total += trailer.malformed_records;
         report.per_chunk_trailers.push(trailer);
 
