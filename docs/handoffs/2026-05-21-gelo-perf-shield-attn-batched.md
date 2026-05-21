@@ -249,3 +249,97 @@ ticks up only because the total shrank.
   ~1 day of work, ≤ 3 s wall saved.
 
 Memory entry: `shield_simd_gaussian_landed.md`.
+
+## Follow-up landed 2026-05-21 (same day, third session) — §A fully exhausted
+
+Commit `3eca59e`: polar (Marsaglia) rejection + Xoshiro256++ shield
+RNG.  Motivated by: moving attention to GPU (§B / perm-attention)
+will roughly double the number of mask/unmask/shield cycles per
+forward, so shield-row cost must drop *before* attn offload lands,
+not after.
+
+**What changed:**
+
+- `gaussian::fill_gaussian` SIMD body rewritten from Box-Muller to
+  polar method.  Drops `sin_cos` (the dominant transcendental,
+  ~35 % of the prior kernel).  Branchless 8-lane SIMD with
+  `move_mask` + bit-walk compaction; rejected lanes' factor is
+  computed and discarded (-inf/NaN sink).  Pool sized at 1.4×
+  target_pairs — covers the 21.5 % rejection rate with multi-σ
+  safety margin.
+- New `shield_rng: Xoshiro256PlusPlus` field on
+  `InProcessTrustedExecutor`, seeded deterministically from
+  `MaskSeed` via a fixed ChaCha20 stream split
+  (`SHIELD_RNG_STREAM = 0xCAFE_F00D_5EED_E11D`) so the main RNG's
+  stream-0 position is untouched.  Plumbed through both shield call
+  sites; mask sampling and all other crypto-relevant draws still go
+  through `self.rng: ChaCha20Rng`.
+
+**Microbench** (`cargo bench -p gelo-protocol --bench
+shield_gaussian`, d=2560 / k=15 decode):
+
+| variant | µs/call |
+|---|---:|
+| `legacy_scalar` (Ziggurat + ChaCha20) | 214 |
+| `fill_gaussian` Box-Muller + ChaCha20 | 148 |
+| `fill_gaussian` polar + ChaCha20 | 154 (≈ tied) |
+| `fill_gaussian_xoshiro` polar + Xoshiro | **61** |
+
+**Synergy, not additivity**: polar's win is only realised when
+paired with Xoshiro.  Polar adds 40 % more RNG bytes (1.4× pool)
+which on ChaCha20 cancels the sin_cos savings; on Xoshiro the RNG
+is cheap enough that the SIMD-body win dominates.  Land both or
+neither.
+
+**Clean E2E** (`extract_and_query_bench`, BENCH_MAX_CHUNKS=1):
+
+| stage | post-144d764 | post-3eca59e | Δ |
+|---|---:|---:|---:|
+| `gelo:shield_stack` ms | 22 665 | **11 672** | **−10 993 (−48.5 %)** |
+| `gelo:shield_stack` µs/call | 307 | **158** | **−149 µs/call** |
+| `gelo:shield_stack` share | 10.3 % | **5.1 %** | dropped #4 → **#6** |
+| `tee:attn_cached` s | 69.94 | 89.71 | **+19.77** ← noise |
+| generate wall s | 341.56 | 342.78 | ≈ flat |
+
+**Wall didn't budge** on this single measurement because
+`tee:attn_cached` happened to be at the top of its ±15 % noise
+band.  Across our three clean runs that bucket has been at
+77.5 / 69.9 / 89.7 s on the same fixture — characteristic of
+the shared Strix Halo iGPU/CPU memory subsystem when other tasks
+warm/cool the unified memory.  Average-case wall is ~330 s, ~31 s
+below v7's 361 s.
+
+**Cumulative since v7** (both commits):
+
+| metric | v7 | post-3eca59e | factor |
+|---|---:|---:|---:|
+| shield_stack µs/call | 486 | **158** | **3.08×** |
+| shield_stack bucket | 35.9 s (14.8 %) | 11.67 s (5.1 %) | **−67 %** |
+| bucket rank | #4 | **#6** | — |
+
+**Output**: 10 entities + 4 raw / 3 final relations — byte-identical
+to v7 across both stages.  Greedy decode determinism survives the
+Xoshiro RNG switch because shield rows are post-stripped and never
+propagate to logits; the mask `A` itself still comes from ChaCha20.
+
+**Open security gate** (P3 only): the AloePri `c2_default`
+attack-suite must be re-run before the Xoshiro shield-RNG lands
+in any externally-attested deployment.  Theoretically the
+shield-vs-key distinction is part of the protocol design (key
+material is the mask `A`, not the shield) but the empirical no-
+leakage claim against the new RNG bit-pattern is not yet
+re-validated.  Tracked in memory `aloepri_hd3_gate_phase_a_b.md`.
+
+**Bottleneck ranking after both commits (clean run shares):**
+
+1. `tee:attn_cached` — 39.3 % (the obvious next target — §B)
+2. `engine:matmul` — 19.2 % (GPU)
+3. `engine:matmul_many` — 18.9 % (GPU)
+4. `gelo:mask_unapply:hd3` — 10.7 %
+5. `gelo:mask_apply:hd3` — 6.2 %
+6. `gelo:shield_stack` — 5.1 %
+
+§A is fully exhausted at the wide::f32x8 SIMD width.  Further
+shield work needs either AVX-512 hand-rolling (~2 s wall, ~3 days)
+or workspace-wide `target-cpu=native` (broader experiment).
+Pivot to §B (perm-attention) next.
