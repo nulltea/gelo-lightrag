@@ -26,7 +26,7 @@
 //!    TEE-side weight cache + GPU device handle build once per
 //!    condition; the prompt loop only resets the snapshot capture
 //!    buffer between prompts.
-//! 3. **`provision_weight_shared` with `Arc<Array2<f32>>`**: the
+//! 3. **`provision_weight_shared` with `Arc<Array2<half::bf16>>`**: the
 //!    TEE-side weight cache holds an `Arc::clone` of the embedder's
 //!    weight tensor rather than a fresh `.to_owned()` byte copy,
 //!    so we pay ~3.4 GB for the cache instead of 6.8 GB on
@@ -372,7 +372,7 @@ fn load_prompts(path: Option<&Path>, max_prompts: usize) -> Result<Vec<String>> 
     Ok(raw.into_iter().take(limit).collect())
 }
 
-/// Wrap each offload-bound weight tensor in `Arc<Array2<f32>>` once
+/// Wrap each offload-bound weight tensor in `Arc<Array2<half::bf16>>` once
 /// at startup, returning a `(WeightHandle, Arc)` vector. The engine
 /// registration path uses `arc.view()`; the executor uses
 /// `Arc::clone` via `provision_weight_shared`. Halves the TEE-side
@@ -380,18 +380,16 @@ fn load_prompts(path: Option<&Path>, max_prompts: usize) -> Result<Vec<String>> 
 fn build_weight_arcs(
     cfg: &DecoderConfig,
     weights: &DecoderWeights,
-) -> Vec<(WeightHandle, Arc<Array2<f32>>)> {
+) -> Vec<(WeightHandle, Arc<Array2<half::bf16>>)> {
     let mut arcs = Vec::with_capacity(weights.layers.len() * 7);
     for (li, layer) in weights.layers.iter().enumerate() {
         if !cfg.offload_layer(li) {
             continue;
         }
         let li16 = li as u16;
-        // Note on the clone: the embedder's `DecoderLayerWeights`
-        // currently stores `Array2<f32>` rather than `Arc<Array2<f32>>`,
-        // so we pay one f32 clone here. That's the right boundary —
-        // the Arc-of-Array2 pool can be shared with the executor and
-        // dropped together when the binary exits.
+        // As of 2026-05-21 `DecoderLayerWeights` stores `Arc<Array2<half::bf16>>`
+        // directly; clone the Arc to get a second handle on the same
+        // backing buffer — no f32 byte clone.
         for (kind, tensor) in [
             (WeightKind::Q, &layer.wq),
             (WeightKind::K, &layer.wk),
@@ -401,16 +399,22 @@ fn build_weight_arcs(
             (WeightKind::FfnUp, &layer.w_up),
             (WeightKind::FfnDown, &layer.w_down),
         ] {
-            arcs.push((WeightHandle::new(li16, kind), Arc::new(tensor.clone())));
+            // Snapshot binary holds an external Arc pool; opt out of
+            // the embedder's take-after-upload pattern by cloning the
+            // Arc handle (refcount += 1) and leaving the original.
+            let arc = tensor
+                .as_ref()
+                .expect("offloadable weight missing — fresh DecoderWeights expected here");
+            arcs.push((WeightHandle::new(li16, kind), Arc::clone(arc)));
         }
     }
     arcs
 }
 
-fn approx_arc_pool_gb(arcs: &[(WeightHandle, Arc<Array2<f32>>)]) -> f32 {
+fn approx_arc_pool_gb(arcs: &[(WeightHandle, Arc<Array2<half::bf16>>)]) -> f32 {
     let bytes: usize = arcs
         .iter()
-        .map(|(_, a)| a.nrows() * a.ncols() * std::mem::size_of::<f32>())
+        .map(|(_, a)| a.nrows() * a.ncols() * std::mem::size_of::<half::bf16>())
         .sum();
     bytes as f32 / 1e9
 }
@@ -420,7 +424,7 @@ fn run_condition<E>(
     cond: Condition,
     cfg: &DecoderConfig,
     weights: &Arc<DecoderWeights>,
-    weight_arcs: &[(WeightHandle, Arc<Array2<f32>>)],
+    weight_arcs: &[(WeightHandle, Arc<Array2<half::bf16>>)],
     rope: &Arc<RopeTables>,
     prompt_token_ids: &[Vec<u32>],
     prompts: &[String],
@@ -492,12 +496,12 @@ where
     match &mut executor {
         ExecVariant::Plain(e) => {
             for (handle, arc) in weight_arcs {
-                e.provision_weight(*handle, arc.view())?;
+                e.provision_weight_bf16(*handle, arc.view())?;
             }
         }
         ExecVariant::InProc(e) => {
             for (handle, arc) in weight_arcs {
-                e.provision_weight_shared(*handle, Arc::clone(arc))?;
+                e.provision_weight_bf16_shared(*handle, Arc::clone(arc))?;
             }
         }
     }

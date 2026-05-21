@@ -63,32 +63,33 @@ impl<X: TrustedExecutor> CausalDiscriminatorRerankService<X> {
     pub fn new(
         cfg: DecoderConfig,
         tokenizer: HfTokenizer,
-        weights: Arc<DecoderWeights>,
+        mut weights: DecoderWeights,
         rope: Arc<RopeTables>,
         head: YesNoHead,
         mut exec: X,
     ) -> Result<Self> {
-        for (li, layer) in weights.layers.iter().enumerate() {
+        for li in 0..weights.layers.len() {
             if !cfg.offload_layer(li) {
                 continue;
             }
             let li16 = li as u16;
-            exec.provision_weight(WeightHandle::new(li16, WeightKind::Q), layer.wq.view())?;
-            exec.provision_weight(WeightHandle::new(li16, WeightKind::K), layer.wk.view())?;
-            exec.provision_weight(WeightHandle::new(li16, WeightKind::V), layer.wv.view())?;
-            exec.provision_weight(WeightHandle::new(li16, WeightKind::O), layer.wo.view())?;
-            exec.provision_weight(
-                WeightHandle::new(li16, WeightKind::FfnGate),
-                layer.w_gate.view(),
-            )?;
-            exec.provision_weight(
-                WeightHandle::new(li16, WeightKind::FfnUp),
-                layer.w_up.view(),
-            )?;
-            exec.provision_weight(
-                WeightHandle::new(li16, WeightKind::FfnDown),
-                layer.w_down.view(),
-            )?;
+            let layer = &mut weights.layers[li];
+            // bf16-native + take() — see GeloQwenEmbedder::new for the
+            // rationale (host RAM drops once Arc refcount hits 0).
+            let wq = layer.wq.take().ok_or_else(|| anyhow::anyhow!("layer {li}: wq already taken"))?;
+            exec.provision_weight_bf16_shared(WeightHandle::new(li16, WeightKind::Q), wq)?;
+            let wk = layer.wk.take().ok_or_else(|| anyhow::anyhow!("layer {li}: wk already taken"))?;
+            exec.provision_weight_bf16_shared(WeightHandle::new(li16, WeightKind::K), wk)?;
+            let wv = layer.wv.take().ok_or_else(|| anyhow::anyhow!("layer {li}: wv already taken"))?;
+            exec.provision_weight_bf16_shared(WeightHandle::new(li16, WeightKind::V), wv)?;
+            let wo = layer.wo.take().ok_or_else(|| anyhow::anyhow!("layer {li}: wo already taken"))?;
+            exec.provision_weight_bf16_shared(WeightHandle::new(li16, WeightKind::O), wo)?;
+            let w_gate = layer.w_gate.take().ok_or_else(|| anyhow::anyhow!("layer {li}: w_gate already taken"))?;
+            exec.provision_weight_bf16_shared(WeightHandle::new(li16, WeightKind::FfnGate), w_gate)?;
+            let w_up = layer.w_up.take().ok_or_else(|| anyhow::anyhow!("layer {li}: w_up already taken"))?;
+            exec.provision_weight_bf16_shared(WeightHandle::new(li16, WeightKind::FfnUp), w_up)?;
+            let w_down = layer.w_down.take().ok_or_else(|| anyhow::anyhow!("layer {li}: w_down already taken"))?;
+            exec.provision_weight_bf16_shared(WeightHandle::new(li16, WeightKind::FfnDown), w_down)?;
         }
         let max_len = cfg.max_seq_len.min(cfg.max_position_embeddings);
         let mut hasher = Sha256::new();
@@ -100,7 +101,7 @@ impl<X: TrustedExecutor> CausalDiscriminatorRerankService<X> {
         Ok(Self {
             cfg,
             tokenizer,
-            weights,
+            weights: Arc::new(weights),
             rope,
             head,
             exec,
@@ -139,7 +140,7 @@ impl<X: TrustedExecutor> CausalDiscriminatorRerankService<X> {
             serde_json::from_slice(&cfg_bytes).context("parsing config.json")?;
         let tokenizer = HfTokenizer::from_file(tokenizer_path)?;
         let shard_refs: Vec<&Path> = safetensors_paths.iter().map(|p| p.as_path()).collect();
-        let weights = Arc::new(DecoderWeights::from_safetensors(&shard_refs, &cfg)?);
+        let weights = DecoderWeights::from_safetensors(&shard_refs, &cfg)?;
         let rope = Arc::new(RopeTables::new(
             cfg.head_dim_value(),
             cfg.max_position_embeddings,
@@ -236,10 +237,28 @@ impl<X: TrustedExecutor> CausalDiscriminatorRerankService<X> {
             // Tied LM head: project last hidden by token_embedding.row(id)
             // for each of the two vocab IDs we care about. Skips the
             // (1, hidden) × (hidden, vocab) matmul over all 151669 rows.
-            let yes_logit =
-                last.dot(&self.weights.token_embedding.row(self.head.yes_token_id as usize));
-            let no_logit =
-                last.dot(&self.weights.token_embedding.row(self.head.no_token_id as usize));
+            // Token embedding is bf16; widen per-element and accumulate
+            // in f32 (same precision as the pre-bf16 path).
+            let yes_logit: f32 = last
+                .iter()
+                .zip(
+                    self.weights
+                        .token_embedding
+                        .row(self.head.yes_token_id as usize)
+                        .iter(),
+                )
+                .map(|(a, b)| a * b.to_f32())
+                .sum();
+            let no_logit: f32 = last
+                .iter()
+                .zip(
+                    self.weights
+                        .token_embedding
+                        .row(self.head.no_token_id as usize)
+                        .iter(),
+                )
+                .map(|(a, b)| a * b.to_f32())
+                .sum();
             // Numerically stable softmax([no, yes])[1]:
             let mx = yes_logit.max(no_logit);
             let e_yes = (yes_logit - mx).exp();
@@ -336,10 +355,16 @@ fn score_candidates_parallel<X: TrustedExecutor + Clone + Send + Sync>(
             )?;
             let score = profile::time("tee:yesno_head", || {
                 let last = hidden.row(hidden.shape()[0] - 1);
-                let yes_logit =
-                    last.dot(&svc.weights.token_embedding.row(svc.head.yes_token_id as usize));
-                let no_logit =
-                    last.dot(&svc.weights.token_embedding.row(svc.head.no_token_id as usize));
+                let yes_logit: f32 = last
+                    .iter()
+                    .zip(svc.weights.token_embedding.row(svc.head.yes_token_id as usize).iter())
+                    .map(|(a, b)| a * b.to_f32())
+                    .sum();
+                let no_logit: f32 = last
+                    .iter()
+                    .zip(svc.weights.token_embedding.row(svc.head.no_token_id as usize).iter())
+                    .map(|(a, b)| a * b.to_f32())
+                    .sum();
                 let mx = yes_logit.max(no_logit);
                 let e_yes = (yes_logit - mx).exp();
                 let e_no = (no_logit - mx).exp();

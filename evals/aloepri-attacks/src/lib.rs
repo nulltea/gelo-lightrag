@@ -397,6 +397,22 @@ impl<E: GpuOffloadEngine> TrustedExecutor for CapturingPlaintextExecutor<E> {
         self.inner.provision_weight_shared(handle, weight)
     }
 
+    fn provision_weight_bf16(
+        &mut self,
+        handle: WeightHandle,
+        weight: ArrayView2<half::bf16>,
+    ) -> Result<()> {
+        self.inner.provision_weight_bf16(handle, weight)
+    }
+
+    fn provision_weight_bf16_shared(
+        &mut self,
+        handle: WeightHandle,
+        weight: std::sync::Arc<Array2<half::bf16>>,
+    ) -> Result<()> {
+        self.inner.provision_weight_bf16_shared(handle, weight)
+    }
+
     fn begin_forward_pass(&mut self, n: usize) -> Result<()> {
         self.inner.begin_forward_pass(n)
     }

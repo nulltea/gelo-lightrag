@@ -11,6 +11,7 @@
 //! - `LightRagPrivateService` — the `kg_query` orchestrator over
 //!   `LightKgStore`.
 
+pub mod extract;
 mod perturb;
 mod service;
 mod two_party_service;

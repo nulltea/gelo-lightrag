@@ -228,7 +228,7 @@ fn time_generate<X: TrustedExecutor>(
         let mut best_val = f32::NEG_INFINITY;
         for v in 0..vocab {
             let row = weights.token_embedding.row(v);
-            let dot: f32 = h_last.iter().zip(row.iter()).map(|(a, b)| a * b).sum();
+            let dot: f32 = h_last.iter().zip(row.iter()).map(|(a, b)| a * b.to_f32()).sum();
             if dot > best_val {
                 best_val = dot;
                 best_idx = v as u32;
@@ -310,22 +310,13 @@ fn provision_decoder_weights<X: TrustedExecutor>(
             continue;
         }
         let li16 = li as u16;
-        exec.provision_weight(WeightHandle::new(li16, WeightKind::Q), layer.wq.view())?;
-        exec.provision_weight(WeightHandle::new(li16, WeightKind::K), layer.wk.view())?;
-        exec.provision_weight(WeightHandle::new(li16, WeightKind::V), layer.wv.view())?;
-        exec.provision_weight(WeightHandle::new(li16, WeightKind::O), layer.wo.view())?;
-        exec.provision_weight(
-            WeightHandle::new(li16, WeightKind::FfnGate),
-            layer.w_gate.view(),
-        )?;
-        exec.provision_weight(
-            WeightHandle::new(li16, WeightKind::FfnUp),
-            layer.w_up.view(),
-        )?;
-        exec.provision_weight(
-            WeightHandle::new(li16, WeightKind::FfnDown),
-            layer.w_down.view(),
-        )?;
+        exec.provision_weight_bf16(WeightHandle::new(li16, WeightKind::Q), layer.wq.as_ref().expect("offloadable weight").view())?;
+        exec.provision_weight_bf16(WeightHandle::new(li16, WeightKind::K), layer.wk.as_ref().expect("offloadable weight").view())?;
+        exec.provision_weight_bf16(WeightHandle::new(li16, WeightKind::V), layer.wv.as_ref().expect("offloadable weight").view())?;
+        exec.provision_weight_bf16(WeightHandle::new(li16, WeightKind::O), layer.wo.as_ref().expect("offloadable weight").view())?;
+        exec.provision_weight_bf16(WeightHandle::new(li16, WeightKind::FfnGate), layer.w_gate.as_ref().expect("offloadable weight").view())?;
+        exec.provision_weight_bf16(WeightHandle::new(li16, WeightKind::FfnUp), layer.w_up.as_ref().expect("offloadable weight").view())?;
+        exec.provision_weight_bf16(WeightHandle::new(li16, WeightKind::FfnDown), layer.w_down.as_ref().expect("offloadable weight").view())?;
     }
     Ok(())
 }

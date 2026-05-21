@@ -37,7 +37,7 @@ pub use hd3::Hd3Mask;
 pub use mask::{
     GeloMask, HD3_AUTO_MAX_PAD_RATIO_DEN, HD3_AUTO_MAX_PAD_RATIO_NUM, MaskFamily, MaskKind,
     MaskSeed, ensure_blis_single_thread, mask_backend_description, resolve_mask_kind_for_shape,
-    set_blis_num_threads, tee_matmul,
+    set_blis_num_threads, tee_matmul, tee_matmul_bf16,
 };
 pub use ple::PleTable;
 pub use shield::ShieldConfig;

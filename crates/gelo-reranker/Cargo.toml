@@ -42,4 +42,5 @@ zeroize.workspace = true
 [dev-dependencies]
 gelo-gpu-wgpu = { path = "../gelo-gpu-wgpu" }
 gelo-tee-sev-snp = { path = "../gelo-tee-sev-snp", features = ["mock"] }
+half.workspace = true
 rand_distr.workspace = true

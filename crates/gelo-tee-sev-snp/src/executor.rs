@@ -165,6 +165,22 @@ impl<E: GpuOffloadEngine, I: AttestationIssuer> TrustedExecutor
         self.inner.provision_weight_shared(handle, weight)
     }
 
+    fn provision_weight_bf16(
+        &mut self,
+        handle: WeightHandle,
+        weight: ArrayView2<half::bf16>,
+    ) -> Result<()> {
+        self.inner.provision_weight_bf16(handle, weight)
+    }
+
+    fn provision_weight_bf16_shared(
+        &mut self,
+        handle: WeightHandle,
+        weight: Arc<Array2<half::bf16>>,
+    ) -> Result<()> {
+        self.inner.provision_weight_bf16_shared(handle, weight)
+    }
+
     fn offload_linear(
         &mut self,
         handle: WeightHandle,

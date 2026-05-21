@@ -33,7 +33,114 @@ pub struct GeloQwenEmbedder<X: TrustedExecutor> {
 }
 
 impl<X: TrustedExecutor> GeloQwenEmbedder<X> {
+    /// Build with **owned** `DecoderWeights`. The offload-bound bf16
+    /// projection matrices are `Option<Arc<…>>`; this constructor
+    /// **`take()`s** each Arc out of the struct and hands it to the
+    /// engine via `provision_weight_bf16_shared`. With the wgpu engine
+    /// (the production substrate) the upload converts bf16 → f16
+    /// device-side and the Arc's refcount drops on return — releasing
+    /// the host RAM that was backing the matrix. With skip-first /
+    /// skip-last layers off (the default), no forward-path read ever
+    /// touches `layer.{wq,wk,…,w_down}` again. See
+    /// `feedback_memory_efficiency_priority.md`.
     pub fn new(
+        cfg: DecoderConfig,
+        tokenizer: HfTokenizer,
+        mut weights: DecoderWeights,
+        rope: Arc<RopeTables>,
+        mut exec: X,
+    ) -> Result<Self> {
+        for li in 0..weights.layers.len() {
+            if !cfg.offload_layer(li) {
+                continue;
+            }
+            let li16 = li as u16;
+            let layer = &mut weights.layers[li];
+            // Take each Arc out — when the engine's upload consumes
+            // the Arc and returns, refcount → 0 and the host bytes
+            // drop. From this point on, `layer.wq` (etc.) is None.
+            let wq = layer.wq.take().ok_or_else(|| {
+                anyhow::anyhow!("layer {li}: wq already taken")
+            })?;
+            exec.provision_weight_bf16_shared(
+                WeightHandle::new(li16, WeightKind::Q),
+                wq,
+            )?;
+            let wk = layer.wk.take().ok_or_else(|| {
+                anyhow::anyhow!("layer {li}: wk already taken")
+            })?;
+            exec.provision_weight_bf16_shared(
+                WeightHandle::new(li16, WeightKind::K),
+                wk,
+            )?;
+            let wv = layer.wv.take().ok_or_else(|| {
+                anyhow::anyhow!("layer {li}: wv already taken")
+            })?;
+            exec.provision_weight_bf16_shared(
+                WeightHandle::new(li16, WeightKind::V),
+                wv,
+            )?;
+            let wo = layer.wo.take().ok_or_else(|| {
+                anyhow::anyhow!("layer {li}: wo already taken")
+            })?;
+            exec.provision_weight_bf16_shared(
+                WeightHandle::new(li16, WeightKind::O),
+                wo,
+            )?;
+            let w_gate = layer.w_gate.take().ok_or_else(|| {
+                anyhow::anyhow!("layer {li}: w_gate already taken")
+            })?;
+            exec.provision_weight_bf16_shared(
+                WeightHandle::new(li16, WeightKind::FfnGate),
+                w_gate,
+            )?;
+            let w_up = layer.w_up.take().ok_or_else(|| {
+                anyhow::anyhow!("layer {li}: w_up already taken")
+            })?;
+            exec.provision_weight_bf16_shared(
+                WeightHandle::new(li16, WeightKind::FfnUp),
+                w_up,
+            )?;
+            let w_down = layer.w_down.take().ok_or_else(|| {
+                anyhow::anyhow!("layer {li}: w_down already taken")
+            })?;
+            exec.provision_weight_bf16_shared(
+                WeightHandle::new(li16, WeightKind::FfnDown),
+                w_down,
+            )?;
+        }
+        let max_len = cfg.max_seq_len.min(cfg.max_position_embeddings);
+        let _ = rope.head_dim(); // silence "unused field" if dead-code path triggers
+        let model_identity = hex::encode(weights.model_identity);
+        // Wrap the now-sparse DecoderWeights in Arc. The offloaded
+        // matrices are None; only token_embedding, final_norm, the
+        // per-layer 1-D norm scales, and Q/K norm scales remain on the
+        // host. ~1.5 GB on Qwen3-1.7B (was ~6.8 GB).
+        let weights = Arc::new(weights);
+        Ok(Self {
+            cfg,
+            tokenizer,
+            weights,
+            rope,
+            exec,
+            max_len,
+            model_identity,
+        })
+    }
+
+    /// Alternative constructor that **does not** drop the host weights
+    /// after engine upload. Intended for parity benches and tests that
+    /// need to construct multiple services from the same pre-loaded
+    /// `DecoderWeights` (e.g. plaintext vs masked executor comparison
+    /// over identical weights). Production code should call
+    /// [`Self::new`] which `take()`s the offloadable Arcs and releases
+    /// the host bytes.
+    ///
+    /// Memory: with `WgpuVulkanEngine` you still get GPU-resident
+    /// weights + host-resident Arc<DecoderWeights>. The host copy is
+    /// referenced solely by this `Arc<DecoderWeights>`; the test caller
+    /// drops it explicitly when done.
+    pub fn with_shared_weights(
         cfg: DecoderConfig,
         tokenizer: HfTokenizer,
         weights: Arc<DecoderWeights>,
@@ -45,27 +152,29 @@ impl<X: TrustedExecutor> GeloQwenEmbedder<X> {
                 continue;
             }
             let li16 = li as u16;
-            // Standard offload weights — same handles as BERT.
-            exec.provision_weight(WeightHandle::new(li16, WeightKind::Q), layer.wq.view())?;
-            exec.provision_weight(WeightHandle::new(li16, WeightKind::K), layer.wk.view())?;
-            exec.provision_weight(WeightHandle::new(li16, WeightKind::V), layer.wv.view())?;
-            exec.provision_weight(WeightHandle::new(li16, WeightKind::O), layer.wo.view())?;
-            // SwiGLU has three matmuls: gate, up, down.
-            exec.provision_weight(
-                WeightHandle::new(li16, WeightKind::FfnGate),
-                layer.w_gate.view(),
-            )?;
-            exec.provision_weight(
-                WeightHandle::new(li16, WeightKind::FfnUp),
-                layer.w_up.view(),
-            )?;
-            exec.provision_weight(
-                WeightHandle::new(li16, WeightKind::FfnDown),
-                layer.w_down.view(),
-            )?;
+            // Arc::clone (no take) — host bytes stay alive.
+            for (kind, slot) in [
+                (WeightKind::Q, layer.wq.as_ref()),
+                (WeightKind::K, layer.wk.as_ref()),
+                (WeightKind::V, layer.wv.as_ref()),
+                (WeightKind::O, layer.wo.as_ref()),
+                (WeightKind::FfnGate, layer.w_gate.as_ref()),
+                (WeightKind::FfnUp, layer.w_up.as_ref()),
+                (WeightKind::FfnDown, layer.w_down.as_ref()),
+            ] {
+                let arc = slot.ok_or_else(|| anyhow!(
+                    "layer {li} {kind:?}: weight already taken — `with_shared_weights` \
+                     requires a fresh DecoderWeights (not one previously consumed by \
+                     `new()`)"
+                ))?;
+                exec.provision_weight_bf16_shared(
+                    WeightHandle::new(li16, kind),
+                    Arc::clone(arc),
+                )?;
+            }
         }
         let max_len = cfg.max_seq_len.min(cfg.max_position_embeddings);
-        let _ = rope.head_dim(); // silence "unused field" if dead-code path triggers
+        let _ = rope.head_dim();
         let model_identity = hex::encode(weights.model_identity);
         Ok(Self {
             cfg,
@@ -110,7 +219,7 @@ impl<X: TrustedExecutor> GeloQwenEmbedder<X> {
         let tokenizer = HfTokenizer::from_file(tokenizer_path)?;
 
         let shard_refs: Vec<&Path> = safetensors_paths.iter().map(|p| p.as_path()).collect();
-        let weights = Arc::new(DecoderWeights::from_safetensors(&shard_refs, &cfg)?);
+        let weights = DecoderWeights::from_safetensors(&shard_refs, &cfg)?;
 
         let rope = Arc::new(RopeTables::new(
             cfg.head_dim_value(),

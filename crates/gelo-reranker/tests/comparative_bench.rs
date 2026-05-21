@@ -192,20 +192,20 @@ fn dec_weights(cfg: &DecoderConfig, rng: &mut impl rand::RngCore) -> DecoderWeig
     let layers = (0..cfg.num_hidden_layers)
         .map(|_| DecoderLayerWeights {
             norm_attn: Array1::from_elem(d, 1.0),
-            wq: rand2(d, q, rng, 0.05),
-            wk: rand2(d, kv, rng, 0.05),
-            wv: rand2(d, kv, rng, 0.05),
-            wo: rand2(q, d, rng, 0.05),
+            wq: Some(std::sync::Arc::new(rand2(d, q, rng, 0.05).mapv(|v| half::bf16::from_f32(v)))),
+            wk: Some(std::sync::Arc::new(rand2(d, kv, rng, 0.05).mapv(|v| half::bf16::from_f32(v)))),
+            wv: Some(std::sync::Arc::new(rand2(d, kv, rng, 0.05).mapv(|v| half::bf16::from_f32(v)))),
+            wo: Some(std::sync::Arc::new(rand2(q, d, rng, 0.05).mapv(|v| half::bf16::from_f32(v)))),
             norm_ffn: Array1::from_elem(d, 1.0),
-            w_gate: rand2(d, f, rng, 0.05),
-            w_up: rand2(d, f, rng, 0.05),
-            w_down: rand2(f, d, rng, 0.05),
+            w_gate: Some(std::sync::Arc::new(rand2(d, f, rng, 0.05).mapv(|v| half::bf16::from_f32(v)))),
+            w_up: Some(std::sync::Arc::new(rand2(d, f, rng, 0.05).mapv(|v| half::bf16::from_f32(v)))),
+            w_down: Some(std::sync::Arc::new(rand2(f, d, rng, 0.05).mapv(|v| half::bf16::from_f32(v)))),
             q_norm: None,
             k_norm: None,
         })
         .collect();
     DecoderWeights {
-        token_embedding: rand2(cfg.vocab_size, d, rng, 0.1),
+        token_embedding: rand2(cfg.vocab_size, d, rng, 0.1).mapv(|v| half::bf16::from_f32(v)),
         final_norm: Array1::from_elem(d, 1.0),
         layers,
         model_identity: [0u8; 32],
@@ -218,13 +218,13 @@ fn provision_dec<E: GpuOffloadEngine>(w: &DecoderWeights, cfg: &DecoderConfig, e
             continue;
         }
         let li16 = li as u16;
-        e.register_weight(WeightHandle::new(li16, WeightKind::Q), layer.wq.view()).unwrap();
-        e.register_weight(WeightHandle::new(li16, WeightKind::K), layer.wk.view()).unwrap();
-        e.register_weight(WeightHandle::new(li16, WeightKind::V), layer.wv.view()).unwrap();
-        e.register_weight(WeightHandle::new(li16, WeightKind::O), layer.wo.view()).unwrap();
-        e.register_weight(WeightHandle::new(li16, WeightKind::FfnGate), layer.w_gate.view()).unwrap();
-        e.register_weight(WeightHandle::new(li16, WeightKind::FfnUp), layer.w_up.view()).unwrap();
-        e.register_weight(WeightHandle::new(li16, WeightKind::FfnDown), layer.w_down.view()).unwrap();
+        e.register_weight_bf16(WeightHandle::new(li16, WeightKind::Q), layer.wq.as_ref().expect("offloadable weight").view()).unwrap();
+        e.register_weight_bf16(WeightHandle::new(li16, WeightKind::K), layer.wk.as_ref().expect("offloadable weight").view()).unwrap();
+        e.register_weight_bf16(WeightHandle::new(li16, WeightKind::V), layer.wv.as_ref().expect("offloadable weight").view()).unwrap();
+        e.register_weight_bf16(WeightHandle::new(li16, WeightKind::O), layer.wo.as_ref().expect("offloadable weight").view()).unwrap();
+        e.register_weight_bf16(WeightHandle::new(li16, WeightKind::FfnGate), layer.w_gate.as_ref().expect("offloadable weight").view()).unwrap();
+        e.register_weight_bf16(WeightHandle::new(li16, WeightKind::FfnUp), layer.w_up.as_ref().expect("offloadable weight").view()).unwrap();
+        e.register_weight_bf16(WeightHandle::new(li16, WeightKind::FfnDown), layer.w_down.as_ref().expect("offloadable weight").view()).unwrap();
     }
 }
 
@@ -286,7 +286,7 @@ fn synthetic_comparative_bench_both_services_emit_valid_bundles() {
     // ── Causal-LM discriminator ─────────────────────────────────────
     let cfg_d = dec_cfg();
     let mut rng = ChaCha20Rng::from_seed([21u8; 32]);
-    let w_d = Arc::new(dec_weights(&cfg_d, &mut rng));
+    let w_d = dec_weights(&cfg_d, &mut rng);
     let rope = Arc::new(RopeTables::new(
         cfg_d.head_dim_value(),
         cfg_d.max_position_embeddings,

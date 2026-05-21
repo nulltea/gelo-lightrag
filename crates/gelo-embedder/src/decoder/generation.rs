@@ -109,11 +109,14 @@ fn compute_logits(
     let vocab = weights.token_embedding.nrows();
     let mut logits = ndarray::Array1::<f32>::zeros(vocab);
     for v in 0..vocab {
+        // bf16-stored row × f32 hidden state. Widening per element,
+        // accumulating in f32 — bit-identical to the pre-bf16 path
+        // (the on-disk weights were bf16 anyway).
         let row = weights.token_embedding.row(v);
         let dot: f32 = h_last
             .iter()
             .zip(row.iter())
-            .map(|(a, b)| a * b)
+            .map(|(a, b)| a * b.to_f32())
             .sum();
         logits[v] = dot;
     }

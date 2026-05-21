@@ -359,6 +359,21 @@ pub fn tee_matmul(a: ArrayView2<'_, f32>, b: ArrayView2<'_, f32>) -> Array2<f32>
     a.dot(&b)
 }
 
+/// bf16-weight variant of [`tee_matmul`] for the sensitive-layer
+/// carve-out (paper §3.2 skip_first / skip_last). Activations stay
+/// f32; the weight matrix is bf16. We widen per-element into a
+/// transient `Array2<f32>` then forward to `tee_matmul`.
+///
+/// **Only called when offload=false for a given layer.** With the
+/// project defaults (skip-first / skip-last both off), this path is
+/// unreachable at runtime. The per-element widening is acceptable
+/// because skip-layer mode is an explicit operator opt-in, and the
+/// resulting alloc lifetime is bounded by the matmul call.
+pub fn tee_matmul_bf16(a: ArrayView2<'_, f32>, b: ArrayView2<'_, half::bf16>) -> Array2<f32> {
+    let b_f32 = b.mapv(|v| v.to_f32());
+    tee_matmul(a, b_f32.view())
+}
+
 /// BLIS-backed general matmul `C = A · B`. Both operands assumed
 /// row-major contiguous (true for `ndarray::Array2` standard layout
 /// and any `.view()` of an unsliced array). The function mirrors

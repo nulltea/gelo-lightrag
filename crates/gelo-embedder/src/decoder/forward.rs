@@ -2,7 +2,7 @@ use anyhow::Result;
 use ndarray::{Array1, Array2, ArrayView2};
 
 use gelo_protocol::profile;
-use gelo_protocol::tee_matmul;
+use gelo_protocol::tee_matmul_bf16;
 use gelo_protocol::{TrustedExecutor, WeightHandle, WeightKind};
 
 use super::attention::{
@@ -68,8 +68,11 @@ fn embedding_lookup(cfg: &DecoderConfig, w: &DecoderWeights, ids: &[u32]) -> Arr
     let d = cfg.hidden_size;
     let mut out = Array2::<f32>::zeros((n, d));
     for (i, &id) in ids.iter().enumerate() {
+        // bf16 → f32 widening per element. No intermediate row alloc.
         let row = w.token_embedding.row(id as usize);
-        out.row_mut(i).assign(&row);
+        for (j, &v) in row.iter().enumerate() {
+            out[(i, j)] = v.to_f32();
+        }
     }
     out
 }
@@ -263,12 +266,12 @@ fn decoder_block_cached(
         }
     } else {
         profile::time("tee:qkv_direct", || {
-            let q = tee_matmul(h_norm.view(), layer.wq.view());
-            let k = tee_matmul(h_norm.view(), layer.wk.view());
+            let q = tee_matmul_bf16(h_norm.view(), layer.wq.as_ref().expect("offload=false requires layer.wq present (skip-layers mode)").view());
+            let k = tee_matmul_bf16(h_norm.view(), layer.wk.as_ref().expect("offload=false requires layer.wk present (skip-layers mode)").view());
             let v = if kv_shared {
                 k.clone()
             } else {
-                tee_matmul(h_norm.view(), layer.wv.view())
+                tee_matmul_bf16(h_norm.view(), layer.wv.as_ref().expect("offload=false requires layer.wv present (skip-layers mode)").view())
             };
             (q, k, v)
         })
@@ -394,7 +397,7 @@ fn decoder_block_cached(
     let attn_out = if offload {
         exec.offload_linear(WeightHandle::new(layer_idx, WeightKind::O), ctx.view())?
     } else {
-        profile::time("tee:o_direct", || tee_matmul(ctx.view(), layer.wo.view()))
+        profile::time("tee:o_direct", || tee_matmul_bf16(ctx.view(), layer.wo.as_ref().expect("offload=false requires layer.wo present (skip-layers mode)").view()))
     };
     let h1 = profile::time("tee:residual", || &hidden + &attn_out);
 
@@ -416,8 +419,8 @@ fn decoder_block_cached(
     } else {
         profile::time("tee:swiglu_proj_direct", || {
             (
-                tee_matmul(h1_norm.view(), layer.w_gate.view()),
-                tee_matmul(h1_norm.view(), layer.w_up.view()),
+                tee_matmul_bf16(h1_norm.view(), layer.w_gate.as_ref().expect("offload=false requires layer.w_gate present (skip-layers mode)").view()),
+                tee_matmul_bf16(h1_norm.view(), layer.w_up.as_ref().expect("offload=false requires layer.w_up present (skip-layers mode)").view()),
             )
         })
     };
@@ -431,7 +434,7 @@ fn decoder_block_cached(
         )?
     } else {
         profile::time("tee:swiglu_down_direct", || {
-            tee_matmul(activated.view(), layer.w_down.view())
+            tee_matmul_bf16(activated.view(), layer.w_down.as_ref().expect("offload=false requires layer.w_down present (skip-layers mode)").view())
         })
     };
     Ok(profile::time("tee:residual", || &h1 + &ffn_out))
@@ -458,9 +461,9 @@ fn decoder_block(
     } else {
         profile::time("tee:qkv_direct", || {
             (
-                tee_matmul(h_norm.view(), layer.wq.view()),
-                tee_matmul(h_norm.view(), layer.wk.view()),
-                tee_matmul(h_norm.view(), layer.wv.view()),
+                tee_matmul_bf16(h_norm.view(), layer.wq.as_ref().expect("offload=false requires layer.wq present (skip-layers mode)").view()),
+                tee_matmul_bf16(h_norm.view(), layer.wk.as_ref().expect("offload=false requires layer.wk present (skip-layers mode)").view()),
+                tee_matmul_bf16(h_norm.view(), layer.wv.as_ref().expect("offload=false requires layer.wv present (skip-layers mode)").view()),
             )
         })
     };
@@ -540,7 +543,7 @@ fn decoder_block(
     let attn_out = if offload {
         exec.offload_linear(WeightHandle::new(layer_idx, WeightKind::O), ctx.view())?
     } else {
-        profile::time("tee:o_direct", || tee_matmul(ctx.view(), layer.wo.view()))
+        profile::time("tee:o_direct", || tee_matmul_bf16(ctx.view(), layer.wo.as_ref().expect("offload=false requires layer.wo present (skip-layers mode)").view()))
     };
     let h1 = profile::time("tee:residual", || &hidden + &attn_out);
 
@@ -564,8 +567,8 @@ fn decoder_block(
     } else {
         profile::time("tee:swiglu_proj_direct", || {
             (
-                tee_matmul(h1_norm.view(), layer.w_gate.view()),
-                tee_matmul(h1_norm.view(), layer.w_up.view()),
+                tee_matmul_bf16(h1_norm.view(), layer.w_gate.as_ref().expect("offload=false requires layer.w_gate present (skip-layers mode)").view()),
+                tee_matmul_bf16(h1_norm.view(), layer.w_up.as_ref().expect("offload=false requires layer.w_up present (skip-layers mode)").view()),
             )
         })
     };
@@ -579,7 +582,7 @@ fn decoder_block(
         )?
     } else {
         profile::time("tee:swiglu_down_direct", || {
-            tee_matmul(activated.view(), layer.w_down.view())
+            tee_matmul_bf16(activated.view(), layer.w_down.as_ref().expect("offload=false requires layer.w_down present (skip-layers mode)").view())
         })
     };
     Ok(profile::time("tee:residual", || &h1 + &ffn_out))

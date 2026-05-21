@@ -17,22 +17,51 @@ use crate::shield::{ShieldConfig, stack_shield};
 use crate::snapshot::{SnapshotCapture, SnapshotConfig};
 use crate::substrate::{GpuOffloadEngine, TrustedExecutor, WeightHandle, WeightKind};
 
-/// Reference [`GpuOffloadEngine`] that performs the offloaded GEMM on the CPU.
-/// Stand-in for a real Vulkan / CUDA backend.
+/// **DEPRECATED — DO NOT USE IN NEW CODE.**
+///
+/// Reference [`GpuOffloadEngine`] that performs the offloaded GEMM on the
+/// CPU. Retained only so existing tests / synthetic parity harnesses keep
+/// compiling while they migrate. **Every measurement, bench, example,
+/// and production runtime must use `gelo_gpu_wgpu::WgpuVulkanEngine`** —
+/// see `feedback_benches_use_gelo_gpu.md` and
+/// `feedback_no_rayon_cpu_engine.md`.
+///
+/// Weights are stored as `Arc<Array2<f32>>` so the legacy path that does
+/// reach this type still avoids the engine-side clone via
+/// [`Self::register_weight_shared`]. New call sites must not be added.
+#[deprecated(
+    since = "0.1.0",
+    note = "RayonCpuEngine is the reference CPU impl; use `gelo_gpu_wgpu::WgpuVulkanEngine` \
+            for all measurements, benches, and production runtimes — see \
+            `feedback_benches_use_gelo_gpu.md` + `feedback_no_rayon_cpu_engine.md`."
+)]
 #[derive(Default, Clone)]
 pub struct RayonCpuEngine {
-    weights: HashMap<WeightHandle, Array2<f32>>,
+    weights: HashMap<WeightHandle, Arc<Array2<f32>>>,
 }
 
+#[allow(deprecated)]
 impl RayonCpuEngine {
     pub fn new() -> Self {
         Self::default()
     }
 }
 
+#[allow(deprecated)]
 impl GpuOffloadEngine for RayonCpuEngine {
     fn register_weight(&mut self, handle: WeightHandle, weight: ArrayView2<f32>) -> Result<()> {
-        self.weights.insert(handle, weight.to_owned());
+        // Legacy path: caller doesn't own an Arc. Clone once and wrap.
+        // New call sites should use `register_weight_shared` instead.
+        self.weights.insert(handle, Arc::new(weight.to_owned()));
+        Ok(())
+    }
+
+    fn register_weight_shared(
+        &mut self,
+        handle: WeightHandle,
+        weight: Arc<Array2<f32>>,
+    ) -> Result<()> {
+        self.weights.insert(handle, weight);
         Ok(())
     }
 
@@ -48,7 +77,7 @@ impl GpuOffloadEngine for RayonCpuEngine {
                 w.nrows()
             ));
         }
-        Ok(input.dot(w))
+        Ok(input.dot(w.as_ref()))
     }
 
     fn matmul_dynamic(
@@ -797,6 +826,32 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         self.engine.register_weight(handle, weight)
     }
 
+    fn provision_weight_bf16(
+        &mut self,
+        handle: WeightHandle,
+        weight: ArrayView2<half::bf16>,
+    ) -> Result<()> {
+        // U-Verify cache deliberately not populated for the bf16
+        // path: the probe machinery is f32-only, and bf16 +
+        // verify_probes is unsupported in v1. The engine still gets
+        // the bf16 weight directly.
+        self.engine.register_weight_bf16(handle, weight)
+    }
+
+    fn provision_weight_bf16_shared(
+        &mut self,
+        handle: WeightHandle,
+        weight: Arc<Array2<half::bf16>>,
+    ) -> Result<()> {
+        // Hand the Arc straight to the engine. For wgpu in F16 mode
+        // the upload converts bf16 → f16 device-side and the Arc
+        // refcount drops once the engine returns. For the deprecated
+        // RayonCpuEngine, the default impl converts bf16 → f32 via
+        // mapv() inside `register_weight_bf16_shared` — never used in
+        // production. See `feedback_no_rayon_cpu_engine.md`.
+        self.engine.register_weight_bf16_shared(handle, weight)
+    }
+
     fn provision_weight_shared(
         &mut self,
         handle: WeightHandle,
@@ -804,7 +859,10 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
     ) -> Result<()> {
         // Same as `provision_weight` but avoids the 2.4 GB clone on
         // Qwen3-class models when the embedder already holds an Arc.
-        self.engine.register_weight(handle, weight.view())?;
+        // The engine-side clone is also eliminated via
+        // `register_weight_shared` — for engines that override
+        // (`RayonCpuEngine` does), the Arc is stored directly.
+        self.engine.register_weight_shared(handle, Arc::clone(&weight))?;
         if self.verify_probes > 0 {
             self.weights.insert(handle, weight);
         }
@@ -1122,6 +1180,14 @@ impl<E: GpuOffloadEngine> PlaintextExecutor<E> {
 impl<E: GpuOffloadEngine> TrustedExecutor for PlaintextExecutor<E> {
     fn provision_weight(&mut self, handle: WeightHandle, weight: ArrayView2<f32>) -> Result<()> {
         self.engine.register_weight(handle, weight)
+    }
+
+    fn provision_weight_bf16(
+        &mut self,
+        handle: WeightHandle,
+        weight: ArrayView2<half::bf16>,
+    ) -> Result<()> {
+        self.engine.register_weight_bf16(handle, weight)
     }
 
     fn offload_linear(

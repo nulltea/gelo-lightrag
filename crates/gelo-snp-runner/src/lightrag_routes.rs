@@ -5,20 +5,27 @@
 //! `LightKgStore`-backed retrieval surface. Wire types are JSON;
 //! ciphertext fields stay base64. The KG payload itself is plaintext
 //! over RATLS (the client-side extraction LLM produces it; see OQ#5).
+//!
+//! M8.x — `extract_and_build` closes OQ#5 by running extraction
+//! inside the CVM on the masked GELO LLM path. See
+//! `crate::extraction` for the warm-loaded handles.
 
 use std::sync::Arc;
 
 use axum::{
     Json,
     extract::State,
+    http::StatusCode,
     response::IntoResponse,
 };
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
+use gelo_chunker::{ChunkerConfig, TokenBasedChunker};
 use light_kg_store::{
     Chunk, CompassIndexParams, Entity, ExtractedKg, LightKgParams, PlainHnswParams, Relation,
     RingOramParams, XorMmParams,
 };
+use lightrag_private::extract::{ChunkInput, ExtractionConfig, extract_kg_from_chunks};
 use lightrag_private::{KgQueryParams, LightRagTwoPartyService, QueryShape};
 use rag_core::TenantId;
 use serde::{Deserialize, Serialize};
@@ -26,6 +33,8 @@ use tracing::info;
 use zeroize::Zeroizing;
 
 use crate::AppError;
+use crate::RunnerEngine;
+use crate::extraction::ExtractionHandles;
 
 /// Shared lightrag-service handle. Held alongside the existing
 /// `AppState` rather than embedded so the runner's CAPRISE service
@@ -308,6 +317,168 @@ pub async fn query(
             .collect(),
         context_string,
     }))
+}
+
+/// State slice for the `/lightrag/extract_and_build` route. Holds the
+/// optional warm-loaded extraction handles + the LightRAG service so
+/// the handler can run extraction, then ingest, against the same
+/// tenant.
+#[derive(Clone)]
+pub struct ExtractAndBuildState {
+    pub extraction: Option<ExtractionHandles<RunnerEngine>>,
+    pub lightrag: LightRagServiceHandle,
+}
+
+#[derive(Deserialize, Default, Debug)]
+pub struct ChunkerOverrideJson {
+    pub chunk_size: Option<usize>,
+    pub chunk_overlap: Option<usize>,
+    pub min_chunk_size: Option<usize>,
+}
+
+fn default_max_tokens_per_chunk() -> usize {
+    1024
+}
+
+#[derive(Deserialize, Debug)]
+pub struct LightRagExtractAndBuildRequest {
+    pub tenant_id: String,
+    pub user_x_sk: UserXskB64,
+    /// Whole-document text. The CVM chunker runs server-side.
+    pub document_text: String,
+    /// Optional override for chunker config. Defaults to
+    /// `ChunkerConfig::default()`.
+    #[serde(default)]
+    pub chunker: Option<ChunkerOverrideJson>,
+    /// Optional override for the per-chunk generation budget.
+    #[serde(default = "default_max_tokens_per_chunk")]
+    pub max_tokens_per_chunk: usize,
+}
+
+#[derive(Serialize)]
+pub struct LightRagExtractAndBuildResponse {
+    pub ingested: IngestStats,
+    pub extraction: ExtractionStatsJson,
+}
+
+#[derive(Serialize, Debug)]
+pub struct ExtractionStatsJson {
+    pub chunks_processed: usize,
+    pub chunks_skipped_empty: usize,
+    pub generations_truncated: usize,
+    pub malformed_records_total: usize,
+    pub dropped_dangling_relations_total: usize,
+    pub embedding_dim: usize,
+}
+
+pub async fn extract_and_build(
+    State(state): State<ExtractAndBuildState>,
+    Json(req): Json<LightRagExtractAndBuildRequest>,
+) -> Result<axum::response::Response, AppError> {
+    let Some(extraction) = state.extraction.clone() else {
+        return Ok((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "extraction not configured on this CVM — \
+             set extraction_decoder_path + extraction_embedder_path in runner.toml \
+             and restart",
+        )
+            .into_response());
+    };
+    let tenant = TenantId::new(req.tenant_id.clone());
+    let user_x_sk = req.user_x_sk.decode()?;
+
+    // Chunk the document inside the CVM. Cheap (pure CPU, no LLM).
+    let chunker_cfg = build_chunker_config(req.chunker.as_ref());
+    let raw_chunks = TokenBasedChunker::chunk(&req.document_text, &chunker_cfg);
+    let chunk_inputs: Vec<ChunkInput> = raw_chunks
+        .into_iter()
+        .enumerate()
+        .map(|(i, text)| ChunkInput {
+            id: format!("chunk-{i:06}"),
+            text,
+        })
+        .collect();
+
+    let max_tokens_per_chunk = req.max_tokens_per_chunk;
+    // Heavy CPU-bound work — the decoder loop is sync. Move it to a
+    // blocking worker so we don't tie up the axum runtime.
+    let decoder_arc = extraction.decoder.clone();
+    let embedder_arc = extraction.embedder.clone();
+    let extract_result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        let mut decoder = decoder_arc
+            .lock()
+            .map_err(|e| anyhow::anyhow!("decoder mutex poisoned: {e}"))?;
+        let mut embedder = embedder_arc
+            .lock()
+            .map_err(|e| anyhow::anyhow!("embedder mutex poisoned: {e}"))?;
+        let cfg = ExtractionConfig {
+            max_tokens_per_chunk,
+            ..ExtractionConfig::default()
+        };
+        let (kg, report) =
+            extract_kg_from_chunks(chunk_inputs, &mut *decoder, &mut *embedder, &cfg)?;
+        let dim = embedder.dim();
+        Ok((kg, report, dim))
+    })
+    .await
+    .map_err(|join_err| anyhow::anyhow!("extraction task join error: {join_err}"))??;
+    let (kg, report, dim) = extract_result;
+
+    let stats = IngestStats {
+        chunks: kg.chunks.len(),
+        entities: kg.entities.len(),
+        relations: kg.relations.len(),
+    };
+
+    // Ingest only when we actually extracted something — empty KGs
+    // are valid (no entities surfaced) and we don't need to spin up
+    // an empty store. Still bookkeep the tenant if it doesn't exist
+    // yet? No — the contract is "ingest = full rebuild" (see
+    // LightRagTwoPartyService::ingest_kg_for), so an empty KG would
+    // replace any prior store with nothing. Better to skip.
+    if !kg.entities.is_empty() || !kg.chunks.is_empty() {
+        let params = LightKgParams {
+            entities: default_compass_params(dim, stats.entities),
+            relations: default_compass_params(dim, stats.relations.max(8)),
+            chunks: default_compass_params(dim, stats.chunks),
+            adjacency: default_xormm_params(),
+            src_chunks: default_xormm_params(),
+        };
+        state
+            .lightrag
+            .ingest_kg_for(&tenant, user_x_sk, kg, params)
+            .await?;
+    }
+
+    let resp = LightRagExtractAndBuildResponse {
+        ingested: stats,
+        extraction: ExtractionStatsJson {
+            chunks_processed: report.chunks_processed,
+            chunks_skipped_empty: report.chunks_skipped_empty,
+            generations_truncated: report.generations_truncated,
+            malformed_records_total: report.malformed_records_total,
+            dropped_dangling_relations_total: report.dropped_dangling_relations_total,
+            embedding_dim: dim,
+        },
+    };
+    info!(tenant = %tenant, ?resp.extraction, "lightrag extract_and_build complete");
+    Ok(Json(resp).into_response())
+}
+
+fn build_chunker_config(overrides: Option<&ChunkerOverrideJson>) -> ChunkerConfig {
+    let mut cfg = ChunkerConfig::default();
+    if let Some(o) = overrides {
+        if let Some(v) = o.chunk_size {
+            cfg.chunk_size = v;
+        }
+        if let Some(v) = o.chunk_overlap {
+            cfg.chunk_overlap = v;
+        }
+        if let Some(v) = o.min_chunk_size {
+            cfg.min_chunk_size = v;
+        }
+    }
+    cfg
 }
 
 /// `/lightrag/attest` — separate route name so a relying party can

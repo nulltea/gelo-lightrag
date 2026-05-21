@@ -36,7 +36,7 @@ use burn_cubecl::CubeBackend;
 use burn_tensor::{Tensor, TensorData, Transaction, activation};
 use cubecl_common::future;
 use cubecl_wgpu::{AutoGraphicsApi, RuntimeOptions, WgpuDevice, WgpuRuntime, init_setup_async};
-use half::f16;
+use half::{bf16, f16};
 use ndarray::{Array2, Array3, ArrayView2, ArrayView3};
 
 use gelo_protocol::{GpuOffloadEngine, WeightHandle};
@@ -226,6 +226,43 @@ fn array2_to_tensor_f16(view: ArrayView2<'_, f32>, device: &WgpuDevice) -> Tenso
     Tensor::<CubeWgpu16, 2>::from_data(TensorData::new(v, [rows, cols]), device)
 }
 
+/// **bf16-native** weight upload. Skips the bf16 → f32 host
+/// intermediate that `view_to_f32` would otherwise force on the
+/// loader. Each bf16 element is converted directly to f16 via the
+/// `f16::from_f32(bf16::to_f32(x))` round-trip — same numeric path
+/// as the f32 entry point but without ever materialising an f32
+/// host copy of the full weight matrix.
+fn array2_bf16_to_tensor_f16(
+    view: ArrayView2<'_, bf16>,
+    device: &WgpuDevice,
+) -> Tensor<CubeWgpu16, 2> {
+    let rows = view.nrows();
+    let cols = view.ncols();
+    let v: Vec<f16> = view
+        .as_standard_layout()
+        .iter()
+        .map(|&x| f16::from_f32(x.to_f32()))
+        .collect();
+    Tensor::<CubeWgpu16, 2>::from_data(TensorData::new(v, [rows, cols]), device)
+}
+
+/// **bf16 → f32 GPU upload**. Used when the engine is in F32 mode but
+/// the caller supplied bf16. Still avoids a host f32 array — the
+/// per-element widening happens once during the upload Vec build.
+fn array2_bf16_to_tensor_f32(
+    view: ArrayView2<'_, bf16>,
+    device: &WgpuDevice,
+) -> Tensor<CubeWgpu32, 2> {
+    let rows = view.nrows();
+    let cols = view.ncols();
+    let v: Vec<f32> = view
+        .as_standard_layout()
+        .iter()
+        .map(|&x| x.to_f32())
+        .collect();
+    Tensor::<CubeWgpu32, 2>::from_data(TensorData::new(v, [rows, cols]), device)
+}
+
 fn array3_to_tensor_f16(view: ArrayView3<'_, f32>, device: &WgpuDevice) -> Tensor<CubeWgpu16, 3> {
     let b = view.shape()[0];
     let m = view.shape()[1];
@@ -272,6 +309,25 @@ impl GpuOffloadEngine for WgpuVulkanEngine {
             }
             WeightStore::F16(map) => {
                 let t = array2_to_tensor_f16(weight, &self.device);
+                map.insert(handle, t);
+            }
+        }
+        Ok(())
+    }
+
+    fn register_weight_bf16(
+        &mut self,
+        handle: WeightHandle,
+        weight: ArrayView2<'_, bf16>,
+    ) -> Result<()> {
+        let mut guard = self.weights.lock().unwrap();
+        match &mut *guard {
+            WeightStore::F32(map) => {
+                let t = array2_bf16_to_tensor_f32(weight, &self.device);
+                map.insert(handle, t);
+            }
+            WeightStore::F16(map) => {
+                let t = array2_bf16_to_tensor_f16(weight, &self.device);
                 map.insert(handle, t);
             }
         }

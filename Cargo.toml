@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/core",
+    "crates/gelo-chunker",
     "crates/gelo-rag",
     "crates/gelo-protocol",
     "crates/gelo-embedder",

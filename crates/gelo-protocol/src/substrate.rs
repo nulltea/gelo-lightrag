@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
+use half::bf16;
 use ndarray::{Array2, Array3, ArrayView2, ArrayView3, Axis};
 
 use crate::ple::PleTable;
@@ -44,6 +45,59 @@ pub trait GpuOffloadEngine: Send {
     /// Provision a public weight tensor to the offload engine. Called once at
     /// model load. Shape is `(in_features, out_features)`.
     fn register_weight(&mut self, handle: WeightHandle, weight: ArrayView2<f32>) -> Result<()>;
+
+    /// Arc-shared variant of [`Self::register_weight`]. When the caller
+    /// already owns the weight in an `Arc<Array2<f32>>` (e.g. the
+    /// embedder's `DecoderLayerWeights` after the 2026-05-21
+    /// Arc-conversion), engines that retain a host-side cache can store
+    /// the Arc directly and avoid the 7.5 GB-per-Qwen3-4B clone in
+    /// `register_weight`.
+    ///
+    /// Default impl preserves the legacy behaviour by calling
+    /// `register_weight(handle, weight.view())`. Override on engines that
+    /// can take Arc ownership — currently `RayonCpuEngine`. The wgpu
+    /// engine does not need this override because it uploads weights to
+    /// VRAM at registration and never keeps a host copy.
+    fn register_weight_shared(
+        &mut self,
+        handle: WeightHandle,
+        weight: std::sync::Arc<ndarray::Array2<f32>>,
+    ) -> Result<()> {
+        self.register_weight(handle, weight.view())
+    }
+
+    /// **bf16-native** weight registration. Engines that can accept
+    /// bf16 directly (the wgpu engine in F16 mode, which converts
+    /// bf16 → f16 at upload) override this to avoid the loader-side
+    /// bf16 → f32 upcast that `register_weight` would otherwise force
+    /// — see `feedback_memory_efficiency_priority.md`.
+    ///
+    /// Default impl converts to f32 in a transient scratch buffer and
+    /// forwards to `register_weight`. This preserves correctness for
+    /// engines that haven't been updated, but is the path the loader
+    /// goes out of its way to avoid: a non-overridden engine on a
+    /// Qwen3-1.7B run pays ~3.4 GB of host RAM in the scratch buffer
+    /// during provisioning.
+    fn register_weight_bf16(
+        &mut self,
+        handle: WeightHandle,
+        weight: ArrayView2<bf16>,
+    ) -> Result<()> {
+        let f32_owned: Array2<f32> = weight.mapv(|v| v.to_f32());
+        self.register_weight(handle, f32_owned.view())
+    }
+
+    /// bf16 + Arc-shared. Mirrors [`Self::register_weight_shared`] for
+    /// the bf16 storage layout. Overriders should retain the Arc on
+    /// engines that hold a host-side cache; the default impl
+    /// downcasts via `register_weight_bf16` and drops the Arc.
+    fn register_weight_bf16_shared(
+        &mut self,
+        handle: WeightHandle,
+        weight: Arc<Array2<bf16>>,
+    ) -> Result<()> {
+        self.register_weight_bf16(handle, weight.view())
+    }
 
     /// Compute `input · W[handle]` and return the product.
     ///
@@ -431,6 +485,34 @@ pub trait TrustedExecutor {
         weight: Arc<Array2<f32>>,
     ) -> Result<()> {
         self.provision_weight(handle, weight.view())
+    }
+
+    /// **bf16-native** weight provisioning. The trusted side does not
+    /// need a host f32 copy of offloadable projection weights —
+    /// activations are masked f32 but weights live on the engine
+    /// (GPU) at f16. Loader stores bf16 to avoid the
+    /// bf16 → f32 widening called out in
+    /// `feedback_memory_efficiency_priority.md`.
+    ///
+    /// Default impl forwards to `register_weight_bf16` on the engine
+    /// and skips the U-Verify cache (verify_probes is gated on the
+    /// f32 path; bf16 + U-Verify is not supported in v1).
+    fn provision_weight_bf16(
+        &mut self,
+        handle: WeightHandle,
+        weight: ArrayView2<bf16>,
+    ) -> Result<()>;
+
+    /// bf16 + Arc-shared variant. The loader's `Arc<Array2<bf16>>`
+    /// flows straight through to the engine; for the wgpu engine in
+    /// F16 mode the Arc is consumed during upload and the host bytes
+    /// drop when the Arc refcount hits zero.
+    fn provision_weight_bf16_shared(
+        &mut self,
+        handle: WeightHandle,
+        weight: Arc<Array2<bf16>>,
+    ) -> Result<()> {
+        self.provision_weight_bf16(handle, weight.view())
     }
 
     /// Provision a Per-Layer Embedding (PLE) table into the trusted

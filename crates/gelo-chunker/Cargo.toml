@@ -1,0 +1,14 @@
+[package]
+name = "gelo-chunker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Character-boundary-aware text splitter with overlap and
+# separator-aware split points. Ported from the simplified upstream
+# `edgequake-pipeline` `TokenBasedChunking` that lived in
+# `crates/gelo-rag/tests/common/mod.rs`. Lifted into its own crate so
+# the `/lightrag/extract_and_build` route can chunk inside the CVM
+# without pulling in test dependencies.
+
+[dependencies]
