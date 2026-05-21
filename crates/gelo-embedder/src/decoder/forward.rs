@@ -413,37 +413,51 @@ fn decoder_block_cached_batched(
     // Per-sequence in-TEE causal attention over the full cached
     // prefix. n_q = 1 per sequence, n_kv = lens[b]. R1.4 stopgap as
     // in decoder_block_batched.
+    //
+    // D1.8: rayon-parallel over B. At n_q = 1 the inner attention
+    // kernel (`causal_gqa_attention_cached` / `_swa_cached`) runs
+    // serial over heads (its internal rayon threshold is n_q ≥ 64),
+    // so an outer rayon-iter over the B sequences gives clean
+    // B-parallel attention with no nested-rayon contention. We
+    // pre-collect `kv_cache.view_b` views outside the parallel
+    // section to keep Result plumbing out of the closure.
     let q_dim = cfg.num_attention_heads * cfg.head_dim_value();
     let mut ctx = Array2::<f32>::zeros((batch_size, q_dim));
-    profile::time("tee:attn_cached_inplace_many", || -> Result<()> {
-        for b in 0..batch_size {
-            let q_b = q.slice(ndarray::s![b..b + 1, ..]);
-            let (k_cached, v_cached) = kv_cache.view_b(layer_idx as usize, b)?;
-            let ctx_b = match layer_class {
-                AttentionClass::Local { window } => causal_gqa_attention_swa_cached(
-                    q_b,
-                    k_cached,
-                    v_cached,
-                    cfg.num_attention_heads,
-                    cfg.num_key_value_heads,
-                    cfg.head_dim_value(),
-                    q_pos_offsets[b],
-                    window,
-                ),
-                AttentionClass::Global => causal_gqa_attention_cached(
-                    q_b,
-                    k_cached,
-                    v_cached,
-                    cfg.num_attention_heads,
-                    cfg.num_key_value_heads,
-                    cfg.head_dim_value(),
-                    q_pos_offsets[b],
-                ),
-            };
-            ctx.slice_mut(ndarray::s![b..b + 1, ..]).assign(&ctx_b);
-        }
-        Ok(())
-    })?;
+    let kv_views: Vec<(ArrayView2<'_, f32>, ArrayView2<'_, f32>)> = (0..batch_size)
+        .map(|b| kv_cache.view_b(layer_idx as usize, b))
+        .collect::<Result<Vec<_>>>()?;
+    profile::time("tee:attn_cached_inplace_many", || {
+        use ndarray::parallel::prelude::*;
+        ctx.axis_chunks_iter_mut(ndarray::Axis(0), 1)
+            .into_par_iter()
+            .enumerate()
+            .for_each(|(b, mut ctx_slice)| {
+                let q_b = q.slice(ndarray::s![b..b + 1, ..]);
+                let (k_cached, v_cached) = kv_views[b];
+                let ctx_b = match layer_class {
+                    AttentionClass::Local { window } => causal_gqa_attention_swa_cached(
+                        q_b,
+                        k_cached,
+                        v_cached,
+                        cfg.num_attention_heads,
+                        cfg.num_key_value_heads,
+                        cfg.head_dim_value(),
+                        q_pos_offsets[b],
+                        window,
+                    ),
+                    AttentionClass::Global => causal_gqa_attention_cached(
+                        q_b,
+                        k_cached,
+                        v_cached,
+                        cfg.num_attention_heads,
+                        cfg.num_key_value_heads,
+                        cfg.head_dim_value(),
+                        q_pos_offsets[b],
+                    ),
+                };
+                ctx_slice.assign(&ctx_b);
+            });
+    });
 
     let attn_out = if offload {
         exec.offload_linear(WeightHandle::new(layer_idx, WeightKind::O), ctx.view())?
