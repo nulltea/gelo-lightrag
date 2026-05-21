@@ -246,6 +246,7 @@ def rewrite_gguf(
     lam: float = 0.3,
     apply_pi: bool = False,
     pi_seed: int = 0,
+    pi_include_specials: bool = False,
     key_out: Path | None = None,
     noise_alpha_e: float = 0.0,
     noise_alpha_h: float = 0.0,
@@ -387,17 +388,36 @@ def rewrite_gguf(
             )
         token_types = np.asarray(token_type_field.contents(), dtype=np.int32)
         # llama.cpp token type codes: 1=NORMAL, 2=UNKNOWN, 3=CONTROL,
-        # 4=USER_DEFINED, 5=UNUSED, 6=BYTE. Keep only NORMAL (1) and
-        # BYTE (6) in the permutable set — all others must stay
-        # identity so generation control flow works.
-        permutable_mask = np.isin(token_types[:pi_active_size], [1, 6])
-        permutable_ids = np.where(permutable_mask)[0].astype(np.int32)
-        pi_special_ids = sorted(set(range(pi_active_size)) - set(permutable_ids.tolist()))
-        log.info(
-            "Π special-token exclusion: %d permutable, %d kept identity "
-            "(non-NORMAL/BYTE token-type) within active range %d",
-            len(permutable_ids), len(pi_special_ids), pi_active_size,
-        )
+        # 4=USER_DEFINED, 5=UNUSED, 6=BYTE.
+        #
+        # Default mode (pi_include_specials=False): permute only NORMAL +
+        # BYTE so the server's stop-on-EOS / chat-template plumbing keeps
+        # working without client-side `ignore_eos`. Leaks ~293 identity-
+        # fixed pairs to a passive attacker who reads this source file.
+        #
+        # Strong mode (pi_include_specials=True): permute everything in
+        # `[0, pi_active_size)`. Closes the structural leak. Requires
+        # the client to set `ignore_eos: True` and bytes-stream the
+        # response — otherwise the server's EOS detection fires on the
+        # wrong (permuted) id and generation runs to max_tokens with
+        # multi-language drift output that may crash the chat-parser
+        # PEG.
+        if pi_include_specials:
+            permutable_ids = np.arange(pi_active_size, dtype=np.int32)
+            pi_special_ids = []
+            log.info(
+                "Π strong mode: permuting all %d ids in active range; "
+                "no identity-fixed specials", pi_active_size,
+            )
+        else:
+            permutable_mask = np.isin(token_types[:pi_active_size], [1, 6])
+            permutable_ids = np.where(permutable_mask)[0].astype(np.int32)
+            pi_special_ids = sorted(set(range(pi_active_size)) - set(permutable_ids.tolist()))
+            log.info(
+                "Π special-token exclusion: %d permutable, %d kept identity "
+                "(non-NORMAL/BYTE token-type) within active range %d",
+                len(permutable_ids), len(pi_special_ids), pi_active_size,
+            )
 
         pi_rng = np.random.default_rng(pi_seed)
         # Permute only `permutable_ids` among themselves. tau starts at
@@ -753,6 +773,16 @@ def main(argv: list[str] | None = None) -> int:
                         help="apply Π token-permutation to token_embd + output (item 6).")
     parser.add_argument("--pi-seed", type=int, default=42424242,
                         help="seed for τ generation (kept out of GGUF metadata).")
+    parser.add_argument("--pi-include-specials", action="store_true",
+                        help="Include CONTROL/USER_DEFINED/UNKNOWN/UNUSED token types "
+                             "in the Π permutation (default: keep them at identity for "
+                             "server stop-on-EOS compatibility). Closes the ~293-pair "
+                             "structural leak that lets an attacker fit a partial-τ "
+                             "ridge inverter from publicly-known identity-fixed ids. "
+                             "Requires the client to pass `ignore_eos: True` and "
+                             "stream-decode the response — without that, the server "
+                             "won't stop on EOS and may emit chat-template gibberish "
+                             "that crashes the PEG chat-parser.")
     parser.add_argument("--key-out", type=Path, default=None,
                         help="path for τ key file (defaults to <out>.key.npz).")
     parser.add_argument("--noise-alpha-e", type=float, default=0.0,
@@ -799,7 +829,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     info = rewrite_gguf(args.in_path, args.out_path, mode=args.mode,
                        expansion=args.expansion_size, seed=args.seed, lam=args.lam,
-                       apply_pi=args.pi, pi_seed=args.pi_seed, key_out=args.key_out,
+                       apply_pi=args.pi, pi_seed=args.pi_seed,
+                       pi_include_specials=args.pi_include_specials,
+                       key_out=args.key_out,
                        noise_alpha_e=args.noise_alpha_e, noise_alpha_h=args.noise_alpha_h,
                        noise_seed=args.noise_seed,
                        apply_alg2=args.alg2, alg2_seed=args.alg2_seed,

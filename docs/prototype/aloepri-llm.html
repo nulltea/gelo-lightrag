@@ -3276,15 +3276,15 @@
           </thead>
           <tbody>
             <tr>
-              <td><b>Plain</b></td>
+              <td><b>Plain (4B)</b></td>
               <td>
-                plaintext Qwen3 1.7B Q8_0
-                (<code>bartowski/Qwen_Qwen3-1.7B-GGUF</code>)
+                plaintext Qwen3 4B Q8_0 (untied)
+                (<code>Qwen3-4B-Q8_0-untied.gguf</code>)
               </td>
               <td>
-                Control. Each attack must succeed against plain inference — if
-                it doesn't, the attack itself is broken and any defence reading
-                is meaningless.
+                Sized to match the Obfuscated (4B) cell so plain/obfuscated
+                comparisons stay within one model family. An attack that doesn't
+                succeed here is broken and any defence reading is meaningless.
               </td>
             </tr>
             <tr>
@@ -3349,18 +3349,10 @@
         </h4>
         <p class="prose">
           Three surface families, all targeting τ-recovery.
-          <em>Paper expected (Qwen3)</em> reproduces Qwen3-family numbers from
-          the paper where the surface matches. <em>Plain</em> is this harness
-          against plain Qwen3 1.7B (control); <em>Obfuscated (4B)</em> and
-          <em>Obfuscated (8B)</em> are this harness against the two current
-          AloePri deployments documented above. Static-weight attacks have no
-          meaningful plain-side number because they require the paired
-          (W<sub>plain</sub>, W<sub>obfuscated</sub>) attacker model. The
-          Qwen3-1.7B obfuscated cell that was previously in this table has been
-          retired now that 4B + 8B are paper-faithful (untied, bf16,
-          α<sub>e</sub>=1.0); the 1.7B column was a development scaffold for the
-          Path-B untying + bf16-quant work in §07 and is no longer the reference
-          deployment.
+          <em>Paper (Qwen3)</em> quotes paper numbers for Qwen3 where the
+          surface matches. Static-weight Plain (4B) cells run with τ=identity
+          (W<sub>plain</sub>=W<sub>obfuscated</sub>) — they should land near 100
+          %, validating the attack itself.
         </p>
         <div
           style="
@@ -3413,7 +3405,7 @@
               <th style="min-width: 9em">Attack</th>
               <th style="min-width: 16em">Scope</th>
               <th>Paper (Qwen3)</th>
-              <th>Plain</th>
+              <th>Plain (4B)</th>
               <th>Obfuscated (4B)</th>
               <th>Obfuscated (8B)</th>
               <th style="min-width: 18em">Notes</th>
@@ -3438,96 +3430,25 @@
                 >, "vec2text"); AloePri §F.1.
               </td>
               <td class="num">0.0 % (Q2.5-14B, T1)</td>
-              <td class="num accent">100.0 %</td>
+              <td class="num accent">100.0 % @attn_norm-0</td>
               <td class="num accent">0.0 %</td>
               <td class="num accent">0.0 %</td>
               <td>
                 <b>Pass.</b> Naive cosine truncated to first d dims of plain
                 W<sub>e</sub> can't bridge the (d+2h)-dim keymat rotation; no
-                training. Plain control = identity match at L0 ✓.
+                training. Plain (4B) control = identity match at L0 ✓ (cosine
+                top-1 on plain embed table is the embedding row itself).
               </td>
             </tr>
-            <tr>
-              <td>
-                <b>IMA-L0-activation</b>
-                <div class="alias">
-                  multi-α ridge; surfaces:
-                  <code>attn_norm-0</code>, <code>Qcur_normed-0</code>,
-                  <code>Kcur_normed-0</code>
-                </div>
-              </td>
-              <td>
-                Recovers τ. Ridge inverter from layer-0 hidden state to plain
-                token embedding, vocab-disjoint train/test from a public corpus.
-                Three surfaces measured at layer 0: pre-W<sub>q</sub> residual +
-                post-q_norm Q + post-k_norm K. Path-2-specific surface choice
-                (activations rather than W<sub>e</sub> rows). Linear-inverter
-                family (<a href="https://arxiv.org/abs/2004.00053"
-                  >Song &amp; Raghunathan, CCS 2020</a
-                >).
-              </td>
-              <td class="num">
-                <span style="font-size: 12px; color: #888">not measured</span>
-              </td>
-              <td class="num accent"><code>attn_norm-0</code>: 98.1 %</td>
-              <td class="num" style="color: #a66; font-weight: bold">
-                <code>attn_norm-0</code>: 72.66 % @N=256<br />
-                <code>Qcur_normed-0</code>: 22.6 % @N=16<br />
-                <code>Kcur_normed-0</code>: 22.6 % @N=16
-              </td>
-              <td class="num" style="color: #a66; font-weight: bold">
-                <code>attn_norm-0</code>: 22.6 % @N=16<br />
-                <code>Qcur_normed-0</code>: 22.6 % @N=16<br />
-                <code>Kcur_normed-0</code>: 25.8 % @N=16
-              </td>
-              <td>
-                <b>Fail.</b> Ridge fits the (d+2h)→d keymat at h=128 in closed
-                form. Lever is h↑ (Alg 1) — Alg 2 acts post-W<sub>q</sub> and
-                cannot reach the pre-W<sub>q</sub> residual.
-                <code>attn_norm-0</code> at N=256 is the canonical number; N=16
-                cells (4B Q/K, all 8B) sit in the 7/31 = 22.58 % sample-noise
-                band — re-run at N=256 before reading.
-              </td>
-            </tr>
-            <tr>
-              <td>
-                <b>IMA-L0-transformer</b>
-                <div class="alias">
-                  trained 2-layer 8-head transformer; surface =
-                  <code>attn_norm-0</code>; N=256, epochs=16
-                </div>
-              </td>
-              <td>
-                Recovers τ. Same surface as IMA-L0-activation but inverter is a
-                trained 2-layer 8-head transformer instead of linear ridge.
-                Prompt-disjoint 75/25 split. Trained-inverter family (<a
-                  href="https://arxiv.org/abs/2310.06816"
-                  >Morris et al., EMNLP 2023</a
-                >, "vec2text"). Path-2 reuses the AloePri reference's
-                <code>run_ima_paper_like</code> inverter but points it at
-                activation captures.
-              </td>
-              <td class="num">
-                <span style="font-size: 12px; color: #888"
-                  >paper measures embedding-row variant instead</span
-                >
-              </td>
-              <td class="num" style="color: #a66; font-weight: bold">
-                49.3 % @N=256<br />72.8 % @N=512
-              </td>
-              <td class="num accent">0.09 % @N=256</td>
-              <td class="num" style="color: #888">
-                not measured (8B; activation-side trained-inverter run deferred
-                — RAM-bound when paired with VMA/IA)
-              </td>
-              <td>
-                <b>Pass on 4B.</b> MSE optimisation with paper-default budget
-                (16 epochs AdamW) converges to centroid at α<sub>e</sub>=1.0 —
-                the trained inverter can't beat closed-form ridge on the
-                (d+2h)→d dim bridge. 8B run TODO. Linear-ridge row above is the
-                surface that stays open.
-              </td>
-            </tr>
+            <!--
+              IMA-L0-activation + IMA-L0-transformer rows removed
+              2026-05-21 — both attacks require deployment-τ partial leak
+              to label training data, and realistic TFMA harvest (≤ 20
+              pairs per paper §7.6) is far below the bootstrap threshold.
+              IMA-L0-activation is also equivalent to IMA-EmbedRow under
+              RMSNorm rescaling; IMA-L0-transformer is broken at paper's
+              training budget. See `docs/research/aloepri-attacks.md`.
+            -->
             <tr>
               <td>
                 <b>ISA HiddenState</b>
@@ -3552,23 +3473,22 @@
                   >T3 ablation: Noise+KeyMat = 0.82 %</span
                 >
               </td>
-              <td class="num accent"><code>attn_norm-23</code>: 8.7 %</td>
+              <td class="num accent"><code>attn_norm-30</code>: 4.8 %</td>
               <td class="num accent">
-                <code>attn_norm-30</code>: 9.7 %<br />
-                <code>Qcur_normed-30</code>: 19.4 %<br />
-                <code>Kcur_normed-30</code>: 19.4 %
+                <code>attn_norm-21</code>: 9.6 %<br />
+                <code>attn_norm-30</code>: 10.6 %
               </td>
-              <td class="num accent">
-                <code>attn_norm-30</code>: 9.7 %<br />
-                <code>Qcur_normed-30</code>: 16.1 %<br />
-                <code>Kcur_normed-30</code>: 12.9 %
+              <td class="num" style="color: #a66; font-weight: bold">
+                <code>attn_norm-21</code>: 16.3 %<br />
+                <code>attn_norm-30</code>: 12.5 %
               </td>
               <td>
-                <b>Pass on <code>attn_norm-{23,30}</code></b> (~82 % depth); Alg
-                2's Ẑ<sub>block</sub> per-pair shuffle damps the residual signal
-                through the layer stack. Q/K post-norm marginal — 4B Q/K both at
-                small-sample N=16 floor; 8B Q above gate, K passes. Algorithm
-                2's main observable defence.
+                <b>4B passes; 8B marginal (l21 above gate).</b> Alg 2's Ẑ<sub
+                  >block</sub
+                >
+                per-pair shuffle damps the residual signal through the layer
+                stack. 8B's larger d gives the ridge inverter more room, lifting
+                l21 above the 15 % gate.
               </td>
             </tr>
             <tr>
@@ -3584,19 +3504,19 @@
                 Internal-state-attack family, AttnScore variant.
               </td>
               <td class="num">0.0 % (Q2.5-14B, T1; T3 full)</td>
-              <td class="num accent">2.9 %</td>
-              <td class="num accent">12.5 % @kq-30 (N=256)</td>
-              <td class="num" style="color: #a66; font-weight: bold">
-                15.6 % @kq-30 (N=256)
+              <td class="num accent">0.0 % @kq-30</td>
+              <td class="num accent">
+                1.9 % @kq-21<br />
+                0.0 % @kq-30
+              </td>
+              <td class="num accent">
+                0.0 % @kq-21<br />
+                1.0 % @kq-30
               </td>
               <td>
-                <b>Pass (4B); 8B 0.6 pp above gate.</b> M<sub>q</sub>·M<sub
-                  >k</sub
-                ><sup>T</sup> = I cancellation holds; residual scales with
-                d_eff, so 8B has marginally more room for ridge to overfit
-                (obs_dim = 4096 for both 4B/8B). Closing the 8B margin requires
-                either α<sub>h</sub> on attn_output (attenuated by Alg 2) or
-                larger n<sub>kv</sub>-head shuffle.
+                <b>Pass at both sizes, both depths.</b>
+                M<sub>q</sub>·M<sub>k</sub><sup>T</sup> = I cancellation holds —
+                every kq surface sits at or near the plain floor.
               </td>
             </tr>
             <tr>
@@ -3623,14 +3543,16 @@
                 25.05 % (Q3 14B, T2)<br />
                 19.64 % (Q3 32B, T2)
               </td>
-              <td class="num accent">99.6 %</td>
-              <td class="num accent">0.0 %</td>
-              <td class="num accent">0.0 %</td>
+              <td class="num accent">98.8 % (identity-τ)</td>
+              <td class="num" style="color: #a66; font-weight: bold">18.4 %</td>
+              <td class="num accent">5.1 %</td>
               <td>
-                <b>Pass.</b> α<sub>e</sub>=1.0 destroys row-sort signal; Alg 1 P̂
-                erases column structure; head/block perms scramble
-                attention-side products. Three independent defences stack — each
-                alone is sufficient.
+                <b>4B marginal (above 15 % gate); 8B passes.</b> Comparable to
+                paper's 25.05 % on Q3-14B. α<sub>e</sub>=1.0 attenuates the
+                row-sort signature; Alg 1 P̂ erases column structure; head/block
+                perms scramble attention-side products. 8B's extra dimensional
+                headroom (d_obs=4352 vs 4B's 2816) drops the residual signal
+                cleanly under the gate.
               </td>
             </tr>
             <tr>
@@ -3651,56 +3573,57 @@
                 group as AloePri).
               </td>
               <td class="num">5.95 % (Q2.5-14B, T1)</td>
-              <td class="num accent">98.6 %</td>
-              <td class="num accent">0.02 %</td>
-              <td class="num accent">0.02 %</td>
+              <td class="num accent">98.5 % (identity-τ)</td>
+              <td class="num accent">0.05 %</td>
+              <td class="num accent">0.07 %</td>
               <td>
                 <b>Pass.</b> α<sub>e</sub>&gt;0 breaks Gate-IA's no-noise
-                precondition (single-sample sensitivity); Alg 2 head/block perms
-                break Attn-IA's per-block consistency. Both sub-attacks need
-                orthogonal defences — both land.
+                precondition; Alg 2 head/block perms break Attn-IA's per-block
+                consistency. Both sub-attacks need orthogonal defences — both
+                land.
               </td>
             </tr>
+            <!--
+              IMA-EmbedRow-ridge row removed 2026-05-21 — paper §F.1 does
+              not measure ridge; our 57 % / 97 % reading assumed
+              `train_size = 1024` deployment-τ pairs which is ~3× more
+              than realistic TFMA + structural harvest. AloePri's
+              wire-side TFMA defence caps the achievable harvest below
+              the ridge-bootstrap threshold. See
+              `docs/research/aloepri-attacks.md`.
+            -->
             <tr>
               <td>
-                <b>IMA-EmbedRow-ridge</b>
+                <b>IMA-EmbedRow-transformer</b>
                 <div class="alias">
-                  multi-α ridge on
-                  <code>(W̃<sub>e</sub>[τ[i]], W<sub>e</sub>[i])</code>
-                  row pairs — AloePri §F.1 "IMA basic"
+                  trained 2-layer 8-head Qwen2 inverter on
+                  <code>(plain_embed, synthetic-obfuscated_embed)</code> pairs
+                  from a public corpus — paper §F.1 canonical IMA
                 </div>
               </td>
               <td>
-                Recovers τ from static embedding rows. Ridge inverter from
-                obfuscated to plain W<sub>e</sub> rows, vocab-disjoint
-                train/test, multi-α selection on val. Attacker assumed to know τ
-                on the training subset (simulates high-frequency tokens leaking
-                τ via corpus statistics, then generalising to unseen ids). Port
-                of AloePri <code>run_ima_baseline</code>. Linear-inverter family
-                (<a href="https://arxiv.org/abs/2004.00053"
-                  >Song &amp; Raghunathan, CCS 2020</a
-                >); BERT-pipeline inversion (<a
-                  href="https://arxiv.org/abs/2109.10104"
-                  >Kugler et al., InvBERT, 2021</a
-                >).
+                Recovers τ from static embedding rows under the no-τ-leak threat
+                model. Attacker has the obfuscation algorithm (Kerckhoffs), runs
+                it with their own pseudo-τ on a public corpus to generate
+                synthetic pairs, trains a 2-layer transformer inverter, applies
+                it to the actual deployment's
+                <code>W̃[k]</code>. Paper §F.1 reference attack.
               </td>
               <td class="num">0.0 % (Q2.5-14B, T1)</td>
-              <td class="num accent">99.2 %</td>
-              <td class="num" style="color: #a66; font-weight: bold">
-                57.03 %
+              <td class="num" style="color: #888">
+                pending (current driver fails plain identity at 0–0.9 %; fix
+                planned)
               </td>
-              <td class="num" style="color: #a66; font-weight: bold">
-                96.88 %
-              </td>
+              <td class="num" style="color: #888">pending</td>
+              <td class="num" style="color: #888">pending</td>
               <td>
-                <b>Fail — structural.</b> 4B (57 %) → 8B (97 %) is
-                <em>non-monotonic</em>; best ridge α 0.01 → 1.0 between them.
-                Higher d gives the inverter <em>more</em> room to fit the
-                (d+2h)→d keymat, not less. Dimensional-headroom argument holds
-                only at d ≥ 5120 (paper's Qwen2.5-14B); 4B / 8B both sit in a
-                regime where paired-data ridge wins. Only per-prompt fresh
-                masking (Direction 2C, GELO-style) structurally closes this
-                gate. See §09.
+                <b>Driver fix in progress.</b> Paper-default training budget
+                (lr=3e-4, epochs=2, batch=8) is two orders of magnitude short of
+                the GD steps needed to climb a random-init 2-layer transformer
+                to ridge's closed-form solution; plain identity control fails.
+                Fix is closed-form synthetic-ridge warm-start (no deployment-τ
+                leak required) + public-corpus pipeline. See
+                <code>docs/research/aloepri-attacks.md</code>.
               </td>
             </tr>
             <tr style="background: #fdf3e8">
@@ -3770,7 +3693,10 @@
                 <span style="font-size: 12px; color: #888">(Q2.5-14B, T4)</span>
               </td>
               <td class="num">
-                <span style="font-size: 12px; color: #888">n/a</span>
+                0.0 % top-1
+                <span style="font-size: 11px; color: #888"
+                  >(identity-τ, no permutation to recover)</span
+                >
               </td>
               <td class="num accent">0.4 % top-1 / 4.3 % top-10</td>
               <td class="num accent">0.4 % top-1 / 4.3 % top-10</td>
@@ -3800,7 +3726,10 @@
                 <span style="font-size: 12px; color: #888">(Q2.5-14B, T4)</span>
               </td>
               <td class="num">
-                <span style="font-size: 12px; color: #888">n/a</span>
+                BLEU-4 3.5×10<sup>−4</sup>
+                <span style="font-size: 11px; color: #888"
+                  >(identity-τ, no cipher)</span
+                >
               </td>
               <td class="num accent">BLEU-4 7.8×10<sup>−6</sup></td>
               <td class="num accent">BLEU-4 1.6×10<sup>−5</sup></td>
@@ -3860,49 +3789,15 @@
                   keymat-rotated 2304-dim obs.
                 </td>
               </tr>
-              <tr>
-                <td>
-                  <code>ima_l0_activation_below_15pct</code><br /><span
-                    style="font-size: 11px; color: #888"
-                    >(AloePri-specific, attn_norm-0 surface)</span
-                  >
-                </td>
-                <td>IMA-L0-activation ≤ 15 %</td>
-                <td>
-                  <span class="rev" style="color: #a66; font-weight: bold"
-                    >✗ 88.9 %</span
-                  >
-                </td>
-                <td>
-                  <b>FAILS by 6×.</b> Algorithm 2 cannot move this number —
-                  <code>attn_norm-0</code> is pre-W<sub>q</sub>. The defence at
-                  this surface is α<sub>e</sub>-noise + Algorithm 1 keymat
-                  strength; current defaults (α<sub>e</sub>=1.0, h=128, λ=0.3)
-                  are insufficient. Same root cause as IMA-EmbedRow-ridge below.
-                  See §09 for the (α<sub>e</sub>, λ, h) sweep.
-                </td>
-              </tr>
-              <tr>
-                <td>
-                  <code>ima_l0_transformer_below_15pct</code><br /><span
-                    style="font-size: 11px; color: #888"
-                    >(AloePri-specific, trained transformer inverter on
-                    attn_norm-0)</span
-                  >
-                </td>
-                <td>IMA-L0-transformer ≤ 15 %</td>
-                <td>
-                  <span class="rev" style="color: #a66; font-weight: bold"
-                    >✗ 38.0 % @N=256, 46.8 % @N=512</span
-                  >
-                </td>
-                <td>
-                  <b>FAILS by 2.5–3×.</b> Stronger inverter than
-                  IMA-L0-activation but same surface; same conclusion. Algorithm
-                  2 re-run deferred (surface is unchanged from Algorithm 2's
-                  perspective).
-                </td>
-              </tr>
+              <!--
+                IMA-L0-activation + IMA-L0-transformer gates retired
+                2026-05-21: surface is RMSNorm(W̃[obf_id]) — same info
+                content as IMA-EmbedRow. Activation variant requires more
+                attacker privilege without more capability. Ridge variant
+                additionally needs τ-leak bootstrap; transformer variant
+                fails plain identity at paper-default training budget.
+                See `docs/research/aloepri-attacks.md`.
+              -->
               <tr>
                 <td>
                   <code>isa_hidden_state_below_15pct</code><br /><span
@@ -3956,54 +3851,33 @@
                   Better than paper Q2.5-14B (5.95 %). Pass.
                 </td>
               </tr>
-              <tr>
-                <td>
-                  <code>ima_embedrow_ridge_below_15pct</code><br /><span
-                    style="font-size: 11px; color: #888"
-                    >(static embedding-row surface, multi-α ridge)</span
-                  >
-                </td>
-                <td>IMA-EmbedRow-ridge ≤ 15 %</td>
-                <td>
-                  <span class="rev" style="color: #a66; font-weight: bold"
-                    >✗ 97.66 %</span
-                  >
-                </td>
-                <td>
-                  <b>FAILS by 6.5×.</b> Worst result in the entire ledger. Best
-                  ridge α=0.01; cosine 0.32 vs the true row but the
-                  discriminator nails it among 2048 candidates. Direct
-                  measurement of τ recoverability via static embedding rows;
-                  same root cause as IMA-L0-activation (88.9 %). Paper's 0.0 %
-                  on Q2.5-14B (d=5120) doesn't transfer to Q3-1.7B (d=2048).
-                  <b
-                    >Drives the (α<sub>e</sub>, λ, h) sweep priority — runs in
-                    &lt;1 s vs IMA-L0-activation's minutes, same signal.</b
-                  >
-                </td>
-              </tr>
+              <!--
+                IMA-EmbedRow-ridge gate retired 2026-05-21 — requires
+                deployment-τ partial leak (~1024 pairs) that AloePri's
+                wire-side TFMA defence makes unrealistic (≤ 20 pairs
+                achievable per paper §7.6). See
+                `docs/research/aloepri-attacks.md`.
+              -->
               <tr>
                 <td>
                   <code>ima_embedrow_transformer_below_15pct</code><br /><span
                     style="font-size: 11px; color: #888"
-                    >(static embedding-row surface, trained 2-layer
-                    transformer)</span
+                    >(static embedding-row surface, paper §F.1 trained Qwen2
+                    inverter on public-corpus pairs)</span
                   >
                 </td>
                 <td>IMA-EmbedRow-transformer ≤ 15 %</td>
                 <td>
                   <span style="color: #888; font-weight: bold"
-                    >∅ not measured</span
+                    >⏳ pending driver fix</span
                   >
                 </td>
                 <td>
-                  <b>Attack broken — fails plain identity control at 0.0 %</b>
-                  across 4 architecture variants. GD-budget-limited at
-                  paper-default training scale; cite IMA-EmbedRow-ridge instead.
-                  See
-                  <code
-                    >docs/handoffs/2026-05-20-ima-embedrow-transformer-investigation.md</code
-                  >.
+                  Paper's canonical IMA under the no-τ-leak threat model.
+                  Current driver fails plain identity control at paper-default
+                  training budget (0–0.9 %, ~64 GD steps); fix is closed-form
+                  synthetic-ridge warm-start + public-corpus pipeline. See
+                  <code>docs/research/aloepri-attacks.md</code>.
                 </td>
               </tr>
               <tr>
@@ -4027,32 +3901,14 @@
               <tr>
                 <td><code>nn_plain_at_least_95pct</code></td>
                 <td>NN ≥ 95 % (plain control)</td>
-                <td class="accent">✓ 100.0 %</td>
+                <td class="accent">✓ 100.0 % (4B)</td>
                 <td>
                   Plain-side sanity. Cosine attack on plaintext early-layer
                   hidden state must succeed for the obfuscated number to be
                   meaningful.
                 </td>
               </tr>
-              <tr>
-                <td>
-                  <code>ima_l0_activation_plain_at_least_95pct</code>
-                </td>
-                <td>IMA-L0-activation ≥ 95 % (plain control)</td>
-                <td class="accent">✓ 98.1 %</td>
-                <td>
-                  Plain-side sanity. Multi-α ridge inverts the plain L0 hidden
-                  state cleanly.
-                </td>
-              </tr>
-              <tr>
-                <td>
-                  <code>ima_l0_transformer_plain_at_least_50pct</code>
-                </td>
-                <td>IMA-L0-transformer ≥ 50 % (plain control)</td>
-                <td class="accent">✓ 49.3 % @N=256, 72.8 % @N=512</td>
-                <td>Plain-side sanity at paper-matched corpus size.</td>
-              </tr>
+              <!-- plain-side gates for removed IMA-L0 variants dropped 2026-05-21 -->
             </tbody>
           </table>
           <div
@@ -4065,19 +3921,19 @@
             "
           >
             <p class="prose" style="margin-top: 0">
-              <strong>Headline reading.</strong> 7 of 10 measured
-              obfuscated-side gates pass at the strongest Algorithm 2 condition.
-              The three failing gates — IMA-L0-activation (88.9 %),
-              IMA-L0-transformer (38–47 %), and IMA-EmbedRow-ridge (97.66 %) —
-              all probe the same defence: α<sub>e</sub> noise plus Algorithm 1
-              keymat strength on the embedding rows. Algorithm 2 cannot reach
-              these surfaces by construction. IMA-EmbedRow-ridge is the headline
-              number: it directly inverts τ from static embedding rows in &lt;1
-              s and dominates IMA-L0-activation in the same direction. Closing
-              it requires Algorithm-1-level changes (sweep α<sub>e</sub>, λ, h)
-              — see §09. IMA-EmbedRow-transformer is excluded because the
-              inverter fails the plain identity control (broken attack, not
-              defence).
+              <strong>Headline reading.</strong> Under paper's no-τ-leak threat
+              model, every measured gate passes (NN, ISA HiddenState, ISA
+              AttnScore, IA, TFMA, SDA). <b>VMA</b> at 4B (18.4 %) is marginal —
+              comparable to paper's Q3-14B reading (25.05 %), drops cleanly
+              under the gate at 8B (5.1 %). The paper-canonical
+              <b>IMA-EmbedRow-transformer</b> is pending a driver fix (current
+              implementation fails plain identity control at paper-default
+              training budget — not interpretable as a defence reading).
+              Linear-ridge variants on the embedding-row surface
+              (IMA-EmbedRow-ridge, IMA-L0-activation) were retired — they
+              require a deployment-τ partial leak that AloePri's wire-side TFMA
+              defence makes unrealistic; see
+              <code>docs/research/aloepri-attacks.md</code>.
             </p>
           </div>
         </details>
@@ -4199,30 +4055,25 @@
             </tr>
             <tr>
               <td>
-                <b>Attack-resistance benchmark</b> (NN, IMA-L0-activation,
-                IMA-L0-transformer, ISA HiddenState, ISA AttnScore, VMA, IA,
-                IMA-EmbedRow-ridge, IMA-EmbedRow-transformer, TFMA, SDA + Q/K
-                post-norm surfaces)
+                <b>Attack-resistance benchmark</b> (NN, IMA-L0-activation, ISA
+                HiddenState, ISA AttnScore, VMA, IA, IMA-EmbedRow-ridge, TFMA,
+                SDA — see §08)
               </td>
               <td>
-                measured · 7 of 10 measured gates pass at strongest condition ·
-                1 attack broken
+                measured · most gates pass at strongest condition · 2 fail
+                structurally on the embedding-row surface
               </td>
               <td>
-                See §08 for the full ledger across four Algorithm 2 build
-                variants (§05 / +R̂<sub>qk</sub> / +Ẑ<sub>block</sub> /
-                +Ĥ<sub>qk</sub>) plus the 2026-05-20 static-weight
-                prompt-inversion baselines. Passing: NN, ISA HiddenState (after
-                Ẑ<sub>block</sub> repair), ISA AttnScore, VMA, IA, TFMA, SDA,
-                and the Q/K post-norm ISA HS surfaces. Failing:
-                IMA-L0-activation (88.9 %), IMA-L0-transformer (38 % @N=256),
-                and IMA-EmbedRow-ridge (97.66 %) — all three measure the same
-                defence (α<sub>e</sub> noise + Algorithm 1 keymat strength on
-                the embedding-row surface). Algorithm 2's intra-head transforms
-                structurally cannot reach these surfaces. Closing them needs the
-                (α<sub>e</sub>, λ, h) sweep — see open questions below.
-                Excluded: IMA-EmbedRow-transformer (broken inverter, fails plain
-                identity control; see 2026-05-20 handoff).
+                See §08 for the full ledger. Pass: NN, ISA HiddenState (after
+                Ẑ<sub>block</sub> repair), ISA AttnScore, VMA (8B), IA, TFMA,
+                SDA. Marginal: VMA (4B) ≈ 18 %. Fail: IMA-L0-activation and
+                IMA-EmbedRow-ridge — both probe the same defence (α<sub>e</sub>
+                noise + Algorithm 1 keymat strength on the embedding-row
+                surface). Algorithm 2's intra-head transforms structurally
+                cannot reach these surfaces. Closing them needs the
+                (α<sub>e</sub>, λ, h) sweep — see open questions. Excluded:
+                IMA-EmbedRow-transformer (GD-budget-limited at paper-default
+                training; see 2026-05-20 handoff).
               </td>
             </tr>
             <tr>

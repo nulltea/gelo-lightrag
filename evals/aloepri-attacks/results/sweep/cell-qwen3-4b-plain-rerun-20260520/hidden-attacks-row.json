@@ -1,0 +1,114 @@
+{
+  "format": "aloepri_m2_7_hidden_state_v1",
+  "captures_dir": "evals/aloepri-attacks/results/sweep/cell-qwen3-4b-plain-rerun-20260520/captures",
+  "model_id": "Qwen/Qwen3-4B",
+  "attacks": {
+    "nn": {
+      "attack": "nn",
+      "condition": "m2_7_hidden",
+      "model_id": "Qwen/Qwen3-1.7B (obfuscated, keymat-h128-pi-noise-alg2-fp32)",
+      "n_prompts": 64,
+      "n_train": 0,
+      "n_test": 904,
+      "ttrsr_top1": 1.0,
+      "ttrsr_top10": 1.0,
+      "risk_level": "high",
+      "primary_metric_name": "token_top1_recovery_rate",
+      "extra": {
+        "layer": 0,
+        "kind": "attn_norm",
+        "strip_shield": false,
+        "matching_strategy": "cosine_topk_no_train"
+      }
+    },
+    "ima": {
+      "attack": "ima",
+      "condition": "m2_7_hidden",
+      "model_id": "Qwen/Qwen3-1.7B (obfuscated, keymat-h128-pi-noise-alg2-fp32)",
+      "n_prompts": 64,
+      "n_train": 632,
+      "n_test": 137,
+      "ttrsr_top1": 0.9270073175430298,
+      "ttrsr_top10": 0.985401451587677,
+      "risk_level": "high",
+      "primary_metric_name": "token_top1_recovery_rate",
+      "extra": {
+        "layer": 0,
+        "kind": "attn_norm",
+        "split_mode": "row",
+        "best_ridge_alpha": 0.01,
+        "ridge_alpha_val_scan": [
+          {
+            "ridge_alpha": 0.0001,
+            "val_top1": 0.385185182094574
+          },
+          {
+            "ridge_alpha": 0.01,
+            "val_top1": 0.9333333373069763
+          },
+          {
+            "ridge_alpha": 1.0,
+            "val_top1": 0.9333333373069763
+          }
+        ],
+        "strip_shield": false,
+        "candidate_pool_size": 2255,
+        "embedding_cosine_similarity": 0.6471477746963501
+      }
+    },
+    "ima_paper_like": {
+      "attack": "ima_paper_like",
+      "condition": "m2_7_hidden",
+      "ttrsr_top1": null,
+      "risk_level": "skipped",
+      "extra": {
+        "note": "pass --include-paper-like-ima; needs \u2265256 prompts"
+      }
+    },
+    "isa_hidden_state": {
+      "attack": "isa",
+      "condition": "m2_7_hidden",
+      "model_id": "Qwen/Qwen3-1.7B (obfuscated, keymat-h128-pi-noise-alg2-fp32)",
+      "n_prompts": 64,
+      "n_train": 256,
+      "n_test": 64,
+      "ttrsr_top1": 0.1875,
+      "ttrsr_top10": 0.359375,
+      "risk_level": "medium",
+      "primary_metric_name": "token_top1_recovery_rate",
+      "extra": {
+        "layer": 30,
+        "kind": "attn_norm",
+        "split_mode": "row",
+        "best_ridge_alpha": 1.0,
+        "ridge_alpha_val_scan": [
+          {
+            "ridge_alpha": 0.0001,
+            "val_top1": 0.03125
+          },
+          {
+            "ridge_alpha": 0.01,
+            "val_top1": 0.0625
+          },
+          {
+            "ridge_alpha": 1.0,
+            "val_top1": 0.1875
+          }
+        ],
+        "strip_shield": false,
+        "candidate_pool_size": 2147,
+        "embedding_cosine_similarity": 0.18650709092617035,
+        "observable_type": "hidden_state"
+      }
+    },
+    "isa_attn_score": {
+      "attack": "isa_attn_score",
+      "condition": "m2_7_hidden",
+      "ttrsr_top1": null,
+      "risk_level": "skipped",
+      "extra": {
+        "note": "pass --include-attn-score (requires --flash-attn off server pass)"
+      }
+    }
+  }
+}

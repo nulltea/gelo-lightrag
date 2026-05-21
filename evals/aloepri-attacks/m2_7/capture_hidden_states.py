@@ -205,6 +205,9 @@ def main() -> int:
 
         # n_predict=1 so the forward pass runs through all layers and our
         # tensor callback fires. The single generated token is discarded.
+        # chat_parser=epsilon overrides llama-server's default PEG content
+        # grammar so update_chat_msg never throws on strong-Π gibberish
+        # output — see python/path-2/aloepri_client.py for the rationale.
         body = {
             "prompt": wire_ids,
             "n_predict": 1,
@@ -212,6 +215,7 @@ def main() -> int:
             "seed": 0,
             "cache_prompt": False,
             "stream": False,
+            "chat_parser": '{"parsers":[{"type":"epsilon"}],"rules":{},"root":0}',
         }
         resp = requests.post(completion_endpoint, json=body, timeout=180)
         resp.raise_for_status()

@@ -45,7 +45,7 @@ def _isa_attn_score(
     embed_table: torch.Tensor,
     layer: int,
     seed: int,
-    split_mode: str = "row",
+    split_mode: str = "vocab",
 ) -> AttackResult:
     """ISA against the AttnScore observable.
 
@@ -118,11 +118,13 @@ def main() -> int:
     p.add_argument("--include-paper-like-ima", action="store_true",
                    help="Run the trained-transformer IMA paper-like "
                         "(slow; needs ≥256 prompts to fit).")
-    p.add_argument("--split-mode", choices=("row", "vocab"), default="row",
+    p.add_argument("--split-mode", choices=("row", "vocab"), default="vocab",
                    help="Ridge train/val/test split for IMA basic + ISA: "
-                        "'row' = legacy row-shuffle (memorising attacker); "
-                        "'vocab' = paper-faithful vocab-disjoint "
-                        "(generalising attacker — the reference impl uses this).")
+                        "'vocab' (default, paper-faithful) = vocab-disjoint "
+                        "generalising attacker (reference impl + paper §F.1); "
+                        "'row' = legacy row-shuffle memorising attacker, kept "
+                        "only for methodology-comparison reads of pre-2026-05-20 "
+                        "result cells.")
     from m2_7_common import add_min_mem_args, check_phase_memory  # type: ignore
     add_min_mem_args(p, phase="hidden_attacks")
     args = p.parse_args()

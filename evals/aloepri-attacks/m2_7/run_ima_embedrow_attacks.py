@@ -370,6 +370,32 @@ def run_ima_embedrow_transformer(
         output_dim=plain_W_e.shape[1],
     ).to(device)
 
+    # Warm-start output_proj at the ridge closed-form solution. With
+    # identity-init residual trunk (FFN second-linear zero-init), the
+    # network at t=0 IS the ridge inverter. From random init AdamW
+    # only manages ~2 % of the W movement needed in paper-default
+    # 1024 GD steps (||W − I||_F drops 52.2 → 51.2 on the minimal-pipeline
+    # diagnostic); the network never reaches ridge's closed-form
+    # solution. Warm-starting gets us there at step 0 — any further
+    # AdamW movement is non-linear refinement on top.
+    with torch.no_grad():
+        # Match `inverter_hidden` to the input projection: if input_proj
+        # is Identity (inverter_hidden==observed_dim), the ridge regressor
+        # acts directly on observed rows; otherwise `model.input_proj`
+        # would re-project, and warm-start would be wrong without
+        # accounting for it. The default path (inverter_hidden=observed_dim)
+        # is the common case.
+        if isinstance(model.input_proj, nn.Identity):
+            ridge_alpha_for_init = 1e-2
+            xt_x = x_train.T @ x_train
+            xt_y = x_train.T @ y_train
+            n_in = x_train.shape[1]
+            reg = ridge_alpha_for_init * torch.eye(n_in, dtype=x_train.dtype)
+            # Ridge yields `W_ridge: (in, out)` such that `x @ W_ridge ≈ y`.
+            w_ridge = torch.linalg.solve(xt_x + reg, xt_y)
+            # output_proj.weight is (out, in) — transpose.
+            model.output_proj.weight.copy_(w_ridge.T.contiguous())
+
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     n = x_train.shape[0]
 
@@ -529,11 +555,14 @@ def main() -> int:
 
     if args.identity_tau:
         # Plain control: τ = identity → x_train == y_train (up to noise).
-        # Active range matches the obfuscator's Qwen3-1.7B default.
-        active_size = 151669
+        # The active vocab range only matters for splitting train/val/test —
+        # use the full loaded vocab so the splits cover the whole table.
+        # (Pre-2026-05-20 this was hard-coded 151669 = Qwen3-1.7B's
+        # permutable count, which under-sampled the 4B/8B test pool.)
+        active_size = plain.vocab_size
         tau = np.arange(plain.vocab_size, dtype=np.int64)
         print(f"[IMA-EmbedRow] τ = identity (plain control); "
-              f"active_size={active_size}")
+              f"active_size={active_size} (= vocab_size)")
     else:
         if args.key is None:
             raise SystemExit(
