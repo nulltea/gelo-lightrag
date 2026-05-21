@@ -3865,177 +3865,91 @@
         </table>
 
         <h4 style="margin-top: 24px">
-          Long-context measurement — Qwen3-4B, AOCL-BLIS threads = 16
+          Mask-family TTFT comparison — Qwen3-4B, n = 2 048
         </h4>
         <p class="prose">
-          Same iGPU, the production-shape prompt length. Both rows are now on
-          the HD₃ branch under the current shield-as-padding design; the table
-          is kept for the historical Haar / DCT-IV comparison and for the pow2
-          vs non-pow2 contrast (n = 2 040 lands cleanly, n = 2 048 pays the
-          next-pow2 jump to s = 4 096). Greedy prefill + 4 decode tokens, 1
-          warmup,
-          <code>GELO_BLIS_THREADS = 16</code>;
-          <code>crates/gelo-gpu-wgpu/tests/qwen3_long_context_bench.rs</code>.
+          The non-pow2 single-stream prefill is the hard case — it's where the
+          four mask strategies diverge most. Numbers below are Qwen3-4B on Strix
+          Halo iGPU, AOCL-BLIS at
+          <code>GELO_BLIS_THREADS = 16</code>, 2 048-token greedy prefill + 4
+          decode tokens.
         </p>
-
         <table class="spec" style="margin-top: 12px">
           <thead>
             <tr>
-              <th>shape</th>
-              <th>plain TTFT</th>
-              <th>Haar TTFT</th>
-              <th>HD₃ TTFT</th>
-              <th>DCT-IV TTFT <em>(deprecated)</em></th>
-              <th>HD₃ vs Haar</th>
+              <th>Strategy</th>
+              <th>TTFT (ms)</th>
+              <th>vs Haar</th>
+              <th>Mask families in tree</th>
             </tr>
           </thead>
           <tbody>
             <tr>
-              <td>n = 2 040, s = 2 048 <em>(pow2)</em></td>
-              <td class="num">11 905</td>
-              <td class="num">~25 600</td>
-              <td class="num"><b>16 289</b></td>
-              <td class="num">—</td>
-              <td><span class="accent" style="color: #1e7050">−36 %</span></td>
-            </tr>
-            <tr>
-              <td>n = 2 048, s_pad → 4 096</td>
-              <td class="num">11 764</td>
+              <td>Haar · dense QR</td>
               <td class="num">25 873</td>
-              <td class="num"><b>32 012</b></td>
-              <td class="num">22 794</td>
+              <td>(base)</td>
+              <td>1 (Haar)</td>
+            </tr>
+            <tr>
+              <td>HD₃ · zero-pad to next pow2</td>
+              <td class="num">32 012</td>
               <td><span class="accent">+24 %</span></td>
-            </tr>
-          </tbody>
-        </table>
-        <p class="prose" style="margin-top: 8px; font-size: 13px">
-          TTFT in ms. The bottom row exposes the cost the current design
-          accepts: at non-pow2 single-stream <code>n</code> the
-          shield-as-padding approach pays the full next-pow2 jump for HD₃ (s = 4
-          096), which gives up the 9 s DCT-IV win in exchange for one mask
-          family and one kernel path. The trade is acceptable because (a) the
-          dominant production regime under M1.11 is batched decode (small
-          <code>n + k</code> on pow2 by construction) rather than single-stream
-          long prefill, and (b) the GPU matmul bucket dominates at long
-          <code>n</code> regardless of which mask family runs.
-        </p>
-
-        <h4 style="margin-top: 24px">
-          Where the time goes — Qwen3-4B prefill profile
-        </h4>
-        <p class="prose">
-          Bucket breakdown from <code>gelo_protocol::profile</code>; all times
-          in ms across the full 2 048-token prefill. TEE small ops (RMSNorm,
-          RoPE, QK-norm, SwiGLU, residual) are within a few percent across cells
-          and aggregated into <em>other tee</em>.
-          <strong>mask CPU</strong> aggregates apply + unapply + shield
-          stack/strip + sample; <strong>engine matmul</strong> aggregates the
-          single (<code>engine:matmul</code>) and batched
-          (<code>engine:matmul_many</code>) GPU dispatches.
-        </p>
-        <table class="spec" style="margin-top: 8px; font-size: 13px">
-          <thead>
-            <tr>
-              <th>bucket</th>
-              <th>Haar · n = 2 048</th>
-              <th>HD₃ · n = 2 040 <em>(pow2)</em></th>
-              <th>DCT-IV · n = 2 048</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>mask sample</td>
-              <td class="num">
-                <span class="accent" style="color: #b73228">3 107</span>
-              </td>
-              <td class="num">0</td>
-              <td class="num">0</td>
+              <td>1 (HD₃)</td>
             </tr>
             <tr>
-              <td>mask apply</td>
-              <td class="num">2 645</td>
-              <td class="num">1 188</td>
-              <td class="num">3 223</td>
-            </tr>
-            <tr>
-              <td>mask unapply</td>
-              <td class="num">4 165</td>
-              <td class="num">2 029</td>
-              <td class="num">5 172</td>
-            </tr>
-            <tr>
-              <td>shield stack + strip</td>
-              <td class="num">2 255</td>
-              <td class="num">1 749</td>
-              <td class="num">1 939</td>
-            </tr>
-            <tr style="background: #f6f3eb">
-              <td><b>mask CPU subtotal</b></td>
-              <td class="num"><b>12 172</b></td>
-              <td class="num"><b>4 966</b></td>
-              <td class="num"><b>10 334</b></td>
-            </tr>
-            <tr>
-              <td>engine matmul (GPU)</td>
-              <td class="num">3 820</td>
-              <td class="num">3 363</td>
-              <td class="num">3 456</td>
-            </tr>
-            <tr>
-              <td>engine matmul_many (GPU)</td>
-              <td class="num">4 793</td>
-              <td class="num">4 320</td>
-              <td class="num">4 674</td>
-            </tr>
-            <tr style="background: #f6f3eb">
-              <td><b>GPU subtotal</b></td>
-              <td class="num"><b>8 613</b></td>
-              <td class="num"><b>7 683</b></td>
-              <td class="num"><b>8 130</b></td>
-            </tr>
-            <tr>
-              <td>tee:attn_cached</td>
-              <td class="num">2 558</td>
-              <td class="num">2 598</td>
-              <td class="num">2 525</td>
-            </tr>
-            <tr>
+              <td>DCT-IV · Bluestein at exact <code>s</code></td>
+              <td class="num">22 794</td>
               <td>
-                other tee ops (rmsnorm, rope, qk_norm, swiglu, residual,
-                embed_lookup)
+                <span class="accent" style="color: #1e7050">−12 %</span>
               </td>
-              <td class="num">649</td>
-              <td class="num">573</td>
-              <td class="num">615</td>
+              <td>2 (HD₃ + DCT-IV)</td>
             </tr>
-            <tr>
-              <td>unprofiled overhead (allocs, glue)</td>
-              <td class="num">~ 1 880</td>
-              <td class="num">~ 1 110</td>
-              <td class="num">~ 1 190</td>
-            </tr>
-            <tr style="border-top: 1px solid #999">
-              <td><b>TTFT total (wall-clock)</b></td>
-              <td class="num"><b>25 873</b></td>
-              <td class="num"><b>16 289</b></td>
-              <td class="num"><b>22 794</b></td>
+            <tr style="background: #f6f3eb">
+              <td><b>HD₃ + shield-to-pow2</b> <em>(current)</em></td>
+              <td class="num">~ 32 000</td>
+              <td><span class="accent">+24 %</span></td>
+              <td><b>1 (HD₃)</b></td>
             </tr>
           </tbody>
         </table>
         <p class="prose" style="margin-top: 12px">
-          Two things stand out vs the Haar baseline.
-          <strong>(a) HD₃ kills mask sample entirely.</strong>
-          Haar pays 3.1 s of single-thread Householder QR per forward; HD₃
-          replaces it with a 6 168-bit sign-cascade draw, sub-microsecond.
-          <strong>(b) HD₃ also wins the mask GEMM side</strong> — apply +
-          unapply 1.2 + 2.0 s vs Haar's 2.6 + 4.2 s, ~2× faster. The DCT-IV
-          column captures the historical non-pow2 fallback (Bluestein chirp-z at
-          exact <code>s = n + k = 2 056</code>): its GPU subtotal beats
-          HD₃-pow2-pad at n = 2 048, but the shield-as-padding design supersedes
-          it — the current path runs HD₃ at s = 4 096 (32.0 s TTFT) with no
-          second kernel family, and accepts the long-context regression because
-          the M1.11 batched path is the production target rather than
-          single-stream long prefill.
+          The Haar / HD₃-zero-pad / DCT-IV rows are direct measurements across
+          the three mask paths that lived in-tree historically. The current
+          shield-to-pow2 row is the active production design but shares the
+          dominant GPU + mask-GEMM cost with HD₃-zero-pad at
+          <code>s = 4 096</code> — the shield Gaussians replace the zero rows
+          that would otherwise pad the FWHT, paying a small shield-fill CPU
+          overhead on top of an otherwise identical wall. DCT-IV remains in the
+          source tree under <code>MaskKind::Dct4</code> for parity tests but is
+          no longer dispatched by <code>MaskKind::Auto</code>.
+        </p>
+
+        <p class="prose" style="margin-top: 16px">
+          At pow2-aligned shapes (n = 2 040) HD₃ wins outright vs Haar at
+          <strong>16.29 s</strong> vs <strong>~25.6 s</strong> (<strong
+            >−36 %</strong
+          >
+          TTFT, see headline stat). The +24 % regression above is the cost the
+          design accepts only at non-pow2 single-stream long prefill — a regime
+          the M1.11 batched path structurally avoids (the variable shield_k
+          formula keeps batched decode and rerank-shape prefill on a pow2
+          stacked axis by construction).
+        </p>
+
+        <p class="prose" style="margin-top: 16px">
+          <strong>How we got here.</strong> Haar shipped first (paper-parity);
+          HD₃ replaced Haar at pow2 shapes for the −36 % TTFT win; HD₃ regressed
+          +24 % at non-pow2 because the FWHT requires pow2 and zero-padding
+          doubles the GPU operand; DCT-IV was added as a non-pow2 branch (−12 %
+          via Bluestein chirp-z at exact <code>s</code>) which closed the
+          regression but introduced a second mask family and a second kernel
+          path; HD₃ + shield-to-pow2 retires DCT-IV by using the GELO-mandated
+          shield rows themselves as the next-pow2 padding (<code
+            >k = next_pow2(n + k_base) − n</code
+          >), giving back one mask family + one kernel path at the cost of
+          restoring the +24 % non-pow2 regression. Worth it because the M1.11
+          batched path moves the production regime away from non-pow2
+          single-stream prefill entirely.
         </p>
 
         <h4 style="margin-top: 24px">Trade-offs</h4>
