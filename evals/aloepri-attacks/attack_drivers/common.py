@@ -81,8 +81,12 @@ def _ensure_module_stub(
 ) -> None:
     """Register a stub module under `name` in `sys.modules` so
     `from name import X` succeeds without the real dep installed.
+
+    If the real package is importable, prefer it (so trained-inverter
+    drivers that genuinely need `transformers` / `tokenizers` get the
+    real classes instead of `AttributeError`-raising stubs).
     """
-    # Don't clobber a real install.
+    # Don't clobber a real install if already loaded.
     if name in sys.modules:
         try:
             real = sys.modules[name]
@@ -90,6 +94,18 @@ def _ensure_module_stub(
                 return
         except Exception:
             return
+    # Try to import the real package first — only fall back to stub if
+    # missing. The previous behaviour clobbered real installs of e.g.
+    # `transformers` with a stub whose attributes raise; that broke
+    # downstream drivers (run_ima_embedrow_attacks paper-faithful port)
+    # that need AutoTokenizer.from_pretrained.
+    try:
+        import importlib
+        real_mod = importlib.import_module(name)
+        if isinstance(real_mod, types.ModuleType) and getattr(real_mod, "__file__", None):
+            return
+    except Exception:
+        pass
     stub = types.ModuleType(name)
     if attrs:
         for k, v in attrs.items():

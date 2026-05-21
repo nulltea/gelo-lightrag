@@ -1,4 +1,33 @@
-"""Run the IMA-EmbedRow prompt-inversion attacks against the §05 obfuscated GGUF.
+"""Multi-key paper-faithful IMA-EmbedRow-transformer attack.
+
+Fork of `run_ima_embedrow_attacks.py`. Replaces the single-key attacker
+(one synthetic (τ_a, K_a) sampled once per run) with **multi-key
+training**: K independent K_aᵏ are pre-generated, and per training
+batch a random k is sampled and the input is computed on-the-fly as
+`(W_e[plain_id] + fresh_noise) @ K_aᵏ`.
+
+Why: with a single attacker key the inverter overfits to one specific
+K_a and cannot transfer to the deployment's K_d at test time. With
+many K_a samples drawn from the *same algorithm distribution* as K_d,
+the inverter is forced to learn a key-invariant inversion procedure —
+i.e. to invert the obfuscation **algorithm** rather than memorize
+one keymat. Multi-key is paper-faithful (the threat model permits the
+attacker to run Algorithm 1 any number of times with their own keys)
+and matches the strongest-attacker reading.
+
+Construction note: when training pairs are accessed as
+`W̃_aᵏ[τ_aᵏ[plain_id]]`, the τ_aᵏ permutation cancels — we both route
+the row to position τ_aᵏ[plain_id] AND look it up via the same index.
+So τ_aᵏ is irrelevant for training-input generation; only K_aᵏ and
+noise_aᵏ matter. We skip per-key permutation materialisation entirely
+and compute `x_train[i] = (W_e[plain_id_i] + fresh_noise) @ K_aᵏ`
+on-the-fly per batch.
+
+Recommendation A from the IMA-attacker research agent (2026-05-21).
+
+──────────────────────────────────────────────────────────────────────
+
+Run the IMA-EmbedRow prompt-inversion attacks against the §05 obfuscated GGUF.
 
 These are the two **prompt-inversion via static-weight** flavours of
 the Inversion Model Attack described in paper §F.1, ported as path-2
@@ -322,59 +351,76 @@ def _ima_xformer_ckpt_path(
     return checkpoint_dir / f"ima_xformer_{fp_short}.pt"
 
 
-def _synthesize_attacker_obfuscation(
-    plain_W_e_np: np.ndarray,
+def _build_multikey_pool(
     *,
+    d: int,
     expansion: int,
     lam: float,
-    alpha_e: float,
+    num_keys: int,
     attacker_seed: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Run Algorithm 1 with a *fresh* attacker-side (τ_a, K_a, noise_a)
-    on the plaintext embedding table, producing a synthetic W̃_attacker
-    that mimics the deployment's obfuscation but uses keys the attacker
-    chose themselves.
+) -> torch.Tensor:
+    """Pre-generate K independent attacker-side keymats via Algorithm 1.
 
-    Threat model (paper §3.2 + §D.1):
+    Returns a tensor of shape (K, d, d + 2h) on CPU. Per-batch noise
+    is fresh — only the keymats are pooled here. Threat model: the
+    attacker has Kerckhoffs access to (h, λ, α_e) and can run
+    Algorithm 1 an unbounded number of times with their own keys.
 
-    The attacker knows the obfuscation algorithm and its parameters
-    (Kerckhoffs) — `expansion=h`, `lam=λ`, `alpha_e`. They generate
-    their *own* random keys and re-obfuscate the public plaintext W_e
-    to produce labelled training pairs. They DO NOT have access to
-    the deployment's secret τ or K_e. So they cannot construct
-    (deployment_W̃[deployment_τ[plain_id]], W_e[plain_id]) pairs.
-
-    Returns (W̃_attacker, τ_attacker) as numpy arrays.
+    Memory: K × d × (d + 2h) × 4 bytes. For Q3-4B (d=2560, h=128, K=64):
+    ≈ 1.7 GB. For Q3-8B (d=4096, h=128) at K=64: ≈ 4.4 GB. Allocate on
+    CPU and move per-batch slices to GPU.
     """
     import sys
     sys.path.insert(0, "/home/timo/repos/private-rag-path-2/vendor/aloepri-py")
     sys.path.insert(0, "/home/timo/repos/private-rag-path-2/vendor/aloepri-py/src")
     from keymat import build_keymat_transform  # type: ignore  # noqa: E402
 
-    vocab_size, d = plain_W_e_np.shape
-    rng = np.random.default_rng(attacker_seed)
+    d_obs = d + 2 * expansion
+    pool = torch.empty((num_keys, d, d_obs), dtype=torch.float32)
+    for k in range(num_keys):
+        transform = build_keymat_transform(
+            d=d, h=expansion, lam=lam, init_seed=attacker_seed + 1 + 10_000 * k,
+        )
+        pool[k] = transform.key.to(torch.float32)
+    return pool
 
-    # 1) Sample attacker's τ
-    tau_attacker = rng.permutation(vocab_size).astype(np.int64)
 
-    # 2) Sample attacker's keymat via the public algorithm
-    transform = build_keymat_transform(d=d, h=expansion, lam=lam, init_seed=attacker_seed + 1)
-    K_attacker = transform.key.numpy().astype(np.float32)  # (d, d + 2h)
+def _make_multikey_batch_input(
+    *,
+    plain_W_e_rows: torch.Tensor,
+    keymat_pool: torch.Tensor,
+    key_idx: int,
+    alpha_e: float,
+    sigma_e: float,
+    rng_torch: torch.Generator,
+) -> torch.Tensor:
+    """Build a training/eval batch input as
+    `(W_e[plain_ids] + fresh_noise) @ K_aᵏ` on-the-fly.
 
-    # 3) Apply additive Gaussian noise (Algorithm 1 §5.2.2)
-    sigma_e = float(np.std(plain_W_e_np))
-    noise = rng.standard_normal(plain_W_e_np.shape).astype(np.float32)
-    W_noisy = plain_W_e_np + (alpha_e * sigma_e) * noise
+    See module docstring for why τ_aᵏ cancels — only K_aᵏ + noise
+    matter for training-input construction.
 
-    # 4) Apply Π_τ_attacker. Convention: τ[plain_id] = obs_id, so
-    #    W_permuted[τ[plain_id]] = W_noisy[plain_id].
-    W_permuted = np.empty_like(W_noisy)
-    W_permuted[tau_attacker] = W_noisy
+    Args:
+        plain_W_e_rows: (B*T, d) — plaintext embedding rows for the
+            batch's plain_ids, flattened across batch and time.
+        keymat_pool: (K, d, d+2h) — pre-generated attacker keymats.
+        key_idx: which k to use for this batch.
+        alpha_e, sigma_e: noise scaling. `sigma_e = std(plain_W_e)`.
+        rng_torch: torch Generator on the same device as plain_W_e_rows
+            for fresh per-batch noise.
 
-    # 5) Apply K_attacker (column transformation: d → d + 2h)
-    W_obf_attacker = W_permuted @ K_attacker  # (vocab, d + 2h)
-
-    return W_obf_attacker, tau_attacker
+    Returns:
+        (B*T, d+2h) input tensor.
+    """
+    noise = torch.randn(
+        plain_W_e_rows.shape,
+        generator=rng_torch,
+        dtype=plain_W_e_rows.dtype,
+        device=plain_W_e_rows.device,
+    )
+    K = keymat_pool[key_idx].to(plain_W_e_rows.device, dtype=plain_W_e_rows.dtype)
+    noisy = plain_W_e_rows + (alpha_e * sigma_e) * noise
+    return noisy @ K  # (B*T, d+2h)
 
 
 def run_ima_embedrow_transformer(
@@ -402,6 +448,7 @@ def run_ima_embedrow_transformer(
     attacker_lam: float = 0.3,
     attacker_alpha_e: float = 1.0,
     attacker_seed: int | None = None,
+    attacker_num_keys: int = 64,
     use_bf16: bool = True,
 ) -> AttackResult:
     """Paper-faithful trained-inverter attack on the static embedding-row
@@ -482,47 +529,45 @@ def run_ima_embedrow_transformer(
     val_plain_ids = val_plain_ids.clamp_(0, vocab_size - 1)
     test_plain_ids = test_plain_ids.clamp_(0, vocab_size - 1)
 
-    # Build training pairs under the paper-faithful threat model.
+    # Multi-key paper-faithful training data.
     #
-    # In `identity_tau` mode the input == target — calibration probe, no
-    # attacker-side obfuscation involved. The attacker's training is the
-    # trivial identity task and the corresponding test is the same.
+    # In `identity_tau` mode the inverter is given the trivial identity
+    # task (x == y) — calibration probe, no attacker obfuscation.
     #
-    # In the obfuscated case, the attacker generates synthetic
-    # W̃_attacker by running Algorithm 1 with their *own* (τ_a, K_a,
-    # noise_a). Training pairs are
-    # (W̃_attacker[τ_a[plain_id]], W_e[plain_id]). The deployment's W̃
-    # and τ are never used in training — they only feed the test path.
-    # See `_synthesize_attacker_obfuscation` for the construction.
+    # In the obfuscated case, we pre-generate K independent K_aᵏ via
+    # Algorithm 1 and at each training batch sample one k and synthesize
+    # input on-the-fly: `x = (W_e[plain_id] + fresh_noise) @ K_aᵏ`. The
+    # attacker never sees the deployment's W̃ during training; the
+    # inverter is forced to learn a *key-invariant* inversion procedure.
+    sigma_e = float(np.std(plain.token_embd.astype(np.float32)))
     if identity_tau:
-        attacker_tau_t = tau_t
-        attacker_obs_W_e = obs_W_e  # equals plain_W_e in identity_tau mode
+        keymat_pool = None
+        x_train_static = plain_W_e[train_plain_ids]  # input == target
     else:
         _att_seed = int(attacker_seed if attacker_seed is not None else seed + 99999)
-        print(f"  synthesizing attacker W̃ via Algorithm 1 with attacker_seed={_att_seed} "
-              f"(h={attacker_expansion}, λ={attacker_lam}, α_e={attacker_alpha_e})")
-        W_obf_attacker_np, tau_attacker_np = _synthesize_attacker_obfuscation(
-            plain.token_embd.astype(np.float32),
+        print(f"  pre-generating multi-key pool: K={attacker_num_keys} attacker keymats "
+              f"via Algorithm 1 (h={attacker_expansion}, λ={attacker_lam}, "
+              f"α_e={attacker_alpha_e}, base_seed={_att_seed})")
+        keymat_pool = _build_multikey_pool(
+            d=d_plain,
             expansion=int(attacker_expansion),
             lam=float(attacker_lam),
-            alpha_e=float(attacker_alpha_e),
+            num_keys=int(attacker_num_keys),
             attacker_seed=_att_seed,
         )
-        if W_obf_attacker_np.shape != obs_W_e.shape:
+        if keymat_pool.shape[1:] != (d_plain, d_obs):
             raise RuntimeError(
-                f"attacker-synthesized W̃ shape {W_obf_attacker_np.shape} != "
-                f"deployment W̃ shape {tuple(obs_W_e.shape)}; check "
-                f"--attacker-expansion (h={attacker_expansion}) against the "
-                f"deployment's expansion"
+                f"keymat pool shape {tuple(keymat_pool.shape)} mismatches "
+                f"(d_plain={d_plain}, d_obs={d_obs}); check --attacker-expansion"
             )
-        attacker_obs_W_e = torch.from_numpy(W_obf_attacker_np)
-        attacker_tau_t = torch.from_numpy(tau_attacker_np)
-        del W_obf_attacker_np
+        # Static rows we'll consume per batch — keeps DataLoader simple.
+        # Per batch we'll sample fresh noise + pick a key index.
+        x_train_static = plain_W_e[train_plain_ids]  # (B, T, d) — clean
 
-    # Training uses attacker's synthetic obfuscation (or identity in
-    # plain control). Test uses deployment's actual W̃ + τ — this is
-    # what the attacker observes via wire-side traffic at test time.
-    x_train = attacker_obs_W_e[attacker_tau_t[train_plain_ids]]
+    # We also need val/test inputs. Test uses deployment's actual W̃ +
+    # τ (what the attacker reads at inference time from the wire).
+    # Val mirrors test so best-state selection generalises to test
+    # distribution.
     y_train = plain_W_e[train_plain_ids]
     x_val = obs_W_e[tau_t[val_plain_ids]]
     x_test = obs_W_e[tau_t[test_plain_ids]]
@@ -558,11 +603,24 @@ def run_ima_embedrow_transformer(
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=learning_rate, weight_decay=weight_decay,
     )
-    train_loader = torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(x_train, y_train),
+    # x_train_static holds clean plain embeddings; per-batch input is
+    # synthesised on-device via _make_multikey_batch_input. DataLoader
+    # iterates indices so we can sample noise + key on the same device.
+    train_index_loader = torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(
+            torch.arange(x_train_static.shape[0], dtype=torch.long),
+        ),
         batch_size=batch_size,
         shuffle=True,
     )
+
+    # Per-batch noise and key-index RNG. Lives on the inverter's device
+    # for fast noise sampling without host↔device transfer.
+    _noise_rng_seed = int(attacker_seed if attacker_seed is not None else seed + 99999) + 7
+    noise_rng = torch.Generator(device=resolved_device)
+    noise_rng.manual_seed(_noise_rng_seed)
+    key_rng = np.random.default_rng(_noise_rng_seed + 1)
+    keymat_pool_device = keymat_pool.to(resolved_device) if keymat_pool is not None else None
 
     x_val_device = x_val.to(resolved_device)
     x_test_device = x_test.to(resolved_device)
@@ -572,11 +630,7 @@ def run_ima_embedrow_transformer(
     val_plain_ids_device = val_plain_ids.to(resolved_device)
     test_plain_ids_device = test_plain_ids.to(resolved_device)
 
-    # Mixed precision. Standard pattern: model + optimizer state in
-    # fp32, autocast wraps the forward to bf16 GEMMs. PyTorch ROCm ≥7
-    # supports bf16 autocast on Strix Halo. ≈2× speed without
-    # accuracy loss for this attack (loss ~5e-4 sits well inside
-    # bf16's representable range).
+    # Mixed precision (see single-key driver for rationale).
     _amp_enabled = bool(use_bf16) and resolved_device.startswith("cuda")
     _amp_device_type = "cuda" if resolved_device.startswith("cuda") else "cpu"
     if _amp_enabled:
@@ -612,16 +666,16 @@ def run_ima_embedrow_transformer(
         tau_fp = "identity" if identity_tau else (
             f"len={tau.shape[0]},sum={int(tau.sum())}"
         )
-        # Encode the threat-model regime + attacker hyperparameters so
-        # pre-2026-05-21 (τ-leaking) checkpoints don't shadow new runs.
+        # Multi-key driver uses a distinct fingerprint tag so single-
+        # key v2 checkpoints don't shadow these runs and vice-versa.
         _bf16_tag = "bf16" if use_bf16 else "fp32"
         if identity_tau:
-            attacker_fp = f"v2-paperfaithful-identityprobe-{_bf16_tag}"
+            attacker_fp = f"v3-multikey-identityprobe-{_bf16_tag}"
         else:
             _att_seed_for_fp = int(attacker_seed if attacker_seed is not None else seed + 99999)
             attacker_fp = (
-                f"v2-paperfaithful|h={attacker_expansion}|lam={attacker_lam}|"
-                f"alpha_e={attacker_alpha_e}|seed={_att_seed_for_fp}|{_bf16_tag}"
+                f"v3-multikey|h={attacker_expansion}|lam={attacker_lam}|"
+                f"alpha_e={attacker_alpha_e}|K={attacker_num_keys}|seed={_att_seed_for_fp}|{_bf16_tag}"
             )
         ckpt_path = _ima_xformer_ckpt_path(
             checkpoint_dir=checkpoint_dir,
@@ -665,11 +719,8 @@ def run_ima_embedrow_transformer(
         # Resume bookkeeping from the checkpoint, not init.
         best_epoch = int(ckpt.get("best_epoch", epochs_already_done))
         best_val_top1 = float(ckpt.get("best_val_top1", init_metrics["token_top1_recovery_rate"]))
-        # best_state lookup priority: sibling .best.pt file → legacy
-        # inline ckpt["best_state"] → fall back to current model_state.
-        # Trimming best_state out of the main file saves ~1 GB per
-        # checkpoint; legacy ckpts written before 2026-05-21 carry it
-        # inline so the fall-through keeps them working.
+        # best_state lookup priority: sibling .best.pt → legacy inline →
+        # current model_state fall-through. See save block.
         if best_state_path.exists():
             print(f"  loading best-state from sibling file {best_state_path.name}")
             _best_ckpt = torch.load(best_state_path, map_location="cpu", weights_only=False)
@@ -728,16 +779,44 @@ def run_ima_embedrow_transformer(
             return True
         return False
 
+    # Move static clean plain embeddings to device once (cheap;
+    # train_size_sequences × seq_len × d float32).
+    x_train_static_device = x_train_static.to(resolved_device)
+    y_train_static_device = y_train.to(resolved_device)
+
     for epoch_idx in range(epochs_to_run):
         epoch_idx = epochs_already_done + epoch_idx  # global epoch counter
         model.train()
         total_loss = 0.0
         total_batches = 0
-        for batch_inputs, batch_targets in train_loader:
-            batch_inputs = batch_inputs.to(resolved_device)
-            batch_targets = batch_targets.to(resolved_device)
+        for (idx_batch,) in train_index_loader:
+            idx_batch = idx_batch.to(resolved_device)
+            # Gather this batch's clean rows + targets
+            clean_rows = x_train_static_device.index_select(0, idx_batch)  # (B, T, d)
+            batch_targets = y_train_static_device.index_select(0, idx_batch)  # (B, T, d)
+
             optimizer.zero_grad(set_to_none=True)
             with _amp_ctx():
+                # Identity-τ path: input = target (no obfuscation).
+                # Obfuscated path: synth input per batch with sampled k.
+                if identity_tau or keymat_pool_device is None:
+                    batch_inputs = clean_rows
+                else:
+                    # Sample a key index for this batch — uniform over the K pool.
+                    k = int(key_rng.integers(0, int(attacker_num_keys)))
+                    B, T, d = clean_rows.shape
+                    flat_clean = clean_rows.reshape(B * T, d)
+                    flat_input = _make_multikey_batch_input(
+                        plain_W_e_rows=flat_clean,
+                        keymat_pool=keymat_pool_device,
+                        key_idx=k,
+                        alpha_e=float(attacker_alpha_e),
+                        sigma_e=sigma_e,
+                        rng_torch=noise_rng,
+                    )
+                    d_obs_local = flat_input.shape[-1]
+                    batch_inputs = flat_input.reshape(B, T, d_obs_local)
+
                 pred = model(batch_inputs)
                 loss = torch.nn.functional.mse_loss(pred, batch_targets)
             loss.backward()
@@ -830,12 +909,13 @@ def run_ima_embedrow_transformer(
             "candidate_pool_size": int(candidate_plain_ids.numel()),
             "device": str(resolved_device),
             "runtime_seconds": round(time.perf_counter() - t0, 2),
-            "threat_model_regime": "v2_paperfaithful",
+            "threat_model_regime": "v3_multikey_paperfaithful",
             "attacker_identity_probe": bool(identity_tau),
             "attacker_expansion": int(attacker_expansion),
             "attacker_lam": float(attacker_lam),
             "attacker_alpha_e": float(attacker_alpha_e),
             "attacker_seed": int(attacker_seed) if attacker_seed is not None else int(seed + 99999),
+            "attacker_num_keys": int(attacker_num_keys),
             "use_bf16": bool(use_bf16),
         },
     )
@@ -943,19 +1023,24 @@ def main() -> int:
     )
     p.add_argument(
         "--attacker-seed", type=int, default=None,
-        help="Seed for the attacker's own (τ_a, K_a, noise_a). If "
+        help="Base seed for the attacker's keymat pool + noise RNG. If "
              "omitted, derived as `seed + 99999`. Setting this lets the "
              "user vary the attacker keys while holding everything else "
              "fixed — useful for confirming the attack is τ-key-invariant.",
     )
     p.add_argument(
+        "--attacker-num-keys", type=int, default=64,
+        help="K = number of independent attacker keymats pre-generated "
+             "for multi-key training. Each batch samples one k uniformly. "
+             "Larger K → more key-invariance but more memory (≈ K · d · "
+             "(d+2h) · 4 bytes). Default 64 → ~1.7 GB on Q3-4B, ~4.4 GB "
+             "on Q3-8B.",
+    )
+    p.add_argument(
         "--no-bf16", action="store_true",
         help="Disable bf16 autocast (use fp32 forward+loss). Default is "
-             "bf16 autocast on the inverter forward + loss; model + "
-             "optimizer state stays fp32. ~2× speed on ROCm Strix Halo "
-             "with no measurable accuracy loss (training loss ~5e-4 sits "
-             "inside bf16's representable range). Pass --no-bf16 for "
-             "fp32-only parity check.",
+             "bf16 autocast; ~2× speed on ROCm Strix Halo with no "
+             "measurable accuracy loss.",
     )
     from m2_7_common import add_min_mem_args, check_phase_memory  # type: ignore
     add_min_mem_args(p, phase="ima_embedrow_attacks")
@@ -1063,6 +1148,7 @@ def main() -> int:
             attacker_lam=args.attacker_lambda,
             attacker_alpha_e=args.attacker_alpha_e,
             attacker_seed=args.attacker_seed,
+            attacker_num_keys=args.attacker_num_keys,
             use_bf16=not args.no_bf16,
         )
         print(
