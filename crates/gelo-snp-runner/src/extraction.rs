@@ -132,12 +132,38 @@ impl<E: GpuOffloadEngine> DecoderRuntime<E> {
     }
 }
 
+/// Qwen3 chat-template wrap with **thinking disabled**.
+///
+/// Qwen3 defaults to reasoning mode — the model emits a long
+/// `<think>…</think>` block before any structured output. On Qwen3-4B
+/// at `max_tokens=512` the entire budget is burned inside the think
+/// block: zero tuples emitted, parser returns `0 entities + 0
+/// relations`, generation hits the cap without EOS. (Observed
+/// 2026-05-21 bench run, chunk 1/7: 269 s wall, 0/0 extracted.)
+///
+/// We pre-fill an empty `<think>\n\n</think>\n\n` block right after
+/// the assistant turn marker, which is Qwen3's documented escape
+/// hatch: the model treats the think block as already closed and
+/// continues with the structured output directly. `/no_think` is
+/// also included in the system prompt as a belt-and-braces signal.
+///
+/// The model's terminating `<|im_end|>` lands in `eos_token_ids`
+/// (resolved at runtime construction) so generation stops on EOS
+/// instead of running to the `max_tokens` cap.
+fn apply_qwen3_chat_template(user_prompt: &str) -> String {
+    format!(
+        "<|im_start|>system\nYou are a precise entity extractor. Follow the exact tuple-delimited format requested by the user. Do not add commentary. /no_think\n<|im_end|>\n<|im_start|>user\n{user_prompt}\n<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    )
+}
+
 impl<E: GpuOffloadEngine> ExtractionDecoder for DecoderRuntime<E> {
     fn generate_extraction(
         &mut self,
         prompt: &str,
         max_tokens: usize,
     ) -> anyhow::Result<DecoderOutput> {
+        let templated = apply_qwen3_chat_template(prompt);
+        let prompt = templated.as_str();
         let t = Instant::now();
         let prompt_ids = self.tokenizer.encode(prompt, self.max_prompt_tokens)?;
         let tokenize = t.elapsed();
