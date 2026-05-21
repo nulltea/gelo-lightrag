@@ -5,9 +5,17 @@ stage_h_attention_static}.py`. Ported from torch to numpy with the
 same seed conventions (so a given `seed` produces matching keys).
 
 Profile: `rqk_hqk_block_taukv_taugroup` — matches reference default.
-**Omits Û_vo deliberately** (the reference's static rewrite passes
-`dense_transform=None` for V; U_vo never appears in the default
-attention profile).
+
+**Û_vo handling.** The V↔O random projection from paper §5.2.3 (step 4
++ step 6 alt + step 7) is opt-in via `enable_u_vo=True` on
+`build_layer_keys`. The reference impl always passes `dense_transform
+=None` for V — equivalent to `enable_u_vo=False` here. Paper Table 4's
+0.0 % HiddenState TTRSR is measured with full Algorithm 2 including
+Û_vo; without it, paper Table 4 reports 0.82 % (Noise+KeyMat row).
+The 2026-05-21 audit (`docs/handoffs/2026-05-21-ima-transformer-paper-disparity.md`)
+attributed the path-2 ISA HiddenState attenuation gap (4B ≈ 50 %, 8B
+≈ 4 %) partly to this missing Û_vo component, so we expose the flag
+to allow re-obfuscating with the full paper Algorithm 2 recipe.
 
 Acts on the **head_dim axis** of W_q, W_k, W_v, W_o. Commutes with
 the existing keymat transform which acts on the **residual (d) axis**.
@@ -152,10 +160,51 @@ def generate_head_perm(n: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
 # ────────────────────────────────────────────────────────────────────
 
 
+def generate_u_vo(head_dim: int, seed: int) -> np.ndarray:
+    """Random projection Û_vo for the V→O cancellation (paper §5.2.3 step 4).
+
+    Sampled from N(0, (1/head_dim) · I) and rescaled so its singular
+    values land in a numerically stable band — the matrix is later
+    inverted (step 7: W̃_o = Û_vo⁻¹ · W_o) and a low-conditioning
+    sample would blow up the obfuscated W_o. We sample from a Gaussian
+    then QR-orthogonalise plus a small diagonal perturbation so the
+    inverse is well-conditioned at bf16 and the matrix is non-trivially
+    different from identity (a pure orthogonal would still preserve
+    too much per-head structure for the head_dim-axis attack to be
+    foiled).
+
+    Returns: (head_dim, head_dim) float32.
+    """
+    rng = np.random.default_rng(seed)
+    # Standard Gaussian with paper's variance 1/head_dim.
+    raw = rng.standard_normal(size=(head_dim, head_dim)).astype(np.float64)
+    raw *= (1.0 / np.sqrt(head_dim))
+    # QR-stabilise: gives Q (orthogonal) · R (upper triangular with positive
+    # diagonal). We return Q · (I + δ·R_norm) where R_norm is the
+    # diagonal-of-R scaled small — keeps the matrix invertible with a
+    # well-conditioned inverse while preserving the Gaussian-projection
+    # spirit. Without this, the raw Gaussian can have condition number
+    # > 1e3 at head_dim=128 and the bf16 cast of Û_vo⁻¹ loses precision
+    # on W̃_o.
+    q, r = np.linalg.qr(raw)
+    diag = np.diag(r)
+    diag_sign = np.sign(diag)
+    diag_sign[diag_sign == 0] = 1.0
+    q = q * diag_sign  # fix Q sign convention (Householder)
+    # Small Gaussian perturbation on the orthogonal Q — keeps it close to
+    # an orthogonal matrix but breaks the head_dim symmetry the attacker
+    # would otherwise rely on.
+    perturb = rng.standard_normal(size=(head_dim, head_dim)).astype(np.float64) * 0.05
+    out = q + perturb
+    return out.astype(np.float32)
+
+
 @dataclass(frozen=True)
 class LayerAlg2Keys:
     q_matrix: np.ndarray       # (head_dim, head_dim) — R_qk · H_qk · Z_block
-    k_matrix: np.ndarray       # (head_dim, head_dim) — R_qk · H_qk⁻¹ · Z_block⁻¹
+    k_matrix: np.ndarray       # (head_dim, head_dim) — R_qk · H_qk⁻¹ · Z_block
+    u_vo: np.ndarray | None    # (head_dim, head_dim) — Û_vo, applied to W_v
+    u_vo_inv: np.ndarray | None  # (head_dim, head_dim) — Û_vo⁻¹, applied to W_o input axis
     tau_kv: np.ndarray | None  # (num_kv_heads,)
     inv_tau_kv: np.ndarray | None
     tau_group: np.ndarray | None  # (num_groups,)
@@ -173,6 +222,7 @@ def build_layer_keys(
     gamma: float = 1e3,
     rope_base: float = 1e6,
     h_hadamard_signs: bool = False,
+    enable_u_vo: bool = False,
 ) -> LayerAlg2Keys:
     r_qk = generate_r_qk(head_dim, seed + 1)
     h_qk = generate_h_qk(head_dim, qk_scale_range, seed + 2,
@@ -198,6 +248,13 @@ def build_layer_keys(
     # See docs/handoffs/2026-05-19-alg2-z-block-degeneracy.md.
     k_matrix = (r_qk @ h_qk_inv @ z_block).astype(np.float32)
 
+    if enable_u_vo:
+        u_vo = generate_u_vo(head_dim, seed + 7)
+        u_vo_inv = np.linalg.inv(u_vo.astype(np.float64)).astype(np.float32)
+    else:
+        u_vo = None
+        u_vo_inv = None
+
     if num_kv_heads > 1:
         tau_kv, inv_tau_kv = generate_head_perm(num_kv_heads, seed + 4)
     else:
@@ -210,6 +267,8 @@ def build_layer_keys(
     return LayerAlg2Keys(
         q_matrix=q_matrix,
         k_matrix=k_matrix,
+        u_vo=u_vo,
+        u_vo_inv=u_vo_inv,
         tau_kv=tau_kv,
         inv_tau_kv=inv_tau_kv,
         tau_group=tau_group,
@@ -299,10 +358,29 @@ def apply_qkv_output_transform(
     return out
 
 
-def apply_o_output_transform(weight: np.ndarray, feature_order: np.ndarray) -> np.ndarray:
-    """Apply Q head-shuffle (and only that, per default profile) to W_o.
+def apply_o_output_transform(
+    weight: np.ndarray,
+    feature_order: np.ndarray,
+    dense_input_transform: np.ndarray | None = None,
+) -> np.ndarray:
+    """Apply head-shuffle + optional Û_vo⁻¹ input-axis transform to W_o.
 
-    W_o has natural shape (d, n_q_heads · head_dim) — the head-feature
-    axis is axis 1, so we permute along axis 1.
+    W_o has natural shape `(d_model, n_q_heads · head_dim)` — the
+    head-feature axis is axis 1.
+
+    `dense_input_transform`, when given, is the
+    `_block_diag_repeat(Û_vo⁻¹, n_q_heads)` matrix from
+    `build_layer_keys`. Paper §5.2.3 step 7: `W̃_o = Û_vo⁻¹ · W_o`.
+    Translating to numpy natural shape: V̄ = (X · W_v^T · Û_vo) flows
+    through attention; the residual contribution then is V̄ · W_o^T =
+    X · W_v^T · Û_vo · W_o^T. For this to equal the plain `X · W_v^T ·
+    W_o^T` we need `Û_vo · W_o^T = W_o^T` after substitution, which
+    gives `W̃_o^T = Û_vo⁻¹ · W_o^T` i.e. `W̃_o = W_o · Û_vo⁻¹.T`. In
+    block-diagonal-per-head form, that's a right-multiply of
+    W_o_natural by `(Û_vo_inv_block_diag).T`.
     """
-    return weight[:, feature_order]
+    out = weight
+    if dense_input_transform is not None:
+        out = out @ dense_input_transform.T.astype(out.dtype)
+    out = out[:, feature_order]
+    return out

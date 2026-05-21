@@ -73,16 +73,22 @@ from attack_drivers.common import (  # type: ignore  # noqa: E402
 # ───── Multi-key attacker construction (mirrors IMA multi-key driver) ──────
 
 
-def _build_attacker_keymat_pool(
+def _build_attacker_keymat_pool_vendor(
     *,
     d: int,
     expansion: int,
     lam: float,
     num_keys: int,
     attacker_seed: int,
+    device: str = "cpu",
 ) -> torch.Tensor:
-    """Pre-generate K independent attacker keymats K_a^k via the public
-    Algorithm 1. Returns (K, d, d + 2h) on CPU.
+    """Reference keymat pool builder using vendor `keymat.build_keymat_transform`
+    (CPU-only torch via `torch.Generator(device='cpu')`). Returns
+    (K, d, d + 2h) float32, transferred to `device` at the end.
+
+    Trusted reference: same code path that built the deployment's K_d.
+    Slow on CPU at large d (~few minutes per pool at d=4096, K=64), but
+    correct.
     """
     sys.path.insert(0, "/home/timo/repos/private-rag-path-2/vendor/aloepri-py")
     sys.path.insert(0, "/home/timo/repos/private-rag-path-2/vendor/aloepri-py/src")
@@ -95,7 +101,107 @@ def _build_attacker_keymat_pool(
             d=d, h=expansion, lam=lam, init_seed=attacker_seed + 1 + 10_000 * k,
         )
         pool[k] = transform.key.to(torch.float32)
+    return pool.to(device)
+
+
+def _build_attacker_keymat_pool_gpu_native(
+    *,
+    d: int,
+    expansion: int,
+    lam: float,
+    num_keys: int,
+    attacker_seed: int,
+    device: str = "cpu",
+) -> torch.Tensor:
+    """GPU-native keymat pool builder. Same Algorithm 1 math as vendor
+    but uses one `torch.Generator(device=gen_device)` per k advancing
+    through 8 draws — pattern that vendor avoids by using 8 separate
+    generators (one per draw with offset seeds +1..+7 / +11).
+
+    A 2026-05-21 5-seed sweep at Q3-4B Û_vo, L=17, K=64, row-split
+    found vendor_cpu and gpu_native sample TTRSR top-1 from
+    indistinguishable distributions (Welch t = 0.40, p = 0.70):
+
+        | impl       | mean    | std    | range          |
+        | ---------- | ------- | ------ | -------------- |
+        | vendor_cpu | 6.22 %  | 5.02   | 1.91 – 12.79 % |
+        | gpu_native | 5.04 %  | 4.19   | 1.24 – 11.66 % |
+
+    Earlier-same-day analysis flagged a single-seed reading of 11.92 %
+    here as "structurally impossible" above the 10.18 % plain-τ
+    ceiling — that diagnosis was retracted after the seed sweep
+    showed vendor reaches 12.79 % at attacker_seed=2 alone. The K=64
+    pool's TTRSR has std ≈ 5 pp at d=2560; single-seed comparisons
+    within that range are noise.
+
+    Either impl is correct. Prefer vendor_cpu for consistency with
+    the deployment-side keymat builder (no measurable difference,
+    but matches the reference algorithm verbatim). Full investigation
+    writeup: `docs/research/aloepri-keymat-variance.md`.
+    """
+    if expansion <= 0 or expansion % 2 != 0:
+        raise ValueError(f"expansion h must be positive and even, got {expansion}")
+    if lam < 0:
+        raise ValueError(f"lam must be non-negative, got {lam}")
+    d_obs = d + 2 * expansion
+    half_h = expansion // 2
+    dtype = torch.float64
+    gen_device = "cuda" if device.startswith("cuda") else "cpu"
+    pool = torch.empty((num_keys, d, d_obs), dtype=torch.float32, device=device)
+
+    def _orthogonal(dim: int, gen: torch.Generator) -> torch.Tensor:
+        g = torch.randn(dim, dim, generator=gen, dtype=dtype, device=gen_device)
+        q, r = torch.linalg.qr(g, mode="reduced")
+        sign = torch.sign(torch.diagonal(r))
+        sign = torch.where(sign == 0, torch.ones_like(sign), sign)
+        return q * sign.unsqueeze(0)
+
+    def _nullspace_basis(matrix: torch.Tensor) -> torch.Tensor:
+        _, sv, vh = torch.linalg.svd(matrix, full_matrices=True)
+        cutoff = max(1e-10, 1e-10 * float(sv.max().item()))
+        rank = int((sv > cutoff).sum().item())
+        basis = vh[rank:].T.contiguous()
+        if basis.numel() == 0:
+            raise ValueError("Null space empty; cannot construct Algorithm 1 key.")
+        return basis
+
+    for k in range(num_keys):
+        gen = torch.Generator(device=gen_device)
+        gen.manual_seed(int(attacker_seed + 1 + 10_000 * k))
+        u = _orthogonal(d, gen)
+        v = torch.randn(d, d, generator=gen, dtype=dtype, device=gen_device) * (d ** -0.5)
+        b = u + lam * v
+        e1 = torch.randn(d, half_h, generator=gen, dtype=dtype, device=gen_device) * (d ** -0.5)
+        e2 = torch.randn(half_h, expansion, generator=gen, dtype=dtype, device=gen_device) * (d ** -0.5)
+        e_mat = e1 @ e2
+        f1 = torch.randn(expansion, half_h, generator=gen, dtype=dtype, device=gen_device) * (d ** -0.5)
+        f2 = torch.randn(half_h, d, generator=gen, dtype=dtype, device=gen_device) * (d ** -0.5)
+        f_mat = f1 @ f2
+        z_mat = _orthogonal(d_obs, gen)
+        basis_ft = _nullspace_basis(f_mat.T)
+        coeffs_c = torch.randn(d, basis_ft.shape[1], generator=gen, dtype=dtype, device=gen_device)
+        c_mat = coeffs_c @ basis_ft.T
+        left = torch.cat([b, c_mat, e_mat], dim=1)
+        key = left @ z_mat
+        pool[k] = key.to(dtype=torch.float32)
+        del u, v, b, e1, e2, e_mat, f1, f2, f_mat, z_mat
+        del basis_ft, coeffs_c, c_mat, left, key
     return pool
+
+
+def _build_attacker_keymat_pool(
+    *,
+    impl: str = "vendor_cpu",
+    **kwargs,
+) -> torch.Tensor:
+    """Dispatch on impl name: 'vendor_cpu' (trusted, slow at large d)
+    or 'gpu_native' (fast on GPU but currently produces divergent
+    attack results — diagnostic only)."""
+    if impl == "vendor_cpu":
+        return _build_attacker_keymat_pool_vendor(**kwargs)
+    if impl == "gpu_native":
+        return _build_attacker_keymat_pool_gpu_native(**kwargs)
+    raise ValueError(f"unknown keymat impl: {impl!r}; expected vendor_cpu or gpu_native")
 
 
 # ───── Ridge solver (multi-α, val-selected) ────────────────────────────────
@@ -106,27 +212,46 @@ def _fit_ridge(
 ) -> dict[str, torch.Tensor]:
     """Standard closed-form ridge — same primitive as
     `attack_drivers/run_isa.py` and `vendor/aloepri-py` reference.
+
+    Runs on the device X is on. Caller should move X, Y to GPU before
+    invoking when the synthetic training set fits on the GPU (~tens of
+    GB at K=64 on Q3-8B). torch.linalg.solve auto-routes to cuSOLVER
+    / rocSOLVER for the (n × n) solve.
     """
+    device = X.device
     x_mean = X.mean(dim=0, keepdim=True)
     x_std = X.std(dim=0, keepdim=True).clamp_min(1e-6)
     y_mean = Y.mean(dim=0, keepdim=True)
     y_std = Y.std(dim=0, keepdim=True).clamp_min(1e-6)
     Xn = (X - x_mean) / x_std
     Yn = (Y - y_mean) / y_std
-    ones = torch.ones((Xn.shape[0], 1), dtype=Xn.dtype)
+    ones = torch.ones((Xn.shape[0], 1), dtype=Xn.dtype, device=device)
     Xa = torch.cat([Xn, ones], dim=1)
     n = Xa.shape[1]
-    I = torch.eye(n, dtype=Xn.dtype)
+    I = torch.eye(n, dtype=Xn.dtype, device=device)
     I[-1, -1] = 0.0
     lhs = Xa.T @ Xa + ridge_alpha * I
     rhs = Xa.T @ Yn
-    W = torch.linalg.solve(lhs, rhs)
+    # `torch.linalg.solve` on ROCm Strix Halo hits HIPBLAS_STATUS_ALLOC_FAILED
+    # at the hipblasStrsm triangular-solve step at d=4353 even though
+    # peak memory is only ~4 GB on a 68 GB iGPU — rocBLAS-internal
+    # allocator failure, not a real OOM. Try on GPU; on failure, move
+    # the (small, ~150 MB) lhs/rhs to CPU and run LAPACK solve there.
+    try:
+        W = torch.linalg.solve(lhs, rhs)
+    except RuntimeError as e:
+        if "HIPBLAS_STATUS_ALLOC_FAILED" not in str(e) and "CUDA error" not in str(e):
+            raise
+        print(f"  ridge solve: GPU failed ({type(e).__name__}); falling back to CPU LAPACK")
+        W_cpu = torch.linalg.solve(lhs.cpu(), rhs.cpu())
+        W = W_cpu.to(device)
+        del W_cpu
     return {"weight": W, "x_mean": x_mean, "x_std": x_std, "y_mean": y_mean, "y_std": y_std}
 
 
 def _predict_ridge(model: dict[str, torch.Tensor], X: torch.Tensor) -> torch.Tensor:
     Xn = (X - model["x_mean"]) / model["x_std"]
-    ones = torch.ones((Xn.shape[0], 1), dtype=Xn.dtype)
+    ones = torch.ones((Xn.shape[0], 1), dtype=Xn.dtype, device=X.device)
     Xa = torch.cat([Xn, ones], dim=1)
     Yn = Xa @ model["weight"]
     return Yn * model["y_std"] + model["y_mean"]
@@ -141,8 +266,8 @@ def _cosine_topk(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Returns (top1_hits, topk_hits) as bool tensors over the test rows."""
     pn = pred / pred.norm(dim=1, keepdim=True).clamp_min(1e-8)
-    best_scores = torch.full((pn.shape[0], 0), float("-inf"), dtype=pn.dtype)
-    best_ids = torch.empty((pn.shape[0], 0), dtype=torch.long)
+    best_scores = torch.full((pn.shape[0], 0), float("-inf"), dtype=pn.dtype, device=pn.device)
+    best_ids = torch.empty((pn.shape[0], 0), dtype=torch.long, device=pn.device)
     vocab = embed_table.shape[0]
     k_eff = min(topk, vocab)
     for s in range(0, vocab, chunk):
@@ -177,11 +302,14 @@ def run_isa_multikey(
     attacker_lam: float = 0.3,
     attacker_num_keys: int = 64,
     attacker_seed: int = 20260521,
+    keymat_impl: str = "vendor_cpu",
     ridge_alphas: tuple[float, ...] = (1e-4, 1e-2, 1.0),
     train_frac: float = 0.5,
     val_frac: float = 0.25,
     identity_tau: bool = False,
+    split_mode: str = "row",
     topk: int = 10,
+    device: str = "auto",
 ) -> AttackResult:
     """Run paper-faithful multi-key labelled-ridge ISA at one (layer, kind).
 
@@ -192,14 +320,30 @@ def run_isa_multikey(
     """
     t0 = time.perf_counter()
 
+    # Resolve device. GPU eliminates the CPU memory bottleneck on the
+    # ridge solve (multi-key training matrix can reach ~14 GB at K=158
+    # on Q3-8B). torch.linalg.solve auto-routes to cuSOLVER /
+    # rocSOLVER on the corresponding device.
+    if device == "auto":
+        resolved_device = "cuda" if torch.cuda.is_available() else "cpu"
+    elif device == "gpu":
+        resolved_device = "cuda"
+    else:
+        resolved_device = device
+    if resolved_device.startswith("cuda") and not torch.cuda.is_available():
+        print(f"  warn: requested device={device!r} but CUDA/ROCm not available; falling back to CPU")
+        resolved_device = "cpu"
+    print(f"  device = {resolved_device}")
+    embed_table = embed_table.to(resolved_device)
+
     # 1) Load plain hidden states (and their plain_id labels)
     X_plain, y_ids, _ = stack_prompt_observations(
         plain_snapshots, layer=layer, kind=kind, strip_shield=True,
     )
     if X_plain.shape[0] == 0:
         raise RuntimeError(f"no plain snapshots at layer={layer} kind={kind}")
-    X_plain_t = torch.from_numpy(X_plain).to(torch.float32)
-    y_ids_t = torch.from_numpy(y_ids).to(torch.long)
+    X_plain_t = torch.from_numpy(X_plain).to(torch.float32).to(resolved_device)
+    y_ids_t = torch.from_numpy(y_ids).to(torch.long).to(resolved_device)
     d_plain = int(X_plain_t.shape[1])
     n_total = int(X_plain_t.shape[0])
 
@@ -211,24 +355,62 @@ def run_isa_multikey(
             f"unexpected; the plain model's residual stream should match W_e dim"
         )
 
-    # 2) Vocab-disjoint split on plain_ids
+    # 2) Train/val/test split.
+    #
+    # split_mode="row" (default, threat-model realistic): partition
+    # token positions randomly, both splits share the unique plain_id
+    # vocab. Matches the realistic attacker who pre-trains on a public
+    # corpus covering > 99 % of the Qwen3 vocab, so test queries'
+    # plain_ids are essentially always in training vocab.
+    #
+    # split_mode="vocab" (paper reference-impl methodology): partition
+    # unique plain_ids into disjoint sets, all rows for each id go to
+    # one split. Stress test for vocab generalisation. Ridge cannot
+    # extrapolate to unseen W_e[plain_id] across the split, so this
+    # gives 0 % top-1 by construction on small data — measures the
+    # methodology more than the defence. Available as a secondary
+    # reading.
     unique_ids = torch.unique(y_ids_t).tolist()
     rng = np.random.default_rng(attacker_seed + 17)
-    shuffled = rng.permutation(unique_ids).tolist()
-    n_train_ids = int(len(shuffled) * train_frac)
-    n_val_ids = int(len(shuffled) * val_frac)
-    train_ids = set(shuffled[:n_train_ids])
-    val_ids = set(shuffled[n_train_ids : n_train_ids + n_val_ids])
-    test_ids = set(shuffled[n_train_ids + n_val_ids :])
-
-    def _mask(ids_set):
-        return torch.tensor([int(i) in ids_set for i in y_ids_t.tolist()], dtype=torch.bool)
-
-    tr_mask = _mask(train_ids)
-    va_mask = _mask(val_ids)
-    te_mask = _mask(test_ids)
-    print(f"  vocab-disjoint split: train={int(tr_mask.sum())} val={int(va_mask.sum())} "
-          f"test={int(te_mask.sum())} rows (over {len(unique_ids)} unique plain_ids)")
+    if split_mode == "vocab":
+        shuffled = rng.permutation(unique_ids).tolist()
+        n_train_ids = int(len(shuffled) * train_frac)
+        n_val_ids = int(len(shuffled) * val_frac)
+        train_ids = set(shuffled[:n_train_ids])
+        val_ids = set(shuffled[n_train_ids : n_train_ids + n_val_ids])
+        test_ids = set(shuffled[n_train_ids + n_val_ids :])
+        def _mask(ids_set):
+            return torch.tensor(
+                [int(i) in ids_set for i in y_ids_t.tolist()],
+                dtype=torch.bool, device=resolved_device,
+            )
+        tr_mask = _mask(train_ids)
+        va_mask = _mask(val_ids)
+        te_mask = _mask(test_ids)
+        print(f"  vocab-disjoint split: train={int(tr_mask.sum())} val={int(va_mask.sum())} "
+              f"test={int(te_mask.sum())} rows (over {len(unique_ids)} unique plain_ids)")
+    elif split_mode == "row":
+        n_rows = int(X_plain_t.shape[0])
+        perm = rng.permutation(n_rows)
+        n_train_rows = int(n_rows * train_frac)
+        n_val_rows = int(n_rows * val_frac)
+        tr_idx = perm[:n_train_rows]
+        va_idx = perm[n_train_rows : n_train_rows + n_val_rows]
+        te_idx = perm[n_train_rows + n_val_rows :]
+        tr_mask = torch.zeros(n_rows, dtype=torch.bool, device=resolved_device)
+        tr_mask[tr_idx] = True
+        va_mask = torch.zeros(n_rows, dtype=torch.bool, device=resolved_device)
+        va_mask[va_idx] = True
+        te_mask = torch.zeros(n_rows, dtype=torch.bool, device=resolved_device)
+        te_mask[te_idx] = True
+        train_ids = set(y_ids_t[tr_mask].tolist())
+        val_ids = set(y_ids_t[va_mask].tolist())
+        test_ids = set(y_ids_t[te_mask].tolist())
+        print(f"  row split: train={int(tr_mask.sum())} val={int(va_mask.sum())} "
+              f"test={int(te_mask.sum())} rows; vocab overlap "
+              f"train∩test={len(train_ids & test_ids)} of {len(train_ids)} train ids")
+    else:
+        raise ValueError(f"split_mode must be 'row' or 'vocab', got {split_mode!r}")
 
     # 3) Build training inputs
     if identity_tau:
@@ -246,10 +428,13 @@ def run_isa_multikey(
         if obf_snapshots is None:
             raise RuntimeError("obf_snapshots is required in non-identity_tau mode")
         print(f"  pre-generating multi-key pool: K={attacker_num_keys} keymats "
-              f"(h={attacker_expansion}, λ={attacker_lam}, seed={attacker_seed})")
+              f"(impl={keymat_impl}, h={attacker_expansion}, λ={attacker_lam}, "
+              f"seed={attacker_seed})")
         keymat_pool = _build_attacker_keymat_pool(
+            impl=keymat_impl,
             d=d_plain, expansion=int(attacker_expansion), lam=float(attacker_lam),
             num_keys=int(attacker_num_keys), attacker_seed=int(attacker_seed),
+            device=resolved_device,
         )
 
         # Synthesise: X_a^k[i] = X_plain[i] @ K_a^k. Stack across k.
@@ -273,15 +458,28 @@ def run_isa_multikey(
         y_val_ids = y_val_ids_single.repeat(int(attacker_num_keys))
         print(f"  synthesised training tensor: X_train {tuple(X_train.shape)} "
               f"y_train {tuple(y_train.shape)} (K × n_train)")
+        # Free GPU memory held by the per-key chunks (~K · 2 · n_train · d_obs)
+        # and the full keymat pool (~K · d · d_obs). Both are now redundant —
+        # the concatenated X_train / y_train / X_val carry everything the
+        # ridge solve needs. On Q3-8B at K=64 this frees ~5 GB GPU, which
+        # the rocSOLVER triangular-solve needs as workspace; without this
+        # we hit HIPBLAS_STATUS_ALLOC_FAILED inside torch.linalg.solve.
+        del synth_train_chunks, synth_train_y_chunks, synth_val_chunks
+        del keymat_pool
+        if resolved_device.startswith("cuda"):
+            torch.cuda.empty_cache()
 
         # Test inputs: deployment's obf captures at the same layer, but
         # filtered to test plain_ids only (vocab-disjoint from train).
         X_obf_full, y_obf_ids, _ = stack_prompt_observations(
             obf_snapshots, layer=layer, kind=kind, strip_shield=True,
         )
-        X_obf_t = torch.from_numpy(X_obf_full).to(torch.float32)
-        y_obf_t = torch.from_numpy(y_obf_ids).to(torch.long)
-        te_obf_mask = torch.tensor([int(i) in test_ids for i in y_obf_t.tolist()], dtype=torch.bool)
+        X_obf_t = torch.from_numpy(X_obf_full).to(torch.float32).to(resolved_device)
+        y_obf_t = torch.from_numpy(y_obf_ids).to(torch.long).to(resolved_device)
+        te_obf_mask = torch.tensor(
+            [int(i) in test_ids for i in y_obf_t.tolist()],
+            dtype=torch.bool, device=resolved_device,
+        )
         X_test = X_obf_t[te_obf_mask]
         y_test_ids = y_obf_t[te_obf_mask]
         print(f"  obf test rows: {int(te_obf_mask.sum())} (filtered to test plain_ids)")
@@ -325,11 +523,13 @@ def run_isa_multikey(
             "layer": int(layer),
             "kind": str(kind),
             "threat_model_regime": "multikey_covariant_synthesis_paperfaithful",
+            "split_mode": str(split_mode),
             "attacker_identity_probe": bool(identity_tau),
             "attacker_expansion": int(attacker_expansion),
             "attacker_lam": float(attacker_lam),
             "attacker_num_keys": int(attacker_num_keys) if not identity_tau else 0,
             "attacker_seed": int(attacker_seed),
+            "keymat_impl": str(keymat_impl),
             "best_ridge_alpha": best_alpha,
             "alpha_scan": alpha_scores,
             "n_unique_plain_ids": len(unique_ids),
@@ -363,6 +563,28 @@ def main() -> int:
     p.add_argument("--attacker-expansion", type=int, default=128)
     p.add_argument("--attacker-lambda", type=float, default=0.3)
     p.add_argument("--attacker-num-keys", type=int, default=64)
+    p.add_argument("--keymat-impl", type=str, default="vendor_cpu",
+                   choices=("vendor_cpu", "gpu_native"),
+                   help="vendor_cpu (default): trusted vendor build_keymat_transform "
+                        "on CPU; correct but slow at large d (~few min per pool at "
+                        "d=4096 K=64). gpu_native: experimental GPU port of Algorithm "
+                        "1; fast (~30s) but currently produces divergent attack results "
+                        "(4B Û_vo TTRSR 11.9 % vs vendor's 3.4 %) — keep for diagnostic "
+                        "side-by-side; do not use for production measurements.")
+    p.add_argument("--split-mode", type=str, default="row", choices=("row", "vocab"),
+                   help="row (default): random position-level split, train+test share vocab — "
+                        "realistic threat-model reading. vocab: vocab-disjoint, stress test "
+                        "for vocab generalisation (ridge gives 0 percent by construction on small data).")
+    p.add_argument("--device", type=str, default="auto", choices=("auto", "gpu", "cpu", "cuda"),
+                   help="Device for the ridge solve + cosine-NN eval + multi-key synthesis. "
+                        "auto picks GPU if available else CPU. K=64 on Q3-4B fits CPU, "
+                        "but K=158 on Q3-8B benefits from GPU (~14 GB working set, "
+                        "torch.linalg.solve routes to rocSOLVER / cuSOLVER).")
+    # The Docker wrapper run_in_gpu_container.sh auto-injects this for
+    # the IMA driver's checkpointing. ISA does closed-form ridge, no
+    # iterative training, no checkpoint needed — accept and ignore.
+    p.add_argument("--paper-checkpoint-dir", type=Path, default=None,
+                   help="(accepted for compat with shared wrapper; ISA has no checkpoint)")
     p.add_argument("--attacker-seed", type=int, default=20260521)
     p.add_argument("--ridge-alpha", type=float, action="append", default=None,
                    help="Override the default multi-α grid. Can be passed multiple times.")
@@ -400,8 +622,11 @@ def main() -> int:
         attacker_lam=float(args.attacker_lambda),
         attacker_num_keys=int(args.attacker_num_keys),
         attacker_seed=int(args.attacker_seed),
+        keymat_impl=str(args.keymat_impl),
         ridge_alphas=ridge_alphas,
         identity_tau=bool(args.identity_tau),
+        split_mode=str(args.split_mode),
+        device=str(args.device),
     )
 
     print(f"[ISA-multikey] top1={result.ttrsr_top1:.4f} top10={result.ttrsr_top10:.4f} "

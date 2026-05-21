@@ -268,6 +268,16 @@ def rewrite_gguf(
     # flips to the obfuscation; M_q stays equal to M_k (because
     # H = H⁻¹ for ±1 diag), so Q/K cancel cleanly in attention.
     alg2_h_hadamard_signs: bool = False,
+    # When True: enable paper §5.2.3 Û_vo random projection on the V↔O
+    # composition. V output is right-multiplied by Û_vo per head; W_o
+    # input axis is right-multiplied by Û_vo⁻¹ block-diag per head.
+    # The two cancel through attention (V̄ · W̃_o^T = V · W_o^T) so
+    # residual covariance is preserved, but per-head V outputs and
+    # W_o cols carry deployment-specific randomness that ISA
+    # HiddenState ridge cannot extract. Closes paper Table 4's
+    # 0.82 %→0.0 % gap (Noise+KeyMat vs Noise+KeyMat+Head&BlockPerm).
+    # Default off for backward-compat with prior deployments.
+    alg2_enable_u_vo: bool = False,
     # Output precision for the large matmul tensors (token_embd,
     # output, attn_*, ffn_*). Norm tensors and the matrix-Γ Γ_q/Γ_k
     # tensors always stay F32 regardless of this setting. Default
@@ -498,6 +508,7 @@ def rewrite_gguf(
                 gamma=alg2_gamma,
                 rope_base=rope_base,
                 h_hadamard_signs=alg2_h_hadamard_signs,
+                enable_u_vo=alg2_enable_u_vo,
             )
             if alg2_qk_norm_matrix:
                 keys = full_keys
@@ -570,6 +581,7 @@ def rewrite_gguf(
         writer.add_uint32("aloepri.alg2_beta", int(alg2_beta))
         writer.add_float32("aloepri.alg2_gamma", float(alg2_gamma))
         writer.add_bool("aloepri.qk_norm_matrix", bool(alg2_qk_norm_matrix))
+        writer.add_bool("aloepri.alg2_u_vo_applied", bool(alg2_enable_u_vo))
     if mode == "keymat":
         writer.add_float32("aloepri.kappa_e", float(kappa_e))
         writer.add_float32("aloepri.kappa", float(kappa))
@@ -676,17 +688,23 @@ def rewrite_gguf(
                         if alg2_qk_norm_matrix else None
                     k_dense = alg2._block_diag_repeat(keys.k_matrix, n_kv_heads) \
                         if alg2_qk_norm_matrix else None
-                    # V doesn't get an intra-head transform under matrix-Γ
-                    # either: that's a paper-distinct M_v and we don't deploy
-                    # it. Keep V's dense_transform None.
+                    # V dense transform: Û_vo block-diag per KV head when
+                    # enable_u_vo. Without it V is unobfuscated on head_dim.
+                    v_dense = alg2._block_diag_repeat(keys.u_vo, n_kv_heads) \
+                        if (alg2_enable_u_vo and keys.u_vo is not None) else None
+                    # O input-axis transform: Û_vo⁻¹ block-diag per Q head.
+                    o_input_dense = alg2._block_diag_repeat(keys.u_vo_inv, n_q_heads) \
+                        if (alg2_enable_u_vo and keys.u_vo_inv is not None) else None
                     if stripped == "attn_q.weight":
                         out_arr = alg2.apply_qkv_output_transform(out_arr, q_dense, q_feat)
                     elif stripped == "attn_k.weight":
                         out_arr = alg2.apply_qkv_output_transform(out_arr, k_dense, kv_feat)
                     elif stripped == "attn_v.weight":
-                        out_arr = alg2.apply_qkv_output_transform(out_arr, None, kv_feat)
+                        out_arr = alg2.apply_qkv_output_transform(out_arr, v_dense, kv_feat)
                     elif stripped == "attn_output.weight":
-                        out_arr = alg2.apply_o_output_transform(out_arr, q_feat)
+                        out_arr = alg2.apply_o_output_transform(
+                            out_arr, q_feat, dense_input_transform=o_input_dense,
+                        )
 
         # Large matmul tensors: honour output_dtype. bf16 is the default
         # because the AloePri keymat construction creates ~1e-9 tail
@@ -813,6 +831,18 @@ def main(argv: list[str] | None = None) -> int:
                         help="Use ±1 Walsh-Hadamard Ĥ_qk instead of identity. Combine "
                              "with --alg2-qk-norm-matrix: keeps M_q orthogonal (H is "
                              "involutive), adds per-pair sign flips to the obfuscation.")
+    parser.add_argument("--alg2-u-vo", action="store_true",
+                        help="Enable U_vo random projection on the V-O composition "
+                             "(paper sec 5.2.3 step 4 + steps 6 alt / 7). V output is "
+                             "right-multiplied by U_vo (sampled per layer, paper "
+                             "default variance 1/d_head with QR-stabilisation); W_o "
+                             "input axis gets U_vo inverse block-diag per head. The "
+                             "two cancel through attention to preserve residual "
+                             "covariance, while adding per-deployment randomness on "
+                             "the V-O head_dim axis. Closes paper Table 4's "
+                             "0.82 to 0.0 percent HiddenState gap. Default off for "
+                             "backward compatibility with prior deployments; tag "
+                             "obfuscated GGUFs under a distinct name when enabling.")
     parser.add_argument("--output-dtype", choices=("fp32", "bf16"), default="bf16",
                         help="Precision for the large matmul tensors. Default bf16: "
                              "half the file size and 2× decode throughput vs fp32, "
@@ -839,6 +869,7 @@ def main(argv: list[str] | None = None) -> int:
                        alg2_qk_scale_range=(args.alg2_qk_scale_min, args.alg2_qk_scale_max),
                        alg2_qk_norm_matrix=args.alg2_qk_norm_matrix,
                        alg2_h_hadamard_signs=args.alg2_h_hadamard_signs,
+                       alg2_enable_u_vo=args.alg2_u_vo,
                        output_dtype=args.output_dtype)
     log.info("done: %s", info)
     return 0

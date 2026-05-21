@@ -3489,6 +3489,85 @@
                 per-pair shuffle damps the residual signal through the layer
                 stack. 8B's larger d gives the ridge inverter more room, lifting
                 l21 above the 15 % gate.
+                <b
+                  ><em
+                    >Note: this row uses the τ-leak attacker (deployment τ
+                    appears in training labels) and is over-powered relative to
+                    paper §3.2. See row below for paper-faithful threat-model
+                    measurement.</em
+                  ></b
+                >
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <b>ISA HiddenState (paper-faithful)</b>
+                <div class="alias">
+                  multi-α ridge at <code>attn_norm-17</code>; K=64 attacker
+                  keymats synthesised via Algorithm 1; row-split
+                  threat-model-realistic methodology
+                </div>
+              </td>
+              <td>
+                Recovers plain_id from runtime hidden state under paper §3.2
+                threat model (Kerckhoffs: algorithm + plain model + own
+                randomness, no deployment τ or K). Attacker runs <em>plain</em>
+                Qwen3 locally on own plaintext prompts → captures
+                <code>State_plain[L]</code>; samples K=64 own keymats;
+                synthesises
+                <code>State_a^k[L][i] = State_plain[L][i] @ K_a^k</code>; ridge
+                trains across multi-key concatenation, forcing key-invariant
+                inversion; tests on deployment's actual <code>State_d</code>.
+                Layer L=17 ≈ 48 % depth on 36-layer Q3 matches paper's
+                <code>attn_norm-23/48</code>. See
+                <code>docs/research/aloepri-attacks.md</code> §ISA HiddenState
+                for full step-by-step + layer-tradeoff space.
+              </td>
+              <td class="num">
+                0.0 % (Q2.5-14B, T1)<br /><span
+                  style="font-size: 11px; color: #888"
+                  >paper Table 4 ridge ISA — methodology not specified</span
+                >
+              </td>
+              <td class="num accent">
+                10.18 % top-1, 19.03 % top-10<br /><span
+                  style="font-size: 11px; color: #888"
+                  >(identity-τ calibration ceiling — attacker's no-defense ridge
+                  limit on this dataset)</span
+                >
+              </td>
+              <td class="num accent">
+                <b>5.11 % top-1, 21.17 % top-10</b><br /><span
+                  style="font-size: 11px; color: #888"
+                  >defence attenuates top-1 by ≈ 50 % vs plain ceiling</span
+                >
+              </td>
+              <td class="num" style="color: #a66; font-weight: bold">
+                <b>9.73 % top-1, 22.14 % top-10</b><br /><span
+                  style="font-size: 11px; color: #888"
+                  >top-1 attenuation ≈ 4 % only — marginal</span
+                >
+              </td>
+              <td>
+                <b
+                  >4B pass (5.11 %); 8B marginal (9.73 % top-1, near-zero
+                  attenuation).</b
+                >
+                Both pass paper's &lt; 15 % gate, but defence behaviour diverges
+                by size. 4B: plain ceiling 10.18 % → obf 5.11 % top-1 = ~50 %
+                relative attenuation, defence working as expected. 8B: plain
+                10.18 % → obf 9.73 % top-1 = ~4 % attenuation only, defence
+                essentially silent on top-1 (top-10 still attenuates 26.55 % →
+                22.14 % = 17 % — defence blurs the prediction distribution but
+                doesn't displace top-1). Bigger d_obs gives both attacker and
+                defender more room and at this attacker scale the attacker's
+                gain dominates — same direction we observed with IMA multi-key
+                (Q3-8B ≥ Q3-4B). Above paper's literal 0.0 % on Q2.5-14B,
+                attributable to smaller d_obs (2,816 / 4,352 vs paper's 5,376) +
+                Qwen3 attackability (paper Table 3: Q3-14B VMA = 25.05 % vs
+                Q2.5-14B VMA = 13.51 %) + covariance synthesis approximation
+                (training data slightly cleaner than deployment test). See
+                <code>evals/aloepri-attacks/m2_7/run_isa_multikey.py</code>.
               </td>
             </tr>
             <tr>

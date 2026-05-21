@@ -50,6 +50,8 @@ exec docker run --rm \
     -v "/tmp:/tmp" \
     -e HF_HOME="$HF_CACHE" \
     -e HOME="$HOME" \
+    -e ROCBLAS_USE_HIPBLASLT=1 \
+    -e PYTORCH_HIP_ALLOC_CONF=expandable_segments:True \
     -w "$REPO_DIR" \
     aloepri-ima-trainer:latest \
     python3 "evals/aloepri-attacks/m2_7/${IMA_DRIVER:-run_ima_embedrow_attacks.py}" "${extra_args[@]}" "$@"
