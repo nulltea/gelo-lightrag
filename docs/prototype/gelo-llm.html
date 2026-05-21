@@ -57,9 +57,20 @@
           <div class="k">GELO overhead — TTFT</div>
           <div class="v"><em>+93</em><span class="unit">% vs plain</span></div>
           <div class="sub">
-            Qwen3-4B prefill at n = 2 048 · MaskKind::Auto (HD₃ at pow2 / DCT-IV
-            otherwise) · post-Haar default · RADV iGPU · per-forward A +
-            shield(8,4.0)
+            Single-stream Qwen3-4B prefill at n = 2 048 · MaskKind::Auto · per-
+            forward A + shield(8,4.0) · RADV iGPU. M1.11 batched decode
+            amortises this overhead across B sequences (see next stat / §08).
+          </div>
+        </div>
+        <div class="stat">
+          <div class="k">Batched decode — wall amortisation</div>
+          <div class="v">
+            <em>5.23</em><span class="unit">× vs serial × B</span>
+          </div>
+          <div class="sub">
+            M1.11 stack at B = 8, K = 8 decode steps · synth Qwen3-4B-shape
+            (hidden 2560, 32/8 heads, 9728 intermediate) · 9.83 ms / step / seq
+            vs 50.56 ms serial baseline.
           </div>
         </div>
         <div class="stat">
@@ -3562,6 +3573,53 @@
           shape (Haar at n = 2 048: TTFT 25.87 s — see §08).
         </p>
 
+        <h4 style="margin-top: 32px">
+          M1.11 batched decode — per-sequence wall amortisation
+        </h4>
+        <p class="prose">
+          The two tables above are single-stream — they measure the intrinsic
+          GELO overhead at <code>B = 1</code>, the regime where iGPU dispatch is
+          launch-overhead-bound and there's no batch dimension to amortise
+          across. M1.11 restructures the substrate to put <code>B</code>
+          sequences in flight at once. The per-sequence wall drops sharply even
+          though the absolute GELO overhead vs plain is unchanged — batching is
+          an orthogonal lever to mask-family selection.
+        </p>
+        <table class="spec" style="margin-top: 12px">
+          <thead>
+            <tr>
+              <th>Regime</th>
+              <th>Per-sequence wall</th>
+              <th>vs serial × B</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Serial × B (no batching, no Rayon)</td>
+              <td class="num">50.6 ms / step / seq</td>
+              <td>(base)</td>
+            </tr>
+            <tr>
+              <td>
+                M1.11 batched stack (substrate + parallel shield + parallel
+                in-TEE attention)
+              </td>
+              <td class="num"><b>9.8 ms / step / seq</b></td>
+              <td>
+                <span class="accent"><b>5.23×</b></span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="prose" style="margin-top: 12px; font-size: 13px">
+          Synth Qwen3-4B-shape weights (4 layers, hidden 2560, 32 / 8 heads,
+          head_dim 128, intermediate 9728), <code>B = 8</code>,
+          <code>K = 8</code> decode steps over a random <code>n_kv = 64</code>
+          prefix. Real-weight measurement at full Qwen3-4B layer count is
+          pending the cross-chunk extraction integration (D-phase D2 / D3). See
+          §08 for the substrate description and per-bucket breakdown.
+        </p>
+
         <h4 style="margin-top: 24px">
           Correctness — argmax-stable token parity
         </h4>
@@ -4128,183 +4186,105 @@
           728).
         </p>
 
-        <h4 style="margin-top: 32px">
-          M1.11 — Batched forward + decode (2026-05-21)
-        </h4>
+        <h4 style="margin-top: 32px">M1.11 — Batched forward + decode</h4>
         <p class="prose">
-          Up through §07 the protocol ran one sequence at a time. Single- stream
-          decode at <code>n_q = 1</code> is launch-overhead-bound on the iGPU
-          (per the cubek-attention spike at
-          <code>docs/handoffs/2026-05-21-attn-offload-spike.md</code>: no GPU
-          strategy beats in-TEE attention at <code>B=1, m=1</code>). M1.11
-          introduces a batched substrate that amortises GPU dispatch, GELO mask
-          sampling, and per-block CPU work across <code>B</code> sequences in
-          flight. Plan: <code>docs/plans/m1-11-batched-decode.md</code>.
+          Single-stream decode at <code>n_q = 1</code> is kernel-launch-bound on
+          this iGPU: a prior spike confirmed no GPU strategy beats in-TEE
+          attention at <code>B = 1</code>. The protocol restructures to put
+          <code>B</code> sequences in flight at once, so GPU dispatch, GELO mask
+          sampling, and per-block CPU work all amortise across the batch. Three
+          architectural calls drive the design.
         </p>
 
-        <h4 style="margin-top: 16px">
-          Substrate — <code>SessionKind</code> enum + new brackets
-        </h4>
         <p class="prose">
-          <code
-            >InProcessTrustedExecutor::session: Option&lt;SessionKind&gt;</code
+          <strong>1. Mask topology by phase.</strong> At batched prefill each
+          sequence carries its own <code>(n_max+k)</code>-row mask
+          <code>A_b</code> — mathematically identical to the prior
+          per-Rayon-worker model, so the per-row security argument carries over
+          unchanged. At batched decode every sequence contributes one row, and
+          the executor offers two topologies: a default per-sequence path (the
+          same B independent masks, just at row count 1) and an opt-in shared
+          dense <code>A</code> of size <code>(B+k, B+k)</code> that mixes all B
+          current-token rows under one mask. The shared path is HD₃-aligned at
+          every <code>B</code> via the variable-k formula
+          <code>k = next_pow2(B + 8) − B</code> (always ≥ 8, the paper minimum).
+          It defaults off until the AloePri
+          <code>c5_batched_decode_shared_a</code> spot-check at
+          <code>B = 8</code>
+          clears.
+        </p>
+
+        <p class="prose">
+          <strong
+            >2. Per-block parallelism wherever the substrate allows.</strong
           >
-          replaces the prior single-mask
-          <code>Option&lt;SessionMask&gt;</code>:
+          Mask apply / unapply, shield-row Gaussian fill, and in-TEE causal
+          attention all rayon-iterate across the B sequence blocks. The
+          shield-fill case needed extra work — the parent RNG can only be
+          borrowed once at a time, so the executor pre-derives one Xoshiro256++
+          sub-stream seed per block before entering the parallel section. Each
+          closure constructs its own local RNG from its seed; per-element
+          distribution is unchanged, only the cross-block correlation structure
+          differs (invariant for the shield-energy argument since shield rows of
+          different sequences are independent by construction).
         </p>
-        <ul>
-          <li>
-            <code>SessionKind::Single { mask, data_n }</code> — non-batched
-            (legacy) OR opt-in shared-A batched decode. One mask covers all rows
-            of the stacked operand.
-          </li>
-          <li>
-            <code
-              >SessionKind::PerSequence { masks: Vec&lt;MaskFamily&gt;, data_n,
-              batch_size }</code
-            >
-            — default batched mode. One mask per sequence; the executor
-            rayon-iterates across blocks for mask apply / unapply with per-block
-            sub-stream RNGs for shield-row fill.
-          </li>
-        </ul>
-        <p class="prose">
-          New <code>TrustedExecutor</code> trait methods (default impls
-          degenerate to <code>begin_forward_pass(B·n)</code> for backends that
-          aren't batched-aware):
-        </p>
-        <ul>
-          <li>
-            <code>begin_prefill_pass(B, n_max)</code> — samples
-            <code>B</code> per-sequence masks of size
-            <code>(n_max + shield_k, n_max + shield_k)</code>. Used by
-            <code>forward::run_batched</code> /
-            <code>run_prefill_batched</code>.
-          </li>
-          <li>
-            <code>begin_decode_pass(B)</code> — at each decode step samples
-            <code>B</code> per-sequence masks of size
-            <code>(1 + 15, 1 + 15)</code> (shape-adaptive shield overlay at
-            <code>n = 1</code>). Setting
-            <code>BATCHED_DECODE_SHARED_A=1</code> switches to one shared dense
-            <code>A</code> of size <code>(B + k, B + k)</code> with
-            <code>k = shield_k_for_batch(B, 8)</code> — mixes
-            <code>B</code> current-token rows; HD₃-aligned at every
-            <code>B</code>. Gated on the AloePri
-            <code>c5_batched_decode_shared_a</code> spot-check at
-            <code>B = 8</code> per plan §7.1; default is per-sequence.
-          </li>
-        </ul>
 
-        <h4 style="margin-top: 16px">
-          <code>shield_k_for_batch</code> — variable-k for HD₃ alignment
+        <p class="prose">
+          <strong
+            >3. KV cache layout = <code>(B, max_cache_len, kv_dim)</code> per
+            layer.</strong
+          >
+          Per-sequence valid lengths grow at their own pace under
+          <code>append_decode</code> (one row per sequence per step) or
+          <code>append_prefill</code> (variable prompt lengths). The attention
+          call site reads each sequence's prefix slice independently, so SWA /
+          global / Gemma-4 K=V-shared layers all carry over without change.
+        </p>
+
+        <h4 style="margin-top: 24px">
+          Decode-step result — synthetic Qwen3-4B-shape, B=8
         </h4>
         <p class="prose">
-          The shape-adaptive shield overlay generalises to a formula:
-          <code>k = next_pow2(B + k_base) − B</code> with floor
-          <code>k_base = 8</code> (paper minimum). Always lands
-          <code>stacked_n = B + k</code> on a power of two, so
-          <code>MaskKind::Auto</code> resolves to HD₃ at every batch size.
-          Excess <code>k</code> beyond <code>k_base</code> only adds shield rows
-          (monotonically safer per the GELO §4.2 shield-energy argument);
-          worst-case <code>k = 2 · k_base − 1 = 15</code>.
-        </p>
-
-        <h4 style="margin-top: 16px">Batched KV cache</h4>
-        <p class="prose">
-          <code>KvCache</code> becomes batch-aware:
-          <code>Array3&lt;f32&gt;</code> of
-          <code>(B, max_cache_len, kv_dim)</code> per layer with a
-          <code>Vec&lt;usize&gt;</code> of per-sequence valid lengths.
-          <code>KvCache::new</code> wraps <code>new_batched(1, …)</code>; all
-          single-stream callers stay working. New API:
-          <code>append_prefill(li, b, …)</code>,
-          <code>append_decode(li, K_batched, V_batched)</code> (one row per
-          sequence at each sequence's current <code>lens[b]</code>),
-          <code>view_b(li, b)</code>, <code>lens(li)</code>.
-        </p>
-
-        <h4 style="margin-top: 16px">Public APIs</h4>
-        <ul>
-          <li>
-            <code
-              >forward::run_batched(input_ids: &amp;[Vec&lt;u32&gt;]) →
-              (Array3&lt;f32&gt;, Vec&lt;usize&gt;)</code
-            >
-            — batched prefill for embedder/reranker workloads (no KV cache; pure
-            forward).
-          </li>
-          <li>
-            <code
-              >forward::run_prefill_batched(…, kv_cache: &amp;mut KvCache)</code
-            >
-            — same forward but populates per-sequence KV for the subsequent
-            decode loop.
-          </li>
-          <li>
-            <code
-              >forward::run_decode_step_batched(token_ids: &amp;[u32], kv_cache:
-              &amp;mut KvCache) → Array2&lt;f32&gt;</code
-            >
-            — one batched decode step at <code>(B, hidden)</code>.
-          </li>
-          <li>
-            <code
-              >generation::generate_batched(prompts: &amp;[Vec&lt;u32&gt;],
-              gen_cfg) → Vec&lt;GenerationOutput&gt;</code
-            >
-            — full prefill + decode + per-sequence EOS-padding sampling loop.
-            Finished sequences feed a <code>&lt;pad&gt;</code> token on
-            subsequent steps; their output rows are discarded (break-even vs
-            KV-cache compaction at ~30% EOS divergence per plan §2).
-          </li>
-        </ul>
-
-        <h4 style="margin-top: 16px">
-          Decode-step microbench — serial × B vs batched at B
-        </h4>
-        <p class="prose">
-          Synthetic Qwen3-4B-shape weights (4 layers,
-          <code>hidden = 2560</code>, <code>32 / 8</code> attention heads,
-          <code>head_dim = 128</code>, <code>intermediate = 9728</code>),
-          <code>n_kv = 64</code> random prefix per sequence,
-          <code>K = 8</code> decode steps, <code>B = 8</code>.
-          <code>BATCHED_DECODE_SHARED_A</code> off (default per-sequence A_b).
-          Bench:
-          <code>crates/gelo-gpu-wgpu/tests/decode_step_batched_bench.rs</code>.
+          Four-layer Qwen3-4B-shape weights (hidden 2560, 32 / 8 heads, head_dim
+          128, intermediate 9728), <code>K = 8</code> decode steps over a random
+          <code>n_kv = 64</code> prefix, Strix Halo iGPU. Baseline is B serial
+          single-stream decode steps (no concurrency, no Rayon — the acceptance
+          baseline for M1.11 batched paths). Three consecutive optimisations:
         </p>
         <table class="spec" style="margin-top: 12px">
           <thead>
             <tr>
-              <th>Stage</th>
-              <th>Total (ms)</th>
+              <th>Stack</th>
+              <th>Wall (ms)</th>
               <th>Per-step-per-seq (ms)</th>
-              <th>Speedup vs serial</th>
+              <th>vs serial</th>
             </tr>
           </thead>
           <tbody>
             <tr>
-              <td><b>Serial × B</b> (baseline)</td>
+              <td>Serial × B (baseline)</td>
               <td class="num">3 240</td>
-              <td class="num">50.56</td>
+              <td class="num">50.6</td>
               <td>(base)</td>
             </tr>
             <tr>
-              <td>D1 batched (R1.2 substrate)</td>
+              <td>+ batched substrate (mask topology + KV layout)</td>
               <td class="num">751</td>
-              <td class="num">11.73</td>
+              <td class="num">11.7</td>
               <td><span class="accent">4.31×</span></td>
             </tr>
             <tr>
-              <td>+ D1.7 (per-block shield_stack with sub-stream RNGs)</td>
+              <td>+ parallel shield-fill with sub-stream RNGs</td>
               <td class="num">680</td>
-              <td class="num">10.63</td>
+              <td class="num">10.6</td>
               <td><span class="accent">4.80×</span></td>
             </tr>
             <tr>
-              <td><b>+ D1.8 (rayon-parallel batched in-TEE attention)</b></td>
+              <td>
+                <b>+ rayon-parallel batched in-TEE attention (final stack)</b>
+              </td>
               <td class="num"><b>629</b></td>
-              <td class="num"><b>9.83</b></td>
+              <td class="num"><b>9.8</b></td>
               <td>
                 <span class="accent"><b>5.23×</b></span>
               </td>
@@ -4313,134 +4293,61 @@
         </table>
 
         <h4 style="margin-top: 24px">
-          Per-bucket breakdown (post-D1.8 batched)
+          Where the wall goes (post-optimisation)
         </h4>
         <table class="spec" style="margin-top: 8px">
           <thead>
             <tr>
               <th>Bucket</th>
-              <th>Serial ms (B=8 K=8)</th>
-              <th>Batched ms</th>
+              <th>Serial</th>
+              <th>Batched</th>
               <th>Batched share</th>
-              <th>Notes</th>
             </tr>
           </thead>
           <tbody>
             <tr>
-              <td><code>engine:matmul</code></td>
-              <td class="num">1 249</td>
-              <td class="num">244</td>
-              <td class="num">38.9%</td>
-              <td>
-                Vulkan iGPU dispatch (O, FfnDown). 8× fewer calls; per-call grew
-                1.5× — confirms m=1 GEMM launch-overhead-bound on serial.
-              </td>
+              <td>GPU matmul (single + many)</td>
+              <td class="num">2 408 ms</td>
+              <td class="num">444 ms</td>
+              <td class="num">70.9 %</td>
             </tr>
             <tr>
-              <td><code>engine:matmul_many</code></td>
-              <td class="num">1 159</td>
-              <td class="num">200</td>
-              <td class="num">32.0%</td>
-              <td>QKV-fused + gate/up-fused. Same 8× dispatch crash.</td>
+              <td>GELO mask apply + unapply</td>
+              <td class="num">580 ms</td>
+              <td class="num">115 ms</td>
+              <td class="num">18.5 %</td>
             </tr>
             <tr>
-              <td><code>gelo:mask_unapply</code></td>
-              <td class="num">383</td>
-              <td class="num">70</td>
-              <td class="num">11.3%</td>
-              <td>CPU rayon-parallel across B (M1.11 R1.5).</td>
+              <td>Shield-row fill</td>
+              <td class="num">181 ms</td>
+              <td class="num">40 ms</td>
+              <td class="num">6.4 %</td>
             </tr>
             <tr>
-              <td><code>gelo:mask_apply</code></td>
-              <td class="num">197</td>
-              <td class="num">45</td>
-              <td class="num">7.2%</td>
-              <td>Same rayon parallelism as unapply.</td>
+              <td>In-TEE causal attention</td>
+              <td class="num">89 ms</td>
+              <td class="num">17 ms</td>
+              <td class="num">2.7 %</td>
             </tr>
             <tr>
-              <td><code>gelo:shield_stack</code></td>
-              <td class="num">181</td>
-              <td class="num">40</td>
-              <td class="num">6.4%</td>
-              <td>
-                D1.7: pre-derive B Xoshiro sub-stream seeds; rayon over blocks.
-              </td>
-            </tr>
-            <tr>
-              <td><code>tee:attn_cached_inplace_many</code></td>
-              <td class="num">89</td>
-              <td class="num">17</td>
-              <td class="num">2.7%</td>
-              <td>
-                D1.8: rayon over B sequences. R1.4 (batched GPU attention
-                kernel) stays deferred until this passes ~10%.
-              </td>
-            </tr>
-            <tr>
-              <td>
-                other (RMSNorm, RoPE, SwiGLU, residual, embed, sample, strip)
-              </td>
-              <td class="num">17</td>
-              <td class="num">11</td>
-              <td class="num">1.7%</td>
-              <td>—</td>
+              <td>Other CPU (RMSNorm, RoPE, SwiGLU, residual)</td>
+              <td class="num">17 ms</td>
+              <td class="num">11 ms</td>
+              <td class="num">1.7 %</td>
             </tr>
           </tbody>
         </table>
-
-        <p class="prose" style="margin-top: 16px">
-          Cumulative D1.6 → D1.8 batched wall:
-          <strong>751 → 629 ms</strong> (−16%); speedup vs serial:
-          <strong>4.31× → 5.23×</strong>. GPU is now 70.9% of batched wall — CPU
-          side (mask + shield + in-TEE attention combined: 27.6%) is
-          well-amortised across the 32-thread Strix Halo. Further
-          non-architectural levers all sit outside M1.11 scope: Q4 quantised
-          weights (the GPU bucket; see §08), bf16 mask GEMM (the mask buckets —
-          deferred per <code>bf16_mask_gemm_skipped.md</code>), and R1.4
-          batched-attention GPU kernel (not worthwhile at the current 2.7%
-          share; would only matter at much larger <code>n_kv</code>).
-        </p>
-
-        <h4 style="margin-top: 16px">Mask topology — security trade-offs</h4>
-        <table class="spec" style="margin-top: 8px">
-          <thead>
-            <tr>
-              <th>Phase</th>
-              <th>Default topology</th>
-              <th>Opt-in topology</th>
-              <th>AloePri gate</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>Batched prefill (R1)</td>
-              <td>Per-sequence A_b (size n_max+k each)</td>
-              <td>—</td>
-              <td><code>c4_batched_rerank</code> at B=16 spot-check</td>
-            </tr>
-            <tr>
-              <td>Batched decode (D1)</td>
-              <td>Per-sequence A_b (size 1+15 each)</td>
-              <td>
-                Shared dense A (size B+k) via
-                <code>BATCHED_DECODE_SHARED_A=1</code>
-              </td>
-              <td>
-                <code>c5_batched_decode_shared_a</code> at B=8 spot-check (gates
-                default-on)
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        <p class="prose" style="margin-top: 8px; font-size: 13px">
-          Per-sequence default preserves the per-row GELO security argument
-          unchanged — same A_b structure as a single-stream forward, just
-          dispatched as one batched engine call. Shared-A opt-in mixes B
-          current-token rows under one mask (HD₃ at every B via
-          <code>shield_k_for_batch</code>) but needs the c5 attack-suite gate
-          before defaulting on. Fallback ladder per plan §7.1: if c5 flags, the
-          flag never flips and the per-sequence path stays as the only
-          production topology.
+        <p class="prose" style="margin-top: 12px">
+          GPU dispatch count crashes 8× (the structural M1.11 win); per-call GPU
+          work grew only 1.5×, which confirms that single-stream
+          <code>m = 1</code> matmuls were heavily launch-overhead-bound. CPU
+          side is fully amortised across the 32-thread Strix Halo — every
+          remaining bucket is now rayon-parallel. With GPU at 70.9 % of batched
+          wall, the next levers all sit outside M1.11: Q4 quantised GPU weights
+          (cuts the dominant bucket), bf16 mask GEMM (deferred per the bf16-mask
+          analysis above), and a batched GPU attention kernel (deferred — the
+          in-TEE bucket is only 2.7 % so the kernel work isn't justified until
+          longer-<code>n_kv</code> workloads appear).
         </p>
       </section>
 

@@ -2078,84 +2078,63 @@
           Tracked in §08 as the first follow-up.
         </p>
 
-        <h4 style="margin-top: 32px">
-          M1.11 R2 — Batched prefill (2026-05-21)
-        </h4>
+        <h4 style="margin-top: 32px">M1.11 R2 — Batched prefill</h4>
         <p class="prose">
-          The k′=20 numbers above ride the Rayon per-candidate fan-out (L2): N
-          cloned executors, each running its own single-stream
-          <code>forward::run</code>, joined by <code>rayon::par_iter</code>.
-          Rayon extracts CPU parallelism for free, but each forward still pays
-          its own GELO mask sample, its own engine dispatch per layer, and
-          contends for the iGPU's serial work queue. M1.11 R2 introduces
-          <code>score_candidates_batched</code>: one
-          <code>forward::run_batched</code> call covers all N (query, doc)
-          prompts in one batched forward, with per-sequence A_b masks (default)
-          and one batched engine dispatch per layer. Plan:
-          <code>docs/plans/m1-11-batched-decode.md</code> §4.
+          The L2 path above runs N rerank candidates through Rayon as N
+          independent single-stream forwards. That extracts CPU parallelism, but
+          each forward pays its own GELO mask sample and its own per-layer GPU
+          dispatch, and N forwards contend for the iGPU's serial work queue.
+          M1.11 R2 restructures rerank so all N (query, doc) pairs ride one
+          batched forward: one prefill pass with N per-sequence masks
+          <code>A_b</code> derived from a shared batched-forward seed, one GPU
+          dispatch per layer covering the whole batch. The per-row security
+          argument is unchanged from the Rayon-per-worker model — identical
+          <code>A_b</code> structure, just dispatched as one batched call — so
+          no new AloePri derivation is required (the <code>c4</code> spot-check
+          at B=16 is paranoia rather than protocol revision).
         </p>
 
+        <h4 style="margin-top: 16px">Result — Qwen3-Reranker-0.6B, B = 8</h4>
         <p class="prose">
-          Substrate-level:
-          <code>TrustedExecutor::begin_prefill_pass(B, n_max)</code> samples B
-          per-sequence Haar/HD₃ masks of size
-          <code>(n_max + shield_k, n_max + shield_k)</code> each. The
-          per-Rayon-worker model would have sampled one A per worker
-          independently; the batched model derives B masks from one
-          batched-forward seed and applies them rayon-parallel across blocks
-          (M1.11 R1.5). Mathematically identical to the Rayon-per-worker per-row
-          security argument — no new AloePri derivation needed; the spot-check
-          gate <code>c4_batched_rerank</code> at B=16 is paranoia, not
-          protocol-revision.
-        </p>
-
-        <h4 style="margin-top: 16px">
-          R3 perf gate — Qwen3-Reranker-0.6B, B=8
-        </h4>
-        <p class="prose">
-          A/B against <strong>serial</strong> single-stream
-          <code>score_pair</code> × N (no concurrency, no Rayon), not against
-          the existing Rayon path. Per the
-          <code>feedback_perf_baseline_unbatched_not_rayon</code> memory: Rayon
-          is orthogonal CPU parallelism; the M1.11 acceptance baseline is
-          batched vs serial so the batched design's mechanism (GPU dispatch
-          amortisation + per-sequence mask vectorisation) is legible in
-          isolation. Bench:
-          <code
-            >crates/gelo-reranker/tests/comparative_bench.rs::qwen3_batched_vs_serial</code
-          >.
+          A/B against <strong>serial</strong> single-stream rerank × N (no
+          concurrency, no Rayon). The acceptance baseline is deliberately *not*
+          the existing Rayon path: Rayon is orthogonal CPU parallelism that the
+          batched design composes with, not against. Measuring against serial
+          lets the M1.11 mechanism (GPU dispatch amortisation + per-sequence
+          mask vectorisation) appear in isolation. Two subsequent CPU-side
+          optimisations stack on top of the substrate.
         </p>
         <table class="spec" style="margin-top: 8px">
           <thead>
             <tr>
-              <th>Variant</th>
-              <th>Total (B=8)</th>
+              <th>Stack</th>
+              <th>Wall (B = 8)</th>
               <th>Per-pair</th>
-              <th>Speedup vs serial</th>
+              <th>vs serial</th>
             </tr>
           </thead>
           <tbody>
             <tr>
-              <td><b>Serial × B</b> — <code>score_pair</code> × 8, no Rayon</td>
+              <td>Serial × B (baseline)</td>
               <td class="num">6.08 s</td>
               <td class="num">760 ms</td>
               <td>(base)</td>
             </tr>
             <tr>
-              <td>M1.11 R2 (R1.2 substrate)</td>
+              <td>+ batched substrate</td>
               <td class="num">2.54 s</td>
               <td class="num">317 ms</td>
               <td><span class="accent">2.07×</span></td>
             </tr>
             <tr>
-              <td>+ R1.5 (rayon-parallel per-block mask apply/unapply)</td>
+              <td>+ rayon-parallel per-block mask apply/unapply</td>
               <td class="num">~2.00 s</td>
               <td class="num">~250 ms</td>
               <td><span class="accent">~3×</span></td>
             </tr>
             <tr>
               <td>
-                <b>+ R1.6 (matmul_many under PerSequence for QKV + gate/up)</b>
+                <b>+ batched matmul_many for QKV + SwiGLU gate/up (final)</b>
               </td>
               <td class="num"><b>1.86 s</b></td>
               <td class="num"><b>233 ms</b></td>
@@ -2163,139 +2142,75 @@
                 <span class="accent"><b>3.27×</b></span>
               </td>
             </tr>
-            <tr>
-              <td>(re-run, same code; ±10% shared-memory variance)</td>
-              <td class="num">1.67 s</td>
-              <td class="num">209 ms</td>
-              <td><span class="accent">3.66×</span></td>
-            </tr>
           </tbody>
         </table>
-
-        <p class="prose" style="margin-top: 16px">
-          Hardware: Strix Halo iGPU (RADV GFX1151, Vulkan), Qwen3-Reranker-0.6B
-          (28 layers, 1024 hidden, 16/2 attention heads). Speedup ratio is the
-          load-bearing number; the absolute wall fluctuates ±10% on this iGPU
-          because GPU and CPU share unified memory.
+        <p class="prose" style="margin-top: 12px">
+          Hardware: Strix Halo iGPU (RADV GFX1151, Vulkan). Speedup ratio is the
+          load-bearing number; absolute wall fluctuates ±10 % across runs
+          because the iGPU and CPU share unified memory.
         </p>
 
         <h4 style="margin-top: 16px">
-          Per-bucket breakdown (instrumented run)
+          Where the wall goes (post-optimisation)
         </h4>
-        <p class="prose">
-          Profile bracketed with <code>profile::reset()</code> /
-          <code>profile::snapshot()</code> around the measured rerank call.
-          Rayon-parallel sections are wrapped in <code>profile::time</code> at
-          the dispatch boundary so the main-thread wall covers the parallel
-          work.
-        </p>
         <table class="spec">
           <thead>
             <tr>
               <th>Bucket</th>
-              <th>Serial ms (B=8)</th>
-              <th>Batched ms</th>
+              <th>Serial</th>
+              <th>Batched</th>
               <th>Batched share</th>
-              <th>Notes</th>
             </tr>
           </thead>
           <tbody>
             <tr>
-              <td><code>engine:matmul_many</code></td>
-              <td class="num">3 058</td>
-              <td class="num">705</td>
-              <td class="num">42.8%</td>
-              <td>
-                QKV-fused + gate/up-fused — one matmul_many per layer under
-                PerSequence (R1.6).
-              </td>
+              <td>GPU matmul (single + many)</td>
+              <td class="num">3 901 ms</td>
+              <td class="num">989 ms</td>
+              <td class="num">60.0 %</td>
             </tr>
             <tr>
-              <td><code>engine:matmul</code></td>
-              <td class="num">843</td>
-              <td class="num">284</td>
-              <td class="num">17.2%</td>
-              <td>
-                O + FfnDown. Per-call grew 1.8× under batching but call-count
-                dropped 8× — confirms serial mode was kernel-launch-bound.
-              </td>
+              <td>GELO mask apply + unapply</td>
+              <td class="num">1 822 ms</td>
+              <td class="num">392 ms</td>
+              <td class="num">23.8 %</td>
             </tr>
             <tr>
-              <td><code>gelo:mask_unapply</code></td>
-              <td class="num">1 134</td>
-              <td class="num">250</td>
-              <td class="num">15.2%</td>
-              <td>R1.5: rayon-parallel per-block A_bᵀ unmask.</td>
+              <td>Shield-row fill</td>
+              <td class="num">68 ms</td>
+              <td class="num">116 ms</td>
+              <td class="num">7.0 %</td>
             </tr>
             <tr>
-              <td><code>gelo:mask_apply</code></td>
-              <td class="num">688</td>
-              <td class="num">142</td>
-              <td class="num">8.6%</td>
-              <td>Same per-block rayon.</td>
+              <td>In-TEE causal attention (per-sequence loop)</td>
+              <td class="num">50 ms</td>
+              <td class="num">56 ms</td>
+              <td class="num">3.4 %</td>
             </tr>
             <tr>
-              <td><code>gelo:shield_stack</code></td>
-              <td class="num">68</td>
-              <td class="num">116</td>
-              <td class="num">7.0%</td>
-              <td>
-                Pre-D1.7 — RNG was serial. Post-D1.7 the per-block RNG
-                sub-streams unlock parallel fill.
-              </td>
-            </tr>
-            <tr>
-              <td>
-                <code>tee:attn_batched_stopgap</code> (R1.3) →
-                <code>tee:attn_inplace_many</code>
-              </td>
-              <td class="num">50</td>
-              <td class="num">56</td>
-              <td class="num">3.4%</td>
-              <td>
-                Per-sequence in-TEE causal attention loop. Below the ~10% R1.4
-                trigger; batched-kernel GPU offload stays deferred.
-              </td>
-            </tr>
-            <tr>
-              <td>other</td>
-              <td class="num">≈ 230</td>
-              <td class="num">≈ 95</td>
-              <td class="num">5.8%</td>
-              <td>RMSNorm, QK-norm, RoPE, SwiGLU, residual, yes/no head.</td>
+              <td>Other CPU (norms, RoPE, SwiGLU, head, …)</td>
+              <td class="num">≈ 230 ms</td>
+              <td class="num">≈ 95 ms</td>
+              <td class="num">5.8 %</td>
             </tr>
           </tbody>
         </table>
-
-        <p class="prose" style="margin-top: 16px">
-          GPU dispatch count crashes 8× (serial 896 dispatches → batched 112)
-          and total CPU mask work shrinks ≈ 4.7×. GPU is 60% of batched wall;
-          the design lands as expected for a private-rerank workload that's
-          GPU-bandwidth-bound on the projection matmuls.
+        <p class="prose" style="margin-top: 12px">
+          GPU dispatch count crashes 8× (896 → 112) and total CPU mask work
+          shrinks ≈ 4.7×. GPU now dominates batched wall at 60 % — the
+          characteristic shape of a GPU-bandwidth-bound private-rerank workload
+          on this iGPU. Shield-fill share grows in relative terms even though
+          the bucket size doesn't change much; the D1.7 sub-stream RNG
+          optimisation lands in the decode bench and carries over for
+          decode-shaped reranker workloads, but rerank at B = 8 doesn't yet show
+          it as a top-tier bucket.
         </p>
 
-        <h4 style="margin-top: 16px">API surface — batched rerank</h4>
-        <ul>
-          <li>
-            <strong>Public:</strong> <code>RerankService::rerank</code> defaults
-            to <code>score_candidates_batched</code> when
-            <code>candidates.len() &gt; 1</code>; emits the encrypted bundle
-            exactly as before. No client-side change.
-          </li>
-          <li>
-            <strong>Internal (test/bench only):</strong>
-            <code>score_candidates_batched</code> is <code>pub(crate)</code>;
-            the in-source R2 acceptance test compares per-candidate scores to
-            serial <code>score_pair</code> to f32 mask floor.
-          </li>
-          <li>
-            <strong>Legacy fallback:</strong>
-            <code>score_candidates_parallel</code> (the Rayon-per-worker path)
-            marked <code>#[deprecated]</code> and gated to the single-pair fast
-            path or the <code>GELO_RERANKER_LEGACY_RAYON=1</code> A/B escape
-            hatch. Kept under deprecate-but-don't-delete per plan §8 #11.
-          </li>
-        </ul>
+        <p class="prose" style="margin-top: 16px">
+          Client interface unchanged: the rerank service still emits a
+          fixed-shape AES-GCM bundle exactly as before. The batched path is
+          chosen automatically when more than one candidate is submitted.
+        </p>
 
         <h4 style="margin-top: 32px">Protocol fidelity</h4>
         <p class="prose">
