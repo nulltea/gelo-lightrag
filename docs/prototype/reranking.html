@@ -1,945 +1,2535 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>private-rag — reranking (GELO)</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,300..900,0..100,0..1&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/site.css">
-</head>
-<body>
-<div class="sheet">
-  <span class="crosshair tl"></span>
-  <span class="crosshair tr"></span>
-  <span class="crosshair bl"></span>
-  <span class="crosshair br"></span>
-  <!-- ─── TOP NAV (shared, see _nav.js) ─── -->
-  <div id="topnav-mount"></div>
-  <script src="_nav.js" defer></script>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>private-rag — reranking (GELO)</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,300..900,0..100,0..1&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="css/site.css" />
+  </head>
+  <body>
+    <div class="sheet">
+      <span class="crosshair tl"></span>
+      <span class="crosshair tr"></span>
+      <span class="crosshair bl"></span>
+      <span class="crosshair br"></span>
+      <!-- ─── TOP NAV (shared, see _nav.js) ─── -->
+      <div id="topnav-mount"></div>
+      <script src="_nav.js" defer></script>
 
-  <!-- ─── MASTHEAD ─── -->
-  <header class="masthead">
-    <div>
-      <h1 class="title">reranking<br><em>— GELO</em></h1>
-      <p class="subtitle">Two architecture-typed rerank services share one trait, both ride the same GELO mask + TwinShield primitives the embedder validated. Scores never leave the TEE — the only wire emission is a fixed-shape, shuffled, AES-GCM-encrypted bundle whose rank is sealed inside each ciphertext.</p>
-    </div>
-    <div class="colophon">
-      <div><b>protocol</b>&nbsp;&nbsp;GELO + TwinShield + HKDF re-encrypt</div>
-      <div><b>TEE</b>&nbsp;&nbsp;AMD SEV-SNP CVM</div>
-      <div><b>GPU</b>&nbsp;&nbsp;commodity Vulkan via VFIO</div>
-      <div><b>models</b>&nbsp;&nbsp;bge-reranker-v2-m3 · Qwen3-Reranker-0.6B</div>
-      <span class="rev">scores stay sealed inside the boundary</span>
-    </div>
-  </header>
+      <!-- ─── MASTHEAD ─── -->
+      <header class="masthead">
+        <div>
+          <h1 class="title">reranking<br /><em>— GELO</em></h1>
+          <p class="subtitle">
+            Two architecture-typed rerank services share one trait, both ride
+            the same GELO mask + TwinShield primitives the embedder validated.
+            Scores never leave the TEE — the only wire emission is a
+            fixed-shape, shuffled, AES-GCM-encrypted bundle whose rank is sealed
+            inside each ciphertext.
+          </p>
+        </div>
+        <div class="colophon">
+          <div>
+            <b>protocol</b>&nbsp;&nbsp;GELO + TwinShield + HKDF re-encrypt
+          </div>
+          <div><b>TEE</b>&nbsp;&nbsp;AMD SEV-SNP CVM</div>
+          <div><b>GPU</b>&nbsp;&nbsp;commodity Vulkan via VFIO</div>
+          <div>
+            <b>models</b>&nbsp;&nbsp;bge-reranker-v2-m3 · Qwen3-Reranker-0.6B
+          </div>
+          <span class="rev">scores stay sealed inside the boundary</span>
+        </div>
+      </header>
 
-  <!-- ─── HEADLINE STATS ─── -->
-  <div class="stat-strip">
-    <div class="stat">
-      <div class="k">bge rerank · k′=20</div>
-      <div class="v"><em>3.02</em><span class="unit">s batch</span></div>
-      <div class="sub">bge-reranker-v2-m3 · rayon-parallel candidates · 1.19 s single-pair</div>
-    </div>
-    <div class="stat">
-      <div class="k">Qwen3 rerank · k′=20</div>
-      <div class="v"><em>6.48</em><span class="unit">s batch</span></div>
-      <div class="sub">Qwen3-Reranker-0.6B · rayon-parallel candidates · 1.83 s single-pair</div>
-    </div>
-    <div class="stat">
-      <div class="k">bundle k_max</div>
-      <div class="v"><em>k</em><span class="unit">_max items</span></div>
-      <div class="sub">always padded · shuffled · rank sealed inside each ciphertext</div>
-    </div>
-    <div class="stat">
-      <div class="k">HKDF labels</div>
-      <div class="v">v1<span class="unit"></span></div>
-      <div class="sub">gelo-rerank.session.v1 · gelo-rerank.query.v1</div>
-    </div>
-  </div>
-
-  <!-- ═════ § 1 ROLE ═════ -->
-  <section id="role">
-    <header class="section-head">
-      <div class="section-num">§01</div>
-      <h2 class="section-title">Role in the project</h2>
-      <div class="section-meta">where this fits</div>
-    </header>
-    <p class="lede">
-      The reranker is the post-retrieval refinement step in private RAG. After CAPRISE-decrypted top-<code>k_prime</code> candidates land back inside the CVM (see <a href="embedding.html">Embedding</a> + <a href="storage.html">Storage</a>), the reranker re-scores each <code>(query, chunk)</code> pair with a more precise relevance model and selects the final <code>k_final</code>. Two facts make this step its own privacy primitive rather than a thin extension of retrieval.
-    </p>
-    <div class="prose">
-      <p><strong>The score function changes</strong>, but more importantly the score <em>itself</em> becomes a new exit channel. A bi-encoder cosine score on the storage server is already encrypted by CAPRISE — the server learns rank order, not absolute scores. A cross-encoder or causal-LM discriminator score is a plaintext scalar that lives wherever the reranker runs. If exported in plaintext, accumulating scores across queries inverts back to query content. The mitigation here — score never exits the TEE, only the encrypted ordered set — is <strong>structural rather than statistical</strong>: there's nothing to bound because there's nothing to leak.</p>
-      <p><strong>The model is openweight</strong> and runs the same GELO mask + TwinShield primitives the embedder validated. No new cryptography, no new protocol layer; the rerank service is an architecture-typed wrapper over the existing <code>gelo-embedder</code> BERT and decoder forward paths, plus a small head module and a per-query HKDF re-encryption pass.</p>
-      <p>The design pulls the reranker fully <em>inside</em> the trust boundary — ingest, retrieve, rerank, re-encrypt all happen in the CVM. The only wire emission per query is <code>k_max</code> AES-GCM ciphertexts of constant per-item size. A host observer can correlate count, timing, and ciphertext shape but learns nothing about scores, score distribution, rank order, or chunk identity.</p>
-    </div>
-  </section>
-
-  <!-- ═════ § 2 DEFINITIONS ═════ -->
-  <section id="defs">
-    <header class="section-head">
-      <div class="section-num">§02</div>
-      <h2 class="section-title">Definitions &amp; glossary</h2>
-      <div class="section-meta">rerank-specific terms · protocol terms cross-referenced</div>
-    </header>
-    <p class="lede">Protocol primitives (mask, shield, U-Verify, OutAttnMult) are defined in <a href="embedding.html#defs">embedding §02</a>. Only rerank-specific additions are listed here.</p>
-    <table class="spec">
-      <thead>
-        <tr><th style="width:22%">Term</th><th>Definition</th></tr>
-      </thead>
-      <tbody>
-        <tr><td><strong>Cross-encoder</strong></td><td>Reranker family that concatenates <code>(query, candidate)</code> as one sequence and runs a single forward pass to produce a relevance score. Higher accuracy than dual-encoder cosine; higher cost. Today's example: <code>BAAI/bge-reranker-v2-m3</code> (XLM-RoBERTa-large, 24 layers).</td></tr>
-        <tr><td><strong>Causal-LM discriminator</strong></td><td>Reranker family that uses a causal decoder to score whether the candidate answers the query. Example: <code>Qwen3-Reranker-0.6B</code> — Qwen3 backbone, 28 layers, sigmoid-of-yes-token at the last position.</td></tr>
-        <tr><td><strong><code>k_max</code></strong></td><td>Fixed bundle size emitted on every rerank request. The TEE returns exactly <code>k_max</code> shuffled, AES-GCM-sealed score items regardless of true <code>top_k</code> — the wire pattern reveals nothing about how many candidates actually scored above threshold.</td></tr>
-        <tr><td><strong>Bundle ciphertext</strong></td><td>Per-candidate AES-GCM seal of <code>(rank, score, candidate_id)</code> under <code>QueryKey = HKDF(SessionKey, "rerank.score.v1", query_id)</code>. Rank is sealed <em>inside</em> each ciphertext — order on the wire is shuffled, so an observer cannot read rank from position.</td></tr>
-        <tr><td><strong><code>QueryKey</code></strong></td><td>Per-query symmetric key derived in-TEE from the session secret. Disposed at request end so a future TEE break cannot retroactively open old bundles.</td></tr>
-        <tr><td><strong>Stage-1 / Stage-2</strong></td><td>Stage-1 = the embedder's ANN candidate set (top <code>k′</code> by ciphertext cosine). Stage-2 = the reranker re-scores those candidates with a heavier model.</td></tr>
-      </tbody>
-    </table>
-  </section>
-
-  <!-- ═════ § 3 THREAT MODEL ═════ -->
-  <section id="threats">
-    <header class="section-head">
-      <div class="section-num">§03</div>
-      <h2 class="section-title">Threat model</h2>
-      <div class="section-meta">what each component sees · what it cannot</div>
-    </header>
-    <p class="lede">
-      Same trust posture as the embedder, extended to cover the rerank-specific exit channel.
-    </p>
-
-    <table class="spec">
-      <thead>
-        <tr>
-          <th>Component</th>
-          <th>Trust</th>
-          <th>What it sees</th>
-          <th>What it does NOT see</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr><td>User-side text</td><td>confidential</td><td>—</td><td>—</td></tr>
-        <tr><td>TEE (SEV-SNP CVM)</td><td class="accent">trusted</td><td>query · candidate chunk plaintext · scores · rank order · mask state · model weights</td><td>—</td></tr>
-        <tr><td>GPU + driver + PCIe</td><td>untrusted</td><td>public model weights · per-batch masked activations <code>U=A·H</code> · integrity-probed matmul results</td><td>clean activations · mask <code>A</code> · scores · query · doc text</td></tr>
-        <tr><td>TEE host (CVM operator)</td><td>untrusted</td><td>encrypted CVM memory · masked PCIe traffic · per-query AES-GCM ciphertexts · fixed <code>k_max</code> count · per-item size</td><td>scores · rank order · chunk identity · query content · model output before encryption</td></tr>
-        <tr><td>Network operator</td><td>untrusted</td><td>TLS-wrapped requests · attestation evidence</td><td>RATLS contents</td></tr>
-        <tr><td>External generator (if used)</td><td>untrusted</td><td>the prompt content the <em>client</em> sends after decrypting the bundle</td><td>rerank protocol state</td></tr>
-      </tbody>
-    </table>
-
-    <p class="lede" style="margin-top:32px;">
-      Four exit-channel leaks are closed structurally rather than statistically:
-    </p>
-    <table class="spec">
-      <thead>
-        <tr>
-          <th>Leak</th>
-          <th>How it's closed</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td><b>Score-export leakage</b></td>
-          <td>Scores never exit the CVM. The rerank output that crosses the trust boundary is the encrypted ordered set, not the scores.</td>
-        </tr>
-        <tr>
-          <td><b>Rank-order via emission order</b></td>
-          <td>The integer <code>rank</code> is encoded <em>inside</em> the AES-GCM payload and the wire list is shuffled. A host observer cannot read the ranking out of list position.</td>
-        </tr>
-        <tr>
-          <td><b>Cardinality (<code>k_final</code>) leak</b></td>
-          <td>Bundles always emit exactly <code>k_max</code> items, with <code>k_max - k_final</code> decoys. Decoys are AES-GCM-padded to the longest real candidate's length so per-item size doesn't fingerprint them.</td>
-        </tr>
-        <tr>
-          <td><b>Ciphertext-to-storage linkability</b></td>
-          <td>Top-<code>k_final</code> chunks are re-encrypted under a per-query <code>QueryKey = HKDF(SessionKey, "rerank-output", query_id)</code>. The output ciphertexts share no bytes with the storage-time AES-GCM ciphertexts the host may have observed at ingest.</td>
-        </tr>
-      </tbody>
-    </table>
-
-    <p class="lede" style="margin-top:24px;">
-      <em>Not covered.</em> Prompt content the client forwards to an external generator. Query frequency and timing. Side channels in the TEE itself. Replay defense at the protocol layer (re-using <code>(SessionKey, QueryId)</code> re-derives the same <code>QueryKey</code> and breaks AES-GCM — caller must guarantee unique <code>QueryId</code> per session).
-    </p>
-  </section>
-
-  <!-- ═════ § 3 MODEL ARCHITECTURES ═════ -->
-  <section id="models">
-    <header class="section-head">
-      <div class="section-num">§04</div>
-      <h2 class="section-title">Supported model architectures</h2>
-      <div class="section-meta">two architecture-typed services under one RerankService trait</div>
-    </header>
-    <p class="lede">
-      Names track architecture, not model family. Each loads as <code>Arc&lt;…Weights&gt;</code> from safetensors via the HuggingFace Hub; the SHA-256 of backbone bytes + head bytes + (for the discriminator) template + pinned token IDs rides as <code>model_identity</code> through every attestation report.
-    </p>
-
-    <table class="spec">
-      <thead>
-        <tr>
-          <th>Family</th>
-          <th>Crate path</th>
-          <th>Reference model</th>
-          <th>Layers · Hidden · Inter</th>
-          <th>Distinguishing ops</th>
-          <th>Score function</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td><b>Cross-encoder</b></td>
-          <td class="code">gelo_reranker::cross_encoder</td>
-          <td><code>BAAI/bge-reranker-v2-m3</code></td>
-          <td class="num">24 · 1024 · 4096</td>
-          <td>post-LN BERT · GELU FFN · full bidirectional attention</td>
-          <td><code>out_proj(tanh(dense(cls_row)))</code> · 2-layer classifier</td>
-        </tr>
-        <tr>
-          <td><b>Causal-LM discriminator</b></td>
-          <td class="code">gelo_reranker::causal_discriminator</td>
-          <td><code>Qwen/Qwen3-Reranker-0.6B</code></td>
-          <td class="num">28 · 1024 · 3072</td>
-          <td>pre-LN RMSNorm · SwiGLU FFN · GQA(16/8) · RoPE · causal mask</td>
-          <td><code>softmax([no_logit, yes_logit])[1]</code> · tied LM head · two dot products</td>
-        </tr>
-      </tbody>
-    </table>
-
-    <div class="two-col">
-      <div>
-        <h4>Why Qwen3-Reranker is the primary</h4>
-        <p>The backbone is byte-identical to <code>Qwen3-Embedding-0.6B</code> already in <code>gelo_embedder::decoder</code>. Every GELO primitive (mask, shield rows, U-Verify, OutAttnMult, permuted attention, length auto-switch, sensitive-layer exclusion) applies without modification. Adding it took a head loader + a chat template + a yes/no logit gather. ~98% code reuse with the embedder.</p>
+      <!-- ─── HEADLINE STATS ─── -->
+      <div class="stat-strip">
+        <div class="stat">
+          <div class="k">bge rerank · k′=20</div>
+          <div class="v"><em>3.02</em><span class="unit">s batch</span></div>
+          <div class="sub">
+            bge-reranker-v2-m3 · rayon-parallel candidates · 1.19 s single-pair
+          </div>
+        </div>
+        <div class="stat">
+          <div class="k">Qwen3 rerank · k′=20</div>
+          <div class="v"><em>6.48</em><span class="unit">s batch</span></div>
+          <div class="sub">
+            Qwen3-Reranker-0.6B · rayon-parallel candidates · 1.83 s single-pair
+          </div>
+        </div>
+        <div class="stat">
+          <div class="k">bundle k_max</div>
+          <div class="v"><em>k</em><span class="unit">_max items</span></div>
+          <div class="sub">
+            always padded · shuffled · rank sealed inside each ciphertext
+          </div>
+        </div>
+        <div class="stat">
+          <div class="k">HKDF labels</div>
+          <div class="v">v1<span class="unit"></span></div>
+          <div class="sub">gelo-rerank.session.v1 · gelo-rerank.query.v1</div>
+        </div>
       </div>
-      <div>
-        <h4>Why bge-reranker-v2-m3 is the fallback</h4>
-        <p>Validates the protocol on a structurally different architecture (XLM-RoBERTa post-LN BERT vs Qwen3 pre-LN decoder), exercises the BERT path the embedder uses for BGE-base + BGE-small, and acts as a parity bench against Qwen3-Reranker. Apache-2.0; well-trodden in the IR literature.</p>
-      </div>
+
+      <!-- ═════ § 1 ROLE ═════ -->
+      <section id="role">
+        <header class="section-head">
+          <div class="section-num">§01</div>
+          <h2 class="section-title">Role in the project</h2>
+          <div class="section-meta">where this fits</div>
+        </header>
+        <p class="lede">
+          The reranker is the post-retrieval refinement step in private RAG.
+          After CAPRISE-decrypted top-<code>k_prime</code> candidates land back
+          inside the CVM (see <a href="embedding.html">Embedding</a> +
+          <a href="storage.html">Storage</a>), the reranker re-scores each
+          <code>(query, chunk)</code> pair with a more precise relevance model
+          and selects the final <code>k_final</code>. Two facts make this step
+          its own privacy primitive rather than a thin extension of retrieval.
+        </p>
+        <div class="prose">
+          <p>
+            <strong>The score function changes</strong>, but more importantly
+            the score <em>itself</em> becomes a new exit channel. A bi-encoder
+            cosine score on the storage server is already encrypted by CAPRISE —
+            the server learns rank order, not absolute scores. A cross-encoder
+            or causal-LM discriminator score is a plaintext scalar that lives
+            wherever the reranker runs. If exported in plaintext, accumulating
+            scores across queries inverts back to query content. The mitigation
+            here — score never exits the TEE, only the encrypted ordered set —
+            is <strong>structural rather than statistical</strong>: there's
+            nothing to bound because there's nothing to leak.
+          </p>
+          <p>
+            <strong>The model is openweight</strong> and runs the same GELO mask
+            + TwinShield primitives the embedder validated. No new cryptography,
+            no new protocol layer; the rerank service is an architecture-typed
+            wrapper over the existing <code>gelo-embedder</code> BERT and
+            decoder forward paths, plus a small head module and a per-query HKDF
+            re-encryption pass.
+          </p>
+          <p>
+            The design pulls the reranker fully <em>inside</em> the trust
+            boundary — ingest, retrieve, rerank, re-encrypt all happen in the
+            CVM. The only wire emission per query is <code>k_max</code> AES-GCM
+            ciphertexts of constant per-item size. A host observer can correlate
+            count, timing, and ciphertext shape but learns nothing about scores,
+            score distribution, rank order, or chunk identity.
+          </p>
+        </div>
+      </section>
+
+      <!-- ═════ § 2 DEFINITIONS ═════ -->
+      <section id="defs">
+        <header class="section-head">
+          <div class="section-num">§02</div>
+          <h2 class="section-title">Definitions &amp; glossary</h2>
+          <div class="section-meta">
+            rerank-specific terms · protocol terms cross-referenced
+          </div>
+        </header>
+        <p class="lede">
+          Protocol primitives (mask, shield, U-Verify, OutAttnMult) are defined
+          in <a href="embedding.html#defs">embedding §02</a>. Only
+          rerank-specific additions are listed here.
+        </p>
+        <table class="spec">
+          <thead>
+            <tr>
+              <th style="width: 22%">Term</th>
+              <th>Definition</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Cross-encoder</strong></td>
+              <td>
+                Reranker family that concatenates
+                <code>(query, candidate)</code> as one sequence and runs a
+                single forward pass to produce a relevance score. Higher
+                accuracy than dual-encoder cosine; higher cost. Today's example:
+                <code>BAAI/bge-reranker-v2-m3</code> (XLM-RoBERTa-large, 24
+                layers).
+              </td>
+            </tr>
+            <tr>
+              <td><strong>Causal-LM discriminator</strong></td>
+              <td>
+                Reranker family that uses a causal decoder to score whether the
+                candidate answers the query. Example:
+                <code>Qwen3-Reranker-0.6B</code> — Qwen3 backbone, 28 layers,
+                sigmoid-of-yes-token at the last position.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <strong><code>k_max</code></strong>
+              </td>
+              <td>
+                Fixed bundle size emitted on every rerank request. The TEE
+                returns exactly <code>k_max</code> shuffled, AES-GCM-sealed
+                score items regardless of true <code>top_k</code> — the wire
+                pattern reveals nothing about how many candidates actually
+                scored above threshold.
+              </td>
+            </tr>
+            <tr>
+              <td><strong>Bundle ciphertext</strong></td>
+              <td>
+                Per-candidate AES-GCM seal of
+                <code>(rank, score, candidate_id)</code> under
+                <code
+                  >QueryKey = HKDF(SessionKey, "rerank.score.v1",
+                  query_id)</code
+                >. Rank is sealed <em>inside</em> each ciphertext — order on the
+                wire is shuffled, so an observer cannot read rank from position.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <strong><code>QueryKey</code></strong>
+              </td>
+              <td>
+                Per-query symmetric key derived in-TEE from the session secret.
+                Disposed at request end so a future TEE break cannot
+                retroactively open old bundles.
+              </td>
+            </tr>
+            <tr>
+              <td><strong>Stage-1 / Stage-2</strong></td>
+              <td>
+                Stage-1 = the embedder's ANN candidate set (top
+                <code>k′</code> by ciphertext cosine). Stage-2 = the reranker
+                re-scores those candidates with a heavier model.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- ═════ § 3 THREAT MODEL ═════ -->
+      <section id="threats">
+        <header class="section-head">
+          <div class="section-num">§03</div>
+          <h2 class="section-title">Threat model</h2>
+          <div class="section-meta">
+            what each component sees · what it cannot
+          </div>
+        </header>
+        <p class="lede">
+          Same trust posture as the embedder, extended to cover the
+          rerank-specific exit channel.
+        </p>
+
+        <table class="spec">
+          <thead>
+            <tr>
+              <th>Component</th>
+              <th>Trust</th>
+              <th>What it sees</th>
+              <th>What it does NOT see</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>User-side text</td>
+              <td>confidential</td>
+              <td>—</td>
+              <td>—</td>
+            </tr>
+            <tr>
+              <td>TEE (SEV-SNP CVM)</td>
+              <td class="accent">trusted</td>
+              <td>
+                query · candidate chunk plaintext · scores · rank order · mask
+                state · model weights
+              </td>
+              <td>—</td>
+            </tr>
+            <tr>
+              <td>GPU + driver + PCIe</td>
+              <td>untrusted</td>
+              <td>
+                public model weights · per-batch masked activations
+                <code>U=A·H</code> · integrity-probed matmul results
+              </td>
+              <td>
+                clean activations · mask <code>A</code> · scores · query · doc
+                text
+              </td>
+            </tr>
+            <tr>
+              <td>TEE host (CVM operator)</td>
+              <td>untrusted</td>
+              <td>
+                encrypted CVM memory · masked PCIe traffic · per-query AES-GCM
+                ciphertexts · fixed <code>k_max</code> count · per-item size
+              </td>
+              <td>
+                scores · rank order · chunk identity · query content · model
+                output before encryption
+              </td>
+            </tr>
+            <tr>
+              <td>Network operator</td>
+              <td>untrusted</td>
+              <td>TLS-wrapped requests · attestation evidence</td>
+              <td>RATLS contents</td>
+            </tr>
+            <tr>
+              <td>External generator (if used)</td>
+              <td>untrusted</td>
+              <td>
+                the prompt content the <em>client</em> sends after decrypting
+                the bundle
+              </td>
+              <td>rerank protocol state</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p class="lede" style="margin-top: 32px">
+          Four exit-channel leaks are closed structurally rather than
+          statistically:
+        </p>
+        <table class="spec">
+          <thead>
+            <tr>
+              <th>Leak</th>
+              <th>How it's closed</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><b>Score-export leakage</b></td>
+              <td>
+                Scores never exit the CVM. The rerank output that crosses the
+                trust boundary is the encrypted ordered set, not the scores.
+              </td>
+            </tr>
+            <tr>
+              <td><b>Rank-order via emission order</b></td>
+              <td>
+                The integer <code>rank</code> is encoded <em>inside</em> the
+                AES-GCM payload and the wire list is shuffled. A host observer
+                cannot read the ranking out of list position.
+              </td>
+            </tr>
+            <tr>
+              <td><b>Cardinality (<code>k_final</code>) leak</b></td>
+              <td>
+                Bundles always emit exactly <code>k_max</code> items, with
+                <code>k_max - k_final</code> decoys. Decoys are AES-GCM-padded
+                to the longest real candidate's length so per-item size doesn't
+                fingerprint them.
+              </td>
+            </tr>
+            <tr>
+              <td><b>Ciphertext-to-storage linkability</b></td>
+              <td>
+                Top-<code>k_final</code> chunks are re-encrypted under a
+                per-query
+                <code
+                  >QueryKey = HKDF(SessionKey, "rerank-output", query_id)</code
+                >. The output ciphertexts share no bytes with the storage-time
+                AES-GCM ciphertexts the host may have observed at ingest.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p class="lede" style="margin-top: 24px">
+          <em>Not covered.</em> Prompt content the client forwards to an
+          external generator. Query frequency and timing. Side channels in the
+          TEE itself. Replay defense at the protocol layer (re-using
+          <code>(SessionKey, QueryId)</code> re-derives the same
+          <code>QueryKey</code> and breaks AES-GCM — caller must guarantee
+          unique <code>QueryId</code> per session).
+        </p>
+      </section>
+
+      <!-- ═════ § 3 MODEL ARCHITECTURES ═════ -->
+      <section id="models">
+        <header class="section-head">
+          <div class="section-num">§04</div>
+          <h2 class="section-title">Supported model architectures</h2>
+          <div class="section-meta">
+            two architecture-typed services under one RerankService trait
+          </div>
+        </header>
+        <p class="lede">
+          Names track architecture, not model family. Each loads as
+          <code>Arc&lt;…Weights&gt;</code> from safetensors via the HuggingFace
+          Hub; the SHA-256 of backbone bytes + head bytes + (for the
+          discriminator) template + pinned token IDs rides as
+          <code>model_identity</code> through every attestation report.
+        </p>
+
+        <table class="spec">
+          <thead>
+            <tr>
+              <th>Family</th>
+              <th>Crate path</th>
+              <th>Reference model</th>
+              <th>Layers · Hidden · Inter</th>
+              <th>Distinguishing ops</th>
+              <th>Score function</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><b>Cross-encoder</b></td>
+              <td class="code">gelo_reranker::cross_encoder</td>
+              <td><code>BAAI/bge-reranker-v2-m3</code></td>
+              <td class="num">24 · 1024 · 4096</td>
+              <td>post-LN BERT · GELU FFN · full bidirectional attention</td>
+              <td>
+                <code>out_proj(tanh(dense(cls_row)))</code> · 2-layer classifier
+              </td>
+            </tr>
+            <tr>
+              <td><b>Causal-LM discriminator</b></td>
+              <td class="code">gelo_reranker::causal_discriminator</td>
+              <td><code>Qwen/Qwen3-Reranker-0.6B</code></td>
+              <td class="num">28 · 1024 · 3072</td>
+              <td>
+                pre-LN RMSNorm · SwiGLU FFN · GQA(16/8) · RoPE · causal mask
+              </td>
+              <td>
+                <code>softmax([no_logit, yes_logit])[1]</code> · tied LM head ·
+                two dot products
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="two-col">
+          <div>
+            <h4>Why Qwen3-Reranker is the primary</h4>
+            <p>
+              The backbone is byte-identical to
+              <code>Qwen3-Embedding-0.6B</code> already in
+              <code>gelo_embedder::decoder</code>. Every GELO primitive (mask,
+              shield rows, U-Verify, OutAttnMult, permuted attention, length
+              auto-switch, sensitive-layer exclusion) applies without
+              modification. Adding it took a head loader + a chat template + a
+              yes/no logit gather. ~98% code reuse with the embedder.
+            </p>
+          </div>
+          <div>
+            <h4>Why bge-reranker-v2-m3 is the fallback</h4>
+            <p>
+              Validates the protocol on a structurally different architecture
+              (XLM-RoBERTa post-LN BERT vs Qwen3 pre-LN decoder), exercises the
+              BERT path the embedder uses for BGE-base + BGE-small, and acts as
+              a parity bench against Qwen3-Reranker. Apache-2.0; well-trodden in
+              the IR literature.
+            </p>
+          </div>
+        </div>
+
+        <p class="lede" style="margin-top: 32px">
+          <strong>jina-reranker-v3 is deferred.</strong> Its listwise
+          packed-context architecture pushes <code>n ≈ 16k+</code> per forward,
+          which sits in the fused-permuted-attention regime documented in
+          <code>gelo-llm.md</code> §3 — a 5–7 week prerequisite. CC-BY-NC-4.0
+          license is also a blocker for commercial deployments. Revisit
+          alongside the LLM-serving stack.
+        </p>
+      </section>
+
+      <!-- ═════ § 4 COMPONENTS ═════ -->
+      <section id="components">
+        <header class="section-head">
+          <div class="section-num">§05</div>
+          <h2 class="section-title">Components</h2>
+          <div class="section-meta">crate-side · 6 implementation units</div>
+        </header>
+        <p class="lede">
+          Each card pairs
+          <span class="mono"
+            >[component ↦ source ↦ what it secures ↦ threat]</span
+          >. Ordered by request path: trait → heads → session keys → bundle →
+          in-TEE sort → HTTP route.
+        </p>
+
+        <div class="cgrid">
+          <article class="card">
+            <span class="tag tee">trait</span>
+            <h3>
+              RerankService<span class="alias">gelo_reranker :: service</span>
+            </h3>
+            <p class="one">
+              Common surface for both architectures. Three methods:
+              <code>model_identity()</code> (SHA-256 over
+              backbone+head+template), <code>family()</code> (cross-encoder /
+              causal-discriminator), <code>rerank()</code> (the only entry point
+              that crosses the trust boundary).
+            </p>
+            <dl>
+              <dt>impls</dt>
+              <dd>
+                <code>CrossEncoderRerankService&lt;X&gt;</code> ·
+                <code>CausalDiscriminatorRerankService&lt;X&gt;</code>
+              </dd>
+              <dt>generic</dt>
+              <dd>
+                <code>X: TrustedExecutor</code> — typically
+                <code>InProcessTrustedExecutor&lt;WgpuVulkanEngine&gt;</code>
+              </dd>
+              <dt>identity</dt>
+              <dd>
+                folded into <code>REPORT_DATA[0..32]</code> — relying party pins
+                backbone + head + template together
+              </dd>
+            </dl>
+          </article>
+
+          <article class="card">
+            <span class="tag tee">head</span>
+            <h3>
+              ClassifierHead<span class="alias">gelo_reranker :: head</span>
+            </h3>
+            <p class="one">
+              2-layer <code>XLMRobertaForSequenceClassification</code> head:
+              <code>out_proj(tanh(dense(cls)))</code>. Loads
+              <code>classifier.dense.{weight,bias}</code> +
+              <code>classifier.out_proj.{weight,bias}</code> from safetensors,
+              hashes the four tensor blobs into the head identity.
+            </p>
+            <dl>
+              <dt>shape</dt>
+              <dd>dense (hidden, hidden) · out_proj (hidden, 1)</dd>
+              <dt>used by</dt>
+              <dd>
+                CrossEncoderRerankService — applied to CLS row of the joint
+                <code>[CLS] q [SEP] d [SEP]</code> forward
+              </dd>
+            </dl>
+          </article>
+
+          <article class="card">
+            <span class="tag tee">head</span>
+            <h3>YesNoHead<span class="alias">gelo_reranker :: head</span></h3>
+            <p class="one">
+              Pinned vocab IDs for the causal-LM discriminator.
+              <code>YesNoHead { yes_token_id, no_token_id }</code> resolved from
+              the tokenizer at load and folded into
+              <code>model_identity</code> — a tokenizer-config drift that
+              re-numbers <code>yes</code>/<code>no</code> trips the attestation.
+            </p>
+            <dl>
+              <dt>storage</dt>
+              <dd>
+                two u32s + the tied <code>token_embedding</code> from
+                <code>DecoderWeights</code> doubles as the output projection
+                (Qwen3-Reranker sets <code>tie_word_embeddings = true</code>)
+              </dd>
+              <dt>cost</dt>
+              <dd>
+                two dot products against
+                <code>token_embedding.row(yes_id)</code> and
+                <code>.row(no_id)</code> per (q, d) pair · ~µs
+              </dd>
+            </dl>
+          </article>
+
+          <article class="card">
+            <span class="tag tee">crypto</span>
+            <h3>
+              SessionKey / QueryKey<span class="alias"
+                >gelo_reranker :: session</span
+              >
+            </h3>
+            <p class="one">
+              HKDF-SHA256 hierarchy mirroring
+              <code>rag_core::keying::HkdfPolicy::V1</code>. Session root
+              derived from a per-session shared secret; per-query AES-256-GCM
+              key derived from session root + query_id. Both
+              <code>Zeroizing</code>-wrapped.
+            </p>
+            <dl>
+              <dt>policy</dt>
+              <dd>
+                SessionKeyPolicy::V1 · salt
+                <code>"gelo-rerank.session.v1"</code> · info
+                <code>"gelo-rerank.query.v1"</code>
+              </dd>
+              <dt>derivation</dt>
+              <dd>
+                <code
+                  >QueryKey = HKDF(salt=SessionKey, ikm=query_id,
+                  info="gelo-rerank.query.v1")</code
+                >
+              </dd>
+              <dt>uniqueness</dt>
+              <dd>
+                caller must guarantee unique <code>query_id</code> per session —
+                AES-GCM does not survive key+nonce reuse
+              </dd>
+              <dt>future</dt>
+              <dd>
+                attestation-bound ECDH KEX will replace the manual session
+                secret; API surface unchanged
+              </dd>
+            </dl>
+          </article>
+
+          <article class="card">
+            <span class="tag tee">crypto</span>
+            <h3>
+              EncryptedRerankBundle<span class="alias"
+                >gelo_reranker :: output</span
+              >
+            </h3>
+            <p class="one">
+              Fixed-shape AES-GCM-256 wire format. Always emits exactly
+              <code>k_max</code> shuffled
+              <code>(nonce, ciphertext)</code> items. Real items carry
+              <code>(rank, chunk_id, chunk_text)</code>; decoys carry a tag the
+              client drops after decryption.
+            </p>
+            <dl>
+              <dt>seal</dt>
+              <dd>
+                top-k_final → encode each → AES-GCM with fresh per-item nonce →
+                pad with k_max−k_final decoys → shuffle → emit
+              </dd>
+              <dt>open</dt>
+              <dd>
+                decrypt every item → filter <code>Decoy</code> → sort real items
+                by embedded <code>rank</code>
+              </dd>
+              <dt>padding</dt>
+              <dd>
+                decoy plaintext padded to the longest real candidate's text
+                length so per-item size doesn't reveal which are decoys
+              </dd>
+            </dl>
+          </article>
+
+          <article class="card">
+            <span class="tag tee">ranking</span>
+            <h3>
+              top_k_with_tie_shuffle<span class="alias"
+                >gelo_reranker :: score</span
+              >
+            </h3>
+            <p class="one">
+              In-TEE sort. Sort by score descending, then within each
+              equal-score bucket randomise with the same
+              <code>QueryKey</code>-seeded ChaCha20 RNG. Stops the host from
+              learning a stable secondary order when scores tie.
+            </p>
+            <dl>
+              <dt>determinism</dt>
+              <dd>
+                given the same <code>QueryKey</code>, same RNG seed, same
+                ordering — useful for debugging without breaking AES-GCM nonce
+                safety
+              </dd>
+              <dt>edge case</dt>
+              <dd>
+                NaN scores sort to the back · empty top_k returns empty list
+              </dd>
+            </dl>
+          </article>
+        </div>
+      </section>
+
+      <!-- ═════ § 5 COMPUTE FLOW ═════ -->
+      <section id="flow">
+        <header class="section-head">
+          <div class="section-num">§06</div>
+          <h2 class="section-title">Compute flow &amp; trust boundaries</h2>
+          <div class="section-meta">
+            per-request, external-generator deployment
+          </div>
+        </header>
+        <p class="lede">
+          The rerank stage adds no new privacy primitive at the PCIe boundary —
+          it reuses the same GELO mask + TwinShield round-trip the embedder
+          validated, applied to a different model and a different scoring head.
+          Two figures below trace one layer-block per architecture and add the
+          family-specific scoring head at the bottom.
+          <strong>FIG. 02a</strong> covers the cross-encoder family
+          (bge-reranker-v2-m3 · XLM-RoBERTa-large · 24 layers);
+          <strong>FIG. 02b</strong> covers the causal-LM-discriminator family
+          (Qwen3-Reranker-0.6B · Qwen3 backbone · 28 layers). Same
+          4-offload-group rhythm per block as the embedder; what differs is the
+          input packing and the head.
+        </p>
+
+        <!-- ══════════ FIG. 02a — Cross-encoder ══════════ -->
+        <div class="diagram-frame">
+          <div class="diagram-cap">
+            <span class="l"
+              >FIG. 02a — CrossEncoderRerankService · one XLM-RoBERTa-large
+              block · post-LN · GELU · bidirectional · 24 layers · 2-layer
+              classifier head on CLS</span
+            >
+            <span
+              >blue arc = residual · solid red = TEE flow · dashed amber =
+              masked PCIe transit (mix → / unmix ←)</span
+            >
+          </div>
+          <svg
+            class="flow"
+            viewBox="0 0 1320 820"
+            xmlns="http://www.w3.org/2000/svg"
+            role="img"
+          >
+            <defs>
+              <marker
+                id="ahxenc"
+                viewBox="0 0 10 10"
+                refX="9"
+                refY="5"
+                markerWidth="6"
+                markerHeight="6"
+                orient="auto-start-reverse"
+              >
+                <path d="M0,0 L10,5 L0,10 z" fill="context-stroke" />
+              </marker>
+            </defs>
+            <rect
+              x="0"
+              y="40"
+              width="940"
+              height="760"
+              class="zone-band zone-band-tee"
+            />
+            <rect
+              x="940"
+              y="40"
+              width="380"
+              height="760"
+              class="zone-band zone-band-gpu"
+            />
+            <text x="20" y="64" class="zone-label">Trusted side · in CVM</text>
+            <text x="20" y="80" class="zone-sublabel">
+              cross-encoder + protocol kernel
+            </text>
+            <text x="960" y="64" class="zone-label">Untrusted GPU</text>
+            <text x="960" y="80" class="zone-sublabel">
+              burn-cubecl · Vulkan
+            </text>
+            <line x1="940" y1="40" x2="940" y2="800" class="boundary" />
+            <text x="944" y="796" class="boundary-label">PCIe · masked</text>
+
+            <!-- INPUT: joint (q, d) packed sequence -->
+            <rect
+              x="280"
+              y="100"
+              width="340"
+              height="46"
+              class="box box-tee box-strong"
+            />
+            <text x="450" y="120" class="box-label" text-anchor="middle">
+              H_in (n, 1024)
+            </text>
+            <text x="450" y="138" class="box-sub" text-anchor="middle">
+              [CLS] query [SEP] document [SEP]
+            </text>
+
+            <!-- arrow to attn-block residual split -->
+            <path
+              d="M450 146 L450 164"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxenc)"
+            />
+            <circle cx="450" cy="166" r="4" fill="var(--ink)" />
+
+            <!-- attention residual arc -->
+            <path
+              d="M450 166 C 250 166, 220 296, 444 332"
+              class="arrow"
+              stroke="var(--client)"
+              stroke-dasharray="3 2"
+              fill="none"
+              marker-end="url(#ahxenc)"
+            />
+            <text
+              x="170"
+              y="252"
+              class="arrow-label attest"
+              transform="rotate(-90 170 252)"
+            >
+              residual
+            </text>
+
+            <!-- ① QKV (masked) -->
+            <path d="M450 168 L450 176" class="arrow arrow-secret" />
+            <rect x="340" y="176" width="220" height="40" class="box box-tee" />
+            <text x="356" y="194" class="box-label">
+              ① QKV (masked offload)
+            </text>
+            <text x="356" y="208" class="box-mono">
+              mix → matmul → unmix · +bias
+            </text>
+            <rect
+              x="960"
+              y="176"
+              width="340"
+              height="40"
+              class="box box-gpu box-strong"
+            />
+            <text x="976" y="194" class="box-label">matmul_many [Q, K, V]</text>
+            <text x="976" y="208" class="box-mono">
+              3 weights · 1 dispatch · 1 sync
+            </text>
+            <path
+              d="M560 188 L960 188"
+              class="arrow arrow-masked"
+              marker-end="url(#ahxenc)"
+            />
+            <text x="680" y="182" class="arrow-label masked">mix: U = A·H</text>
+            <path
+              d="M960 204 L560 204"
+              class="arrow arrow-masked"
+              marker-end="url(#ahxenc)"
+              stroke-dasharray="4 3"
+            />
+            <text x="680" y="218" class="arrow-label masked">
+              unmix: Aᵀ·(U·W)
+            </text>
+
+            <!-- ② Multi-head bidirectional attention (joint q-d attention) -->
+            <path
+              d="M450 216 L450 232"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxenc)"
+            />
+            <rect x="340" y="232" width="220" height="40" class="box box-tee" />
+            <text x="356" y="250" class="box-label">② Bidirectional MHA</text>
+            <text x="356" y="264" class="box-sub">
+              16 heads · q ↔ d token interaction · TEE
+            </text>
+
+            <!-- ③ O (masked) -->
+            <path
+              d="M450 272 L450 288"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxenc)"
+            />
+            <rect x="340" y="288" width="220" height="40" class="box box-tee" />
+            <text x="356" y="306" class="box-label">③ O (masked offload)</text>
+            <text x="356" y="320" class="box-mono">
+              mix → matmul → unmix · +bias
+            </text>
+            <rect x="960" y="288" width="340" height="40" class="box box-gpu" />
+            <text x="976" y="306" class="box-label">matmul O</text>
+            <text x="976" y="320" class="box-mono">single GEMM</text>
+            <path
+              d="M560 300 L960 300"
+              class="arrow arrow-masked"
+              marker-end="url(#ahxenc)"
+            />
+            <path
+              d="M960 316 L560 316"
+              class="arrow arrow-masked"
+              marker-end="url(#ahxenc)"
+              stroke-dasharray="4 3"
+            />
+
+            <!-- + merge (residual rejoins) -->
+            <path d="M450 328 L450 338" class="arrow arrow-secret" />
+            <circle
+              cx="450"
+              cy="340"
+              r="8"
+              fill="var(--paper)"
+              stroke="var(--ink)"
+              stroke-width="1.5"
+            />
+            <text
+              x="450"
+              y="344"
+              text-anchor="middle"
+              font-size="12"
+              font-weight="700"
+            >
+              +
+            </text>
+
+            <!-- ④ LayerNorm₁ (post-LN) -->
+            <path
+              d="M450 348 L450 360"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxenc)"
+            />
+            <rect
+              x="340"
+              y="360"
+              width="220"
+              height="36"
+              class="box box-tee box-strong"
+            />
+            <text x="450" y="378" class="box-label" text-anchor="middle">
+              ④ LayerNorm₁ (post-LN)
+            </text>
+            <text x="450" y="390" class="box-sub" text-anchor="middle">
+              LayerNorm(H + attn_proj)
+            </text>
+
+            <!-- FFN residual split -->
+            <path
+              d="M450 396 L450 412"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxenc)"
+            />
+            <circle cx="450" cy="414" r="4" fill="var(--ink)" />
+
+            <!-- FFN residual arc -->
+            <path
+              d="M450 414 C 250 414, 220 528, 444 566"
+              class="arrow"
+              stroke="var(--client)"
+              stroke-dasharray="3 2"
+              fill="none"
+              marker-end="url(#ahxenc)"
+            />
+            <text
+              x="170"
+              y="500"
+              class="arrow-label attest"
+              transform="rotate(-90 170 500)"
+            >
+              residual
+            </text>
+
+            <!-- ⑤ FfnUp (masked) -->
+            <path d="M450 416 L450 426" class="arrow arrow-secret" />
+            <rect x="340" y="426" width="220" height="40" class="box box-tee" />
+            <text x="356" y="444" class="box-label">
+              ⑤ FfnUp (masked offload)
+            </text>
+            <text x="356" y="458" class="box-mono">
+              mix → matmul → unmix · 1024 → 4096
+            </text>
+            <rect x="960" y="426" width="340" height="40" class="box box-gpu" />
+            <text x="976" y="444" class="box-label">matmul FfnUp</text>
+            <text x="976" y="458" class="box-mono">
+              single GEMM · 1024 → 4096
+            </text>
+            <path
+              d="M560 438 L960 438"
+              class="arrow arrow-masked"
+              marker-end="url(#ahxenc)"
+            />
+            <path
+              d="M960 454 L560 454"
+              class="arrow arrow-masked"
+              marker-end="url(#ahxenc)"
+              stroke-dasharray="4 3"
+            />
+
+            <!-- ⑥ GELU -->
+            <path
+              d="M450 466 L450 482"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxenc)"
+            />
+            <rect x="380" y="482" width="140" height="32" class="box box-tee" />
+            <text x="450" y="502" class="box-label" text-anchor="middle">
+              ⑥ GELU
+            </text>
+
+            <!-- ⑦ FfnDown (masked) -->
+            <path
+              d="M450 514 L450 528"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxenc)"
+            />
+            <rect x="340" y="528" width="220" height="40" class="box box-tee" />
+            <text x="356" y="546" class="box-label">
+              ⑦ FfnDown (masked offload)
+            </text>
+            <text x="356" y="560" class="box-mono">
+              mix → matmul → unmix · 4096 → 1024
+            </text>
+            <rect x="960" y="528" width="340" height="40" class="box box-gpu" />
+            <text x="976" y="546" class="box-label">matmul FfnDown</text>
+            <text x="976" y="560" class="box-mono">
+              single GEMM · 4096 → 1024
+            </text>
+            <path
+              d="M560 540 L960 540"
+              class="arrow arrow-masked"
+              marker-end="url(#ahxenc)"
+            />
+            <path
+              d="M960 556 L560 556"
+              class="arrow arrow-masked"
+              marker-end="url(#ahxenc)"
+              stroke-dasharray="4 3"
+            />
+
+            <!-- + merge 2 -->
+            <path d="M450 568 L450 574" class="arrow arrow-secret" />
+            <circle
+              cx="450"
+              cy="576"
+              r="8"
+              fill="var(--paper)"
+              stroke="var(--ink)"
+              stroke-width="1.5"
+            />
+            <text
+              x="450"
+              y="580"
+              text-anchor="middle"
+              font-size="12"
+              font-weight="700"
+            >
+              +
+            </text>
+
+            <!-- ⑧ LayerNorm₂ (post-LN) → next block -->
+            <path
+              d="M450 584 L450 594"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxenc)"
+            />
+            <rect
+              x="340"
+              y="594"
+              width="220"
+              height="36"
+              class="box box-tee box-strong"
+            />
+            <text x="450" y="612" class="box-label" text-anchor="middle">
+              ⑧ LayerNorm₂ (post-LN)
+            </text>
+            <text x="450" y="624" class="box-sub" text-anchor="middle">
+              → next block (×23)
+            </text>
+
+            <!-- stack-skip separator down to the classifier head -->
+            <path
+              d="M450 634 L450 660"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxenc)"
+              stroke-dasharray="2 4"
+            />
+            <text x="470" y="652" class="arrow-label secret">
+              after the final block
+            </text>
+
+            <!-- ⑨ CLS gather -->
+            <rect
+              x="320"
+              y="668"
+              width="260"
+              height="34"
+              class="box box-tee box-strong"
+            />
+            <text x="450" y="690" class="box-label" text-anchor="middle">
+              ⑨ Gather CLS row · H_final[0]
+            </text>
+
+            <!-- ⑩ Classifier head — dense (masked offload) -->
+            <path
+              d="M450 702 L450 718"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxenc)"
+            />
+            <rect x="340" y="718" width="220" height="40" class="box box-tee" />
+            <text x="356" y="736" class="box-label">
+              ⑩ classifier.dense (masked)
+            </text>
+            <text x="356" y="750" class="box-mono">
+              mix → matmul → unmix · 1024 → 1024
+            </text>
+            <rect x="960" y="718" width="340" height="40" class="box box-gpu" />
+            <text x="976" y="736" class="box-label">
+              matmul classifier.dense
+            </text>
+            <text x="976" y="750" class="box-mono">
+              single GEMM · 1024 → 1024
+            </text>
+            <path
+              d="M560 730 L960 730"
+              class="arrow arrow-masked"
+              marker-end="url(#ahxenc)"
+            />
+            <path
+              d="M960 746 L560 746"
+              class="arrow arrow-masked"
+              marker-end="url(#ahxenc)"
+              stroke-dasharray="4 3"
+            />
+
+            <!-- ⑪ tanh + out_proj (TEE — tiny (1024,1)) -->
+            <path
+              d="M450 758 L450 770"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxenc)"
+            />
+            <rect
+              x="280"
+              y="770"
+              width="340"
+              height="28"
+              class="box box-tee box-strong"
+            />
+            <text x="450" y="789" class="box-label" text-anchor="middle">
+              ⑪ tanh → out_proj (1024 → 1) · TEE · scalar score
+            </text>
+          </svg>
+        </div>
+
+        <!-- ══════════ FIG. 02b — Causal-LM discriminator ══════════ -->
+        <div class="diagram-frame">
+          <div class="diagram-cap">
+            <span class="l"
+              >FIG. 02b — CausalDiscriminatorRerankService · one Qwen3 decoder
+              block · pre-LN · SwiGLU · causal GQA + RoPE · 28 layers · tied
+              LM-head yes/no gather</span
+            >
+            <span
+              >same pre-LN block as the Qwen3 embedder; only the input packing
+              and the scoring head differ</span
+            >
+          </div>
+          <svg
+            class="flow"
+            viewBox="0 0 1320 900"
+            xmlns="http://www.w3.org/2000/svg"
+            role="img"
+          >
+            <defs>
+              <marker
+                id="ahxqw"
+                viewBox="0 0 10 10"
+                refX="9"
+                refY="5"
+                markerWidth="6"
+                markerHeight="6"
+                orient="auto-start-reverse"
+              >
+                <path d="M0,0 L10,5 L0,10 z" fill="context-stroke" />
+              </marker>
+            </defs>
+            <rect
+              x="0"
+              y="40"
+              width="940"
+              height="840"
+              class="zone-band zone-band-tee"
+            />
+            <rect
+              x="940"
+              y="40"
+              width="380"
+              height="840"
+              class="zone-band zone-band-gpu"
+            />
+            <text x="20" y="64" class="zone-label">Trusted side · in CVM</text>
+            <text x="20" y="80" class="zone-sublabel">
+              decoder + protocol kernel
+            </text>
+            <text x="960" y="64" class="zone-label">Untrusted GPU</text>
+            <text x="960" y="80" class="zone-sublabel">
+              burn-cubecl · Vulkan
+            </text>
+            <line x1="940" y1="40" x2="940" y2="880" class="boundary" />
+            <text x="944" y="876" class="boundary-label">PCIe · masked</text>
+
+            <!-- INPUT: Qwen3-Reranker chat template -->
+            <rect
+              x="240"
+              y="100"
+              width="420"
+              height="60"
+              class="box box-tee box-strong"
+            />
+            <text x="450" y="120" class="box-label" text-anchor="middle">
+              H_in (n, 1024)
+            </text>
+            <text x="450" y="138" class="box-sub" text-anchor="middle">
+              &lt;|im_start|&gt;system Judge…&lt;|im_end|&gt;
+            </text>
+            <text x="450" y="152" class="box-mono" text-anchor="middle">
+              user &lt;Query&gt;:… &lt;Document&gt;:… &lt;|im_end|&gt; assistant
+              &lt;think&gt;
+            </text>
+
+            <!-- residual split (pre-LN) -->
+            <path
+              d="M450 160 L450 178"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxqw)"
+            />
+            <circle cx="450" cy="180" r="4" fill="var(--ink)" />
+
+            <!-- Attention residual arc (around Norm + sub-block) -->
+            <path
+              d="M450 180 C 250 180, 220 360, 444 408"
+              class="arrow"
+              stroke="var(--client)"
+              stroke-dasharray="3 2"
+              fill="none"
+              marker-end="url(#ahxqw)"
+            />
+            <text
+              x="170"
+              y="296"
+              class="arrow-label attest"
+              transform="rotate(-90 170 296)"
+            >
+              residual (around Norm + sub-block)
+            </text>
+
+            <!-- ① RMSNorm₁ (pre-LN) -->
+            <path d="M450 182 L450 194" class="arrow arrow-secret" />
+            <rect
+              x="340"
+              y="194"
+              width="220"
+              height="34"
+              class="box box-tee box-strong"
+            />
+            <text x="450" y="216" class="box-label" text-anchor="middle">
+              ① RMSNorm₁ (pre-LN)
+            </text>
+
+            <!-- ② QKV (masked) -->
+            <path
+              d="M450 228 L450 242"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxqw)"
+            />
+            <rect x="340" y="242" width="220" height="40" class="box box-tee" />
+            <text x="356" y="260" class="box-label">
+              ② QKV (masked offload)
+            </text>
+            <text x="356" y="274" class="box-mono">
+              mix → matmul → unmix · no bias
+            </text>
+            <rect
+              x="960"
+              y="242"
+              width="340"
+              height="40"
+              class="box box-gpu box-strong"
+            />
+            <text x="976" y="260" class="box-label">matmul_many [Q, K, V]</text>
+            <text x="976" y="274" class="box-mono">
+              3 weights · 1 dispatch · 1 sync
+            </text>
+            <path
+              d="M560 254 L960 254"
+              class="arrow arrow-masked"
+              marker-end="url(#ahxqw)"
+            />
+            <text x="680" y="248" class="arrow-label masked">mix: U = A·H</text>
+            <path
+              d="M960 270 L560 270"
+              class="arrow arrow-masked"
+              marker-end="url(#ahxqw)"
+              stroke-dasharray="4 3"
+            />
+            <text x="680" y="284" class="arrow-label masked">
+              unmix: Aᵀ·(U·W)
+            </text>
+
+            <!-- ③ RoPE -->
+            <path
+              d="M450 282 L450 298"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxqw)"
+            />
+            <rect x="340" y="298" width="220" height="32" class="box box-tee" />
+            <text x="450" y="318" class="box-label" text-anchor="middle">
+              ③ RoPE on Q, K
+            </text>
+
+            <!-- ④ Causal GQA attention (q ↔ d token interaction is causal — left-to-right in the packed sequence) -->
+            <path
+              d="M450 330 L450 342"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxqw)"
+            />
+            <rect x="340" y="342" width="220" height="40" class="box box-tee" />
+            <text x="356" y="360" class="box-label">
+              ④ Causal GQA attention
+            </text>
+            <text x="356" y="374" class="box-sub">
+              16 Q-heads · 8 KV-heads · causal mask · TEE
+            </text>
+
+            <!-- + merge 1 -->
+            <path
+              d="M450 382 L450 404"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxqw)"
+            />
+            <circle
+              cx="450"
+              cy="412"
+              r="8"
+              fill="var(--paper)"
+              stroke="var(--ink)"
+              stroke-width="1.5"
+            />
+            <text
+              x="450"
+              y="416"
+              text-anchor="middle"
+              font-size="12"
+              font-weight="700"
+            >
+              +
+            </text>
+
+            <!-- FFN residual split -->
+            <path
+              d="M450 420 L450 446"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxqw)"
+            />
+            <circle cx="450" cy="448" r="4" fill="var(--ink)" />
+
+            <!-- FFN residual arc -->
+            <path
+              d="M450 448 C 250 448, 220 620, 444 678"
+              class="arrow"
+              stroke="var(--client)"
+              stroke-dasharray="3 2"
+              fill="none"
+              marker-end="url(#ahxqw)"
+            />
+            <text
+              x="170"
+              y="564"
+              class="arrow-label attest"
+              transform="rotate(-90 170 564)"
+            >
+              residual (around Norm + sub-block)
+            </text>
+
+            <!-- ⑤ RMSNorm₂ -->
+            <path d="M450 450 L450 462" class="arrow arrow-secret" />
+            <rect
+              x="340"
+              y="462"
+              width="220"
+              height="34"
+              class="box box-tee box-strong"
+            />
+            <text x="450" y="484" class="box-label" text-anchor="middle">
+              ⑤ RMSNorm₂ (pre-LN)
+            </text>
+
+            <!-- FORK into Gate ∥ Up branches -->
+            <path d="M450 496 L450 510" class="arrow arrow-secret" />
+            <circle cx="450" cy="512" r="4" fill="var(--ink)" />
+            <path
+              d="M450 512 C 450 522, 400 522, 400 530"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxqw)"
+            />
+            <path
+              d="M450 512 C 450 522, 500 522, 500 530"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxqw)"
+            />
+
+            <rect x="320" y="530" width="160" height="40" class="box box-tee" />
+            <text x="330" y="548" class="box-label">⑥a Gate (masked)</text>
+            <text x="330" y="562" class="box-mono">mix → matmul → unmix</text>
+
+            <rect x="500" y="530" width="160" height="40" class="box box-tee" />
+            <text x="510" y="548" class="box-label">⑥b Up (masked)</text>
+            <text x="510" y="562" class="box-mono">mix → matmul → unmix</text>
+
+            <rect
+              x="960"
+              y="530"
+              width="340"
+              height="40"
+              class="box box-gpu box-strong"
+            />
+            <text x="976" y="548" class="box-label">
+              matmul_many [gate, up]
+            </text>
+            <text x="976" y="562" class="box-mono">
+              2 weights · 1 dispatch · 1 sync
+            </text>
+            <path
+              d="M480 542 L960 542"
+              class="arrow arrow-masked"
+              marker-end="url(#ahxqw)"
+            />
+            <path
+              d="M660 542 L960 552"
+              class="arrow arrow-masked"
+              marker-end="url(#ahxqw)"
+            />
+            <path
+              d="M960 558 L660 562"
+              class="arrow arrow-masked"
+              marker-end="url(#ahxqw)"
+              stroke-dasharray="4 3"
+            />
+            <path
+              d="M960 565 L480 565"
+              class="arrow arrow-masked"
+              marker-end="url(#ahxqw)"
+              stroke-dasharray="4 3"
+            />
+
+            <!-- ⑦ SiLU(gate) -->
+            <path
+              d="M400 570 L400 588"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxqw)"
+            />
+            <rect x="340" y="588" width="120" height="32" class="box box-tee" />
+            <text x="400" y="608" class="box-label" text-anchor="middle">
+              ⑦ SiLU(gate)
+            </text>
+
+            <path
+              d="M580 570 L580 620"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxqw)"
+            />
+
+            <!-- ⑧ ⊙ merge -->
+            <path
+              d="M400 620 C 400 634, 440 634, 442 638"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxqw)"
+            />
+            <path
+              d="M580 620 C 580 634, 460 634, 458 638"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxqw)"
+            />
+            <circle
+              cx="450"
+              cy="644"
+              r="9"
+              fill="var(--paper)"
+              stroke="var(--ink)"
+              stroke-width="1.5"
+            />
+            <text
+              x="450"
+              y="648"
+              text-anchor="middle"
+              font-size="13"
+              font-weight="700"
+            >
+              ⊙
+            </text>
+            <text x="490" y="648" class="arrow-label secret">
+              silu(gate) ⊙ up
+            </text>
+
+            <!-- ⑨ FfnDown (masked) -->
+            <path
+              d="M450 653 L450 668"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxqw)"
+            />
+            <rect x="340" y="668" width="220" height="40" class="box box-tee" />
+            <text x="356" y="686" class="box-label">
+              ⑨ FfnDown (masked offload)
+            </text>
+            <text x="356" y="700" class="box-mono">
+              mix → matmul → unmix · 3072 → 1024
+            </text>
+            <rect x="960" y="668" width="340" height="40" class="box box-gpu" />
+            <text x="976" y="686" class="box-label">matmul FfnDown</text>
+            <text x="976" y="700" class="box-mono">
+              single GEMM · 3072 → 1024
+            </text>
+            <path
+              d="M560 680 L960 680"
+              class="arrow arrow-masked"
+              marker-end="url(#ahxqw)"
+            />
+            <path
+              d="M960 696 L560 696"
+              class="arrow arrow-masked"
+              marker-end="url(#ahxqw)"
+              stroke-dasharray="4 3"
+            />
+
+            <!-- + merge 2 -->
+            <path d="M450 708 L450 720" class="arrow arrow-secret" />
+            <circle
+              cx="450"
+              cy="722"
+              r="8"
+              fill="var(--paper)"
+              stroke="var(--ink)"
+              stroke-width="1.5"
+            />
+            <text
+              x="450"
+              y="726"
+              text-anchor="middle"
+              font-size="12"
+              font-weight="700"
+            >
+              +
+            </text>
+
+            <!-- → next block -->
+            <path
+              d="M450 730 L450 744"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxqw)"
+            />
+            <text
+              x="450"
+              y="756"
+              text-anchor="middle"
+              font-size="11"
+              fill="var(--ink-2)"
+            >
+              → next block (×27)
+            </text>
+
+            <!-- stack-skip separator to scoring head -->
+            <path
+              d="M450 762 L450 786"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxqw)"
+              stroke-dasharray="2 4"
+            />
+            <text x="470" y="780" class="arrow-label secret">
+              after the final block + RMSNorm
+            </text>
+
+            <!-- ⑩ Last-token gather + tied LM-head yes/no dot products (TEE — no GPU offload; two dot products against token_embedding rows) -->
+            <rect
+              x="220"
+              y="794"
+              width="460"
+              height="38"
+              class="box box-tee box-strong"
+            />
+            <text x="450" y="814" class="box-label" text-anchor="middle">
+              ⑩ Gather last-token H_final[n−1] · tied LM-head yes/no dot
+              products
+            </text>
+            <text x="450" y="828" class="box-mono" text-anchor="middle">
+              H[n−1] · token_embedding.row(yes_id) | .row(no_id)
+            </text>
+
+            <!-- ⑪ softmax → P(yes) -->
+            <path
+              d="M450 832 L450 844"
+              class="arrow arrow-secret"
+              marker-end="url(#ahxqw)"
+            />
+            <rect
+              x="280"
+              y="844"
+              width="340"
+              height="28"
+              class="box box-tee box-strong"
+            />
+            <text x="450" y="863" class="box-label" text-anchor="middle">
+              ⑪ softmax([no, yes])[1] · TEE · scalar score
+            </text>
+          </svg>
+        </div>
+
+        <p class="lede" style="margin-top: 0; font-size: 14px">
+          <strong>What to look for between the two figures.</strong>
+          ① <em>input packing</em> — the cross-encoder packs
+          <code>[CLS] query [SEP] document [SEP]</code> into one bidirectional
+          sequence; the causal-discriminator wraps
+          <code>(query, document)</code> in Qwen3's chat template and runs
+          causal attention left-to-right. ② <em>scoring head</em> —
+          cross-encoder gathers row 0 (CLS) and runs a 2-layer classifier (<code
+            >dense → tanh → out_proj</code
+          >); causal-discriminator gathers the last-token hidden and computes
+          two dot products against <code>token_embedding.row(yes_id)</code> /
+          <code>.row(no_id)</code> (tied LM head — no separate weight, no GPU
+          offload for the scoring step). ③ <em>per-block topology</em> identical
+          to the embedder family it inherits from — see
+          <code>embedding.html</code> §05 for the same 8-step (BERT) / 9-step
+          (Qwen3) rhythm. The reranker reuses the embedder's
+          <code>gelo_embedder::bert::forward::run</code> /
+          <code>gelo_embedder::decoder::forward::run</code> unchanged; the head
+          is the only new mask boundary.
+        </p>
+
+        <table class="spec" style="margin-top: 24px">
+          <thead>
+            <tr>
+              <th>Boundary</th>
+              <th>What crosses</th>
+              <th>What does not</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>PCIe (TEE ↔ GPU), Stage B embed</td>
+              <td><code>U=A·H_query</code> · public weights</td>
+              <td>
+                clean <code>H_query</code> · mask <code>A</code> · query tokens
+              </td>
+            </tr>
+            <tr>
+              <td>PCIe (TEE ↔ GPU), Stage C rerank</td>
+              <td><code>U=A·H_pair</code> per layer · public weights</td>
+              <td>clean activations · mask · scores · chunk text</td>
+            </tr>
+            <tr>
+              <td>CVM ↔ Host RAM</td>
+              <td>encrypted CVM pages · SWIOTLB DMA bounce buffers</td>
+              <td>decrypted activations · scores · plaintext chunks</td>
+            </tr>
+            <tr>
+              <td>Network (TEE → client)</td>
+              <td>
+                <code>k_max</code> AES-GCM
+                <code>(nonce, ciphertext)</code> pairs of fixed per-item size
+              </td>
+              <td>
+                scores · rank order · chunk identity · <code>k_final</code>
+              </td>
+            </tr>
+            <tr>
+              <td>Client → external generator</td>
+              <td>prompt content the client decides to build</td>
+              <td>rerank protocol state</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h4
+          style="
+            font-family: &quot;Fraunces&quot;, serif;
+            font-variation-settings:
+              &quot;opsz&quot; 26,
+              &quot;wght&quot; 460;
+            font-size: 18px;
+            margin: 32px 0 8px;
+          "
+        >
+          Mask sampling cadence — three modes, one default
+        </h4>
+        <p class="prose">
+          A Haar-uniform orthogonal mask <code>A</code> protects each masked
+          PCIe round-trip. <em>How often</em> <code>A</code> is resampled is a
+          separate dial from <em>where</em> it gets used. Three cadences are
+          coherent at the protocol level; the executor in
+          <code>gelo-protocol</code> ships the first one as the default and
+          exposes the third as an explicit opt-in for the BSS-recovery / parity
+          tests.
+        </p>
+        <table class="spec" style="table-layout: fixed">
+          <colgroup>
+            <col style="width: 14%" />
+            <col style="width: 14%" />
+            <col style="width: 26%" />
+            <col style="width: 24%" />
+            <col style="width: 22%" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th>Cadence</th>
+              <th>Haar samples / forward</th>
+              <th>Security knob</th>
+              <th>Wall-time cost</th>
+              <th>When to pick</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <b>Per forward pass</b> <span class="accent">(default)</span>
+              </td>
+              <td>1</td>
+              <td>
+                Requires <code>ShieldConfig</code> (8 Gaussian rows at energy
+                <code>4·mean‖h‖</code>) — the appended noise rows break the
+                cross-offload Gram-matrix correlation an ICA / BSS attacker
+                would otherwise exploit when the same <code>A</code> protects
+                QKV, O, gate/up, and down within a forward.
+              </td>
+              <td>
+                1 Haar QR / forward. At n+k=520 that's ~18 ms once, then
+                amortised across ~96 mask-apply / mask-unapply GEMMs per
+                forward. ~&lt;1% of rerank wall time on Vulkan iGPU.
+              </td>
+              <td>
+                Production. Paper §3.2 protocol. Best wall-clock with shield's
+                correlation defence intact.
+              </td>
+            </tr>
+            <tr>
+              <td>Per transformer block</td>
+              <td>
+                num_hidden_layers (24 for bge-rerank, 28 for Qwen3-rerank)
+              </td>
+              <td>
+                Same shield requirement intra-block. Cross-block isolation only
+                helps if the threat model includes a per-block correlation
+                attacker — which the current ICA / Game-of-Arrows attacks do
+                not. No empirical attack motivates this cadence today.
+              </td>
+              <td>
+                ~N× the per-forward cost; at our QR rate ~0.4–0.5 s / forward
+                extra purely for sampling.
+              </td>
+              <td>
+                Niche. Useful if a future attack ever localises within a block:
+                drop in <code>begin_block</code>/<code>end_block</code>
+                brackets. Not implemented; would be a thin extension of the
+                current session-mask scaffolding.
+              </td>
+            </tr>
+            <tr>
+              <td>Per offload</td>
+              <td>
+                4–7 × num_hidden_layers (96 / forward for bge-rerank, 112–140
+                for Qwen3-rerank)
+              </td>
+              <td>
+                Strictly the safest in isolation — every masked GEMM has
+                independent <code>A</code>, so no cross-offload ICA is possible
+                <em>even without shield</em>. This is what the
+                <code>bare_orthogonal_mask_leaks_gram_matrix</code> test
+                exercises, demonstrating that without shield
+                <em>and</em> without per-offload, Gram matrix leakage is
+                recoverable.
+              </td>
+              <td>
+                Dominant. Measured at <b>46–48% of rerank wall time</b> pre-flip
+                (33 s of mask sampling per 71 s bge-rerank, 51 s per 108 s
+                Qwen3-rerank).
+              </td>
+              <td>
+                Safety / attack baselines only. Opt in via
+                <code
+                  >InProcessTrustedExecutor::with_seed(…).with_per_offload_mask()</code
+                >. The BSS / U-Verify regression tests use this mode.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="prose">
+          <b>Why per-forward + shield is the default.</b> Per-offload's
+          correlation safety is real but the cost is the Haar-QR over an
+          <code>(n+k)×(n+k)</code> matrix, which is <code>O((n+k)³)</code>.
+          Reranker inputs at <code>n≈256–512</code> push the QR cost to 17–23 ms
+          per call — at ~100 calls per forward that is most of the wall-clock.
+          Per-forward sampling does the QR once, then the same
+          <code>A</code> participates in every offload's mix/unmix GEMM (which
+          is GEMM-fast and CBLAS-tractable). Shield rows are sampled fresh per
+          offload regardless (cheap — k Gaussians), and that per-offload
+          freshness is what stops cross-offload ICA without paying the
+          per-offload QR tax. The paper's §3.2 + §4.2 pairing is exactly this
+          trade.
+        </p>
+      </section>
+
+      <!-- ═════ § 7 PERFORMANCE ═════ -->
+      <section id="numbers">
+        <header class="section-head">
+          <div class="section-num">§08</div>
+          <h2 class="section-title">Performance &amp; correctness</h2>
+          <div class="section-meta">measured on AMD Strix Halo iGPU</div>
+        </header>
+
+        <p class="lede">
+          Hardware: AMD Ryzen AI Max+ 395 (Strix Halo). Vulkan adapter:
+          <code>AMD Radeon Graphics (RADV GFX1151)</code> (IntegratedGpu). All
+          numbers under <code>InProcessTrustedExecutor</code> with GELO+mask
+          enabled.
+        </p>
+
+        <h4>Rerank latency — two regimes, two architectures</h4>
+        <p class="prose">
+          "Per-pair" alone is ambiguous: it depends on whether the candidate
+          batch fans out across CPU workers (k′ &gt; 1) or runs sequentially (k′
+          = 1). Both regimes reported for both architectures. Same lever stack
+          (L1+L2+L3+L4+L5+L6) applies to both — same patterns, ported to
+          <code>bert::*</code> and <code>decoder::*</code> separately.
+        </p>
+        <table class="spec">
+          <thead>
+            <tr>
+              <th>Workload</th>
+              <th>Single-pair (k′=1)</th>
+              <th>Batch (k′=20)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>bge-reranker-v2-m3, NFCorpus n≈256, <b>Vulkan</b></td>
+              <td class="num accent">1.19 s/pair</td>
+              <td class="num accent">3.02 s · 151 ms/pair</td>
+            </tr>
+            <tr>
+              <td>Qwen3-Reranker-0.6B, NFCorpus n≈400, <b>Vulkan</b></td>
+              <td class="num accent">1.83 s/pair</td>
+              <td class="num accent">6.48 s · 324 ms/pair</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p class="prose" style="margin-top: 24px">
+          Why Qwen3 is slower at both regimes: 28 layers vs BGE's 24,
+          chat-templated prompt inflates n from ~256 to ~400, and the mask GEMMs
+          scale as <code>(n+k)² · d</code>. The shape of the breakdown is the
+          same on both paths — mask GEMMs are at the AOCL-BLIS AVX-512 floor,
+          GPU is dispatch-bound, attention is 6× smaller after rayon-parallel
+          heads.
+        </p>
+
+        <h4 style="margin-top: 32px">
+          Per-bucket breakdown (single-pair k′=1)
+        </h4>
+        <p class="prose">
+          Traced with <code>E2E_TRACE=1</code> on
+          <code>rerank_e2e_bench.rs</code>. Batch trace is empty by design —
+          <code>profile::time</code> is thread-local and rayon workers don't
+          roll up to the main thread.
+        </p>
+        <table class="spec">
+          <thead>
+            <tr>
+              <th>Bucket</th>
+              <th>bge (1.19 s)</th>
+              <th>Qwen3 (1.64 s traced)</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>gelo:mask_unapply</code></td>
+              <td class="num">28%</td>
+              <td class="num">35%</td>
+              <td>AOCL-BLIS AVX-512 SGEMM; floor for this hardware</td>
+            </tr>
+            <tr>
+              <td><code>gelo:mask_apply</code></td>
+              <td class="num">21%</td>
+              <td class="num">20%</td>
+              <td>same — floor</td>
+            </tr>
+            <tr>
+              <td><code>engine:matmul</code> + <code>matmul_many</code></td>
+              <td class="num">27%</td>
+              <td class="num">24%</td>
+              <td>Vulkan iGPU dispatch — bandwidth-bound</td>
+            </tr>
+            <tr>
+              <td>In-TEE attention</td>
+              <td class="num">4.7%</td>
+              <td class="num">5.9%</td>
+              <td>16 heads parallelised via rayon (was ~24% / ~21% pre-L3)</td>
+            </tr>
+            <tr>
+              <td>Last-block in-TEE projections</td>
+              <td class="num">6.7%</td>
+              <td class="num">7.1%</td>
+              <td>skip-last-layer keeps these TEE-resident (GELO §3.2)</td>
+            </tr>
+            <tr>
+              <td>Element-wise (GELU / SwiGLU / LN / RMSNorm / residual)</td>
+              <td class="num">5%</td>
+              <td class="num">3%</td>
+              <td>rayon-parallel at rerank shape (L4/L5)</td>
+            </tr>
+            <tr>
+              <td><code>gelo:mask_sample</code></td>
+              <td class="num">2.5%</td>
+              <td class="num">1.6%</td>
+              <td>one Haar QR per forward — see §05</td>
+            </tr>
+            <tr>
+              <td>Other (tokenize, head, lookup)</td>
+              <td class="num">&lt;1%</td>
+              <td class="num">&lt;1%</td>
+              <td>—</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h4 style="margin-top: 32px">
+          End-to-end stages (R7 GPU, 100 docs, 1 query, k'=20, k=10)
+        </h4>
+        <table class="spec">
+          <thead>
+            <tr>
+              <th>Stage</th>
+              <th>Wall</th>
+              <th>Per-unit</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>A · Ingest (BGE-base GELO+mask+Vulkan + CAPRISE)</td>
+              <td class="num">7.7 s</td>
+              <td class="num">13.0 docs/s</td>
+            </tr>
+            <tr>
+              <td>
+                B · Retrieve (BGE-base query embed + CAPRISE cosine, k'=20)
+              </td>
+              <td class="num">178 ms</td>
+              <td class="num">178 ms/query</td>
+            </tr>
+            <tr>
+              <td>C · Rerank bge (20 pairs)</td>
+              <td class="num accent">3.02 s</td>
+              <td class="num accent">151 ms/pair</td>
+            </tr>
+            <tr>
+              <td>C · Rerank Qwen3 (20 pairs)</td>
+              <td class="num accent">6.48 s</td>
+              <td class="num accent">324 ms/pair</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h4 style="margin-top: 32px">Optimization headroom landed</h4>
+        <p class="prose">
+          All numbers below ride the paper-parity executor default (per-forward
+          Haar mask + shield k=8) and AOCL-BLIS via the
+          <code>blas</code> feature (now default-on for <code>gelo-rag</code> /
+          <code>gelo-reranker</code> / <code>gelo-snp-runner</code>).
+        </p>
+        <table class="spec">
+          <thead>
+            <tr>
+              <th>Stack</th>
+              <th>bge k′=1</th>
+              <th>bge k′=20</th>
+              <th>Qwen3 k′=1</th>
+              <th>Qwen3 k′=20</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>T0 baseline — per-offload mask, no BLAS</td>
+              <td class="num">2.29 s</td>
+              <td class="num">45.7 s</td>
+              <td class="num">5.39 s</td>
+              <td class="num">107.8 s</td>
+            </tr>
+            <tr>
+              <td>+ L1 (AOCL-BLIS, thread-local pin)</td>
+              <td class="num">1.74 s</td>
+              <td class="num">27.1 s</td>
+              <td class="num">2.37 s</td>
+              <td class="num">40.7 s</td>
+            </tr>
+            <tr>
+              <td>+ L2 (rayon-parallel candidates)</td>
+              <td class="num">1.74 s</td>
+              <td class="num">3.23 s</td>
+              <td class="num">2.37 s</td>
+              <td class="num">~9 s</td>
+            </tr>
+            <tr>
+              <td>
+                + L3/L4/L5/L6 (parallel heads, GELU/SwiGLU, LN/RMSNorm,
+                skip-last)
+              </td>
+              <td class="num accent">1.19 s</td>
+              <td class="num accent">3.02 s</td>
+              <td class="num accent">1.83 s</td>
+              <td class="num accent">6.48 s</td>
+            </tr>
+            <tr>
+              <td><b>Speedup vs T0</b></td>
+              <td class="num accent"><b>1.92×</b></td>
+              <td class="num accent"><b>15.1×</b></td>
+              <td class="num accent"><b>2.94×</b></td>
+              <td class="num accent"><b>16.6×</b></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p class="prose" style="margin-top: 16px">
+          Qwen3's batch speedup is slightly larger than BGE's (16.6× vs 15.1×)
+          because L1 alone gives more headroom on the longer-n Qwen3 path (mask
+          GEMMs are <code>(n+k)² · d</code>; n≈400 vs 256 → 2.4× more flops per
+          offload, so the BLIS speedup matters more). BGE's single-pair speedup
+          is smaller because more of its work is in the GPU dispatch column,
+          which doesn't accelerate with CPU-side rayon.
+        </p>
+
+        <p class="prose" style="margin-top: 24px">
+          Two non-default options tried and judged not worth turning on:
+        </p>
+        <ul>
+          <li>
+            <strong>L3a · <code>ndarray/blas</code> globally</strong> — routes
+            every workspace <code>.dot()</code> through cblas. Marginal on BGE:
+            1.62 → 1.57 s single-pair, 3.22 → 3.18 s batch (~3% / ~1%). Per-head
+            attention shape <code>(256, 64) · (64, 256)</code> sits on the
+            BLIS-vs-matrixmultiply crossover. Kept as an opt-in
+            <code>blas-ndarray</code> feature for users to try on their own
+            hardware; the global blast radius doesn't justify default-on for a
+            3% gain.
+          </li>
+          <li>
+            <strong>L3b · OutAttnMult for the BERT path</strong> — plumbed (new
+            <code>BertConfig::use_out_attn_mult</code> +
+            <code>multi_head_attention_with_offload</code> mirroring the decoder
+            path), but on this iGPU at our shapes it regressed both regimes
+            (single-pair 1.74 → 4.33 s; batch 3.23 → 17.83 s — the iGPU
+            serialises per-layer Q·Kᵀ dispatches across rayon workers). Code
+            stays — earns its keep at <code>n ≥ 512</code> or on a dGPU — but
+            the bench default keeps it off.
+          </li>
+        </ul>
+
+        <p class="prose" style="margin-top: 24px">
+          Two non-default options tried and judged not worth turning on:
+        </p>
+        <ul>
+          <li>
+            <strong>L3a · <code>ndarray/blas</code> globally</strong> — routes
+            every workspace <code>.dot()</code> through cblas. Marginal: 1.62 →
+            1.57 s single-pair, 3.22 → 3.18 s batch (~3% / ~1%). Per-head
+            attention shape <code>(256, 64) · (64, 256)</code> sits on the
+            BLIS-vs-matrixmultiply crossover. Kept as an opt-in
+            <code>blas-ndarray</code> feature for users to try on their own
+            hardware; the global blast radius doesn't justify default-on for a
+            3% gain.
+          </li>
+          <li>
+            <strong>L3b · OutAttnMult for the BERT path</strong> — plumbed (new
+            <code>BertConfig::use_out_attn_mult</code> +
+            <code>multi_head_attention_with_offload</code> mirroring the decoder
+            path), but on this iGPU at our shapes it regressed both regimes
+            (single-pair 1.74 → 4.33 s; batch 3.23 → 17.83 s — the iGPU
+            serialises per-layer Q·Kᵀ dispatches across rayon workers). Code
+            stays — earns its keep at <code>n ≥ 512</code> or on a dGPU — but
+            the bench default keeps it off.
+          </li>
+        </ul>
+
+        <h4 style="margin-top: 32px">Ranking metrics on the same run</h4>
+        <p class="prose">
+          Baseline = BGE-base GELO+mask+Vulkan cosine over CAPRISE index. Subset
+          of 100 NFCorpus docs constructed to retain qrel-relevant docs (<code
+            >subset_corpus</code
+          >
+          in the bench). Single-digit query counts make these numbers
+          high-variance per-stage; the relative deltas matter more than the
+          absolute values at this scale.
+        </p>
+        <table class="spec">
+          <thead>
+            <tr>
+              <th>Stage</th>
+              <th>nDCG@10</th>
+              <th>Recall@k</th>
+              <th>MRR@10</th>
+              <th>Δ(nDCG@10 vs baseline)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>B · retrieve (baseline)</td>
+              <td class="num">0.629</td>
+              <td class="num">0.717 (k=20)</td>
+              <td class="num">0.800</td>
+              <td class="num">—</td>
+            </tr>
+            <tr>
+              <td>C · rerank bge</td>
+              <td class="num">0.597</td>
+              <td class="num">0.490 (k=10)</td>
+              <td class="num">0.753</td>
+              <td class="num">−0.032</td>
+            </tr>
+            <tr>
+              <td>C · rerank Qwen3 (1-query slice)</td>
+              <td class="num">0.571</td>
+              <td class="num">0.375 (k=10)</td>
+              <td class="num">1.000</td>
+              <td class="num">−0.247</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p class="prose" style="margin-top: 24px">
+          Two distinct stories. The <strong>bge</strong> Δ = −0.032 on 10
+          queries is within sample noise on a 100-doc subset where the baseline
+          is already strong (<code>subset_corpus</code> deliberately keeps
+          relevant docs). Not evidence of a pipeline bug. The
+          <strong>Qwen3</strong> Δ = −0.247 across multiple runs is structural —
+          the <code>QWEN3_RERANKER_TEMPLATE</code> constant omits the
+          <code>&lt;Instruct&gt;:</code> line from the official HF model card
+          example. Without it, the discriminator falls back to a weaker signal.
+          Tracked in §08 as the first follow-up.
+        </p>
+
+        <h4 style="margin-top: 32px">
+          M1.11 R2 — Batched prefill (2026-05-21)
+        </h4>
+        <p class="prose">
+          The k′=20 numbers above ride the Rayon per-candidate fan-out (L2): N
+          cloned executors, each running its own single-stream
+          <code>forward::run</code>, joined by <code>rayon::par_iter</code>.
+          Rayon extracts CPU parallelism for free, but each forward still pays
+          its own GELO mask sample, its own engine dispatch per layer, and
+          contends for the iGPU's serial work queue. M1.11 R2 introduces
+          <code>score_candidates_batched</code>: one
+          <code>forward::run_batched</code> call covers all N (query, doc)
+          prompts in one batched forward, with per-sequence A_b masks (default)
+          and one batched engine dispatch per layer. Plan:
+          <code>docs/plans/m1-11-batched-decode.md</code> §4.
+        </p>
+
+        <p class="prose">
+          Substrate-level:
+          <code>TrustedExecutor::begin_prefill_pass(B, n_max)</code> samples B
+          per-sequence Haar/HD₃ masks of size
+          <code>(n_max + shield_k, n_max + shield_k)</code> each. The
+          per-Rayon-worker model would have sampled one A per worker
+          independently; the batched model derives B masks from one
+          batched-forward seed and applies them rayon-parallel across blocks
+          (M1.11 R1.5). Mathematically identical to the Rayon-per-worker per-row
+          security argument — no new AloePri derivation needed; the spot-check
+          gate <code>c4_batched_rerank</code> at B=16 is paranoia, not
+          protocol-revision.
+        </p>
+
+        <h4 style="margin-top: 16px">
+          R3 perf gate — Qwen3-Reranker-0.6B, B=8
+        </h4>
+        <p class="prose">
+          A/B against <strong>serial</strong> single-stream
+          <code>score_pair</code> × N (no concurrency, no Rayon), not against
+          the existing Rayon path. Per the
+          <code>feedback_perf_baseline_unbatched_not_rayon</code> memory: Rayon
+          is orthogonal CPU parallelism; the M1.11 acceptance baseline is
+          batched vs serial so the batched design's mechanism (GPU dispatch
+          amortisation + per-sequence mask vectorisation) is legible in
+          isolation. Bench:
+          <code
+            >crates/gelo-reranker/tests/comparative_bench.rs::qwen3_batched_vs_serial</code
+          >.
+        </p>
+        <table class="spec" style="margin-top: 8px">
+          <thead>
+            <tr>
+              <th>Variant</th>
+              <th>Total (B=8)</th>
+              <th>Per-pair</th>
+              <th>Speedup vs serial</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><b>Serial × B</b> — <code>score_pair</code> × 8, no Rayon</td>
+              <td class="num">6.08 s</td>
+              <td class="num">760 ms</td>
+              <td>(base)</td>
+            </tr>
+            <tr>
+              <td>M1.11 R2 (R1.2 substrate)</td>
+              <td class="num">2.54 s</td>
+              <td class="num">317 ms</td>
+              <td><span class="accent">2.07×</span></td>
+            </tr>
+            <tr>
+              <td>+ R1.5 (rayon-parallel per-block mask apply/unapply)</td>
+              <td class="num">~2.00 s</td>
+              <td class="num">~250 ms</td>
+              <td><span class="accent">~3×</span></td>
+            </tr>
+            <tr>
+              <td>
+                <b>+ R1.6 (matmul_many under PerSequence for QKV + gate/up)</b>
+              </td>
+              <td class="num"><b>1.86 s</b></td>
+              <td class="num"><b>233 ms</b></td>
+              <td>
+                <span class="accent"><b>3.27×</b></span>
+              </td>
+            </tr>
+            <tr>
+              <td>(re-run, same code; ±10% shared-memory variance)</td>
+              <td class="num">1.67 s</td>
+              <td class="num">209 ms</td>
+              <td><span class="accent">3.66×</span></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p class="prose" style="margin-top: 16px">
+          Hardware: Strix Halo iGPU (RADV GFX1151, Vulkan), Qwen3-Reranker-0.6B
+          (28 layers, 1024 hidden, 16/2 attention heads). Speedup ratio is the
+          load-bearing number; the absolute wall fluctuates ±10% on this iGPU
+          because GPU and CPU share unified memory.
+        </p>
+
+        <h4 style="margin-top: 16px">
+          Per-bucket breakdown (instrumented run)
+        </h4>
+        <p class="prose">
+          Profile bracketed with <code>profile::reset()</code> /
+          <code>profile::snapshot()</code> around the measured rerank call.
+          Rayon-parallel sections are wrapped in <code>profile::time</code> at
+          the dispatch boundary so the main-thread wall covers the parallel
+          work.
+        </p>
+        <table class="spec">
+          <thead>
+            <tr>
+              <th>Bucket</th>
+              <th>Serial ms (B=8)</th>
+              <th>Batched ms</th>
+              <th>Batched share</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>engine:matmul_many</code></td>
+              <td class="num">3 058</td>
+              <td class="num">705</td>
+              <td class="num">42.8%</td>
+              <td>
+                QKV-fused + gate/up-fused — one matmul_many per layer under
+                PerSequence (R1.6).
+              </td>
+            </tr>
+            <tr>
+              <td><code>engine:matmul</code></td>
+              <td class="num">843</td>
+              <td class="num">284</td>
+              <td class="num">17.2%</td>
+              <td>
+                O + FfnDown. Per-call grew 1.8× under batching but call-count
+                dropped 8× — confirms serial mode was kernel-launch-bound.
+              </td>
+            </tr>
+            <tr>
+              <td><code>gelo:mask_unapply</code></td>
+              <td class="num">1 134</td>
+              <td class="num">250</td>
+              <td class="num">15.2%</td>
+              <td>R1.5: rayon-parallel per-block A_bᵀ unmask.</td>
+            </tr>
+            <tr>
+              <td><code>gelo:mask_apply</code></td>
+              <td class="num">688</td>
+              <td class="num">142</td>
+              <td class="num">8.6%</td>
+              <td>Same per-block rayon.</td>
+            </tr>
+            <tr>
+              <td><code>gelo:shield_stack</code></td>
+              <td class="num">68</td>
+              <td class="num">116</td>
+              <td class="num">7.0%</td>
+              <td>
+                Pre-D1.7 — RNG was serial. Post-D1.7 the per-block RNG
+                sub-streams unlock parallel fill.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>tee:attn_batched_stopgap</code> (R1.3) →
+                <code>tee:attn_inplace_many</code>
+              </td>
+              <td class="num">50</td>
+              <td class="num">56</td>
+              <td class="num">3.4%</td>
+              <td>
+                Per-sequence in-TEE causal attention loop. Below the ~10% R1.4
+                trigger; batched-kernel GPU offload stays deferred.
+              </td>
+            </tr>
+            <tr>
+              <td>other</td>
+              <td class="num">≈ 230</td>
+              <td class="num">≈ 95</td>
+              <td class="num">5.8%</td>
+              <td>RMSNorm, QK-norm, RoPE, SwiGLU, residual, yes/no head.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p class="prose" style="margin-top: 16px">
+          GPU dispatch count crashes 8× (serial 896 dispatches → batched 112)
+          and total CPU mask work shrinks ≈ 4.7×. GPU is 60% of batched wall;
+          the design lands as expected for a private-rerank workload that's
+          GPU-bandwidth-bound on the projection matmuls.
+        </p>
+
+        <h4 style="margin-top: 16px">API surface — batched rerank</h4>
+        <ul>
+          <li>
+            <strong>Public:</strong> <code>RerankService::rerank</code> defaults
+            to <code>score_candidates_batched</code> when
+            <code>candidates.len() &gt; 1</code>; emits the encrypted bundle
+            exactly as before. No client-side change.
+          </li>
+          <li>
+            <strong>Internal (test/bench only):</strong>
+            <code>score_candidates_batched</code> is <code>pub(crate)</code>;
+            the in-source R2 acceptance test compares per-candidate scores to
+            serial <code>score_pair</code> to f32 mask floor.
+          </li>
+          <li>
+            <strong>Legacy fallback:</strong>
+            <code>score_candidates_parallel</code> (the Rayon-per-worker path)
+            marked <code>#[deprecated]</code> and gated to the single-pair fast
+            path or the <code>GELO_RERANKER_LEGACY_RAYON=1</code> A/B escape
+            hatch. Kept under deprecate-but-don't-delete per plan §8 #11.
+          </li>
+        </ul>
+
+        <h4 style="margin-top: 32px">Protocol fidelity</h4>
+        <p class="prose">
+          Nine reranker-specific tests across four files validate
+          masked-vs-plain agreement and the wire-format round trip:
+        </p>
+        <ul>
+          <li>
+            <code>cross_encoder_parity.rs</code> — masked and plaintext
+            executors agree on score within <code>1e-3</code> on synthetic
+            2-layer BERT weights; top-1 rank preserved.
+          </li>
+          <li>
+            <code>causal_discriminator_parity.rs</code> — same shape;
+            <code>softmax([no, yes])[1]</code> agrees within
+            <code>1e-3</code> and <code>[0, 1]</code> bounds hold under both
+            executors.
+          </li>
+          <li>
+            <code>bundle_round_trip.rs</code> — full <code>rerank()</code> →
+            wire-shape <code>EncryptedRerankBundle</code> (always
+            <code>k_max</code> items) → client decrypts with matching
+            <code>QueryKey</code> → recovers exactly <code>top_k</code> real
+            items in the in-TEE rank order. Wrong session key fails to open.
+          </li>
+          <li>
+            <code>comparative_bench.rs::real_models_bge_vs_qwen3</code> —
+            <code>#[ignore]</code> real-weight A/B; both rerankers select a
+            RAG-grounded doc at rank 0.
+          </li>
+          <li>
+            <code>gelo-snp-runner</code> integration tests —
+            <code>/rerank</code> returns 501 unconfigured; returns a valid
+            bundle when configured; client reconstructs and opens it via the
+            session-derived key.
+          </li>
+        </ul>
+      </section>
+
+      <!-- ═════ § 8 STATUS & GAPS ═════ -->
+      <section id="status">
+        <header class="section-head">
+          <div class="section-num">§09</div>
+          <h2 class="section-title">Status &amp; gaps</h2>
+          <div class="section-meta">
+            what's landed · what's next · what's deferred
+          </div>
+        </header>
+
+        <h4>What's landed</h4>
+        <ul>
+          <li>
+            <code>crates/gelo-reranker</code> — full crate, 9 source files, 4
+            test files.
+          </li>
+          <li>
+            <code>gelo-snp-runner</code> <code>/rerank</code> HTTP route with
+            mock-issuer integration test.
+          </li>
+          <li>
+            E2E bench
+            <code>crates/gelo-rag/tests/rerank_e2e_bench.rs</code> with
+            <code
+              >E2E_DOCS · E2E_QUERIES · E2E_KPRIME · E2E_KFINAL · E2E_SKIP_BGE ·
+              E2E_SKIP_QWEN3</code
+            >
+            knobs and configurable corpus subsetting.
+          </li>
+          <li>
+            Real-weight bench
+            <code
+              >crates/gelo-reranker/tests/comparative_bench.rs::real_models_bge_vs_qwen3</code
+            >
+            running on AMD Vulkan iGPU.
+          </li>
+          <li>This documentation page.</li>
+        </ul>
+
+        <h4 style="margin-top: 32px">Highest-impact next levers</h4>
+        <table class="spec">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Lever</th>
+              <th>Status</th>
+              <th>Measured impact</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>L1</td>
+              <td>
+                AOCL-BLIS for mask GEMMs (<code>blas</code> default feature) +
+                thread-local single-thread pin in <code>sgemm_blis</code> so
+                rayon workers don't oversubscribe.
+              </td>
+              <td class="accent">landed</td>
+              <td>−24% single-pair · −41% batch</td>
+            </tr>
+            <tr>
+              <td>L2</td>
+              <td>
+                Rayon-parallel candidate loop in
+                <code>CrossEncoderRerankService::rerank</code> and
+                <code>CausalDiscriminatorRerankService::rerank</code>; one
+                cloned executor per worker, single-candidate fast path.
+              </td>
+              <td class="accent">landed</td>
+              <td>−88% batch · per-pair unchanged</td>
+            </tr>
+            <tr>
+              <td>L3</td>
+              <td>
+                Rayon-parallel attention heads in
+                <code>bert::attention::multi_head_attention</code> and
+                <code>decoder::attention::causal_gqa_attention</code> (plus the
+                per-head softmax+V loop of
+                <code>causal_gqa_attention_with_offload</code>) when
+                <code>n ≥ 64</code>; embedder shape stays serial.
+              </td>
+              <td class="accent">landed</td>
+              <td>−27% single-pair (bucket 7.1× shrink)</td>
+            </tr>
+            <tr>
+              <td>L3a</td>
+              <td>
+                Route every <code>ndarray::dot()</code> through BLIS (<code
+                  >blas-ndarray</code
+                >
+                opt-in feature).
+              </td>
+              <td>opt-in</td>
+              <td>
+                −3% single-pair · −1% batch — kept opt-in for hardware-specific
+                tuning
+              </td>
+            </tr>
+            <tr>
+              <td>L3b</td>
+              <td>
+                OutAttnMult for the BERT path
+                (<code>BertConfig::use_out_attn_mult</code>); plumbed
+                end-to-end.
+              </td>
+              <td>plumbed, default off</td>
+              <td>
+                regresses on this iGPU at <code>n ≈ 256</code>; useful at
+                <code>n ≥ 512</code> or on a dGPU
+              </td>
+            </tr>
+            <tr>
+              <td>L4 / L5</td>
+              <td>
+                Rayon-parallel elementwise + norm: GELU/LayerNorm/add_bias in
+                <code>bert::forward</code>, SwiGLU in
+                <code>decoder::swiglu</code>, RMSNorm in
+                <code>decoder::rms_norm</code>. Shape-conditional threshold
+                (<code>n × d ≥ 32 768</code>).
+              </td>
+              <td class="accent">landed</td>
+              <td>~−7% single-pair (combined)</td>
+            </tr>
+            <tr>
+              <td>L6</td>
+              <td>
+                <code>with_skip_last_layer(true)</code> builder on both reranker
+                services (wraps <code>BertConfig::skip_last_layer</code> /
+                <code>DecoderConfig::skip_last_layer</code>) — GELO §3.2
+                sensitive-layer exclusion.
+              </td>
+              <td class="accent">landed</td>
+              <td>−1.5% wall · paper-aligned default</td>
+            </tr>
+            <tr>
+              <td>Qwen3 template</td>
+              <td>
+                Fix <code>QWEN3_RERANKER_TEMPLATE</code> — add the missing
+                <code>&lt;Instruct&gt;:</code> line per the HF model card.
+                Tracked separately because Qwen3 was descoped from the BGE perf
+                sweep.
+              </td>
+              <td>open</td>
+              <td>most likely cause of the Qwen3 −0.247 nDCG regression</td>
+            </tr>
+            <tr>
+              <td>Bucket-pad seq</td>
+              <td>
+                Bucket-pad input tokens to <code>{128, 256, 512}</code> to keep
+                cubecl's autotune cache hot.
+              </td>
+              <td>open</td>
+              <td>p99 stabilisation, mean wall unchanged</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h4 style="margin-top: 32px">Deferred / out of scope</h4>
+        <ul>
+          <li>
+            <strong>jina-reranker-v3</strong> — listwise n≈16k forwards need
+            <code>gelo-llm.md</code> §3's fused permuted attention +
+            FlashAttention to land first. License is CC-BY-NC-4.0. Revisit
+            alongside the LLM-serving stack.
+          </li>
+          <li>
+            <strong>Shredder at the pooled activation</strong> — round-2 §6
+            follow-up. Only relevant if a deployment needs to
+            <em>export</em> scores for downstream use (calibrated cutoffs,
+            hybrid fusion). Default TEE-internal architecture already keeps
+            scores sealed.
+          </li>
+          <li>
+            <strong>Score-DP accountant</strong> — formal
+            <code>(ε, δ)</code> budget over rerank score exports. Same trigger
+            as Shredder.
+          </li>
+          <li>
+            <strong>ECDH-bound session-key handshake</strong> — currently
+            <code>session_secret</code> is a 32-byte token the client supplies
+            per request. An attestation-bound ECDH KEX will replace it; the
+            <code>SessionKey::derive</code> API surface stays identical.
+          </li>
+          <li>
+            <strong>Game-of-Arrows attack bench in reranker mode</strong> —
+            round-2 §4.3. The construction is safe by the same argument that
+            protects the embedder; the empirical confirmation is gated on
+            lifting the attack reference into a workspace test.
+          </li>
+        </ul>
+      </section>
+
+      <footer class="colophon-foot">
+        <span class="rev">private-rag · prototype · reranking · GELO</span>
+      </footer>
     </div>
-
-    <p class="lede" style="margin-top:32px;">
-      <strong>jina-reranker-v3 is deferred.</strong> Its listwise packed-context architecture pushes <code>n ≈ 16k+</code> per forward, which sits in the fused-permuted-attention regime documented in <code>gelo-llm.md</code> §3 — a 5–7 week prerequisite. CC-BY-NC-4.0 license is also a blocker for commercial deployments. Revisit alongside the LLM-serving stack.
-    </p>
-  </section>
-
-  <!-- ═════ § 4 COMPONENTS ═════ -->
-  <section id="components">
-    <header class="section-head">
-      <div class="section-num">§05</div>
-      <h2 class="section-title">Components</h2>
-      <div class="section-meta">crate-side · 6 implementation units</div>
-    </header>
-    <p class="lede">
-      Each card pairs <span class="mono">[component ↦ source ↦ what it secures ↦ threat]</span>. Ordered by request path: trait → heads → session keys → bundle → in-TEE sort → HTTP route.
-    </p>
-
-    <div class="cgrid">
-
-      <article class="card">
-        <span class="tag tee">trait</span>
-        <h3>RerankService<span class="alias">gelo_reranker :: service</span></h3>
-        <p class="one">Common surface for both architectures. Three methods: <code>model_identity()</code> (SHA-256 over backbone+head+template), <code>family()</code> (cross-encoder / causal-discriminator), <code>rerank()</code> (the only entry point that crosses the trust boundary).</p>
-        <dl>
-          <dt>impls</dt><dd><code>CrossEncoderRerankService&lt;X&gt;</code> · <code>CausalDiscriminatorRerankService&lt;X&gt;</code></dd>
-          <dt>generic</dt><dd><code>X: TrustedExecutor</code> — typically <code>InProcessTrustedExecutor&lt;WgpuVulkanEngine&gt;</code></dd>
-          <dt>identity</dt><dd>folded into <code>REPORT_DATA[0..32]</code> — relying party pins backbone + head + template together</dd>
-        </dl>
-      </article>
-
-      <article class="card">
-        <span class="tag tee">head</span>
-        <h3>ClassifierHead<span class="alias">gelo_reranker :: head</span></h3>
-        <p class="one">2-layer <code>XLMRobertaForSequenceClassification</code> head: <code>out_proj(tanh(dense(cls)))</code>. Loads <code>classifier.dense.{weight,bias}</code> + <code>classifier.out_proj.{weight,bias}</code> from safetensors, hashes the four tensor blobs into the head identity.</p>
-        <dl>
-          <dt>shape</dt><dd>dense (hidden, hidden) · out_proj (hidden, 1)</dd>
-          <dt>used by</dt><dd>CrossEncoderRerankService — applied to CLS row of the joint <code>[CLS] q [SEP] d [SEP]</code> forward</dd>
-        </dl>
-      </article>
-
-      <article class="card">
-        <span class="tag tee">head</span>
-        <h3>YesNoHead<span class="alias">gelo_reranker :: head</span></h3>
-        <p class="one">Pinned vocab IDs for the causal-LM discriminator. <code>YesNoHead { yes_token_id, no_token_id }</code> resolved from the tokenizer at load and folded into <code>model_identity</code> — a tokenizer-config drift that re-numbers <code>yes</code>/<code>no</code> trips the attestation.</p>
-        <dl>
-          <dt>storage</dt><dd>two u32s + the tied <code>token_embedding</code> from <code>DecoderWeights</code> doubles as the output projection (Qwen3-Reranker sets <code>tie_word_embeddings = true</code>)</dd>
-          <dt>cost</dt><dd>two dot products against <code>token_embedding.row(yes_id)</code> and <code>.row(no_id)</code> per (q, d) pair · ~µs</dd>
-        </dl>
-      </article>
-
-      <article class="card">
-        <span class="tag tee">crypto</span>
-        <h3>SessionKey / QueryKey<span class="alias">gelo_reranker :: session</span></h3>
-        <p class="one">HKDF-SHA256 hierarchy mirroring <code>rag_core::keying::HkdfPolicy::V1</code>. Session root derived from a per-session shared secret; per-query AES-256-GCM key derived from session root + query_id. Both <code>Zeroizing</code>-wrapped.</p>
-        <dl>
-          <dt>policy</dt><dd>SessionKeyPolicy::V1 · salt <code>"gelo-rerank.session.v1"</code> · info <code>"gelo-rerank.query.v1"</code></dd>
-          <dt>derivation</dt><dd><code>QueryKey = HKDF(salt=SessionKey, ikm=query_id, info="gelo-rerank.query.v1")</code></dd>
-          <dt>uniqueness</dt><dd>caller must guarantee unique <code>query_id</code> per session — AES-GCM does not survive key+nonce reuse</dd>
-          <dt>future</dt><dd>attestation-bound ECDH KEX will replace the manual session secret; API surface unchanged</dd>
-        </dl>
-      </article>
-
-      <article class="card">
-        <span class="tag tee">crypto</span>
-        <h3>EncryptedRerankBundle<span class="alias">gelo_reranker :: output</span></h3>
-        <p class="one">Fixed-shape AES-GCM-256 wire format. Always emits exactly <code>k_max</code> shuffled <code>(nonce, ciphertext)</code> items. Real items carry <code>(rank, chunk_id, chunk_text)</code>; decoys carry a tag the client drops after decryption.</p>
-        <dl>
-          <dt>seal</dt><dd>top-k_final → encode each → AES-GCM with fresh per-item nonce → pad with k_max−k_final decoys → shuffle → emit</dd>
-          <dt>open</dt><dd>decrypt every item → filter <code>Decoy</code> → sort real items by embedded <code>rank</code></dd>
-          <dt>padding</dt><dd>decoy plaintext padded to the longest real candidate's text length so per-item size doesn't reveal which are decoys</dd>
-        </dl>
-      </article>
-
-      <article class="card">
-        <span class="tag tee">ranking</span>
-        <h3>top_k_with_tie_shuffle<span class="alias">gelo_reranker :: score</span></h3>
-        <p class="one">In-TEE sort. Sort by score descending, then within each equal-score bucket randomise with the same <code>QueryKey</code>-seeded ChaCha20 RNG. Stops the host from learning a stable secondary order when scores tie.</p>
-        <dl>
-          <dt>determinism</dt><dd>given the same <code>QueryKey</code>, same RNG seed, same ordering — useful for debugging without breaking AES-GCM nonce safety</dd>
-          <dt>edge case</dt><dd>NaN scores sort to the back · empty top_k returns empty list</dd>
-        </dl>
-      </article>
-
-    </div>
-  </section>
-
-  <!-- ═════ § 5 COMPUTE FLOW ═════ -->
-  <section id="flow">
-    <header class="section-head">
-      <div class="section-num">§06</div>
-      <h2 class="section-title">Compute flow &amp; trust boundaries</h2>
-      <div class="section-meta">per-request, external-generator deployment</div>
-    </header>
-    <p class="lede">
-      The rerank stage adds no new privacy primitive at the PCIe boundary — it reuses the same GELO mask + TwinShield round-trip the embedder validated, applied to a different model and a different scoring head. Two figures below trace one layer-block per architecture and add the family-specific scoring head at the bottom. <strong>FIG. 02a</strong> covers the cross-encoder family (bge-reranker-v2-m3 · XLM-RoBERTa-large · 24 layers); <strong>FIG. 02b</strong> covers the causal-LM-discriminator family (Qwen3-Reranker-0.6B · Qwen3 backbone · 28 layers). Same 4-offload-group rhythm per block as the embedder; what differs is the input packing and the head.
-    </p>
-
-    <!-- ══════════ FIG. 02a — Cross-encoder ══════════ -->
-    <div class="diagram-frame">
-      <div class="diagram-cap">
-        <span class="l">FIG. 02a — CrossEncoderRerankService · one XLM-RoBERTa-large block · post-LN · GELU · bidirectional · 24 layers · 2-layer classifier head on CLS</span>
-        <span>blue arc = residual · solid red = TEE flow · dashed amber = masked PCIe transit (mix → / unmix ←)</span>
-      </div>
-      <svg class="flow" viewBox="0 0 1320 820" xmlns="http://www.w3.org/2000/svg" role="img">
-        <defs>
-          <marker id="ahxenc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-            <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
-          </marker>
-        </defs>
-        <rect x="0"   y="40" width="940"  height="760" class="zone-band zone-band-tee"/>
-        <rect x="940" y="40" width="380"  height="760" class="zone-band zone-band-gpu"/>
-        <text x="20"  y="64" class="zone-label">Trusted side · in CVM</text>
-        <text x="20"  y="80" class="zone-sublabel">cross-encoder + protocol kernel</text>
-        <text x="960" y="64" class="zone-label">Untrusted GPU</text>
-        <text x="960" y="80" class="zone-sublabel">burn-cubecl · Vulkan</text>
-        <line x1="940" y1="40" x2="940" y2="800" class="boundary"/>
-        <text x="944" y="796" class="boundary-label">PCIe · masked</text>
-
-        <!-- INPUT: joint (q, d) packed sequence -->
-        <rect x="280" y="100" width="340" height="46" class="box box-tee box-strong"/>
-        <text x="450" y="120" class="box-label" text-anchor="middle">H_in   (n, 1024)</text>
-        <text x="450" y="138" class="box-sub" text-anchor="middle">[CLS] query [SEP] document [SEP]</text>
-
-        <!-- arrow to attn-block residual split -->
-        <path d="M450 146 L450 164" class="arrow arrow-secret" marker-end="url(#ahxenc)"/>
-        <circle cx="450" cy="166" r="4" fill="var(--ink)"/>
-
-        <!-- attention residual arc -->
-        <path d="M450 166 C 250 166, 220 296, 444 332" class="arrow" stroke="var(--client)" stroke-dasharray="3 2" fill="none" marker-end="url(#ahxenc)"/>
-        <text x="170" y="252" class="arrow-label attest" transform="rotate(-90 170 252)">residual</text>
-
-        <!-- ① QKV (masked) -->
-        <path d="M450 168 L450 176" class="arrow arrow-secret"/>
-        <rect x="340" y="176" width="220" height="40" class="box box-tee"/>
-        <text x="356" y="194" class="box-label">① QKV  (masked offload)</text>
-        <text x="356" y="208" class="box-mono">mix → matmul → unmix · +bias</text>
-        <rect x="960" y="176" width="340" height="40" class="box box-gpu box-strong"/>
-        <text x="976" y="194" class="box-label">matmul_many [Q, K, V]</text>
-        <text x="976" y="208" class="box-mono">3 weights · 1 dispatch · 1 sync</text>
-        <path d="M560 188 L960 188" class="arrow arrow-masked" marker-end="url(#ahxenc)"/>
-        <text x="680" y="182" class="arrow-label masked">mix:  U = A·H</text>
-        <path d="M960 204 L560 204" class="arrow arrow-masked" marker-end="url(#ahxenc)" stroke-dasharray="4 3"/>
-        <text x="680" y="218" class="arrow-label masked">unmix:  Aᵀ·(U·W)</text>
-
-        <!-- ② Multi-head bidirectional attention (joint q-d attention) -->
-        <path d="M450 216 L450 232" class="arrow arrow-secret" marker-end="url(#ahxenc)"/>
-        <rect x="340" y="232" width="220" height="40" class="box box-tee"/>
-        <text x="356" y="250" class="box-label">② Bidirectional MHA</text>
-        <text x="356" y="264" class="box-sub">16 heads · q ↔ d token interaction · TEE</text>
-
-        <!-- ③ O (masked) -->
-        <path d="M450 272 L450 288" class="arrow arrow-secret" marker-end="url(#ahxenc)"/>
-        <rect x="340" y="288" width="220" height="40" class="box box-tee"/>
-        <text x="356" y="306" class="box-label">③ O  (masked offload)</text>
-        <text x="356" y="320" class="box-mono">mix → matmul → unmix · +bias</text>
-        <rect x="960" y="288" width="340" height="40" class="box box-gpu"/>
-        <text x="976" y="306" class="box-label">matmul O</text>
-        <text x="976" y="320" class="box-mono">single GEMM</text>
-        <path d="M560 300 L960 300" class="arrow arrow-masked" marker-end="url(#ahxenc)"/>
-        <path d="M960 316 L560 316" class="arrow arrow-masked" marker-end="url(#ahxenc)" stroke-dasharray="4 3"/>
-
-        <!-- + merge (residual rejoins) -->
-        <path d="M450 328 L450 338" class="arrow arrow-secret"/>
-        <circle cx="450" cy="340" r="8" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
-        <text x="450" y="344" text-anchor="middle" font-size="12" font-weight="700">+</text>
-
-        <!-- ④ LayerNorm₁ (post-LN) -->
-        <path d="M450 348 L450 360" class="arrow arrow-secret" marker-end="url(#ahxenc)"/>
-        <rect x="340" y="360" width="220" height="36" class="box box-tee box-strong"/>
-        <text x="450" y="378" class="box-label" text-anchor="middle">④ LayerNorm₁   (post-LN)</text>
-        <text x="450" y="390" class="box-sub" text-anchor="middle">LayerNorm(H + attn_proj)</text>
-
-        <!-- FFN residual split -->
-        <path d="M450 396 L450 412" class="arrow arrow-secret" marker-end="url(#ahxenc)"/>
-        <circle cx="450" cy="414" r="4" fill="var(--ink)"/>
-
-        <!-- FFN residual arc -->
-        <path d="M450 414 C 250 414, 220 528, 444 566" class="arrow" stroke="var(--client)" stroke-dasharray="3 2" fill="none" marker-end="url(#ahxenc)"/>
-        <text x="170" y="500" class="arrow-label attest" transform="rotate(-90 170 500)">residual</text>
-
-        <!-- ⑤ FfnUp (masked) -->
-        <path d="M450 416 L450 426" class="arrow arrow-secret"/>
-        <rect x="340" y="426" width="220" height="40" class="box box-tee"/>
-        <text x="356" y="444" class="box-label">⑤ FfnUp  (masked offload)</text>
-        <text x="356" y="458" class="box-mono">mix → matmul → unmix · 1024 → 4096</text>
-        <rect x="960" y="426" width="340" height="40" class="box box-gpu"/>
-        <text x="976" y="444" class="box-label">matmul FfnUp</text>
-        <text x="976" y="458" class="box-mono">single GEMM · 1024 → 4096</text>
-        <path d="M560 438 L960 438" class="arrow arrow-masked" marker-end="url(#ahxenc)"/>
-        <path d="M960 454 L560 454" class="arrow arrow-masked" marker-end="url(#ahxenc)" stroke-dasharray="4 3"/>
-
-        <!-- ⑥ GELU -->
-        <path d="M450 466 L450 482" class="arrow arrow-secret" marker-end="url(#ahxenc)"/>
-        <rect x="380" y="482" width="140" height="32" class="box box-tee"/>
-        <text x="450" y="502" class="box-label" text-anchor="middle">⑥ GELU</text>
-
-        <!-- ⑦ FfnDown (masked) -->
-        <path d="M450 514 L450 528" class="arrow arrow-secret" marker-end="url(#ahxenc)"/>
-        <rect x="340" y="528" width="220" height="40" class="box box-tee"/>
-        <text x="356" y="546" class="box-label">⑦ FfnDown  (masked offload)</text>
-        <text x="356" y="560" class="box-mono">mix → matmul → unmix · 4096 → 1024</text>
-        <rect x="960" y="528" width="340" height="40" class="box box-gpu"/>
-        <text x="976" y="546" class="box-label">matmul FfnDown</text>
-        <text x="976" y="560" class="box-mono">single GEMM · 4096 → 1024</text>
-        <path d="M560 540 L960 540" class="arrow arrow-masked" marker-end="url(#ahxenc)"/>
-        <path d="M960 556 L560 556" class="arrow arrow-masked" marker-end="url(#ahxenc)" stroke-dasharray="4 3"/>
-
-        <!-- + merge 2 -->
-        <path d="M450 568 L450 574" class="arrow arrow-secret"/>
-        <circle cx="450" cy="576" r="8" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
-        <text x="450" y="580" text-anchor="middle" font-size="12" font-weight="700">+</text>
-
-        <!-- ⑧ LayerNorm₂ (post-LN) → next block -->
-        <path d="M450 584 L450 594" class="arrow arrow-secret" marker-end="url(#ahxenc)"/>
-        <rect x="340" y="594" width="220" height="36" class="box box-tee box-strong"/>
-        <text x="450" y="612" class="box-label" text-anchor="middle">⑧ LayerNorm₂   (post-LN)</text>
-        <text x="450" y="624" class="box-sub" text-anchor="middle">→ next block (×23)</text>
-
-        <!-- stack-skip separator down to the classifier head -->
-        <path d="M450 634 L450 660" class="arrow arrow-secret" marker-end="url(#ahxenc)" stroke-dasharray="2 4"/>
-        <text x="470" y="652" class="arrow-label secret">after the final block</text>
-
-        <!-- ⑨ CLS gather -->
-        <rect x="320" y="668" width="260" height="34" class="box box-tee box-strong"/>
-        <text x="450" y="690" class="box-label" text-anchor="middle">⑨ Gather CLS row · H_final[0]</text>
-
-        <!-- ⑩ Classifier head — dense (masked offload) -->
-        <path d="M450 702 L450 718" class="arrow arrow-secret" marker-end="url(#ahxenc)"/>
-        <rect x="340" y="718" width="220" height="40" class="box box-tee"/>
-        <text x="356" y="736" class="box-label">⑩ classifier.dense  (masked)</text>
-        <text x="356" y="750" class="box-mono">mix → matmul → unmix · 1024 → 1024</text>
-        <rect x="960" y="718" width="340" height="40" class="box box-gpu"/>
-        <text x="976" y="736" class="box-label">matmul classifier.dense</text>
-        <text x="976" y="750" class="box-mono">single GEMM · 1024 → 1024</text>
-        <path d="M560 730 L960 730" class="arrow arrow-masked" marker-end="url(#ahxenc)"/>
-        <path d="M960 746 L560 746" class="arrow arrow-masked" marker-end="url(#ahxenc)" stroke-dasharray="4 3"/>
-
-        <!-- ⑪ tanh + out_proj (TEE — tiny (1024,1)) -->
-        <path d="M450 758 L450 770" class="arrow arrow-secret" marker-end="url(#ahxenc)"/>
-        <rect x="280" y="770" width="340" height="28" class="box box-tee box-strong"/>
-        <text x="450" y="789" class="box-label" text-anchor="middle">⑪ tanh → out_proj (1024 → 1) · TEE · scalar score</text>
-      </svg>
-    </div>
-
-    <!-- ══════════ FIG. 02b — Causal-LM discriminator ══════════ -->
-    <div class="diagram-frame">
-      <div class="diagram-cap">
-        <span class="l">FIG. 02b — CausalDiscriminatorRerankService · one Qwen3 decoder block · pre-LN · SwiGLU · causal GQA + RoPE · 28 layers · tied LM-head yes/no gather</span>
-        <span>same pre-LN block as the Qwen3 embedder; only the input packing and the scoring head differ</span>
-      </div>
-      <svg class="flow" viewBox="0 0 1320 900" xmlns="http://www.w3.org/2000/svg" role="img">
-        <defs>
-          <marker id="ahxqw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-            <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
-          </marker>
-        </defs>
-        <rect x="0"   y="40" width="940"  height="840" class="zone-band zone-band-tee"/>
-        <rect x="940" y="40" width="380"  height="840" class="zone-band zone-band-gpu"/>
-        <text x="20"  y="64" class="zone-label">Trusted side · in CVM</text>
-        <text x="20"  y="80" class="zone-sublabel">decoder + protocol kernel</text>
-        <text x="960" y="64" class="zone-label">Untrusted GPU</text>
-        <text x="960" y="80" class="zone-sublabel">burn-cubecl · Vulkan</text>
-        <line x1="940" y1="40" x2="940" y2="880" class="boundary"/>
-        <text x="944" y="876" class="boundary-label">PCIe · masked</text>
-
-        <!-- INPUT: Qwen3-Reranker chat template -->
-        <rect x="240" y="100" width="420" height="60" class="box box-tee box-strong"/>
-        <text x="450" y="120" class="box-label" text-anchor="middle">H_in   (n, 1024)</text>
-        <text x="450" y="138" class="box-sub" text-anchor="middle">&lt;|im_start|&gt;system Judge…&lt;|im_end|&gt;</text>
-        <text x="450" y="152" class="box-mono" text-anchor="middle">user &lt;Query&gt;:… &lt;Document&gt;:… &lt;|im_end|&gt; assistant &lt;think&gt;</text>
-
-        <!-- residual split (pre-LN) -->
-        <path d="M450 160 L450 178" class="arrow arrow-secret" marker-end="url(#ahxqw)"/>
-        <circle cx="450" cy="180" r="4" fill="var(--ink)"/>
-
-        <!-- Attention residual arc (around Norm + sub-block) -->
-        <path d="M450 180 C 250 180, 220 360, 444 408" class="arrow" stroke="var(--client)" stroke-dasharray="3 2" fill="none" marker-end="url(#ahxqw)"/>
-        <text x="170" y="296" class="arrow-label attest" transform="rotate(-90 170 296)">residual (around Norm + sub-block)</text>
-
-        <!-- ① RMSNorm₁ (pre-LN) -->
-        <path d="M450 182 L450 194" class="arrow arrow-secret"/>
-        <rect x="340" y="194" width="220" height="34" class="box box-tee box-strong"/>
-        <text x="450" y="216" class="box-label" text-anchor="middle">① RMSNorm₁   (pre-LN)</text>
-
-        <!-- ② QKV (masked) -->
-        <path d="M450 228 L450 242" class="arrow arrow-secret" marker-end="url(#ahxqw)"/>
-        <rect x="340" y="242" width="220" height="40" class="box box-tee"/>
-        <text x="356" y="260" class="box-label">② QKV  (masked offload)</text>
-        <text x="356" y="274" class="box-mono">mix → matmul → unmix · no bias</text>
-        <rect x="960" y="242" width="340" height="40" class="box box-gpu box-strong"/>
-        <text x="976" y="260" class="box-label">matmul_many [Q, K, V]</text>
-        <text x="976" y="274" class="box-mono">3 weights · 1 dispatch · 1 sync</text>
-        <path d="M560 254 L960 254" class="arrow arrow-masked" marker-end="url(#ahxqw)"/>
-        <text x="680" y="248" class="arrow-label masked">mix:  U = A·H</text>
-        <path d="M960 270 L560 270" class="arrow arrow-masked" marker-end="url(#ahxqw)" stroke-dasharray="4 3"/>
-        <text x="680" y="284" class="arrow-label masked">unmix:  Aᵀ·(U·W)</text>
-
-        <!-- ③ RoPE -->
-        <path d="M450 282 L450 298" class="arrow arrow-secret" marker-end="url(#ahxqw)"/>
-        <rect x="340" y="298" width="220" height="32" class="box box-tee"/>
-        <text x="450" y="318" class="box-label" text-anchor="middle">③ RoPE on Q, K</text>
-
-        <!-- ④ Causal GQA attention (q ↔ d token interaction is causal — left-to-right in the packed sequence) -->
-        <path d="M450 330 L450 342" class="arrow arrow-secret" marker-end="url(#ahxqw)"/>
-        <rect x="340" y="342" width="220" height="40" class="box box-tee"/>
-        <text x="356" y="360" class="box-label">④ Causal GQA attention</text>
-        <text x="356" y="374" class="box-sub">16 Q-heads · 8 KV-heads · causal mask · TEE</text>
-
-        <!-- + merge 1 -->
-        <path d="M450 382 L450 404" class="arrow arrow-secret" marker-end="url(#ahxqw)"/>
-        <circle cx="450" cy="412" r="8" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
-        <text x="450" y="416" text-anchor="middle" font-size="12" font-weight="700">+</text>
-
-        <!-- FFN residual split -->
-        <path d="M450 420 L450 446" class="arrow arrow-secret" marker-end="url(#ahxqw)"/>
-        <circle cx="450" cy="448" r="4" fill="var(--ink)"/>
-
-        <!-- FFN residual arc -->
-        <path d="M450 448 C 250 448, 220 620, 444 678" class="arrow" stroke="var(--client)" stroke-dasharray="3 2" fill="none" marker-end="url(#ahxqw)"/>
-        <text x="170" y="564" class="arrow-label attest" transform="rotate(-90 170 564)">residual (around Norm + sub-block)</text>
-
-        <!-- ⑤ RMSNorm₂ -->
-        <path d="M450 450 L450 462" class="arrow arrow-secret"/>
-        <rect x="340" y="462" width="220" height="34" class="box box-tee box-strong"/>
-        <text x="450" y="484" class="box-label" text-anchor="middle">⑤ RMSNorm₂   (pre-LN)</text>
-
-        <!-- FORK into Gate ∥ Up branches -->
-        <path d="M450 496 L450 510" class="arrow arrow-secret"/>
-        <circle cx="450" cy="512" r="4" fill="var(--ink)"/>
-        <path d="M450 512 C 450 522, 400 522, 400 530" class="arrow arrow-secret" marker-end="url(#ahxqw)"/>
-        <path d="M450 512 C 450 522, 500 522, 500 530" class="arrow arrow-secret" marker-end="url(#ahxqw)"/>
-
-        <rect x="320" y="530" width="160" height="40" class="box box-tee"/>
-        <text x="330" y="548" class="box-label">⑥a Gate  (masked)</text>
-        <text x="330" y="562" class="box-mono">mix → matmul → unmix</text>
-
-        <rect x="500" y="530" width="160" height="40" class="box box-tee"/>
-        <text x="510" y="548" class="box-label">⑥b Up  (masked)</text>
-        <text x="510" y="562" class="box-mono">mix → matmul → unmix</text>
-
-        <rect x="960" y="530" width="340" height="40" class="box box-gpu box-strong"/>
-        <text x="976" y="548" class="box-label">matmul_many [gate, up]</text>
-        <text x="976" y="562" class="box-mono">2 weights · 1 dispatch · 1 sync</text>
-        <path d="M480 542 L960 542" class="arrow arrow-masked" marker-end="url(#ahxqw)"/>
-        <path d="M660 542 L960 552" class="arrow arrow-masked" marker-end="url(#ahxqw)"/>
-        <path d="M960 558 L660 562" class="arrow arrow-masked" marker-end="url(#ahxqw)" stroke-dasharray="4 3"/>
-        <path d="M960 565 L480 565" class="arrow arrow-masked" marker-end="url(#ahxqw)" stroke-dasharray="4 3"/>
-
-        <!-- ⑦ SiLU(gate) -->
-        <path d="M400 570 L400 588" class="arrow arrow-secret" marker-end="url(#ahxqw)"/>
-        <rect x="340" y="588" width="120" height="32" class="box box-tee"/>
-        <text x="400" y="608" class="box-label" text-anchor="middle">⑦ SiLU(gate)</text>
-
-        <path d="M580 570 L580 620" class="arrow arrow-secret" marker-end="url(#ahxqw)"/>
-
-        <!-- ⑧ ⊙ merge -->
-        <path d="M400 620 C 400 634, 440 634, 442 638" class="arrow arrow-secret" marker-end="url(#ahxqw)"/>
-        <path d="M580 620 C 580 634, 460 634, 458 638" class="arrow arrow-secret" marker-end="url(#ahxqw)"/>
-        <circle cx="450" cy="644" r="9" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
-        <text x="450" y="648" text-anchor="middle" font-size="13" font-weight="700">⊙</text>
-        <text x="490" y="648" class="arrow-label secret">silu(gate) ⊙ up</text>
-
-        <!-- ⑨ FfnDown (masked) -->
-        <path d="M450 653 L450 668" class="arrow arrow-secret" marker-end="url(#ahxqw)"/>
-        <rect x="340" y="668" width="220" height="40" class="box box-tee"/>
-        <text x="356" y="686" class="box-label">⑨ FfnDown  (masked offload)</text>
-        <text x="356" y="700" class="box-mono">mix → matmul → unmix · 3072 → 1024</text>
-        <rect x="960" y="668" width="340" height="40" class="box box-gpu"/>
-        <text x="976" y="686" class="box-label">matmul FfnDown</text>
-        <text x="976" y="700" class="box-mono">single GEMM · 3072 → 1024</text>
-        <path d="M560 680 L960 680" class="arrow arrow-masked" marker-end="url(#ahxqw)"/>
-        <path d="M960 696 L560 696" class="arrow arrow-masked" marker-end="url(#ahxqw)" stroke-dasharray="4 3"/>
-
-        <!-- + merge 2 -->
-        <path d="M450 708 L450 720" class="arrow arrow-secret"/>
-        <circle cx="450" cy="722" r="8" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
-        <text x="450" y="726" text-anchor="middle" font-size="12" font-weight="700">+</text>
-
-        <!-- → next block -->
-        <path d="M450 730 L450 744" class="arrow arrow-secret" marker-end="url(#ahxqw)"/>
-        <text x="450" y="756" text-anchor="middle" font-size="11" fill="var(--ink-2)">→ next block (×27)</text>
-
-        <!-- stack-skip separator to scoring head -->
-        <path d="M450 762 L450 786" class="arrow arrow-secret" marker-end="url(#ahxqw)" stroke-dasharray="2 4"/>
-        <text x="470" y="780" class="arrow-label secret">after the final block + RMSNorm</text>
-
-        <!-- ⑩ Last-token gather + tied LM-head yes/no dot products (TEE — no GPU offload; two dot products against token_embedding rows) -->
-        <rect x="220" y="794" width="460" height="38" class="box box-tee box-strong"/>
-        <text x="450" y="814" class="box-label" text-anchor="middle">⑩ Gather last-token H_final[n−1] · tied LM-head yes/no dot products</text>
-        <text x="450" y="828" class="box-mono" text-anchor="middle">H[n−1] · token_embedding.row(yes_id) | .row(no_id)</text>
-
-        <!-- ⑪ softmax → P(yes) -->
-        <path d="M450 832 L450 844" class="arrow arrow-secret" marker-end="url(#ahxqw)"/>
-        <rect x="280" y="844" width="340" height="28" class="box box-tee box-strong"/>
-        <text x="450" y="863" class="box-label" text-anchor="middle">⑪ softmax([no, yes])[1] · TEE · scalar score</text>
-      </svg>
-    </div>
-
-    <p class="lede" style="margin-top:0; font-size:14px;">
-      <strong>What to look for between the two figures.</strong>
-      ① <em>input packing</em> — the cross-encoder packs <code>[CLS] query [SEP] document [SEP]</code> into one bidirectional sequence; the causal-discriminator wraps <code>(query, document)</code> in Qwen3's chat template and runs causal attention left-to-right.
-      ② <em>scoring head</em> — cross-encoder gathers row 0 (CLS) and runs a 2-layer classifier (<code>dense → tanh → out_proj</code>); causal-discriminator gathers the last-token hidden and computes two dot products against <code>token_embedding.row(yes_id)</code> / <code>.row(no_id)</code> (tied LM head — no separate weight, no GPU offload for the scoring step).
-      ③ <em>per-block topology</em> identical to the embedder family it inherits from — see <code>embedding.html</code> §05 for the same 8-step (BERT) / 9-step (Qwen3) rhythm. The reranker reuses the embedder's <code>gelo_embedder::bert::forward::run</code> / <code>gelo_embedder::decoder::forward::run</code> unchanged; the head is the only new mask boundary.
-    </p>
-
-    <table class="spec" style="margin-top:24px;">
-      <thead>
-        <tr>
-          <th>Boundary</th>
-          <th>What crosses</th>
-          <th>What does not</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>PCIe (TEE ↔ GPU), Stage B embed</td>
-          <td><code>U=A·H_query</code> · public weights</td>
-          <td>clean <code>H_query</code> · mask <code>A</code> · query tokens</td>
-        </tr>
-        <tr>
-          <td>PCIe (TEE ↔ GPU), Stage C rerank</td>
-          <td><code>U=A·H_pair</code> per layer · public weights</td>
-          <td>clean activations · mask · scores · chunk text</td>
-        </tr>
-        <tr>
-          <td>CVM ↔ Host RAM</td>
-          <td>encrypted CVM pages · SWIOTLB DMA bounce buffers</td>
-          <td>decrypted activations · scores · plaintext chunks</td>
-        </tr>
-        <tr>
-          <td>Network (TEE → client)</td>
-          <td><code>k_max</code> AES-GCM <code>(nonce, ciphertext)</code> pairs of fixed per-item size</td>
-          <td>scores · rank order · chunk identity · <code>k_final</code></td>
-        </tr>
-        <tr>
-          <td>Client → external generator</td>
-          <td>prompt content the client decides to build</td>
-          <td>rerank protocol state</td>
-        </tr>
-      </tbody>
-    </table>
-
-    <h4 style="font-family:'Fraunces',serif;font-variation-settings:'opsz' 26,'wght' 460;font-size:18px;margin:32px 0 8px;">Mask sampling cadence — three modes, one default</h4>
-    <p class="prose">A Haar-uniform orthogonal mask <code>A</code> protects each masked PCIe round-trip. <em>How often</em> <code>A</code> is resampled is a separate dial from <em>where</em> it gets used. Three cadences are coherent at the protocol level; the executor in <code>gelo-protocol</code> ships the first one as the default and exposes the third as an explicit opt-in for the BSS-recovery / parity tests.</p>
-    <table class="spec" style="table-layout:fixed;">
-      <colgroup>
-        <col style="width:14%;">
-        <col style="width:14%;">
-        <col style="width:26%;">
-        <col style="width:24%;">
-        <col style="width:22%;">
-      </colgroup>
-      <thead>
-        <tr>
-          <th>Cadence</th>
-          <th>Haar samples / forward</th>
-          <th>Security knob</th>
-          <th>Wall-time cost</th>
-          <th>When to pick</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td><b>Per forward pass</b> <span class="accent">(default)</span></td>
-          <td>1</td>
-          <td>Requires <code>ShieldConfig</code> (8 Gaussian rows at energy <code>4·mean‖h‖</code>) — the appended noise rows break the cross-offload Gram-matrix correlation an ICA / BSS attacker would otherwise exploit when the same <code>A</code> protects QKV, O, gate/up, and down within a forward.</td>
-          <td>1 Haar QR / forward. At n+k=520 that's ~18 ms once, then amortised across ~96 mask-apply / mask-unapply GEMMs per forward. ~&lt;1% of rerank wall time on Vulkan iGPU.</td>
-          <td>Production. Paper §3.2 protocol. Best wall-clock with shield's correlation defence intact.</td>
-        </tr>
-        <tr>
-          <td>Per transformer block</td>
-          <td>num_hidden_layers (24 for bge-rerank, 28 for Qwen3-rerank)</td>
-          <td>Same shield requirement intra-block. Cross-block isolation only helps if the threat model includes a per-block correlation attacker — which the current ICA / Game-of-Arrows attacks do not. No empirical attack motivates this cadence today.</td>
-          <td>~N× the per-forward cost; at our QR rate ~0.4–0.5 s / forward extra purely for sampling.</td>
-          <td>Niche. Useful if a future attack ever localises within a block: drop in <code>begin_block</code>/<code>end_block</code> brackets. Not implemented; would be a thin extension of the current session-mask scaffolding.</td>
-        </tr>
-        <tr>
-          <td>Per offload</td>
-          <td>4–7 × num_hidden_layers (96 / forward for bge-rerank, 112–140 for Qwen3-rerank)</td>
-          <td>Strictly the safest in isolation — every masked GEMM has independent <code>A</code>, so no cross-offload ICA is possible <em>even without shield</em>. This is what the <code>bare_orthogonal_mask_leaks_gram_matrix</code> test exercises, demonstrating that without shield <em>and</em> without per-offload, Gram matrix leakage is recoverable.</td>
-          <td>Dominant. Measured at <b>46–48% of rerank wall time</b> pre-flip (33 s of mask sampling per 71 s bge-rerank, 51 s per 108 s Qwen3-rerank).</td>
-          <td>Safety / attack baselines only. Opt in via <code>InProcessTrustedExecutor::with_seed(…).with_per_offload_mask()</code>. The BSS / U-Verify regression tests use this mode.</td>
-        </tr>
-      </tbody>
-    </table>
-    <p class="prose"><b>Why per-forward + shield is the default.</b> Per-offload's correlation safety is real but the cost is the Haar-QR over an <code>(n+k)×(n+k)</code> matrix, which is <code>O((n+k)³)</code>. Reranker inputs at <code>n≈256–512</code> push the QR cost to 17–23 ms per call — at ~100 calls per forward that is most of the wall-clock. Per-forward sampling does the QR once, then the same <code>A</code> participates in every offload's mix/unmix GEMM (which is GEMM-fast and CBLAS-tractable). Shield rows are sampled fresh per offload regardless (cheap — k Gaussians), and that per-offload freshness is what stops cross-offload ICA without paying the per-offload QR tax. The paper's §3.2 + §4.2 pairing is exactly this trade.</p>
-  </section>
-
-  <!-- ═════ § 7 PERFORMANCE ═════ -->
-  <section id="numbers">
-    <header class="section-head">
-      <div class="section-num">§08</div>
-      <h2 class="section-title">Performance &amp; correctness</h2>
-      <div class="section-meta">measured on AMD Strix Halo iGPU</div>
-    </header>
-
-    <p class="lede">
-      Hardware: AMD Ryzen AI Max+ 395 (Strix Halo). Vulkan adapter: <code>AMD Radeon Graphics (RADV GFX1151)</code> (IntegratedGpu). All numbers under <code>InProcessTrustedExecutor</code> with GELO+mask enabled.
-    </p>
-
-    <h4>Rerank latency — two regimes, two architectures</h4>
-    <p class="prose">"Per-pair" alone is ambiguous: it depends on whether the candidate batch fans out across CPU workers (k′ &gt; 1) or runs sequentially (k′ = 1). Both regimes reported for both architectures. Same lever stack (L1+L2+L3+L4+L5+L6) applies to both — same patterns, ported to <code>bert::*</code> and <code>decoder::*</code> separately.</p>
-    <table class="spec">
-      <thead>
-        <tr>
-          <th>Workload</th>
-          <th>Single-pair (k′=1)</th>
-          <th>Batch (k′=20)</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr><td>bge-reranker-v2-m3, NFCorpus n≈256, <b>Vulkan</b></td><td class="num accent">1.19 s/pair</td><td class="num accent">3.02 s · 151 ms/pair</td></tr>
-        <tr><td>Qwen3-Reranker-0.6B, NFCorpus n≈400, <b>Vulkan</b></td><td class="num accent">1.83 s/pair</td><td class="num accent">6.48 s · 324 ms/pair</td></tr>
-      </tbody>
-    </table>
-
-    <p class="prose" style="margin-top:24px;">Why Qwen3 is slower at both regimes: 28 layers vs BGE's 24, chat-templated prompt inflates n from ~256 to ~400, and the mask GEMMs scale as <code>(n+k)² · d</code>. The shape of the breakdown is the same on both paths — mask GEMMs are at the AOCL-BLIS AVX-512 floor, GPU is dispatch-bound, attention is 6× smaller after rayon-parallel heads.</p>
-
-    <h4 style="margin-top:32px;">Per-bucket breakdown (single-pair k′=1)</h4>
-    <p class="prose">Traced with <code>E2E_TRACE=1</code> on <code>rerank_e2e_bench.rs</code>. Batch trace is empty by design — <code>profile::time</code> is thread-local and rayon workers don't roll up to the main thread.</p>
-    <table class="spec">
-      <thead>
-        <tr>
-          <th>Bucket</th>
-          <th>bge (1.19 s)</th>
-          <th>Qwen3 (1.64 s traced)</th>
-          <th>Notes</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr><td><code>gelo:mask_unapply</code></td><td class="num">28%</td><td class="num">35%</td><td>AOCL-BLIS AVX-512 SGEMM; floor for this hardware</td></tr>
-        <tr><td><code>gelo:mask_apply</code></td><td class="num">21%</td><td class="num">20%</td><td>same — floor</td></tr>
-        <tr><td><code>engine:matmul</code> + <code>matmul_many</code></td><td class="num">27%</td><td class="num">24%</td><td>Vulkan iGPU dispatch — bandwidth-bound</td></tr>
-        <tr><td>In-TEE attention</td><td class="num">4.7%</td><td class="num">5.9%</td><td>16 heads parallelised via rayon (was ~24% / ~21% pre-L3)</td></tr>
-        <tr><td>Last-block in-TEE projections</td><td class="num">6.7%</td><td class="num">7.1%</td><td>skip-last-layer keeps these TEE-resident (GELO §3.2)</td></tr>
-        <tr><td>Element-wise (GELU / SwiGLU / LN / RMSNorm / residual)</td><td class="num">5%</td><td class="num">3%</td><td>rayon-parallel at rerank shape (L4/L5)</td></tr>
-        <tr><td><code>gelo:mask_sample</code></td><td class="num">2.5%</td><td class="num">1.6%</td><td>one Haar QR per forward — see §05</td></tr>
-        <tr><td>Other (tokenize, head, lookup)</td><td class="num">&lt;1%</td><td class="num">&lt;1%</td><td>—</td></tr>
-      </tbody>
-    </table>
-
-    <h4 style="margin-top:32px;">End-to-end stages (R7 GPU, 100 docs, 1 query, k'=20, k=10)</h4>
-    <table class="spec">
-      <thead>
-        <tr>
-          <th>Stage</th>
-          <th>Wall</th>
-          <th>Per-unit</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr><td>A · Ingest (BGE-base GELO+mask+Vulkan + CAPRISE)</td><td class="num">7.7 s</td><td class="num">13.0 docs/s</td></tr>
-        <tr><td>B · Retrieve (BGE-base query embed + CAPRISE cosine, k'=20)</td><td class="num">178 ms</td><td class="num">178 ms/query</td></tr>
-        <tr><td>C · Rerank bge (20 pairs)</td><td class="num accent">3.02 s</td><td class="num accent">151 ms/pair</td></tr>
-        <tr><td>C · Rerank Qwen3 (20 pairs)</td><td class="num accent">6.48 s</td><td class="num accent">324 ms/pair</td></tr>
-      </tbody>
-    </table>
-
-    <h4 style="margin-top:32px;">Optimization headroom landed</h4>
-    <p class="prose">All numbers below ride the paper-parity executor default (per-forward Haar mask + shield k=8) and AOCL-BLIS via the <code>blas</code> feature (now default-on for <code>gelo-rag</code> / <code>gelo-reranker</code> / <code>gelo-snp-runner</code>).</p>
-    <table class="spec">
-      <thead>
-        <tr>
-          <th>Stack</th>
-          <th>bge k′=1</th>
-          <th>bge k′=20</th>
-          <th>Qwen3 k′=1</th>
-          <th>Qwen3 k′=20</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr><td>T0 baseline — per-offload mask, no BLAS</td><td class="num">2.29 s</td><td class="num">45.7 s</td><td class="num">5.39 s</td><td class="num">107.8 s</td></tr>
-        <tr><td>+ L1 (AOCL-BLIS, thread-local pin)</td><td class="num">1.74 s</td><td class="num">27.1 s</td><td class="num">2.37 s</td><td class="num">40.7 s</td></tr>
-        <tr><td>+ L2 (rayon-parallel candidates)</td><td class="num">1.74 s</td><td class="num">3.23 s</td><td class="num">2.37 s</td><td class="num">~9 s</td></tr>
-        <tr><td>+ L3/L4/L5/L6 (parallel heads, GELU/SwiGLU, LN/RMSNorm, skip-last)</td><td class="num accent">1.19 s</td><td class="num accent">3.02 s</td><td class="num accent">1.83 s</td><td class="num accent">6.48 s</td></tr>
-        <tr><td><b>Speedup vs T0</b></td><td class="num accent"><b>1.92×</b></td><td class="num accent"><b>15.1×</b></td><td class="num accent"><b>2.94×</b></td><td class="num accent"><b>16.6×</b></td></tr>
-      </tbody>
-    </table>
-
-    <p class="prose" style="margin-top:16px;">Qwen3's batch speedup is slightly larger than BGE's (16.6× vs 15.1×) because L1 alone gives more headroom on the longer-n Qwen3 path (mask GEMMs are <code>(n+k)² · d</code>; n≈400 vs 256 → 2.4× more flops per offload, so the BLIS speedup matters more). BGE's single-pair speedup is smaller because more of its work is in the GPU dispatch column, which doesn't accelerate with CPU-side rayon.</p>
-
-    <p class="prose" style="margin-top:24px;">Two non-default options tried and judged not worth turning on:</p>
-    <ul>
-      <li><strong>L3a · <code>ndarray/blas</code> globally</strong> — routes every workspace <code>.dot()</code> through cblas. Marginal on BGE: 1.62 → 1.57 s single-pair, 3.22 → 3.18 s batch (~3% / ~1%). Per-head attention shape <code>(256, 64) · (64, 256)</code> sits on the BLIS-vs-matrixmultiply crossover. Kept as an opt-in <code>blas-ndarray</code> feature for users to try on their own hardware; the global blast radius doesn't justify default-on for a 3% gain.</li>
-      <li><strong>L3b · OutAttnMult for the BERT path</strong> — plumbed (new <code>BertConfig::use_out_attn_mult</code> + <code>multi_head_attention_with_offload</code> mirroring the decoder path), but on this iGPU at our shapes it regressed both regimes (single-pair 1.74 → 4.33 s; batch 3.23 → 17.83 s — the iGPU serialises per-layer Q·Kᵀ dispatches across rayon workers). Code stays — earns its keep at <code>n ≥ 512</code> or on a dGPU — but the bench default keeps it off.</li>
-    </ul>
-
-    <p class="prose" style="margin-top:24px;">Two non-default options tried and judged not worth turning on:</p>
-    <ul>
-      <li><strong>L3a · <code>ndarray/blas</code> globally</strong> — routes every workspace <code>.dot()</code> through cblas. Marginal: 1.62 → 1.57 s single-pair, 3.22 → 3.18 s batch (~3% / ~1%). Per-head attention shape <code>(256, 64) · (64, 256)</code> sits on the BLIS-vs-matrixmultiply crossover. Kept as an opt-in <code>blas-ndarray</code> feature for users to try on their own hardware; the global blast radius doesn't justify default-on for a 3% gain.</li>
-      <li><strong>L3b · OutAttnMult for the BERT path</strong> — plumbed (new <code>BertConfig::use_out_attn_mult</code> + <code>multi_head_attention_with_offload</code> mirroring the decoder path), but on this iGPU at our shapes it regressed both regimes (single-pair 1.74 → 4.33 s; batch 3.23 → 17.83 s — the iGPU serialises per-layer Q·Kᵀ dispatches across rayon workers). Code stays — earns its keep at <code>n ≥ 512</code> or on a dGPU — but the bench default keeps it off.</li>
-    </ul>
-
-    <h4 style="margin-top:32px;">Ranking metrics on the same run</h4>
-    <p class="prose">Baseline = BGE-base GELO+mask+Vulkan cosine over CAPRISE index. Subset of 100 NFCorpus docs constructed to retain qrel-relevant docs (<code>subset_corpus</code> in the bench). Single-digit query counts make these numbers high-variance per-stage; the relative deltas matter more than the absolute values at this scale.</p>
-    <table class="spec">
-      <thead>
-        <tr>
-          <th>Stage</th>
-          <th>nDCG@10</th>
-          <th>Recall@k</th>
-          <th>MRR@10</th>
-          <th>Δ(nDCG@10 vs baseline)</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr><td>B · retrieve (baseline)</td><td class="num">0.629</td><td class="num">0.717 (k=20)</td><td class="num">0.800</td><td class="num">—</td></tr>
-        <tr><td>C · rerank bge</td><td class="num">0.597</td><td class="num">0.490 (k=10)</td><td class="num">0.753</td><td class="num">−0.032</td></tr>
-        <tr><td>C · rerank Qwen3 (1-query slice)</td><td class="num">0.571</td><td class="num">0.375 (k=10)</td><td class="num">1.000</td><td class="num">−0.247</td></tr>
-      </tbody>
-    </table>
-
-    <p class="prose" style="margin-top:24px;">
-      Two distinct stories. The <strong>bge</strong> Δ = −0.032 on 10 queries is within sample noise on a 100-doc subset where the baseline is already strong (<code>subset_corpus</code> deliberately keeps relevant docs). Not evidence of a pipeline bug. The <strong>Qwen3</strong> Δ = −0.247 across multiple runs is structural — the <code>QWEN3_RERANKER_TEMPLATE</code> constant omits the <code>&lt;Instruct&gt;:</code> line from the official HF model card example. Without it, the discriminator falls back to a weaker signal. Tracked in §08 as the first follow-up.
-    </p>
-
-    <h4 style="margin-top:32px;">Protocol fidelity</h4>
-    <p class="prose">Nine reranker-specific tests across four files validate masked-vs-plain agreement and the wire-format round trip:</p>
-    <ul>
-      <li><code>cross_encoder_parity.rs</code> — masked and plaintext executors agree on score within <code>1e-3</code> on synthetic 2-layer BERT weights; top-1 rank preserved.</li>
-      <li><code>causal_discriminator_parity.rs</code> — same shape; <code>softmax([no, yes])[1]</code> agrees within <code>1e-3</code> and <code>[0, 1]</code> bounds hold under both executors.</li>
-      <li><code>bundle_round_trip.rs</code> — full <code>rerank()</code> → wire-shape <code>EncryptedRerankBundle</code> (always <code>k_max</code> items) → client decrypts with matching <code>QueryKey</code> → recovers exactly <code>top_k</code> real items in the in-TEE rank order. Wrong session key fails to open.</li>
-      <li><code>comparative_bench.rs::real_models_bge_vs_qwen3</code> — <code>#[ignore]</code> real-weight A/B; both rerankers select a RAG-grounded doc at rank 0.</li>
-      <li><code>gelo-snp-runner</code> integration tests — <code>/rerank</code> returns 501 unconfigured; returns a valid bundle when configured; client reconstructs and opens it via the session-derived key.</li>
-    </ul>
-  </section>
-
-  <!-- ═════ § 8 STATUS & GAPS ═════ -->
-  <section id="status">
-    <header class="section-head">
-      <div class="section-num">§09</div>
-      <h2 class="section-title">Status &amp; gaps</h2>
-      <div class="section-meta">what's landed · what's next · what's deferred</div>
-    </header>
-
-    <h4>What's landed</h4>
-    <ul>
-      <li><code>crates/gelo-reranker</code> — full crate, 9 source files, 4 test files.</li>
-      <li><code>gelo-snp-runner</code> <code>/rerank</code> HTTP route with mock-issuer integration test.</li>
-      <li>E2E bench <code>crates/gelo-rag/tests/rerank_e2e_bench.rs</code> with <code>E2E_DOCS · E2E_QUERIES · E2E_KPRIME · E2E_KFINAL · E2E_SKIP_BGE · E2E_SKIP_QWEN3</code> knobs and configurable corpus subsetting.</li>
-      <li>Real-weight bench <code>crates/gelo-reranker/tests/comparative_bench.rs::real_models_bge_vs_qwen3</code> running on AMD Vulkan iGPU.</li>
-      <li>This documentation page.</li>
-    </ul>
-
-    <h4 style="margin-top:32px;">Highest-impact next levers</h4>
-    <table class="spec">
-      <thead>
-        <tr>
-          <th>#</th>
-          <th>Lever</th>
-          <th>Status</th>
-          <th>Measured impact</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>L1</td>
-          <td>AOCL-BLIS for mask GEMMs (<code>blas</code> default feature) + thread-local single-thread pin in <code>sgemm_blis</code> so rayon workers don't oversubscribe.</td>
-          <td class="accent">landed</td>
-          <td>−24% single-pair · −41% batch</td>
-        </tr>
-        <tr>
-          <td>L2</td>
-          <td>Rayon-parallel candidate loop in <code>CrossEncoderRerankService::rerank</code> and <code>CausalDiscriminatorRerankService::rerank</code>; one cloned executor per worker, single-candidate fast path.</td>
-          <td class="accent">landed</td>
-          <td>−88% batch · per-pair unchanged</td>
-        </tr>
-        <tr>
-          <td>L3</td>
-          <td>Rayon-parallel attention heads in <code>bert::attention::multi_head_attention</code> and <code>decoder::attention::causal_gqa_attention</code> (plus the per-head softmax+V loop of <code>causal_gqa_attention_with_offload</code>) when <code>n ≥ 64</code>; embedder shape stays serial.</td>
-          <td class="accent">landed</td>
-          <td>−27% single-pair (bucket 7.1× shrink)</td>
-        </tr>
-        <tr>
-          <td>L3a</td>
-          <td>Route every <code>ndarray::dot()</code> through BLIS (<code>blas-ndarray</code> opt-in feature).</td>
-          <td>opt-in</td>
-          <td>−3% single-pair · −1% batch — kept opt-in for hardware-specific tuning</td>
-        </tr>
-        <tr>
-          <td>L3b</td>
-          <td>OutAttnMult for the BERT path (<code>BertConfig::use_out_attn_mult</code>); plumbed end-to-end.</td>
-          <td>plumbed, default off</td>
-          <td>regresses on this iGPU at <code>n ≈ 256</code>; useful at <code>n ≥ 512</code> or on a dGPU</td>
-        </tr>
-        <tr>
-          <td>L4 / L5</td>
-          <td>Rayon-parallel elementwise + norm: GELU/LayerNorm/add_bias in <code>bert::forward</code>, SwiGLU in <code>decoder::swiglu</code>, RMSNorm in <code>decoder::rms_norm</code>. Shape-conditional threshold (<code>n × d ≥ 32 768</code>).</td>
-          <td class="accent">landed</td>
-          <td>~−7% single-pair (combined)</td>
-        </tr>
-        <tr>
-          <td>L6</td>
-          <td><code>with_skip_last_layer(true)</code> builder on both reranker services (wraps <code>BertConfig::skip_last_layer</code> / <code>DecoderConfig::skip_last_layer</code>) — GELO §3.2 sensitive-layer exclusion.</td>
-          <td class="accent">landed</td>
-          <td>−1.5% wall · paper-aligned default</td>
-        </tr>
-        <tr>
-          <td>Qwen3 template</td>
-          <td>Fix <code>QWEN3_RERANKER_TEMPLATE</code> — add the missing <code>&lt;Instruct&gt;:</code> line per the HF model card. Tracked separately because Qwen3 was descoped from the BGE perf sweep.</td>
-          <td>open</td>
-          <td>most likely cause of the Qwen3 −0.247 nDCG regression</td>
-        </tr>
-        <tr>
-          <td>Bucket-pad seq</td>
-          <td>Bucket-pad input tokens to <code>{128, 256, 512}</code> to keep cubecl's autotune cache hot.</td>
-          <td>open</td>
-          <td>p99 stabilisation, mean wall unchanged</td>
-        </tr>
-      </tbody>
-    </table>
-
-    <h4 style="margin-top:32px;">Deferred / out of scope</h4>
-    <ul>
-      <li><strong>jina-reranker-v3</strong> — listwise n≈16k forwards need <code>gelo-llm.md</code> §3's fused permuted attention + FlashAttention to land first. License is CC-BY-NC-4.0. Revisit alongside the LLM-serving stack.</li>
-      <li><strong>Shredder at the pooled activation</strong> — round-2 §6 follow-up. Only relevant if a deployment needs to <em>export</em> scores for downstream use (calibrated cutoffs, hybrid fusion). Default TEE-internal architecture already keeps scores sealed.</li>
-      <li><strong>Score-DP accountant</strong> — formal <code>(ε, δ)</code> budget over rerank score exports. Same trigger as Shredder.</li>
-      <li><strong>ECDH-bound session-key handshake</strong> — currently <code>session_secret</code> is a 32-byte token the client supplies per request. An attestation-bound ECDH KEX will replace it; the <code>SessionKey::derive</code> API surface stays identical.</li>
-      <li><strong>Game-of-Arrows attack bench in reranker mode</strong> — round-2 §4.3. The construction is safe by the same argument that protects the embedder; the empirical confirmation is gated on lifting the attack reference into a workspace test.</li>
-    </ul>
-  </section>
-
-  <footer class="colophon-foot">
-    <span class="rev">private-rag · prototype · reranking · GELO</span>
-  </footer>
-</div>
-</body>
+  </body>
 </html>
