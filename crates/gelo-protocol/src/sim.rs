@@ -177,11 +177,20 @@ pub struct InProcessTrustedExecutor<E: GpuOffloadEngine> {
     /// inside every offload — strictly safer but ~48-140× more QR
     /// work per text). Toggled via [`Self::with_per_forward_mask`].
     per_forward_mask: bool,
-    /// Active session mask. `Some` between `begin_forward_pass` and
-    /// `end_forward_pass` when `per_forward_mask` is enabled. The mask
-    /// is sized to `n + shield.k` because shield rows are part of the
-    /// stacked operand the mask acts on.
-    session: Option<SessionMask>,
+    /// Active session mask. `Some` between `begin_forward_pass`
+    /// (or `begin_prefill_pass` / `begin_decode_pass`) and
+    /// `end_forward_pass` when `per_forward_mask` is enabled.
+    ///
+    /// **Single** holds one mask of size `n + shield.k` — non-batched
+    /// callers (`begin_forward_pass`) and the M1.11 opt-in shared-A
+    /// decode path land here.
+    ///
+    /// **PerSequence** holds `B` independent masks of size
+    /// `n_max + shield.k` each — M1.11 batched-prefill default. The
+    /// caller passes `(B * n_max, d_in)` activation; the substrate
+    /// applies `masks[b]` to slice `[b*n_max..(b+1)*n_max, :]` per
+    /// rayon worker. See [`docs/plans/m1-11-batched-decode.md`] §3.4.
+    session: Option<SessionKind>,
     /// Per-session reusable (stacked_n × d) shield-scratch buffers, keyed
     /// by input width `d`. In paper-parity mode the data rows are
     /// invariant across all offloads in a forward (only the input width
@@ -293,6 +302,29 @@ struct SessionMask {
     /// HD₃-padding rows). The pipeline strips back to this at the end
     /// of every `offload_*` call.
     data_n: usize,
+}
+
+/// Session-level mask topology — either one mask covering all rows
+/// (Single, today's behaviour) or B per-sequence masks for batched
+/// forwards (PerSequence, M1.11).
+///
+/// See `docs/plans/m1-11-batched-decode.md` §3.4 for the topology
+/// decision and §3.5 for the lifecycle.
+enum SessionKind {
+    /// Non-batched OR shared-A batched decode (feature-flagged).
+    /// One mask covers all rows of the stacked operand.
+    Single(SessionMask),
+    /// Default batched mode at prefill (and the default at batched
+    /// decode until the `BATCHED_DECODE_SHARED_A` gate clears). One
+    /// mask per sequence; mask-apply rayon-parallel across `b`.
+    PerSequence {
+        masks: Vec<MaskFamily>,
+        /// Per-sequence data-row count (excluding shield rows). All B
+        /// sequences share this; right-padding to a common `n_max`
+        /// happens at the caller.
+        data_n: usize,
+        batch_size: usize,
+    },
 }
 
 impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
@@ -728,8 +760,12 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
         // paper-parity mode, fresh sample otherwise).
         let mask = if self.per_forward_mask {
             match &self.session {
-                Some(s) if s.data_n == n_data && s.mask.n() == stacked_n => s.mask.clone(),
-                Some(s) => {
+                Some(SessionKind::Single(s))
+                    if s.data_n == n_data && s.mask.n() == stacked_n =>
+                {
+                    s.mask.clone()
+                }
+                Some(SessionKind::Single(s)) => {
                     panic!(
                         "per-forward-pass mask: offload n={n_data} (stacked {stacked_n}) \
                          doesn't match session n={} (stacked {}); did you forget to call \
@@ -738,6 +774,10 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
                         s.mask.n(),
                     );
                 }
+                Some(SessionKind::PerSequence { .. }) => panic!(
+                    "build_shielded_and_apply called under PerSequence session — \
+                     batched callers must use the batched offload path (M1.11 R1.2)"
+                ),
                 None => panic!(
                     "per-forward-pass mode but no session mask — \
                      embedder must call begin_forward_pass(n) before any offload_*"
@@ -903,6 +943,301 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             self.stacked_scratch.insert(d, buf);
         }
     }
+
+    /// **M1.11 R1.2 / R1.5** — build B shielded+masked operands and
+    /// concat into a `(batch_size * stacked_n, d_in)` tensor.
+    ///
+    /// Step 1 (shield stack) runs serial — the shield RNG is a single
+    /// `&mut self.shield_rng` borrowed sequentially per block.
+    /// Step 2 (mask apply) runs **rayon-parallel** across blocks
+    /// (R1.5): `MaskFamily::apply*` are `&self` methods so per-block
+    /// dispatch is `Sync`. HD₃/DCT-IV `apply_in_place` need owned
+    /// `Array2`, so we clone the block view, apply, assign back — same
+    /// allocation cost as the serial version, just parallelised.
+    fn build_per_sequence_masked(
+        &mut self,
+        hidden: ArrayView2<'_, f32>,
+        masks: &[MaskFamily],
+        batch_size: usize,
+        data_n: usize,
+    ) -> Array2<f32> {
+        let d_in = hidden.ncols();
+        let k = self.shield.k;
+        let stacked_n = masks[0].n();
+        let scale = self.shield.energy_scale;
+
+        // Step 1: serial shield stack (RNG borrow is single-threaded).
+        let mut concat_masked = profile::time("gelo:shield_stack", || {
+            let mut buf = Array2::<f32>::zeros((batch_size * stacked_n, d_in));
+            for b in 0..batch_size {
+                let sub_in = hidden.slice(ndarray::s![b * data_n..(b + 1) * data_n, ..]);
+                let mean_norm = mean_row_norm(sub_in);
+                let sigma = if d_in == 0 {
+                    0.0
+                } else {
+                    scale * mean_norm / (d_in as f32).sqrt()
+                };
+                buf.slice_mut(ndarray::s![b * stacked_n..b * stacked_n + data_n, ..])
+                    .assign(&sub_in);
+                let shield_start = b * stacked_n + data_n;
+                let shield_end = b * stacked_n + (data_n + k).min(stacked_n);
+                if shield_end > shield_start {
+                    fill_shield_rows_inline(
+                        buf.slice_mut(ndarray::s![shield_start..shield_end, ..]),
+                        sigma,
+                        &mut self.shield_rng,
+                    );
+                }
+            }
+            buf
+        });
+
+        // Step 2 (R1.5): rayon-parallel per-block mask apply.
+        // `axis_chunks_iter_mut(Axis(0), stacked_n)` produces B
+        // mutable views; each parallel worker handles one.
+        profile::time("gelo:mask_apply", || {
+            use ndarray::parallel::prelude::*;
+            concat_masked
+                .axis_chunks_iter_mut(ndarray::Axis(0), stacked_n)
+                .into_par_iter()
+                .enumerate()
+                .for_each(|(b, mut block_view)| match &masks[b] {
+                    MaskFamily::Hd3(hd3) => {
+                        let mut block = block_view.to_owned();
+                        hd3.apply_in_place(&mut block);
+                        block_view.assign(&block);
+                    }
+                    MaskFamily::Dct4(dct4) => {
+                        let mut block = block_view.to_owned();
+                        dct4.apply_in_place(&mut block);
+                        block_view.assign(&block);
+                    }
+                    MaskFamily::Haar(_) => {
+                        let masked_block = masks[b].apply(block_view.view());
+                        block_view.assign(&masked_block);
+                    }
+                });
+        });
+        concat_masked
+    }
+
+    /// **M1.11 R1.5** — rayon-parallel per-sequence unmask + shield
+    /// strip. Given a `(batch_size * stacked_n, d_out)` engine output,
+    /// produces a `(batch_size * data_n, d_out)` user-facing tensor.
+    fn unmask_per_sequence(
+        &self,
+        concat_out: ArrayView2<'_, f32>,
+        masks: &[MaskFamily],
+        batch_size: usize,
+        data_n: usize,
+    ) -> Array2<f32> {
+        let stacked_n = masks[0].n();
+        let d_out = concat_out.ncols();
+        let mut output = Array2::<f32>::zeros((batch_size * data_n, d_out));
+        profile::time("gelo:mask_unapply", || {
+            use ndarray::parallel::prelude::*;
+            // Pair up B input blocks (concat_out chunks of stacked_n
+            // rows) with B output blocks (output chunks of data_n
+            // rows) — both have the same number of chunks.
+            output
+                .axis_chunks_iter_mut(ndarray::Axis(0), data_n)
+                .into_par_iter()
+                .enumerate()
+                .for_each(|(b, mut out_block)| {
+                    let in_block = concat_out
+                        .slice(ndarray::s![b * stacked_n..(b + 1) * stacked_n, ..]);
+                    let unmasked = masks[b].unapply(in_block);
+                    out_block.assign(&unmasked.slice(ndarray::s![..data_n, ..]));
+                });
+        });
+        output
+    }
+
+    /// **M1.11 R1.2** — batched per-sequence offload_linear path.
+    ///
+    /// Called from `offload_linear` when the session is
+    /// `SessionKind::PerSequence`. Hidden is `(batch_size * data_n,
+    /// d_in)` with contiguous B-blocks. Each block gets `masks[b]`
+    /// applied independently; the B masked operands concat into one
+    /// `(batch_size * stacked_n, d_in)` tensor for a single engine
+    /// matmul call (preserving GPU dispatch amortisation across B).
+    ///
+    /// R1.5: per-block mask apply / unapply runs rayon-parallel.
+    fn offload_linear_per_sequence(
+        &mut self,
+        handle: WeightHandle,
+        hidden: ArrayView2<'_, f32>,
+        batch_size: usize,
+        data_n: usize,
+    ) -> Result<Array2<f32>> {
+        assert_eq!(
+            hidden.nrows(),
+            batch_size * data_n,
+            "offload_linear_per_sequence: hidden has {} rows; expected B*data_n = {}*{} = {}",
+            hidden.nrows(),
+            batch_size,
+            data_n,
+            batch_size * data_n
+        );
+        if !self.per_forward_mask {
+            return Err(anyhow!(
+                "PerSequence session but per_forward_mask is false — \
+                 batched offload requires paper-parity mode"
+            ));
+        }
+        let masks: Vec<MaskFamily> = match &self.session {
+            Some(SessionKind::PerSequence { masks, .. }) => masks.clone(),
+            _ => unreachable!("offload_linear_per_sequence called outside PerSequence"),
+        };
+
+        let concat_masked = self.build_per_sequence_masked(hidden, &masks, batch_size, data_n);
+
+        let concat_out = profile::time("engine:matmul", || {
+            self.engine.matmul(handle, concat_masked.view())
+        })?;
+        self.record_snapshot(handle, &concat_masked, Some(&concat_out));
+        if self.verify_probes > 0 {
+            let weight = self.weights.get(&handle).ok_or_else(|| {
+                anyhow!("verify_probes>0 but weight {handle:?} not cached in TEE")
+            })?;
+            profile::time("uverify:linear", || {
+                verify_offload(
+                    self.verify_probes,
+                    concat_masked.view(),
+                    weight.view(),
+                    concat_out.view(),
+                    &mut self.rng,
+                )
+            })?;
+        }
+
+        Ok(self.unmask_per_sequence(concat_out.view(), &masks, batch_size, data_n))
+    }
+
+    /// **M1.11 R1.6** — batched per-sequence offload_qkv path. Builds
+    /// the masked operand **once**, dispatches Q/K/V via one
+    /// `engine.matmul_many` call (3 GEMMs amortising the operand
+    /// upload), then unmasks per output. Same shape contract as the
+    /// non-batched override: hidden is `(B*data_n, d_in)`; returns
+    /// three `(B*data_n, kv_dim_*)` tensors.
+    fn offload_qkv_per_sequence(
+        &mut self,
+        layer: u16,
+        hidden: ArrayView2<'_, f32>,
+        batch_size: usize,
+        data_n: usize,
+    ) -> Result<(Array2<f32>, Array2<f32>, Array2<f32>)> {
+        let masks: Vec<MaskFamily> = match &self.session {
+            Some(SessionKind::PerSequence { masks, .. }) => masks.clone(),
+            _ => unreachable!("offload_qkv_per_sequence called outside PerSequence"),
+        };
+        let concat_masked = self.build_per_sequence_masked(hidden, &masks, batch_size, data_n);
+
+        let handles = [
+            WeightHandle::new(layer, WeightKind::Q),
+            WeightHandle::new(layer, WeightKind::K),
+            WeightHandle::new(layer, WeightKind::V),
+        ];
+        let qkv_out = profile::time("engine:matmul_many", || {
+            self.engine.matmul_many(&handles, concat_masked.view())
+        })?;
+        anyhow::ensure!(
+            qkv_out.len() == 3,
+            "engine.matmul_many returned {} results; expected 3",
+            qkv_out.len()
+        );
+        let mut it = qkv_out.into_iter();
+        let mq = it.next().expect("len checked above");
+        let mk = it.next().expect("len checked above");
+        let mv = it.next().expect("len checked above");
+
+        // Snapshot + U-Verify per output kind (same masked operand
+        // drives all three).
+        self.record_snapshot(WeightHandle::new(layer, WeightKind::Q), &concat_masked, Some(&mq));
+        self.record_snapshot(WeightHandle::new(layer, WeightKind::K), &concat_masked, Some(&mk));
+        self.record_snapshot(WeightHandle::new(layer, WeightKind::V), &concat_masked, Some(&mv));
+        if self.verify_probes > 0 {
+            for (kind, observed) in
+                [(WeightKind::Q, &mq), (WeightKind::K, &mk), (WeightKind::V, &mv)]
+            {
+                let h = WeightHandle::new(layer, kind);
+                let w = self.weights.get(&h).ok_or_else(|| {
+                    anyhow!("verify_probes>0 but weight {h:?} not cached in TEE")
+                })?;
+                profile::time("uverify:linear", || {
+                    verify_offload(
+                        self.verify_probes,
+                        concat_masked.view(),
+                        w.view(),
+                        observed.view(),
+                        &mut self.rng,
+                    )
+                })?;
+            }
+        }
+
+        let q = self.unmask_per_sequence(mq.view(), &masks, batch_size, data_n);
+        let k_out = self.unmask_per_sequence(mk.view(), &masks, batch_size, data_n);
+        let v_out = self.unmask_per_sequence(mv.view(), &masks, batch_size, data_n);
+        Ok((q, k_out, v_out))
+    }
+
+    /// **M1.11 R1.6** — generic batched per-sequence `offload_linear_many`.
+    /// Same shape as `offload_qkv_per_sequence` but for an arbitrary
+    /// list of weight handles (SwiGLU gate+up shares hidden, this is
+    /// the canonical caller).
+    fn offload_linear_many_per_sequence(
+        &mut self,
+        handles: &[WeightHandle],
+        hidden: ArrayView2<'_, f32>,
+        batch_size: usize,
+        data_n: usize,
+    ) -> Result<Vec<Array2<f32>>> {
+        if handles.is_empty() {
+            return Ok(Vec::new());
+        }
+        let masks: Vec<MaskFamily> = match &self.session {
+            Some(SessionKind::PerSequence { masks, .. }) => masks.clone(),
+            _ => unreachable!("offload_linear_many_per_sequence called outside PerSequence"),
+        };
+        let concat_masked = self.build_per_sequence_masked(hidden, &masks, batch_size, data_n);
+
+        let masked_outs = profile::time("engine:matmul_many", || {
+            self.engine.matmul_many(handles, concat_masked.view())
+        })?;
+        anyhow::ensure!(
+            masked_outs.len() == handles.len(),
+            "engine.matmul_many returned {} results; expected {}",
+            masked_outs.len(),
+            handles.len()
+        );
+
+        for (h, out) in handles.iter().zip(masked_outs.iter()) {
+            self.record_snapshot(*h, &concat_masked, Some(out));
+        }
+        if self.verify_probes > 0 {
+            for (h, observed) in handles.iter().zip(masked_outs.iter()) {
+                let w = self.weights.get(h).ok_or_else(|| {
+                    anyhow!("verify_probes>0 but weight {h:?} not cached in TEE")
+                })?;
+                profile::time("uverify:linear", || {
+                    verify_offload(
+                        self.verify_probes,
+                        concat_masked.view(),
+                        w.view(),
+                        observed.view(),
+                        &mut self.rng,
+                    )
+                })?;
+            }
+        }
+
+        let outputs: Vec<Array2<f32>> = masked_outs
+            .into_iter()
+            .map(|m| self.unmask_per_sequence(m.view(), &masks, batch_size, data_n))
+            .collect();
+        Ok(outputs)
+    }
 }
 
 /// Overwrite `shield_dest` (a (k × d) mutable view) with fresh Gaussian
@@ -991,7 +1326,7 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
             }
             MaskKind::Auto => unreachable!("Auto resolved above"),
         });
-        self.session = Some(SessionMask { mask, data_n: n });
+        self.session = Some(SessionKind::Single(SessionMask { mask, data_n: n }));
         // Stale scratches from a prior forward with a different `n` are
         // unusable now — clear to avoid silently feeding the wrong row
         // count into mask.apply().
@@ -1001,6 +1336,77 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
 
     fn end_forward_pass(&mut self) -> Result<()> {
         self.session = None;
+        self.stacked_scratch.clear();
+        Ok(())
+    }
+
+    /// M1.11 R1.1 — batched-prefill bracket. Samples `batch_size`
+    /// per-sequence masks of size `(n_max + shield_k, n_max + shield_k)`
+    /// each, stores them as `SessionKind::PerSequence`. The shape-
+    /// adaptive shield overlay applies based on `n_max` (per-sequence
+    /// row count), not on the batch size — at typical prefill widths
+    /// (n_max ≥ 32) the overlay never fires, so we use
+    /// `shield_default` (k=8).
+    fn begin_prefill_pass(
+        &mut self,
+        batch_size: usize,
+        n_max: usize,
+    ) -> Result<()> {
+        if !self.per_forward_mask {
+            // Per-offload mode: each offload samples its own fresh
+            // mask, so the bracket is a no-op (same contract as
+            // begin_forward_pass).
+            return Ok(());
+        }
+        if batch_size == 0 {
+            return Err(anyhow!(
+                "begin_prefill_pass: batch_size must be > 0"
+            ));
+        }
+        if n_max == 0 {
+            return Err(anyhow!(
+                "begin_prefill_pass: n_max must be > 0"
+            ));
+        }
+        // Shape-adaptive shield by per-sequence n_max — same logic as
+        // begin_forward_pass. At typical rerank/extraction prefill
+        // widths (n_max ≥ 200) the overlay won't fire.
+        self.shield = match self.shield_small_n {
+            Some(small) if n_max <= self.shield_small_n_max => small,
+            _ => self.shield_default,
+        };
+        let stacked_n = n_max + self.shield.k;
+        let resolved_kind =
+            crate::mask::resolve_mask_kind_for_shape(self.mask_kind, stacked_n);
+
+        // Sample B independent masks sequentially from the executor's
+        // main RNG stream. Each mask consumes some bytes from the
+        // stream, so the masks are independent. No need to set_stream
+        // per-b — the RNG is a long-period CSPRNG (ChaCha20) and
+        // sequential consumption gives uncorrelated samples.
+        let mut masks = Vec::with_capacity(batch_size);
+        for _b in 0..batch_size {
+            let mask = profile::time("gelo:mask_sample", || match resolved_kind {
+                MaskKind::Haar => MaskFamily::Haar(GeloMask::fresh(stacked_n, &mut self.rng)),
+                MaskKind::Hd3 => {
+                    let s_pad = stacked_n.next_power_of_two().max(2);
+                    MaskFamily::Hd3(Hd3Mask::fresh(s_pad, &mut self.rng))
+                }
+                MaskKind::Dct4 => MaskFamily::Dct4(
+                    crate::dct4::Dct4Mask::fresh(stacked_n, &mut self.rng),
+                ),
+                MaskKind::Auto => unreachable!("Auto resolved above"),
+            });
+            masks.push(mask);
+        }
+        self.session = Some(SessionKind::PerSequence {
+            masks,
+            data_n: n_max,
+            batch_size,
+        });
+        // Per-sequence scratch is bespoke; clear any pre-existing
+        // single-mask scratch so the per-sequence offload path
+        // doesn't accidentally pick it up.
         self.stacked_scratch.clear();
         Ok(())
     }
@@ -1066,6 +1472,21 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         handle: WeightHandle,
         hidden: ArrayView2<f32>,
     ) -> Result<Array2<f32>> {
+        // Branch on session kind: PerSequence (batched prefill, M1.11)
+        // expects hidden = (batch_size * data_n, d_in) with contiguous
+        // B-blocks. Single (legacy / non-batched) uses the existing
+        // single-mask path.
+        let per_sequence_dims = match &self.session {
+            Some(SessionKind::PerSequence {
+                batch_size,
+                data_n,
+                ..
+            }) => Some((*batch_size, *data_n)),
+            _ => None,
+        };
+        if let Some((batch_size, data_n)) = per_sequence_dims {
+            return self.offload_linear_per_sequence(handle, hidden, batch_size, data_n);
+        }
         let (mask, masked, n_data) = self.build_shielded_and_apply(hidden);
         let masked_out =
             profile::time("engine:matmul", || self.engine.matmul(handle, masked.view()))?;
@@ -1101,6 +1522,18 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         layer: u16,
         hidden: ArrayView2<f32>,
     ) -> Result<(Array2<f32>, Array2<f32>, Array2<f32>)> {
+        // M1.11 R1.6: under PerSequence session, route to the
+        // batched per-sequence qkv helper which shares one masked
+        // operand across Q/K/V via a single `matmul_many` dispatch.
+        let per_sequence_dims = match &self.session {
+            Some(SessionKind::PerSequence {
+                batch_size, data_n, ..
+            }) => Some((*batch_size, *data_n)),
+            _ => None,
+        };
+        if let Some((batch_size, data_n)) = per_sequence_dims {
+            return self.offload_qkv_per_sequence(layer, hidden, batch_size, data_n);
+        }
         let (mask, masked, n_data) = self.build_shielded_and_apply(hidden);
 
         // Batched offload: one upload of `masked`, one device sync across
@@ -1181,6 +1614,18 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
     ) -> Result<Vec<Array2<f32>>> {
         if handles.is_empty() {
             return Ok(Vec::new());
+        }
+        // M1.11 R1.6: under PerSequence session, route to the
+        // batched per-sequence many helper which amortises the
+        // masked operand build + dispatch across N matmuls.
+        let per_sequence_dims = match &self.session {
+            Some(SessionKind::PerSequence {
+                batch_size, data_n, ..
+            }) => Some((*batch_size, *data_n)),
+            _ => None,
+        };
+        if let Some((batch_size, data_n)) = per_sequence_dims {
+            return self.offload_linear_many_per_sequence(handles, hidden, batch_size, data_n);
         }
         let (mask, masked, n_data) = self.build_shielded_and_apply(hidden);
 
@@ -1885,6 +2330,91 @@ mod tests {
         }
         for ((i, j), e) in expected_v.indexed_iter() {
             assert!((v[[i, j]] - e).abs() < 5e-3);
+        }
+    }
+
+    /// **M1.11 R1.2** — batched per-sequence offload_linear round-trips
+    /// correctly. Each sub-block of the output must equal the plaintext
+    /// reference `hidden_b · W` to f32 floor, with B independent masks
+    /// applied internally.
+    #[test]
+    fn per_sequence_offload_linear_round_trips_to_plaintext() {
+        let mut rng = ChaCha20Rng::from_seed([17u8; 32]);
+        let normal = StandardNormal;
+        let batch_size = 4;
+        let n_max = 6;
+        let d_in = 5;
+        let d_out = 7;
+
+        // Build (B * n_max, d_in) activation by stacking B random sub-blocks.
+        let hidden = Array2::<f32>::from_shape_fn(
+            (batch_size * n_max, d_in),
+            |_| normal.sample(&mut rng),
+        );
+        let weight = Array2::<f32>::from_shape_fn((d_in, d_out), |_| normal.sample(&mut rng));
+        let handle = WeightHandle::new(0, WeightKind::Q);
+
+        let mut exec = InProcessTrustedExecutor::with_seed(
+            RayonCpuEngine::new(),
+            MaskSeed::from_bytes([23u8; 32]),
+        );
+        exec.provision_weight(handle, weight.view()).unwrap();
+        exec.begin_prefill_pass(batch_size, n_max).unwrap();
+        let out = exec.offload_linear(handle, hidden.view()).unwrap();
+        exec.end_forward_pass().unwrap();
+
+        assert_eq!(out.shape(), &[batch_size * n_max, d_out]);
+
+        // Each block must match the plaintext reference within mask
+        // round-trip f32 noise (~5e-3 is the same tolerance as the
+        // single-sequence Q/K/V test above).
+        for b in 0..batch_size {
+            let sub_in = hidden.slice(ndarray::s![b * n_max..(b + 1) * n_max, ..]);
+            let expected = sub_in.dot(&weight);
+            for ((i, j), e) in expected.indexed_iter() {
+                let got = out[[b * n_max + i, j]];
+                assert!(
+                    (got - e).abs() < 5e-3,
+                    "b={b} ({i},{j}): batched={got} expected={e} delta={}",
+                    (got - e).abs()
+                );
+            }
+        }
+    }
+
+    /// Round-trip parity at batch_size=1 — the degenerate case should
+    /// match the single-sequence `begin_forward_pass(n)` path to mask
+    /// round-trip precision (not bit-identical: different mask
+    /// sampling order across the RNG).
+    #[test]
+    fn per_sequence_offload_linear_b1_matches_single_to_plaintext() {
+        let mut rng = ChaCha20Rng::from_seed([29u8; 32]);
+        let normal = StandardNormal;
+        let n = 8;
+        let d_in = 4;
+        let d_out = 6;
+
+        let hidden = Array2::<f32>::from_shape_fn((n, d_in), |_| normal.sample(&mut rng));
+        let weight = Array2::<f32>::from_shape_fn((d_in, d_out), |_| normal.sample(&mut rng));
+        let handle = WeightHandle::new(0, WeightKind::Q);
+
+        let mut exec = InProcessTrustedExecutor::with_seed(
+            RayonCpuEngine::new(),
+            MaskSeed::from_bytes([31u8; 32]),
+        );
+        exec.provision_weight(handle, weight.view()).unwrap();
+
+        exec.begin_prefill_pass(1, n).unwrap();
+        let batched_out = exec.offload_linear(handle, hidden.view()).unwrap();
+        exec.end_forward_pass().unwrap();
+
+        let expected = hidden.dot(&weight);
+        for ((i, j), e) in expected.indexed_iter() {
+            let got = batched_out[[i, j]];
+            assert!(
+                (got - e).abs() < 5e-3,
+                "({i},{j}): batched(B=1)={got} expected={e}",
+            );
         }
     }
 }

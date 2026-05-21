@@ -489,3 +489,224 @@ fn real_models_bge_vs_qwen3() {
         opened_qw[0].chunk_id
     );
 }
+
+/// **M1.11 R2 perf gate** — A/B wall-time comparison of the new
+/// `score_candidates_batched` path vs *serial single-stream*
+/// `score_pair` calls on `Qwen3-Reranker-0.6B`.
+///
+/// Methodology — per the
+/// `feedback_perf_baseline_unbatched_not_rayon` memory: the
+/// acceptance baseline is **B serial back-to-back `score_pair` calls
+/// with no concurrency** (no Rayon, no clones). This isolates the
+/// M1.11 design win (per-sequence mask amortisation + single engine
+/// dispatch chain per layer) from the orthogonal CPU-parallelism win
+/// Rayon already gives.
+///
+/// Invoke:
+///
+/// ```text
+/// cargo test -p gelo-reranker --release --test comparative_bench \
+///     -- --ignored qwen3_batched_vs_serial --nocapture
+/// ```
+#[test]
+#[ignore = "loads Qwen3-Reranker-0.6B (~1.5 GB), runs on Vulkan/wgpu"]
+fn qwen3_batched_vs_serial() {
+    use std::time::Instant;
+
+    use gelo_gpu_wgpu::WgpuVulkanEngine;
+    use gelo_protocol::rng::MaskSeed;
+    use gelo_protocol::InProcessTrustedExecutor;
+
+    let query = "How does retrieval augmented generation reduce hallucinations?";
+    let docs: &[(&str, &str)] = &[
+        (
+            "rag-grounding",
+            "Retrieval augmented generation grounds an LLM in an external corpus, \
+             feeding retrieved chunks into the prompt so the model can cite real \
+             documents instead of fabricating answers.",
+        ),
+        (
+            "tee-isolation",
+            "A trusted execution environment isolates a process so the host OS \
+             and other tenants cannot read its memory.",
+        ),
+        (
+            "gpu-matmul",
+            "GPUs accelerate parallel dense matrix multiplication, the backbone \
+             of transformer inference and training.",
+        ),
+        (
+            "rag-hallucinations",
+            "By retrieving authoritative source text at query time and including \
+             it in the model's context, RAG lowers the rate of unsupported \
+             generations and gives the user direct citations.",
+        ),
+        (
+            "private-rag",
+            "Private RAG stacks confidential computing, distance-preserving \
+             embedding ciphertext, and DP-bounded query noise so the cloud \
+             provider never sees plaintext queries or documents.",
+        ),
+        (
+            "rust-langs",
+            "Rust is a systems programming language with strong memory-safety \
+             guarantees enforced at compile time.",
+        ),
+        (
+            "bert-encoder",
+            "BERT is a bidirectional transformer encoder used for many NLP tasks \
+             such as classification, NER, and question answering.",
+        ),
+        (
+            "vector-db",
+            "Vector databases store high-dimensional embeddings and support \
+             approximate nearest-neighbour queries via HNSW or IVF indexes.",
+        ),
+    ];
+    let candidates: Vec<RerankCandidate> = docs
+        .iter()
+        .map(|(id, text)| RerankCandidate {
+            chunk_id: ChunkId((*id).into()),
+            text: (*text).into(),
+        })
+        .collect();
+    let batch_size = candidates.len();
+
+    let session = SessionKey::derive(&Zeroizing::new(vec![0x4d; 32]), SessionKeyPolicy::V1);
+    let _ = &session; // silence "unused" if no qkey needed below.
+
+    let gpu = WgpuVulkanEngine::new().expect("Vulkan adapter must be available");
+    eprintln!(
+        "[r2-perf] Vulkan adapter: {} ({:?})",
+        gpu.adapter_info().name,
+        gpu.adapter_info().device_type,
+    );
+    eprintln!("[r2-perf] B = {batch_size}");
+
+    // Force the legacy code path out of the picture entirely — we are
+    // NOT measuring it here; this is batched-vs-serial only.
+    unsafe {
+        std::env::remove_var("GELO_RERANKER_LEGACY_RAYON");
+    }
+
+    // ── Variant A: serial single-stream — score_pair × B ────────────
+    eprintln!("[r2-perf] loading Qwen3-Reranker-0.6B for serial ...");
+    let t_load = Instant::now();
+    let mut svc_serial = CausalDiscriminatorRerankService::from_pretrained(
+        "Qwen/Qwen3-Reranker-0.6B",
+        InProcessTrustedExecutor::with_seed(
+            gpu.clone_shared(),
+            MaskSeed::from_bytes([0x9c; 32]),
+        ),
+    )
+    .expect("load Qwen3-Reranker-0.6B (serial)");
+    eprintln!("[r2-perf]   loaded in {:.2?}", t_load.elapsed());
+
+    // Warm-up: pay for first-launch JIT, kernel cache, scratch alloc.
+    let _ = svc_serial
+        .score_pair(query, &candidates[0].text)
+        .expect("warm score_pair");
+
+    // Measured: B serial score_pair calls, no clones, no Rayon.
+    // Reset profile so the snapshot covers ONLY the measured run.
+    gelo_protocol::profile::reset();
+    let t0 = Instant::now();
+    let mut serial_scores: Vec<f32> = Vec::with_capacity(candidates.len());
+    for cand in &candidates {
+        serial_scores.push(
+            svc_serial
+                .score_pair(query, &cand.text)
+                .expect("serial score_pair"),
+        );
+    }
+    let elapsed_serial = t0.elapsed();
+    let per_pair_serial = elapsed_serial / candidates.len() as u32;
+    let profile_serial = gelo_protocol::profile::snapshot();
+    drop(svc_serial); // release Vulkan handles before building the next one
+
+    // ── Variant B: batched — one score_candidates_batched call ──────
+    eprintln!("[r2-perf] loading Qwen3-Reranker-0.6B for batched ...");
+    let t_load = Instant::now();
+    let mut svc_batched = CausalDiscriminatorRerankService::from_pretrained(
+        "Qwen/Qwen3-Reranker-0.6B",
+        InProcessTrustedExecutor::with_seed(
+            gpu.clone_shared(),
+            MaskSeed::from_bytes([0x9d; 32]),
+        ),
+    )
+    .expect("load Qwen3-Reranker-0.6B (batched)");
+    eprintln!("[r2-perf]   loaded in {:.2?}", t_load.elapsed());
+
+    // Warm-up: trigger one batched forward at the bench shape.
+    let warm_request = RerankRequest {
+        query,
+        candidates: &candidates,
+        top_k: 3,
+        k_max: 8,
+        query_id: QueryId::from("r2-warm"),
+    };
+    let _ = svc_batched
+        .rerank(&session, &warm_request)
+        .expect("warm batched rerank");
+
+    // Measured: one batched call covering all B candidates.
+    let request = RerankRequest {
+        query,
+        candidates: &candidates,
+        top_k: 3,
+        k_max: 8,
+        query_id: QueryId::from("r2-batched"),
+    };
+    gelo_protocol::profile::reset();
+    let t0 = Instant::now();
+    let bundle = svc_batched
+        .rerank(&session, &request)
+        .expect("batched rerank");
+    let elapsed_batched = t0.elapsed();
+    let per_pair_batched = elapsed_batched / candidates.len() as u32;
+    let profile_batched = gelo_protocol::profile::snapshot();
+
+    let qkey = session.derive_query_key(&QueryId::from("r2-batched"));
+    let opened = bundle.open(&qkey).expect("open batched bundle");
+    let ranked_batched: Vec<String> = opened.iter().map(|i| i.chunk_id.clone()).collect();
+
+    eprintln!("\n[r2-perf] ─── results ───");
+    eprintln!(
+        "[r2-perf] serial:  total={elapsed_serial:.2?} per-pair={per_pair_serial:.2?}"
+    );
+    eprintln!(
+        "[r2-perf] batched: total={elapsed_batched:.2?} per-pair={per_pair_batched:.2?}"
+    );
+    let speedup = elapsed_serial.as_secs_f64() / elapsed_batched.as_secs_f64();
+    eprintln!("[r2-perf] speedup (serial/batched): {speedup:.2}×");
+    eprintln!("[r2-perf] batched top-3 = {ranked_batched:?}");
+
+    // Per-key profile dumps — main-thread profile only. Rayon-parallel
+    // sections are wrapped in `profile::time(name, || ...)` so the
+    // dispatch wall-clock IS captured under the right category; the
+    // per-worker inner work isn't sub-divided.
+    profile_serial.dump(&format!(
+        "r2-perf serial breakdown (B={batch_size}, total wall={elapsed_serial:.2?})"
+    ));
+    profile_batched.dump(&format!(
+        "r2-perf batched breakdown (B={batch_size}, total wall={elapsed_batched:.2?})"
+    ));
+    // Print serial scores so the per-pair score-band signal is visible.
+    eprintln!(
+        "[r2-perf] serial scores (per candidate, in input order): {:?}",
+        serial_scores
+            .iter()
+            .zip(candidates.iter())
+            .map(|(s, c)| (c.chunk_id.0.clone(), *s))
+            .collect::<Vec<_>>(),
+    );
+
+    // Sanity: batched returns 3 items with a RAG-grounded doc at top-1.
+    assert_eq!(ranked_batched.len(), 3);
+    let rag_ids = ["rag-grounding", "rag-hallucinations", "private-rag"];
+    assert!(
+        rag_ids.contains(&ranked_batched[0].as_str()),
+        "batched top-1 was {:?}, expected a RAG-grounded doc",
+        ranked_batched[0]
+    );
+}

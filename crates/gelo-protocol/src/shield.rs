@@ -42,6 +42,25 @@ impl Default for ShieldConfig {
     }
 }
 
+/// Pick a shield-row count `k` so the stacked-with-shield axis size
+/// `n + k` lands on a power of two, guaranteeing HD₃ alignment under
+/// `MaskKind::Auto`.
+///
+/// Used by batched-forward brackets (`begin_prefill_pass`,
+/// `begin_decode_pass`) where the data-row count `n` is itself a
+/// function of the batch size and varies per call. The returned `k` is
+/// always `≥ k_base` (the paper-minimum, default 8) — excess `k` only
+/// adds shield rows, which is monotonically safer per GELO §4.2.
+///
+/// Worst-case `k = 2 · k_base − 1`; e.g. with `k_base = 8`, `k ∈ [8,
+/// 15]` and the stacked axis size is `n + k ∈ pow2({16, 32, 64, …})`.
+///
+/// See `docs/plans/m1-11-batched-decode.md` §3.3 for the table of
+/// concrete values per B.
+pub fn shield_k_for_batch(n: usize, k_base: usize) -> usize {
+    (n + k_base).next_power_of_two().saturating_sub(n).max(k_base)
+}
+
 /// Stack `k` high-energy random rows below `hidden`, return the resulting
 /// `(n + k, d)` matrix and the number of original data rows `n`.
 ///
@@ -132,5 +151,36 @@ mod tests {
             (mean_shield_norm - target).abs() / target < 0.2,
             "shield norm {mean_shield_norm} far from target {target}",
         );
+    }
+
+    /// Table from `docs/plans/m1-11-batched-decode.md` §3.3.  Every
+    /// (n, k_base=8) row must yield k such that n+k is a power of two
+    /// and k ≥ k_base.
+    #[test]
+    fn shield_k_for_batch_lands_on_pow2() {
+        let cases = [
+            (1usize, 15usize, 16usize),
+            (8, 8, 16),
+            (12, 20, 32),
+            (16, 16, 32),
+            (24, 8, 32),
+            (32, 32, 64),
+            (48, 16, 64),
+            (56, 8, 64),
+            (64, 64, 128),
+        ];
+        for (n, expected_k, expected_stacked) in cases {
+            let k = shield_k_for_batch(n, 8);
+            assert_eq!(k, expected_k, "n={n}: got k={k}, want {expected_k}");
+            assert_eq!(n + k, expected_stacked, "n={n}: stacked={n}+{k}");
+            assert!((n + k).is_power_of_two(), "n+k={} not pow2", n + k);
+            assert!(k >= 8, "k_base floor violated at n={n}, k={k}");
+        }
+    }
+
+    /// Sanity for n=0 (degenerate / unused, but must not panic).
+    #[test]
+    fn shield_k_for_batch_n0_returns_k_base() {
+        assert_eq!(shield_k_for_batch(0, 8), 8);
     }
 }

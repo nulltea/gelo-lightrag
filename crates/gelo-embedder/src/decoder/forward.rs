@@ -1,5 +1,5 @@
-use anyhow::Result;
-use ndarray::{Array1, Array2, ArrayView2};
+use anyhow::{Result, anyhow};
+use ndarray::{Array1, Array2, Array3, ArrayView2};
 
 use gelo_protocol::profile;
 use gelo_protocol::tee_matmul_bf16;
@@ -435,6 +435,308 @@ fn decoder_block_cached(
     } else {
         profile::time("tee:swiglu_down_direct", || {
             tee_matmul_bf16(activated.view(), layer.w_down.as_ref().expect("offload=false requires layer.w_down present (skip-layers mode)").view())
+        })
+    };
+    Ok(profile::time("tee:residual", || &h1 + &ffn_out))
+}
+
+/// **M1.11 R1.3** — Batched forward pass over `B` sequences.
+///
+/// `input_ids[b]` is sequence b's token IDs. Sequences may differ in
+/// length; right-padded internally to `n_max = max(len)`. Returns
+/// `(hidden, seq_lens)` where `hidden` has shape
+/// `(B, n_max, hidden_size)` (rows past `seq_lens[b]` are valid
+/// numerically but represent positions the model never trained on —
+/// callers gather the last *valid* row per sequence via `seq_lens`).
+///
+/// One `begin_prefill_pass(B, n_max)` bracket wraps the whole call;
+/// the substrate samples B per-sequence masks (see `m1-11-batched-decode.md`
+/// §3.4) and reuses them across every offload in the forward.
+pub fn run_batched(
+    cfg: &DecoderConfig,
+    weights: &DecoderWeights,
+    rope: &RopeTables,
+    exec: &mut impl TrustedExecutor,
+    input_ids: &[Vec<u32>],
+) -> Result<(Array3<f32>, Vec<usize>)> {
+    if input_ids.is_empty() {
+        return Err(anyhow!("run_batched: input_ids must be non-empty"));
+    }
+    let batch_size = input_ids.len();
+    let seq_lens: Vec<usize> = input_ids.iter().map(|s| s.len()).collect();
+    let n_max = seq_lens.iter().copied().max().unwrap_or(0);
+    if n_max == 0 {
+        return Err(anyhow!(
+            "run_batched: at least one sequence must have length > 0"
+        ));
+    }
+    let d = cfg.hidden_size;
+
+    // (B * n_max, d) flat embedding tensor. Pad rows stay zero.
+    let mut h_flat = profile::time("tee:embed_lookup", || {
+        let mut h = Array2::<f32>::zeros((batch_size * n_max, d));
+        for (b, ids) in input_ids.iter().enumerate() {
+            for (i, &id) in ids.iter().enumerate() {
+                let row = weights.token_embedding.row(id as usize);
+                for (j, v) in row.iter().enumerate() {
+                    h[[b * n_max + i, j]] = v.to_f32();
+                }
+            }
+        }
+        h
+    });
+
+    exec.begin_prefill_pass(batch_size, n_max)?;
+    let result = (|| -> Result<Array2<f32>> {
+        for (li, layer) in weights.layers.iter().enumerate() {
+            h_flat = decoder_block_batched(
+                cfg,
+                layer,
+                rope,
+                exec,
+                li as u16,
+                h_flat.view(),
+                batch_size,
+                n_max,
+                &seq_lens,
+                cfg.offload_layer(li),
+            )?;
+        }
+        Ok(profile::time("tee:rmsnorm", || {
+            rms_norm(
+                h_flat.view(),
+                weights.final_norm.as_slice().unwrap(),
+                cfg.rms_norm_eps,
+            )
+        }))
+    })();
+    exec.end_forward_pass()?;
+    let h_final = result?;
+
+    // Materialise (B, n_max, hidden) from the flat (B*n_max, hidden)
+    // tensor.  Direct copy preserves contiguity guarantees that
+    // downstream gather logic relies on.
+    let mut out = Array3::<f32>::zeros((batch_size, n_max, d));
+    for b in 0..batch_size {
+        out.slice_mut(ndarray::s![b, .., ..])
+            .assign(&h_final.slice(ndarray::s![b * n_max..(b + 1) * n_max, ..]));
+    }
+    Ok((out, seq_lens))
+}
+
+/// Batched-prefill decoder block over `(B * n_max, hidden)` rows with
+/// per-sequence valid-lengths `seq_lens`. Mirrors [`decoder_block`]
+/// except:
+///
+/// 1. RoPE is applied **per-sequence** (each sequence's row 0 is at
+///    absolute position 0).
+/// 2. Attention is computed **per-sequence** in-TEE over each
+///    sequence's valid prefix `[0..seq_lens[b]]` (R1.3 stopgap;
+///    R1.4 ships a batched kernel routed through `engine.fused_attention_batched`).
+/// 3. Linear projections (Q/K/V, O, gate/up, down) go through the
+///    substrate's `PerSequence` session — `exec.offload_*` calls
+///    transparently apply the B per-sequence masks.
+///
+/// Pad rows (rows `seq_lens[b]..n_max` of sequence b) carry garbage
+/// values through the entire forward; they're irrelevant for the
+/// caller's last-token gather. We do NOT zero them out per layer — the
+/// residual stream just propagates whatever the embedding lookup
+/// placed there (zero, in `run_batched`'s case).
+#[allow(clippy::too_many_arguments)]
+fn decoder_block_batched(
+    cfg: &DecoderConfig,
+    layer: &DecoderLayerWeights,
+    rope: &RopeTables,
+    exec: &mut impl TrustedExecutor,
+    layer_idx: u16,
+    hidden: ArrayView2<'_, f32>,
+    batch_size: usize,
+    n_max: usize,
+    seq_lens: &[usize],
+    offload: bool,
+) -> Result<Array2<f32>> {
+    debug_assert_eq!(hidden.nrows(), batch_size * n_max);
+
+    let h_norm = profile::time("tee:rmsnorm", || {
+        rms_norm(hidden, layer.norm_attn.as_slice().unwrap(), cfg.rms_norm_eps)
+    });
+
+    // Q/K/V — under PerSequence session, `offload_qkv` falls through
+    // to 3 `offload_linear` calls each running the per-sequence
+    // path (substrate handles slicing).
+    let (mut q, mut k, v) = if offload {
+        exec.offload_qkv(layer_idx, h_norm.view())?
+    } else {
+        profile::time("tee:qkv_direct", || {
+            (
+                tee_matmul_bf16(
+                    h_norm.view(),
+                    layer
+                        .wq
+                        .as_ref()
+                        .expect("offload=false requires layer.wq present")
+                        .view(),
+                ),
+                tee_matmul_bf16(
+                    h_norm.view(),
+                    layer
+                        .wk
+                        .as_ref()
+                        .expect("offload=false requires layer.wk present")
+                        .view(),
+                ),
+                tee_matmul_bf16(
+                    h_norm.view(),
+                    layer
+                        .wv
+                        .as_ref()
+                        .expect("offload=false requires layer.wv present")
+                        .view(),
+                ),
+            )
+        })
+    };
+
+    profile::time("tee:qk_norm", || {
+        if let Some(q_gamma) = layer.q_norm.as_ref() {
+            apply_qk_norm(
+                q.view_mut(),
+                cfg.num_attention_heads,
+                cfg.head_dim_value(),
+                q_gamma.as_slice().expect("q_norm contiguous"),
+                cfg.rms_norm_eps,
+            );
+        }
+        if let Some(k_gamma) = layer.k_norm.as_ref() {
+            apply_qk_norm(
+                k.view_mut(),
+                cfg.num_key_value_heads,
+                cfg.head_dim_value(),
+                k_gamma.as_slice().expect("k_norm contiguous"),
+                cfg.rms_norm_eps,
+            );
+        }
+    });
+
+    // Per-sequence RoPE — each sequence's row i sits at absolute
+    // position i (start_pos = 0).
+    profile::time("tee:rope", || {
+        for b in 0..batch_size {
+            let q_block = q.slice_mut(ndarray::s![b * n_max..(b + 1) * n_max, ..]);
+            rope.apply(q_block, cfg.num_attention_heads);
+            let k_block = k.slice_mut(ndarray::s![b * n_max..(b + 1) * n_max, ..]);
+            rope.apply(k_block, cfg.num_key_value_heads);
+        }
+    });
+
+    // Per-sequence attention via B serial in-TEE `causal_gqa_attention`
+    // calls, one per sequence's valid prefix. Pad rows get a zero
+    // context (their residual stream is unchanged beyond the FFN
+    // residual).
+    //
+    // TODO(R1.4): replace this loop with a single dispatch through
+    // `engine.fused_attention_batched` — reshape Q/K/V to per-head-
+    // batched `(B·num_heads, n_q, d_head)`, fold per-sequence right-
+    // padding + causal into one additive `(B·num_heads, n_q, n_kv)`
+    // mask, dispatch once. Only land this when the
+    // `tee:attn_inplace_many` bucket grows past ~10% of batched wall
+    // (Qwen3-Reranker-0.6B at B=8 is currently 3.4% — not worth the
+    // engineering). The trigger is longer per-sequence n_max (cross-
+    // encoder rerank with longer docs, batched extraction with
+    // longer chunks, or D-phase generate_batched). See M1.11 plan
+    // §3.2 and `docs/handoffs/2026-05-21-attn-offload-spike.md` for
+    // the kernel-routing reasoning.
+    let q_dim = cfg.num_attention_heads * cfg.head_dim_value();
+    let mut ctx = Array2::<f32>::zeros((batch_size * n_max, q_dim));
+    profile::time("tee:attn_inplace_many", || {
+        for b in 0..batch_size {
+            let valid_n = seq_lens[b];
+            if valid_n == 0 {
+                continue;
+            }
+            let q_b = q.slice(ndarray::s![b * n_max..b * n_max + valid_n, ..]);
+            let k_b = k.slice(ndarray::s![b * n_max..b * n_max + valid_n, ..]);
+            let v_b = v.slice(ndarray::s![b * n_max..b * n_max + valid_n, ..]);
+            let ctx_b = causal_gqa_attention(
+                q_b,
+                k_b,
+                v_b,
+                cfg.num_attention_heads,
+                cfg.num_key_value_heads,
+                cfg.head_dim_value(),
+            );
+            ctx.slice_mut(ndarray::s![b * n_max..b * n_max + valid_n, ..])
+                .assign(&ctx_b);
+        }
+    });
+
+    let attn_out = if offload {
+        exec.offload_linear(WeightHandle::new(layer_idx, WeightKind::O), ctx.view())?
+    } else {
+        profile::time("tee:o_direct", || {
+            tee_matmul_bf16(
+                ctx.view(),
+                layer
+                    .wo
+                    .as_ref()
+                    .expect("offload=false requires layer.wo present")
+                    .view(),
+            )
+        })
+    };
+    let h1 = profile::time("tee:residual", || &hidden + &attn_out);
+
+    let h1_norm = profile::time("tee:rmsnorm", || {
+        rms_norm(h1.view(), layer.norm_ffn.as_slice().unwrap(), cfg.rms_norm_eps)
+    });
+
+    let (gate, up) = if offload {
+        let handles = [
+            WeightHandle::new(layer_idx, WeightKind::FfnGate),
+            WeightHandle::new(layer_idx, WeightKind::FfnUp),
+        ];
+        let mut out = exec.offload_linear_many(&handles, h1_norm.view())?;
+        let u = out.pop().expect("offload_linear_many returns 2 outputs");
+        let g = out.pop().expect("offload_linear_many returns 2 outputs");
+        (g, u)
+    } else {
+        profile::time("tee:swiglu_proj_direct", || {
+            (
+                tee_matmul_bf16(
+                    h1_norm.view(),
+                    layer
+                        .w_gate
+                        .as_ref()
+                        .expect("offload=false requires layer.w_gate present")
+                        .view(),
+                ),
+                tee_matmul_bf16(
+                    h1_norm.view(),
+                    layer
+                        .w_up
+                        .as_ref()
+                        .expect("offload=false requires layer.w_up present")
+                        .view(),
+                ),
+            )
+        })
+    };
+    let activated = profile::time("tee:swiglu_activate", || swiglu(gate.view(), up.view()));
+    let ffn_out = if offload {
+        exec.offload_linear(
+            WeightHandle::new(layer_idx, WeightKind::FfnDown),
+            activated.view(),
+        )?
+    } else {
+        profile::time("tee:swiglu_down_direct", || {
+            tee_matmul_bf16(
+                activated.view(),
+                layer
+                    .w_down
+                    .as_ref()
+                    .expect("offload=false requires layer.w_down present")
+                    .view(),
+            )
         })
     };
     Ok(profile::time("tee:residual", || &h1 + &ffn_out))

@@ -222,3 +222,105 @@ fn synthetic_decoder_parity_sensitive_layer_exclusion() {
         "decoder sensitive-layer path diverges: max abs {max_abs}",
     );
 }
+
+/// **M1.11 R1.3** — `forward::run_batched` at B = 1 matches
+/// single-stream `forward::run` to f32 floor (mask topology is the
+/// degenerate case of one A_b for the one sequence).
+#[test]
+fn synthetic_batched_forward_b1_matches_single_stream() {
+    let cfg = tiny_decoder_config(2, 32, 4, 2, 8, 64);
+    let mut rng = ChaCha20Rng::from_seed([41u8; 32]);
+    let weights = Arc::new(synth_weights(&cfg, &mut rng));
+    let rope = RopeTables::new(
+        cfg.head_dim_value(),
+        cfg.max_position_embeddings,
+        cfg.rope_theta,
+    );
+
+    let input_ids: Vec<u32> = vec![1, 5, 9, 13, 17, 21];
+
+    let mut plain_engine = RayonCpuEngine::new();
+    provision_decoder(&weights, &cfg, &mut plain_engine);
+    let mut plain = PlaintextExecutor::new(plain_engine);
+    let single = forward::run(&cfg, &weights, &rope, &mut plain, &input_ids).unwrap();
+
+    let mut batched_engine = RayonCpuEngine::new();
+    provision_decoder(&weights, &cfg, &mut batched_engine);
+    let mut batched_exec = InProcessTrustedExecutor::with_seed(
+        batched_engine,
+        MaskSeed::from_bytes([42u8; 32]),
+    );
+    let (batched_3d, lens) =
+        forward::run_batched(&cfg, &weights, &rope, &mut batched_exec, &[input_ids.clone()])
+            .unwrap();
+    assert_eq!(lens, vec![input_ids.len()]);
+    assert_eq!(batched_3d.shape(), &[1, input_ids.len(), cfg.hidden_size]);
+
+    let mut max_abs = 0.0_f32;
+    for ((i, j), v) in single.indexed_iter() {
+        let diff = (v - batched_3d[[0, i, j]]).abs();
+        if diff > max_abs {
+            max_abs = diff;
+        }
+    }
+    assert!(
+        max_abs < 5e-3,
+        "run_batched(B=1) vs single-stream run diverges: max abs {max_abs}",
+    );
+}
+
+/// **M1.11 R1.3** — batched forward over B sequences with varying
+/// lengths. Each sequence's output (rows `[..lens[b]]`) must match a
+/// dedicated single-stream forward on that sequence, to mask round-
+/// trip f32 floor. This is the core R3 parity contract for the
+/// rerank rollout.
+#[test]
+fn synthetic_batched_forward_per_sequence_matches_single_stream() {
+    let cfg = tiny_decoder_config(2, 32, 4, 2, 8, 64);
+    let mut rng = ChaCha20Rng::from_seed([51u8; 32]);
+    let weights = Arc::new(synth_weights(&cfg, &mut rng));
+    let rope = RopeTables::new(
+        cfg.head_dim_value(),
+        cfg.max_position_embeddings,
+        cfg.rope_theta,
+    );
+
+    let seqs: Vec<Vec<u32>> =
+        vec![vec![1, 5, 9, 13, 17, 21], vec![2, 6, 10, 14], vec![3, 7, 11, 15, 19]];
+
+    // Plaintext per-sequence references.
+    let mut refs: Vec<ndarray::Array2<f32>> = Vec::with_capacity(seqs.len());
+    for ids in &seqs {
+        let mut plain_engine = RayonCpuEngine::new();
+        provision_decoder(&weights, &cfg, &mut plain_engine);
+        let mut plain = PlaintextExecutor::new(plain_engine);
+        refs.push(forward::run(&cfg, &weights, &rope, &mut plain, ids).unwrap());
+    }
+
+    // One batched call.
+    let mut batched_engine = RayonCpuEngine::new();
+    provision_decoder(&weights, &cfg, &mut batched_engine);
+    let mut batched_exec = InProcessTrustedExecutor::with_seed(
+        batched_engine,
+        MaskSeed::from_bytes([52u8; 32]),
+    );
+    let (batched_3d, lens) =
+        forward::run_batched(&cfg, &weights, &rope, &mut batched_exec, &seqs).unwrap();
+    assert_eq!(lens, vec![6, 4, 5]);
+    let n_max = *lens.iter().max().unwrap();
+    assert_eq!(batched_3d.shape(), &[seqs.len(), n_max, cfg.hidden_size]);
+
+    for (b, reference) in refs.iter().enumerate() {
+        let mut max_abs = 0.0_f32;
+        for ((i, j), v) in reference.indexed_iter() {
+            let diff = (v - batched_3d[[b, i, j]]).abs();
+            if diff > max_abs {
+                max_abs = diff;
+            }
+        }
+        assert!(
+            max_abs < 5e-3,
+            "run_batched per-sequence b={b} diverges from single-stream: max abs {max_abs}",
+        );
+    }
+}

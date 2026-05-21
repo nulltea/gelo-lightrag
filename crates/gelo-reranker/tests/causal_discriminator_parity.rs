@@ -237,3 +237,10 @@ fn masked_executor_preserves_top1_rank() {
     };
     assert_eq!(argmax(&plain_scores), argmax(&masked_scores));
 }
+
+// R2 score-level parity is covered by a unit test inside
+// `causal_discriminator.rs` (private helper `score_candidates_batched`
+// is not reachable from this external crate). The integration-level
+// `rerank()` contract is satisfied by the existing
+// `masked_and_plaintext_executors_agree_on_score` test which exercises
+// the same forward + yes/no gather code path.

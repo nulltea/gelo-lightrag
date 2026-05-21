@@ -500,6 +500,37 @@ pub trait TrustedExecutor {
         Ok(())
     }
 
+    /// **M1.11** — Begin a *batched* prefill forward pass over `B`
+    /// sequences, each padded to `n_max` tokens.
+    ///
+    /// Implementations in paper-parity mode sample `B` independent
+    /// per-sequence masks `A_b`, each of size `(n_max + shield_k,
+    /// n_max + shield_k)`, and store them as a `PerSequence` session
+    /// kind. Subsequent `offload_linear_batched` calls expect the
+    /// activation tensor shape `(B * n_max, d_in)` with contiguous
+    /// B-blocks, and apply `masks[b]` to slice
+    /// `[b*n_max..(b+1)*n_max, :]`.
+    ///
+    /// `end_forward_pass` terminates this bracket too — there's no
+    /// separate `end_prefill_pass`.
+    ///
+    /// Default impl falls back to `begin_forward_pass(batch_size *
+    /// n_max)` so backends that don't yet support batched topology
+    /// (PlaintextExecutor) produce correct math at the legacy single-
+    /// shared-A cost — at the price of treating all rows as one big
+    /// sequence under one mask. Engines targeting M1.11 perf override.
+    ///
+    /// See `docs/plans/m1-11-batched-decode.md` §3.4-3.5.
+    fn begin_prefill_pass(
+        &mut self,
+        batch_size: usize,
+        n_max: usize,
+    ) -> Result<()> {
+        // Default: degenerate to a single big forward pass over the
+        // flattened (B * n_max) row count.
+        self.begin_forward_pass(batch_size.saturating_mul(n_max))
+    }
+
     /// Move this executor's randomness source to an independent
     /// stream. Used by the embedder's rayon-parallel `embed` path so
     /// each worker in a batch gets its own mask `A` — without this,
