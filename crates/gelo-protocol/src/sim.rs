@@ -966,29 +966,67 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
         let stacked_n = masks[0].n();
         let scale = self.shield.energy_scale;
 
-        // Step 1: serial shield stack (RNG borrow is single-threaded).
+        // Step 1 (D1.7): per-block parallel shield stack with
+        // sub-stream RNGs. The serial path was 17.2% of batched wall
+        // in the D1.6 microbench — the bottleneck was the shared
+        // `&mut self.shield_rng` borrow forcing per-block fills to
+        // run sequentially.
+        //
+        // Fix: pre-derive `batch_size` independent Xoshiro256PlusPlus
+        // seeds from the parent (advances parent by B*32 bytes),
+        // then rayon-iterate across blocks with each closure holding
+        // its own local Xoshiro. Mirrors
+        // `attention.rs::add_gaussian_3d_inplace`'s per-head
+        // parallelisation pattern. Per-element distribution is
+        // unchanged (independent `N(0, σ²)` everywhere); only the
+        // cross-block correlation structure differs — invariant for
+        // the GELO shield-energy argument since shield rows of
+        // different sequences are independent by construction.
         let mut concat_masked = profile::time("gelo:shield_stack", || {
             let mut buf = Array2::<f32>::zeros((batch_size * stacked_n, d_in));
-            for b in 0..batch_size {
-                let sub_in = hidden.slice(ndarray::s![b * data_n..(b + 1) * data_n, ..]);
-                let mean_norm = mean_row_norm(sub_in);
-                let sigma = if d_in == 0 {
-                    0.0
-                } else {
-                    scale * mean_norm / (d_in as f32).sqrt()
-                };
-                buf.slice_mut(ndarray::s![b * stacked_n..b * stacked_n + data_n, ..])
-                    .assign(&sub_in);
-                let shield_start = b * stacked_n + data_n;
-                let shield_end = b * stacked_n + (data_n + k).min(stacked_n);
-                if shield_end > shield_start {
-                    fill_shield_rows_inline(
-                        buf.slice_mut(ndarray::s![shield_start..shield_end, ..]),
-                        sigma,
-                        &mut self.shield_rng,
-                    );
-                }
-            }
+            // Pre-derive B Xoshiro seeds from the parent shield RNG.
+            // Single-threaded; cheap (B * 32 bytes RNG output).
+            let seeds: Vec<[u8; 32]> = (0..batch_size)
+                .map(|_| {
+                    let mut s = [0u8; 32];
+                    self.shield_rng.fill_bytes(&mut s);
+                    s
+                })
+                .collect();
+
+            use ndarray::parallel::prelude::*;
+            buf.axis_chunks_iter_mut(ndarray::Axis(0), stacked_n)
+                .into_par_iter()
+                .enumerate()
+                .for_each(|(b, mut block_view)| {
+                    let sub_in =
+                        hidden.slice(ndarray::s![b * data_n..(b + 1) * data_n, ..]);
+                    let mean_norm = mean_row_norm(sub_in);
+                    let sigma = if d_in == 0 {
+                        0.0
+                    } else {
+                        scale * mean_norm / (d_in as f32).sqrt()
+                    };
+                    // Place data rows.
+                    block_view
+                        .slice_mut(ndarray::s![..data_n, ..])
+                        .assign(&sub_in);
+                    // Place shield rows.
+                    let shield_end_local = (data_n + k).min(stacked_n);
+                    if shield_end_local > data_n {
+                        let mut local_rng =
+                            rand_xoshiro::Xoshiro256PlusPlus::from_seed(seeds[b]);
+                        fill_shield_rows_inline(
+                            block_view.slice_mut(
+                                ndarray::s![data_n..shield_end_local, ..],
+                            ),
+                            sigma,
+                            &mut local_rng,
+                        );
+                    }
+                    // Pad region (rows shield_end_local..stacked_n)
+                    // stays zero from initial allocation.
+                });
             buf
         });
 
