@@ -531,4 +531,79 @@ impl GpuOffloadEngine for WgpuVulkanEngine {
             tensor3_to_array_f32(activation::softmax(t, 2))
         }
     }
+
+    /// **A1 (Phase 1b enabler)** — single-dispatch-chain fused
+    /// attention.  Uploads Q, K, V, mask **once**; runs
+    /// `Q·Kᵀ → scale → +mask → softmax → ·V` entirely on-device via
+    /// chained `burn::Tensor` ops; downloads the output **once**.
+    ///
+    /// The five sub-ops still execute as separate burn kernels (no
+    /// FlashAttention-style single-pass fusion — that would need a
+    /// hand-rolled CubeCL kernel against the `O(B·n_q·n_kv)` scores
+    /// intermediate).  But all intermediates live in GPU device memory
+    /// — no GPU↔CPU round-trips between sub-ops, no K^T staging on
+    /// the host.  This is the load-bearing change against the trait's
+    /// default impl, which materialises `K^T` and `scores` host-side
+    /// between dispatches.
+    ///
+    /// At decode m=1 the dominant residual cost is per-kernel launch
+    /// latency on Vulkan (~0.2-0.5 ms per dispatch on Strix Halo).
+    /// Removing those further requires either (a) a hand-rolled
+    /// FlashAttention-style kernel that runs the chain in one
+    /// dispatch, or (b) burn-cubecl's operator-fusion pass picking up
+    /// the chain — under investigation.
+    fn fused_attention_batched(
+        &self,
+        q: ArrayView3<'_, f32>,
+        k: ArrayView3<'_, f32>,
+        v: ArrayView3<'_, f32>,
+        scale: f32,
+        mask: Option<ArrayView3<'_, f32>>,
+    ) -> Result<Array3<f32>> {
+        let (b, n_q, d_head) = (q.shape()[0], q.shape()[1], q.shape()[2]);
+        let n_kv = k.shape()[1];
+        debug_assert_eq!(q.shape()[0], b);
+        debug_assert_eq!(k.shape(), &[b, n_kv, d_head]);
+        debug_assert_eq!(v.shape(), &[b, n_kv, d_head]);
+        if let Some(m) = mask {
+            debug_assert_eq!(m.shape(), &[b, n_q, n_kv]);
+        }
+
+        if self.fp16 {
+            let q_t = array3_to_tensor_f16(q, &self.device);
+            let k_t = array3_to_tensor_f16(k, &self.device);
+            let v_t = array3_to_tensor_f16(v, &self.device);
+            // Device-side K^T via permute (no host transpose).
+            let kt = k_t.permute([0, 2, 1]);
+            let scores = q_t.matmul(kt);
+            // A2: mask is None at decode (no-op) — skip the upload +
+            // add-kernel-dispatch entirely.
+            let scores = match mask {
+                Some(m) => {
+                    let mask_t = array3_to_tensor_f16(m, &self.device);
+                    scores.mul_scalar(scale).add(mask_t)
+                }
+                None => scores.mul_scalar(scale),
+            };
+            let probs = activation::softmax(scores, 2);
+            let out = probs.matmul(v_t);
+            tensor3_to_array_f16(out)
+        } else {
+            let q_t = array3_to_tensor_f32(q, &self.device);
+            let k_t = array3_to_tensor_f32(k, &self.device);
+            let v_t = array3_to_tensor_f32(v, &self.device);
+            let kt = k_t.permute([0, 2, 1]);
+            let scores = q_t.matmul(kt);
+            let scores = match mask {
+                Some(m) => {
+                    let mask_t = array3_to_tensor_f32(m, &self.device);
+                    scores.mul_scalar(scale).add(mask_t)
+                }
+                None => scores.mul_scalar(scale),
+            };
+            let probs = activation::softmax(scores, 2);
+            let out = probs.matmul(v_t);
+            tensor3_to_array_f32(out)
+        }
+    }
 }

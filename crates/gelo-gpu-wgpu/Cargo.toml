@@ -25,6 +25,7 @@ cubecl-core.workspace = true
 cubecl-runtime.workspace = true
 cubecl-std.workspace = true
 cubecl-wgpu.workspace = true
+cubek-attention.workspace = true
 gelo-protocol = { path = "../gelo-protocol", default-features = false }
 half.workspace = true
 ndarray.workspace = true
@@ -41,8 +42,13 @@ rand_chacha.workspace = true
 rand_distr.workspace = true
 hf-hub.workspace = true
 serde_json.workspace = true
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 # ROCm/HIP runtime — only pulled in for the Q4-on-HIP spike test
 # (`tests/q4_hip_kernel_spike.rs`). Requires ROCm 6.x installed
 # at /opt/rocm; build will fail loudly if not.
 cubecl-hip.workspace = true
 cubecl-hip-sys.workspace = true
+
+[[bench]]
+name = "amulet_attention"
+harness = false

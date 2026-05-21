@@ -213,26 +213,34 @@ pub trait GpuOffloadEngine: Send {
 
     /// **M1.10 fused permuted attention seam.** Compute the full
     /// per-head causal-masked attention `softmax(scale · Q·Kᵀ + mask) · V`
-    /// in one engine call. The `mask` is an additive `(B, n_q, n_kv)`
-    /// tensor (`-inf` for blocked positions, `0` elsewhere); the
-    /// TEE side bakes the permuted-causal pattern into it before
-    /// invoking.
+    /// in one engine call.
     ///
-    /// Default impl composes the existing 3-dispatch path:
-    /// `matmul_dynamic_batched + add-mask + softmax_batched +
+    /// `mask` is an *optional* additive `(B, n_q, n_kv)` tensor:
+    ///   - `Some(m)` — the kernel adds `m` after the scale and before
+    ///     softmax (use `-cfg.causal_mask_neg` at blocked positions,
+    ///     `0` at allowed positions).
+    ///   - `None` — **A2 fast path**: no mask upload, no `+ mask`
+    ///     dispatch.  The caller signals "mask is identically zero
+    ///     and can be elided" (the decode case where `n_q == 1` and
+    ///     `q_pos_offset == n_kv − 1`, plus any encoder/bidirectional
+    ///     attention with `AttentionMask::None`).  Saves one GPU
+    ///     kernel dispatch + the (B·n_q·n_kv)-f32 upload per call.
+    ///
+    /// Default impl composes the existing dispatch chain:
+    /// `matmul_dynamic_batched + (optional add-mask) + softmax_batched +
     /// matmul_dynamic_batched`. Engines that ship a FlashAttention-
     /// style fused kernel (the M1.10 work — see
     /// `docs/plans/path-1-gelo-gemma.md` for the cubek/burn-cubecl
     /// option matrix) override this method so the kernel runs in one
-    /// GPU dispatch with no `(B, n, n)` score-tensor materialisation.
-    /// Until that override lands, callers get correct math at the
-    /// 3-dispatch wall-clock — same as today.
+    /// GPU dispatch with no `(B, n_q, n_kv)` score-tensor
+    /// materialisation.  Until that override lands, callers get
+    /// correct math at the chained-dispatch wall-clock.
     ///
     /// Shapes:
     ///   q: (B, n_q, d_head)
     ///   k: (B, n_kv, d_head)
     ///   v: (B, n_kv, d_head)
-    ///   mask: (B, n_q, n_kv) additive
+    ///   mask: Option<(B, n_q, n_kv)> additive
     ///   → (B, n_q, d_head)
     fn fused_attention_batched(
         &self,
@@ -240,15 +248,17 @@ pub trait GpuOffloadEngine: Send {
         k: ArrayView3<f32>,
         v: ArrayView3<f32>,
         scale: f32,
-        mask: ArrayView3<f32>,
+        mask: Option<ArrayView3<f32>>,
     ) -> Result<Array3<f32>> {
-        // Compose: scores = Q · Kᵀ; scaled + masked; softmax; · V.
+        // Compose: scores = Q · Kᵀ; scaled + (maybe) masked; softmax; · V.
         let (b, n_q, d_head) = q.dim();
         let n_kv = k.dim().1;
         debug_assert_eq!(q.dim().0, b);
         debug_assert_eq!(k.dim(), (b, n_kv, d_head));
         debug_assert_eq!(v.dim(), (b, n_kv, d_head));
-        debug_assert_eq!(mask.dim(), (b, n_q, n_kv));
+        if let Some(m) = mask {
+            debug_assert_eq!(m.dim(), (b, n_q, n_kv));
+        }
 
         // Build (B, d_head, n_kv) for K^T per batch slot.
         let mut kt = Array3::<f32>::zeros((b, d_head, n_kv));
@@ -261,11 +271,18 @@ pub trait GpuOffloadEngine: Send {
         }
 
         let mut scores = self.matmul_dynamic_batched(q, kt.view())?;
-        for bi in 0..b {
-            for i in 0..n_q {
-                for j in 0..n_kv {
-                    scores[(bi, i, j)] = scores[(bi, i, j)] * scale + mask[(bi, i, j)];
+        match mask {
+            Some(m) => {
+                for bi in 0..b {
+                    for i in 0..n_q {
+                        for j in 0..n_kv {
+                            scores[(bi, i, j)] = scores[(bi, i, j)] * scale + m[(bi, i, j)];
+                        }
+                    }
                 }
+            }
+            None => {
+                scores.mapv_inplace(|x| x * scale);
             }
         }
         let probs = self.softmax_batched(scores.view())?;
@@ -382,7 +399,7 @@ mod fused_attention_tests {
 
         let engine = LocalEngine;
         let got = engine
-            .fused_attention_batched(q.view(), k.view(), v.view(), scale, mask.view())
+            .fused_attention_batched(q.view(), k.view(), v.view(), scale, Some(mask.view()))
             .unwrap();
         let want = ref_attention(q.view(), k.view(), v.view(), scale, mask.view());
         for (a, b) in got.iter().zip(want.iter()) {
@@ -410,11 +427,40 @@ mod fused_attention_tests {
 
         let engine = LocalEngine;
         let got = engine
-            .fused_attention_batched(q.view(), k.view(), v.view(), scale, mask.view())
+            .fused_attention_batched(q.view(), k.view(), v.view(), scale, Some(mask.view()))
             .unwrap();
         let want = ref_attention(q.view(), k.view(), v.view(), scale, mask.view());
         for (a, b) in got.iter().zip(want.iter()) {
             assert!((a - b).abs() < 1e-5);
+        }
+    }
+
+    /// A2 regression: `None` mask must behave identically to an
+    /// all-zero `Some(mask)`.
+    #[test]
+    fn default_impl_none_mask_equivalent_to_zero_mask() {
+        let b = 2;
+        let n_q = 3;
+        let n_kv = 5;
+        let d_head = 8;
+        let q = rand_array3(b, n_q, d_head, 21);
+        let k = rand_array3(b, n_kv, d_head, 22);
+        let v = rand_array3(b, n_kv, d_head, 23);
+        let zero_mask = Array3::<f32>::zeros((b, n_q, n_kv));
+        let scale = 1.0 / (d_head as f32).sqrt();
+
+        let engine = LocalEngine;
+        let with_some = engine
+            .fused_attention_batched(q.view(), k.view(), v.view(), scale, Some(zero_mask.view()))
+            .unwrap();
+        let with_none = engine
+            .fused_attention_batched(q.view(), k.view(), v.view(), scale, None)
+            .unwrap();
+        for (a, b) in with_some.iter().zip(with_none.iter()) {
+            assert!(
+                (a - b).abs() < 1e-5,
+                "A2: Some(0) vs None must match: {a} vs {b}"
+            );
         }
     }
 }

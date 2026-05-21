@@ -104,6 +104,15 @@ cubecl-wgpu = { version = "=0.9.0", default-features = false, features = ["std",
 # the Vulkan path's poor Q4 perf. Optional: only pulled in as a dev-dep
 # on `gelo-gpu-wgpu`, never in release binaries.
 cubecl-hip = { version = "=0.9.0", default-features = false, features = ["std", "rocwmma"] }
+# CubeK attention kernels — fused FlashAttention-style Q·Kᵀ →
+# softmax → ·V in a single GPU dispatch. Used by
+# `WgpuVulkanEngine::fused_attention_batched` at decode shapes
+# where the burn-tensor chain otherwise pays 3-5 kernel-launch
+# overheads per attention block. Pinned to 0.1.1 — same upstream
+# (tracel-ai/cubek) the burn-cubecl 0.20.1 release uses
+# transitively, so version alignment with our cubecl 0.9.0 stack
+# is automatic.
+cubek-attention = { version = "=0.1.1", default-features = false, features = ["std"] }
 # Need the 7.1.x hip-sys API surface for cubecl-hip 0.9.0 to compile;
 # ROCm 7.2.1 reports HIP patch 53211 which is past the 52802 binding
 # cap. Patched locally via `vendor/cubecl-hip-sys-patched` (see

@@ -19,7 +19,8 @@ use gelo_embedder::decoder::rope::RopeTables;
 use gelo_embedder::decoder::weights::DecoderWeights;
 use gelo_embedder::GeloQwenEmbedder;
 use gelo_protocol::{
-    GpuOffloadEngine, InProcessTrustedExecutor, TrustedExecutor, WeightHandle, WeightKind,
+    GpuOffloadEngine, InProcessTrustedExecutor, PermAttnConfig, TrustedExecutor, WeightHandle,
+    WeightKind,
 };
 use lightrag_private::extract::{
     DecoderOutput, DecoderTiming, DescriptionEmbedder, ExtractionDecoder,
@@ -74,7 +75,7 @@ impl<E: GpuOffloadEngine> DecoderRuntime<E> {
     /// the snapshot directory lacks `config.json` — e.g. an HF cache
     /// dir where only the weights + tokenizer were materialised —
     /// and pin the config via `Qwen3Variant::Q1_7B.config()` etc.
-    pub fn from_config_and_dir(cfg: DecoderConfig, dir: &Path, engine: E) -> Result<Self> {
+    pub fn from_config_and_dir(mut cfg: DecoderConfig, dir: &Path, engine: E) -> Result<Self> {
         let (tok_path, shard_paths) = discover_tokenizer_and_shards(dir)?;
         let tokenizer = HfTokenizer::from_file(&tok_path)?;
         let shard_refs: Vec<&Path> = shard_paths.iter().map(|p| p.as_path()).collect();
@@ -85,6 +86,30 @@ impl<E: GpuOffloadEngine> DecoderRuntime<E> {
             cfg.rope_theta,
         ));
 
+        // **Phase 1b opt-in** (`PHASE_1B_DECODE_AMULET=1`): enable
+        // permutation-shielded attention at decode shapes and route
+        // softmax to the GPU.  Wraps the Amulet-at-decode change
+        // landed in `gelo_protocol::attention::PermAttnConfig::
+        // HIDDEN_NO_MORE_DECODE_GPU`.  Gated by env var until the
+        // `c5_perm_attn` AloePri attack-suite re-run lands — see
+        // memory `aloepri_hd3_gate_phase_a_b.md`.
+        let phase_1b = std::env::var("PHASE_1B_DECODE_AMULET")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if phase_1b {
+            cfg.use_perm_attention = true;
+            // Engage perm-attention at every n_q (decode m=1, prefill,
+            // continuations) — the dispatch is shape-aware inside
+            // `permuted_attention_cached`: prefill uses in-TEE
+            // softmax (F1+); decode lifts softmax to the GPU.
+            cfg.perm_attention_min_seq_len = Some(1);
+            tracing::info!(
+                target: "gelo_snp_runner::extraction",
+                "Phase 1b enabled: perm-attention at all n_q, decode softmax on GPU \
+                 (PermAttnConfig::HIDDEN_NO_MORE_DECODE_GPU)"
+            );
+        }
+
         // Build a fresh executor and provision every offloadable layer's
         // weights via the bf16 Arc-shared path. We `take()` each Arc
         // out of `weights` — when the engine (wgpu) consumes and
@@ -93,6 +118,9 @@ impl<E: GpuOffloadEngine> DecoderRuntime<E> {
         // reads `layer.{wq..w_down}` ever again. See
         // `feedback_memory_efficiency_priority.md`.
         let mut exec = InProcessTrustedExecutor::new(engine);
+        if phase_1b {
+            exec = exec.with_perm_attention(PermAttnConfig::HIDDEN_NO_MORE_DECODE_GPU);
+        }
         for li in 0..weights.layers.len() {
             if !cfg.offload_layer(li) {
                 continue;
