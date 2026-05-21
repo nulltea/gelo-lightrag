@@ -15,6 +15,7 @@ use gelo_protocol::gaussian::fill_gaussian;
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use rand_distr::{Distribution, StandardNormal};
+use rand_xoshiro::Xoshiro256PlusPlus;
 use std::hint::black_box;
 
 /// The pre-optimisation reference loop.  Mirrors the body of the
@@ -61,6 +62,23 @@ fn bench(c: &mut Criterion) {
                 &n,
                 |bencher, &n| {
                     let mut rng = ChaCha20Rng::from_seed([0xa3u8; 32]);
+                    let mut buf = vec![0.0_f32; n];
+                    let sigma: f32 = 0.123;
+                    bencher.iter(|| {
+                        fill_gaussian(black_box(&mut buf), black_box(sigma), &mut rng);
+                        black_box(&buf);
+                    });
+                },
+            );
+
+            // P3: same generator, fast Xoshiro256++ instead of ChaCha20.
+            // Attributes the RNG-bulk-fill share of the per-call cost.
+            let id_xoshiro = format!("fill_gaussian_xoshiro/d{d}/{label}");
+            group.bench_with_input(
+                BenchmarkId::from_parameter(&id_xoshiro),
+                &n,
+                |bencher, &n| {
+                    let mut rng = Xoshiro256PlusPlus::from_seed([0xa3u8; 32]);
                     let mut buf = vec![0.0_f32; n];
                     let sigma: f32 = 0.123;
                     bencher.iter(|| {
