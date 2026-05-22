@@ -17,6 +17,8 @@
 #[cfg(feature = "blas")]
 use blas_src as _;
 
+#[cfg(feature = "blas")]
+pub mod aocl_lpgemm;
 pub mod attention;
 pub mod dct4;
 pub mod gaussian;

@@ -337,3 +337,32 @@ today's iGPU in-TEE path.
 - **`verify`** at the bucket-2 re-acceptance bench step — confirm
   the M1.12 microbench shows the projected decode-wall reduction
   before claiming the win.
+
+---
+
+# Other dGPU optimizations
+
+### Async pipelining (M1.12 R4) — DECIDE BEFORE STARTING
+
+Plan-estimated 25–30 % prefill wall via overlapping CPU mask (layer
+N+1) with GPU matmul (layer N).
+
+**On iGPU UMA**: best case ~15 %. CPU and GPU share the same DDR5
+bus; overlap doesn't reduce total bytes moved.
+
+**On production dGPU PCIe**: genuinely valuable — PCIe DMA + GPU
+matmul are physically separate from CPU mask FWHT.
+
+**Open Q#2 (gate before starting)**: does RADV actually overlap wgpu
+submissions, or serialise them under the queue? Spike-measure first
+(half day) — if it serialises, R4 is dead on this iGPU. Plan calls
+this out explicitly.
+
+**Order decision rule (preserve in the plan)**:
+
+- If production dGPU is < 3 months away → **skip R4 on iGPU**; revisit
+  on dGPU. Save 5–8 days of substrate refactor that returns 15 %
+  marginal at best on iGPU.
+- If dGPU is the long tail (≥ 6 months) → **ship R4 on iGPU** for
+  dev-velocity. Q#2 spike first; commit to R4 only if RADV overlaps.
+

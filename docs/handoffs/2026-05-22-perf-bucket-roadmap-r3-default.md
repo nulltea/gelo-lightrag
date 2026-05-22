@@ -152,9 +152,14 @@ Current bottleneck (B=8 prefill, n=2048): `gelo:mask_unapply` 24.5 %
 (45 s) + `gelo:mask_apply` 14.9 % (27 s) — **39 % of prefill wall on
 CPU DDR5**, contending with GPU matmul on the same UMA bus.
 
-**Engineering**: 1–2 weeks. OpenBLAS `cblas_sbgemm` is the 1-day
-path but pulls in the BLAS dep on the offload side; hand-roll over
-wgpu compute shader is cleaner long-term. The
+**Engineering**: 1–2 weeks. Two viable CPU-side paths — **mask
+GEMM cannot move to GPU without violating the GELO threat model**
+(would expose `A` on the device, defeating the protocol; same
+argument as on-GPU unmask in `inference-optimization.md` §2.2.1).
+The choice is between OpenBLAS `cblas_sbgemm` (1-day, pulls in the
+BLAS dep alongside AOCL-BLIS) and a hand-rolled AVX-512_BF16
+kernel (1–2 weeks, no new dep, matches the existing
+`tee_matmul_bf16` precedent in the crate). The
 `bf16_mask_gemm_skipped` memory's "~10 % TTFT, gain shrinks after
 HD₃" estimate was at B=1 — at B=8 the bucket scales linearly so the
 share **and** the win are larger (~25–30 %).
