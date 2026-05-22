@@ -190,26 +190,6 @@ pub fn provision_lm_head_into<X: TrustedExecutor>(
     )
 }
 
-/// Returns `true` when `LM_HEAD_GPU_OFFLOAD=1` (or `=true`) is set in
-/// the environment. Cached per-process via `OnceLock` — env reads
-/// happen once per process, never per token. Runtimes call this once
-/// at startup to decide both whether to call
-/// [`provision_lm_head_into`] and whether to set
-/// `GenerationConfig::lm_head_via_gpu_offload`.
-///
-/// M1.12 R3 — see `docs/plans/m1-12-tee-gpu-throughput.md` §3.
-/// Default off until the c6 AloePri spot-check at the LM-head shape
-/// clears.
-pub fn lm_head_gpu_offload_enabled() -> bool {
-    use std::sync::OnceLock;
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| {
-        std::env::var("LM_HEAD_GPU_OFFLOAD")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-    })
-}
-
 impl DecoderWeights {
     /// Load decoder weights from one or many safetensors files.
     pub fn from_safetensors(paths: &[&Path], cfg: &DecoderConfig) -> Result<Self> {

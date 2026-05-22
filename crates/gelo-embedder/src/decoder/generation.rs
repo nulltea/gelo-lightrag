@@ -46,17 +46,6 @@ pub struct GenerationConfig {
     pub eos_token_ids: Vec<u32>,
     /// How to sample the next token from the per-step logits.
     pub sampler: SamplerConfig,
-    /// M1.12 R3 — when `true`, the LM-head projection (the
-    /// `(1, hidden) × (hidden, vocab)` matmul executed once per
-    /// decoded token) routes through the executor's masked offload
-    /// path instead of the single-threaded in-TEE loop. Requires that
-    /// the caller has already provisioned the tied-embedding
-    /// transpose at [`gelo_protocol::WeightKind::LmHead`] via
-    /// [`crate::decoder::weights::provision_lm_head_into`]. Default
-    /// off; runtimes opt in by reading `LM_HEAD_GPU_OFFLOAD=1` (via
-    /// [`crate::decoder::weights::lm_head_gpu_offload_enabled`]) at
-    /// startup. See `docs/plans/m1-12-tee-gpu-throughput.md` §3.
-    pub lm_head_via_gpu_offload: bool,
 }
 
 impl Default for GenerationConfig {
@@ -65,7 +54,6 @@ impl Default for GenerationConfig {
             max_tokens: 64,
             eos_token_ids: Vec::new(),
             sampler: SamplerConfig::Greedy,
-            lm_head_via_gpu_offload: false,
         }
     }
 }
@@ -104,48 +92,25 @@ fn argmax(logits: ArrayView1<'_, f32>) -> u32 {
 /// Compute logits = `h_last · token_embedding.T` for tied-embedding
 /// models. Returns a `(vocab_size,)` 1-D vector. Stays in-TEE — the LM
 /// head is the same primitive as any other masked offload but at
-/// decode-step shape `(1, d_hidden) · (d_hidden, vocab)` it's smaller
-/// than the dispatch overhead would amortise, so v1 keeps it on CPU.
-/// M1.1 will route this through a `WeightKind::LmHead` offload when
-/// the loader provides one.
+/// Compute logits = `h_last · token_embedding.T` for tied-embedding
+/// models via the executor's masked-offload path. Returns a
+/// `(vocab_size,)` 1-D vector.
+///
+/// **The LM-head projection is GPU-offloaded by default and only.**
+/// Each call opens its own one-row forward-pass bracket, dispatches
+/// the `(1, hidden) × (hidden, vocab)` matmul through
+/// `exec.offload_linear` under the substrate's per-forward mask +
+/// shield, and returns plaintext logits to the in-TEE sampler. The
+/// caller must have provisioned the tied-embedding transpose at
+/// [`gelo_protocol::WeightKind::LmHead`] via
+/// [`crate::decoder::weights::provision_lm_head_into`] before any
+/// call — typically once at runtime startup. M1.12 R3 — see
+/// `docs/plans/m1-12-tee-gpu-throughput.md` §3.
 ///
 /// Applies final-logit softcap (`tanh(x / c) * c`) when
 /// `cfg.final_logit_softcapping` is `Some(c)` — Gemma 4 uses
-/// `c = 30.0`. Without softcap (None), behaviour is byte-for-byte
-/// the same as before.
-fn compute_logits(
-    cfg: &DecoderConfig,
-    weights: &DecoderWeights,
-    h_last: ArrayView1<'_, f32>,
-) -> ndarray::Array1<f32> {
-    profile::time("tee:compute_logits", || {
-        let vocab = weights.token_embedding.nrows();
-        let mut logits = ndarray::Array1::<f32>::zeros(vocab);
-        for v in 0..vocab {
-            // bf16-stored row × f32 hidden state. Widening per element,
-            // accumulating in f32 — bit-identical to the pre-bf16 path
-            // (the on-disk weights were bf16 anyway).
-            let row = weights.token_embedding.row(v);
-            let dot: f32 = h_last
-                .iter()
-                .zip(row.iter())
-                .map(|(a, b)| a * b.to_f32())
-                .sum();
-            logits[v] = dot;
-        }
-        apply_final_softcap(cfg, &mut logits);
-        logits
-    })
-}
-
-/// M1.12 R3 — masked GPU offload variant of [`compute_logits`].
-/// Opens a one-row forward-pass bracket, dispatches the `(1, hidden) ×
-/// (hidden, vocab)` matmul through `exec.offload_linear` under the
-/// substrate's per-forward mask + shield, and returns the resulting
-/// `(vocab,)` plaintext logits. Requires that the caller has
-/// previously provisioned the tied-embedding transpose at
-/// `WeightKind::LmHead`.
-fn compute_logits_gpu<X: TrustedExecutor>(
+/// `c = 30.0`.
+fn compute_logits<X: TrustedExecutor>(
     cfg: &DecoderConfig,
     weights: &DecoderWeights,
     exec: &mut X,
@@ -167,34 +132,14 @@ fn compute_logits_gpu<X: TrustedExecutor>(
             logits_2d.ncols(),
         );
         let mut logits = logits_2d.row(0).to_owned();
-        apply_final_softcap(cfg, &mut logits);
+        if let Some(cap) = cfg.final_logit_softcapping {
+            let inv = 1.0_f32 / cap;
+            for x in logits.iter_mut() {
+                *x = (*x * inv).tanh() * cap;
+            }
+        }
         Ok(logits)
     })
-}
-
-fn apply_final_softcap(cfg: &DecoderConfig, logits: &mut ndarray::Array1<f32>) {
-    if let Some(cap) = cfg.final_logit_softcapping {
-        let inv = 1.0_f32 / cap;
-        for x in logits.iter_mut() {
-            *x = (*x * inv).tanh() * cap;
-        }
-    }
-}
-
-/// Dispatch to either the in-TEE CPU loop or the GPU-offload variant
-/// based on `gen_cfg.lm_head_via_gpu_offload`. M1.12 R3 — see plan §3.
-fn compute_logits_dispatch<X: TrustedExecutor>(
-    cfg: &DecoderConfig,
-    weights: &DecoderWeights,
-    exec: &mut X,
-    h_last: ArrayView1<'_, f32>,
-    gen_cfg: &GenerationConfig,
-) -> Result<ndarray::Array1<f32>> {
-    if gen_cfg.lm_head_via_gpu_offload {
-        compute_logits_gpu(cfg, weights, exec, h_last)
-    } else {
-        Ok(compute_logits(cfg, weights, h_last))
-    }
 }
 
 /// Run prefill + decode loop. Returns the newly-sampled tokens (prompt
@@ -251,7 +196,7 @@ pub fn generate(
     let mut tokens = Vec::with_capacity(gen_cfg.max_tokens);
     let mut stopped_on_eos = false;
     for _ in 0..gen_cfg.max_tokens {
-        let logits = compute_logits_dispatch(cfg, weights, exec, h_last.view(), gen_cfg)?;
+        let logits = compute_logits(cfg, weights, exec, h_last.view())?;
         let next_token = sample(logits.view(), &gen_cfg.sampler)?;
         tokens.push(next_token);
         if gen_cfg.eos_token_ids.contains(&next_token) {
@@ -381,13 +326,7 @@ pub fn generate_batched(
                 next_tokens.push(pad_token);
                 continue;
             }
-            let logits = compute_logits_dispatch(
-                cfg,
-                weights,
-                exec,
-                last_hidden[b].view(),
-                gen_cfg,
-            )?;
+            let logits = compute_logits(cfg, weights, exec, last_hidden[b].view())?;
             let nxt = sample(logits.view(), &gen_cfg.sampler)?;
             tokens[b].push(nxt);
             if gen_cfg.eos_token_ids.contains(&nxt) {

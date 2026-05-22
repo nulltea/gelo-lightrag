@@ -111,6 +111,12 @@ fn provision_decoder<E: GpuOffloadEngine>(weights: &DecoderWeights, cfg: &Decode
         engine.register_weight_bf16(WeightHandle::new(li16, WeightKind::FfnUp), layer.w_up.as_ref().expect("offloadable weight").view()).unwrap();
         engine.register_weight_bf16(WeightHandle::new(li16, WeightKind::FfnDown), layer.w_down.as_ref().expect("offloadable weight").view()).unwrap();
     }
+    // M1.12 R3 — LM head is the production default-and-only path.
+    // Register the tied-embedding transpose so `generation::generate`
+    // can dispatch its per-token offload. Defined below as
+    // `register_lm_head` (used standalone by the single-shot mask-
+    // round-trip parity test).
+    register_lm_head(weights, engine);
 }
 
 #[test]
@@ -356,7 +362,6 @@ fn synthetic_generate_batched_b1_matches_single_stream() {
         max_tokens: 6,
         eos_token_ids: Vec::new(),
         sampler: SamplerConfig::Greedy,
-        lm_head_via_gpu_offload: false,
     };
 
     // Single-stream reference.
@@ -431,7 +436,6 @@ fn synthetic_generate_batched_per_sequence_matches_single_stream() {
         max_tokens: 5,
         eos_token_ids: Vec::new(),
         sampler: SamplerConfig::Greedy,
-        lm_head_via_gpu_offload: false,
     };
 
     // Reference: serial single-stream generates.
@@ -500,7 +504,6 @@ fn synthetic_generate_batched_per_sequence_eos_freezes() {
         max_tokens: 5,
         eos_token_ids: Vec::new(),
         sampler: SamplerConfig::Greedy,
-        lm_head_via_gpu_offload: false,
     };
     let mut refs = Vec::with_capacity(prompts.len());
     for p in &prompts {
@@ -545,7 +548,6 @@ fn synthetic_generate_batched_per_sequence_eos_freezes() {
         max_tokens: 5,
         eos_token_ids: vec![eos_token],
         sampler: SamplerConfig::Greedy,
-        lm_head_via_gpu_offload: false,
     };
 
     // Find the expected stop-step for sequence 0: the first index
@@ -621,7 +623,6 @@ fn synthetic_generate_batched_shared_a_per_sequence_matches_single_stream() {
         max_tokens: 4,
         eos_token_ids: Vec::new(),
         sampler: SamplerConfig::Greedy,
-        lm_head_via_gpu_offload: false,
     };
 
     // Build references with env cleared (single-stream doesn't read
@@ -749,57 +750,8 @@ fn synthetic_lm_head_gpu_offload_matches_in_tee_to_mask_floor() {
     );
 }
 
-/// **M1.12 R3 acceptance — `generate()` parity under PlaintextExecutor.**
-/// With no masking (PlaintextExecutor passes operands through to the
-/// engine matmul untouched), `lm_head_via_gpu_offload=true` must
-/// produce the same token sequence as the in-TEE loop for several
-/// decode steps. This exercises the dispatch wiring + the
-/// (`(1, hidden)` × `(hidden, vocab)`) GPU matmul shape end-to-end.
-#[test]
-fn synthetic_generate_with_lm_head_gpu_offload_matches_in_tee_plaintext() {
-    let cfg = tiny_decoder_config(/*L*/ 2, /*d*/ 32, /*n_q*/ 4, /*n_kv*/ 2, /*head*/ 8, /*f*/ 64);
-    let mut rng = ChaCha20Rng::from_seed([111u8; 32]);
-    let weights = Arc::new(synth_weights(&cfg, &mut rng));
-    let rope = RopeTables::new(
-        cfg.head_dim_value(),
-        cfg.max_position_embeddings,
-        cfg.rope_theta,
-    );
-    let prompt: Vec<u32> = vec![3, 11, 17, 22, 29];
-
-    let base_cfg = GenerationConfig {
-        max_tokens: 4,
-        eos_token_ids: Vec::new(),
-        sampler: SamplerConfig::Greedy,
-        lm_head_via_gpu_offload: false,
-    };
-    let gpu_cfg = GenerationConfig {
-        lm_head_via_gpu_offload: true,
-        ..base_cfg.clone()
-    };
-
-    // Reference: PlaintextExecutor + in-TEE compute_logits loop.
-    let mut ref_engine = RayonCpuEngine::new();
-    provision_decoder(&weights, &cfg, &mut ref_engine);
-    let mut ref_exec = PlaintextExecutor::new(ref_engine);
-    let ref_out =
-        generation::generate(&cfg, &weights, &rope, &mut ref_exec, &prompt, &base_cfg)
-            .expect("reference generate");
-
-    // GPU offload: PlaintextExecutor + LmHead provisioned + flag on.
-    let mut gpu_engine = RayonCpuEngine::new();
-    provision_decoder(&weights, &cfg, &mut gpu_engine);
-    register_lm_head(&weights, &mut gpu_engine);
-    let mut gpu_exec = PlaintextExecutor::new(gpu_engine);
-    let gpu_out =
-        generation::generate(&cfg, &weights, &rope, &mut gpu_exec, &prompt, &gpu_cfg)
-            .expect("gpu lm-head generate");
-
-    assert_eq!(
-        gpu_out.tokens, ref_out.tokens,
-        "lm-head GPU offload diverged from in-TEE compute_logits under \
-         PlaintextExecutor: gpu={:?} ref={:?}",
-        gpu_out.tokens, ref_out.tokens,
-    );
-    assert_eq!(gpu_out.stopped_on_eos, ref_out.stopped_on_eos);
-}
+// (former dual-path parity test deleted alongside the
+// `lm_head_via_gpu_offload` flag — the GPU LM-head offload is the
+// production default and only path, so there's no second path to
+// compare against. Single-shot mask-round-trip parity is covered by
+// `synthetic_lm_head_gpu_offload_matches_in_tee_to_mask_floor` above.)

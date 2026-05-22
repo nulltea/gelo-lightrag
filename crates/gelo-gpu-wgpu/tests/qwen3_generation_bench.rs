@@ -45,7 +45,9 @@ use gelo_embedder::decoder::config::DecoderConfig;
 use gelo_embedder::decoder::generation::{GenerationConfig, SamplerConfig, generate};
 use gelo_embedder::decoder::qwen3::Qwen3Variant;
 use gelo_embedder::decoder::rope::RopeTables;
-use gelo_embedder::decoder::weights::{DecoderWeights, provision_into_shared};
+use gelo_embedder::decoder::weights::{
+    DecoderWeights, provision_into_shared, provision_lm_head_into,
+};
 use gelo_gpu_wgpu::WgpuVulkanEngine;
 use gelo_protocol::rng::MaskSeed;
 use gelo_protocol::{InProcessTrustedExecutor, PlaintextExecutor, TrustedExecutor};
@@ -274,7 +276,9 @@ fn provision_decoder_weights<X: TrustedExecutor>(
     weights: &DecoderWeights,
     exec: &mut X,
 ) -> Result<()> {
-    provision_into_shared(weights, cfg, exec)
+    provision_into_shared(weights, cfg, exec)?;
+    // M1.12 R3 — LM head is the default-and-only path.
+    provision_lm_head_into(weights, exec)
 }
 
 fn pct_over(c: &CellTiming, base: &CellTiming) -> String {
@@ -360,7 +364,6 @@ fn qwen3_1_7b_generation_overhead_breakdown() -> Result<()> {
         max_tokens: 2,
         eos_token_ids: Vec::new(),
         sampler: SamplerConfig::Greedy,
-        lm_head_via_gpu_offload: false,
     };
     let _ = generate(&cfg_offload, &weights, &rope, &mut gpu_plain, &prompt_ids, &warmup)?;
     let _ = generate(&cfg_offload, &weights, &rope, &mut gpu_gelo, &prompt_ids, &warmup)?;

@@ -4448,11 +4448,16 @@
           the same per-forward Haar / HD₃ mask. This is roughly 37 × wider on
           the output axis than any prior offload shape (QKV at
           <code>(16, 4 096)</code>); the GELO §3.2 BSS-hardness argument's
-          quantitative bounds were written against narrower outputs, so the path
-          ships <strong>opt-in only</strong> under
-          <code>LM_HEAD_GPU_OFFLOAD = 1</code> pending an attack-suite re-run at
-          the LM-head shape (the <code>lm_head_gpu_offload</code> attack-suite
-          gate in §10).
+          quantitative bounds were written against narrower outputs. The path is
+          the
+          <strong>production default and only LM-head implementation</strong> in
+          the generate loop (the prior in-TEE bf16 vocab × hidden loop was
+          retired); the <code>c6_lm_head_offload</code> condition in the AloePri
+          attack harness captures snapshots at this shape and runs the
+          recovery-attack drivers against the c2 baseline — the c6 gate
+          retroactively validates the default and remains the only unblocked
+          step before treating this win as security-cleared. See §10 for the
+          gate methodology.
         </p>
 
         <h4

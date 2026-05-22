@@ -227,133 +227,33 @@ fn m1_12_r1_q1_microbench() -> Result<()> {
     );
 
     // --- Q#1 + R3: two generates back-to-back ---
+    // R1's RSS verdict is captured above. For Q#1, just dump the
+    // profile of one short generate so the `tee:compute_logits`
+    // bucket appears alongside the other buckets — confirms the
+    // instrumentation fires. Historical comparison (baseline vs R3)
+    // is gone: R3 is the only path now. The full prefill/decode
+    // breakdown lives in `m1_12_per_op_breakdown_prefill_decode`.
     let prompt = "The quick brown fox";
     let prompt_ids = tokenizer.encode(prompt, 32)?;
-    eprintln!();
-    eprintln!(
-        "--- generation::generate baseline (R3 off) vs R3 on ---",
-    );
-    eprintln!(
-        "prompt='{prompt}' n_prompt={} max_tokens={max_tokens}",
-        prompt_ids.len(),
-    );
-
-    // Phase 1: baseline (lm_head_via_gpu_offload=false). Exercises
-    // the in-TEE bf16 vocab × hidden loop.
-    let baseline_cfg = GenerationConfig {
+    let gen_cfg = GenerationConfig {
         max_tokens,
         eos_token_ids: Vec::new(),
         sampler: SamplerConfig::Greedy,
-        lm_head_via_gpu_offload: false,
     };
     profile::reset();
     let t = Instant::now();
-    let baseline_out =
-        generation::generate(&cfg, &weights, &rope, &mut exec, &prompt_ids, &baseline_cfg)?;
-    let baseline_wall = t.elapsed();
-    let baseline_snap = profile::snapshot();
-
-    // Phase 2: R3 (lm_head_via_gpu_offload=true). Routes through
-    // exec.offload_linear(LmHead, …) under a per-step begin/end
-    // forward-pass bracket, masking the (1, hidden) operand, GPU
-    // matmul to (1+k, vocab), unmask, strip shield.
-    let r3_cfg = GenerationConfig {
-        lm_head_via_gpu_offload: true,
-        ..baseline_cfg.clone()
-    };
-    profile::reset();
-    let t = Instant::now();
-    let r3_out =
-        generation::generate(&cfg, &weights, &rope, &mut exec, &prompt_ids, &r3_cfg)?;
-    let r3_wall = t.elapsed();
-    let r3_snap = profile::snapshot();
-
-    // --- Reports ---
+    let out = generation::generate(&cfg, &weights, &rope, &mut exec, &prompt_ids, &gen_cfg)?;
+    let wall = t.elapsed();
+    let snap = profile::snapshot();
     eprintln!();
     eprintln!(
-        "baseline (R3 off): wall {:.2}s ({:.1} tok/s), tokens={:?}",
-        baseline_wall.as_secs_f64(),
-        baseline_out.tokens.len() as f64 / baseline_wall.as_secs_f64(),
-        baseline_out.tokens,
+        "Q#1 smoke generate: wall {:.2}s ({:.1} tok/s), prompt='{prompt}' n={} K={max_tokens}, tokens={:?}",
+        wall.as_secs_f64(),
+        out.tokens.len() as f64 / wall.as_secs_f64(),
+        prompt_ids.len(),
+        out.tokens,
     );
-    eprintln!(
-        "R3 on:             wall {:.2}s ({:.1} tok/s), tokens={:?}",
-        r3_wall.as_secs_f64(),
-        r3_out.tokens.len() as f64 / r3_wall.as_secs_f64(),
-        r3_out.tokens,
-    );
-
-    baseline_snap.dump(&format!("{:?} baseline (R3 off) profile", variant));
-    r3_snap.dump(&format!("{:?} R3 on (LM_HEAD_GPU_OFFLOAD) profile", variant));
-
-    // Compute_logits bucket comparison.
-    let bucket_ms = |snap: &profile::Profile| -> Option<(f64, u64, f64)> {
-        snap.buckets.get("tee:compute_logits").map(|(d, n)| {
-            let ms = d.as_secs_f64() * 1000.0;
-            let share = if !snap.total().is_zero() {
-                100.0 * d.as_secs_f64() / snap.total().as_secs_f64()
-            } else {
-                0.0
-            };
-            (ms, *n, share)
-        })
-    };
-    eprintln!();
-    eprintln!("--- R3 verdict ---");
-    match (bucket_ms(&baseline_snap), bucket_ms(&r3_snap)) {
-        (Some((ms_b, n_b, sh_b)), Some((ms_r, n_r, sh_r))) => {
-            eprintln!(
-                "tee:compute_logits — baseline: {:.0} ms / {n_b} calls ({:.1}%)",
-                ms_b, sh_b,
-            );
-            eprintln!(
-                "tee:compute_logits — R3 on:   {:.0} ms / {n_r} calls ({:.1}%)",
-                ms_r, sh_r,
-            );
-            let delta = ms_b - ms_r;
-            let pct = if ms_b > 0.0 { 100.0 * delta / ms_b } else { 0.0 };
-            eprintln!(
-                "Δ compute_logits: {:+.0} ms ({:+.1}%) under R3",
-                -delta, -pct,
-            );
-        }
-        (Some((ms_b, _, _)), None) => {
-            eprintln!(
-                "baseline compute_logits: {:.0} ms; R3 path has no compute_logits bucket (expected — offload bypasses the in-TEE loop)",
-                ms_b,
-            );
-        }
-        _ => eprintln!("compute_logits bucket missing in one of the snapshots"),
-    }
-    let wall_delta_ms = (baseline_wall.as_secs_f64() - r3_wall.as_secs_f64()) * 1000.0;
-    let wall_pct = if baseline_wall.as_secs_f64() > 0.0 {
-        100.0 * wall_delta_ms / (baseline_wall.as_secs_f64() * 1000.0)
-    } else {
-        0.0
-    };
-    eprintln!(
-        "Δ total wall:     {:+.0} ms ({:+.1}%) under R3",
-        -wall_delta_ms, -wall_pct,
-    );
-
-    // Token-set sanity check: greedy under PlaintextExecutor would be
-    // byte-identical, but under masked InProcessTrustedExecutor the
-    // R3 path samples extra masks per step (one per compute_logits
-    // call), so its decode-step RNG state diverges from the baseline.
-    // We report whether the token sequences happen to align; argmax
-    // robustness on the prompt's near-deterministic continuation
-    // usually keeps the first few tokens identical.
-    let prefix_match = baseline_out
-        .tokens
-        .iter()
-        .zip(r3_out.tokens.iter())
-        .take_while(|(a, b)| a == b)
-        .count();
-    eprintln!(
-        "token-prefix match: {} / {} (greedy under masked exec — RNG-state divergence expected after the first compute_logits offload)",
-        prefix_match,
-        baseline_out.tokens.len(),
-    );
+    snap.dump(&format!("{:?} generate({max_tokens}) profile", variant));
 
     Ok(())
 }
@@ -390,6 +290,17 @@ fn prompt_size_from_env() -> usize {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(2048)
+}
+
+/// **Default B = 8** for every future bench run in this file —
+/// matches the production-shape target from
+/// `2026-05-22-q3-4b-b8-mask-sweep.md`. Pass `GELO_BENCH_B=1`
+/// explicitly when you want single-stream sanity numbers.
+fn batch_size_from_env() -> usize {
+    std::env::var("GELO_BENCH_B")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8)
 }
 
 /// Replica of the in-TEE `compute_logits` loop, wrapped in the same
@@ -477,7 +388,121 @@ struct PhaseTiming {
     snap: profile::Profile,
     /// Decode-only: per-step wall list. Empty for prefill.
     decode_steps: Vec<std::time::Duration>,
+    /// For B=1 path: the decoded tokens. For B>1: per-sequence sample,
+    /// only the first sequence's tokens are reported (the bench is
+    /// shape-comparison, not output-quality).
     tokens: Vec<u32>,
+}
+
+/// Batched (B>1) variant of `run_prefill_decode`. Drives
+/// `forward::run_prefill_batched` + `forward::run_decode_step_batched`
+/// over `B` identical prompts, calls per-sequence
+/// `bench_compute_logits_*` between decode steps. R3 LM-head offload
+/// opens its own one-row forward-pass bracket per sequence per step
+/// (B brackets per decode step), then the batched decode-step session
+/// opens its own per-sequence-A_b bracket — matches the library's
+/// `generate_batched` dispatch shape.
+fn run_prefill_decode_batched<X: TrustedExecutor>(
+    label: &str,
+    cfg: &DecoderConfig,
+    weights: &DecoderWeights,
+    rope: &RopeTables,
+    exec: &mut X,
+    prompts: &[Vec<u32>],
+    max_tokens: usize,
+    r3_on: bool,
+) -> Result<(PhaseTiming, PhaseTiming)> {
+    let batch_size = prompts.len();
+    assert!(batch_size > 0);
+    let n_max = prompts.iter().map(|p| p.len()).max().unwrap();
+    let max_cache_len = n_max + max_tokens + 1;
+    let mut kv_cache =
+        KvCache::new_batched(batch_size, weights.layers.len(), max_cache_len, cfg.kv_dim());
+
+    // --- Prefill phase ---
+    profile::reset();
+    let t = Instant::now();
+    let (hidden_3d, seq_lens) =
+        forward::run_prefill_batched(cfg, weights, rope, exec, prompts, &mut kv_cache)?;
+    let prefill_wall = t.elapsed();
+    let prefill_snap = profile::snapshot();
+
+    let mut last_hidden: Vec<ndarray::Array1<f32>> = (0..batch_size)
+        .map(|b| hidden_3d.slice(ndarray::s![b, seq_lens[b] - 1, ..]).to_owned())
+        .collect();
+
+    eprintln!(
+        "[{label}] PREFILL: B={batch_size} n_max={n_max}, wall {:.2}s, prefill {:.1} tok/s/seq",
+        prefill_wall.as_secs_f64(),
+        n_max as f64 / prefill_wall.as_secs_f64(),
+    );
+
+    let prefill = PhaseTiming {
+        wall: prefill_wall,
+        snap: prefill_snap,
+        decode_steps: Vec::new(),
+        tokens: prompts[0].clone(),
+    };
+
+    // --- Decode phase ---
+    profile::reset();
+    let mut tokens: Vec<Vec<u32>> =
+        (0..batch_size).map(|_| Vec::with_capacity(max_tokens)).collect();
+    let mut step_walls: Vec<std::time::Duration> = Vec::with_capacity(max_tokens);
+    let t_decode_total = Instant::now();
+    for _ in 0..max_tokens {
+        let t_step = Instant::now();
+        // Per-sequence compute_logits — B independent calls.
+        let mut next_tokens = Vec::with_capacity(batch_size);
+        for b in 0..batch_size {
+            let logits = if r3_on {
+                bench_compute_logits_gpu(cfg, weights, exec, last_hidden[b].view())?
+            } else {
+                bench_compute_logits_in_tee(cfg, weights, last_hidden[b].view())
+            };
+            let next_tok = argmax_row(logits.view());
+            tokens[b].push(next_tok);
+            next_tokens.push(next_tok);
+        }
+        // One batched decode step over B tokens.
+        let h_step = forward::run_decode_step_batched(
+            cfg,
+            weights,
+            rope,
+            exec,
+            &next_tokens,
+            &mut kv_cache,
+        )?;
+        for b in 0..batch_size {
+            last_hidden[b].assign(&h_step.row(b));
+        }
+        step_walls.push(t_step.elapsed());
+    }
+    let decode_wall = t_decode_total.elapsed();
+    let decode_snap = profile::snapshot();
+
+    let step_mean_ms = if !step_walls.is_empty() {
+        step_walls.iter().map(|d| d.as_secs_f64()).sum::<f64>() * 1000.0
+            / step_walls.len() as f64
+    } else {
+        0.0
+    };
+    eprintln!(
+        "[{label}] DECODE:  B={batch_size} K={max_tokens}, wall {:.2}s, decode {:.1} tok/s/seq, per-step mean {:.0} ms (= {:.1} ms / tok / seq)",
+        decode_wall.as_secs_f64(),
+        max_tokens as f64 / decode_wall.as_secs_f64(),
+        step_mean_ms,
+        step_mean_ms / batch_size as f64,
+    );
+
+    let decode = PhaseTiming {
+        wall: decode_wall,
+        snap: decode_snap,
+        decode_steps: step_walls,
+        tokens: std::mem::take(&mut tokens[0]),
+    };
+
+    Ok((prefill, decode))
 }
 
 fn run_prefill_decode<X: TrustedExecutor>(
@@ -561,15 +586,16 @@ fn run_prefill_decode<X: TrustedExecutor>(
 }
 
 #[test]
-#[ignore = "real-weight long-context bench: ~3-5 min on Qwen3-4B at n=2048 + 64-token decode"]
+#[ignore = "real-weight long-context bench: minutes on Qwen3-4B at B=8 n=2048 K=64"]
 fn m1_12_per_op_breakdown_prefill_decode() -> Result<()> {
     let variant = variant_from_env();
     let n_prompt = prompt_size_from_env();
     let max_tokens = max_tokens_from_env();
+    let batch_size = batch_size_from_env();
 
     eprintln!("=== M1.12 per-op breakdown — prefill + decode, baseline vs R3 ===");
     eprintln!(
-        "variant: {:?} ({})  n_prompt: {n_prompt}  max_tokens: {max_tokens}",
+        "variant: {:?} ({})  B: {batch_size}  n_prompt: {n_prompt}  max_tokens: {max_tokens}",
         variant,
         variant.hf_model_id(),
     );
@@ -591,38 +617,55 @@ fn m1_12_per_op_breakdown_prefill_decode() -> Result<()> {
     glibc_release_freed();
     eprintln!("RSS after provision (projections + LmHead): {}", fmt_gib(rss_bytes()));
 
-    let prompt_ids = build_prompt_ids(&tokenizer, n_prompt)?;
-    eprintln!("Tokenised prompt: {} ids", prompt_ids.len());
+    let single_prompt = build_prompt_ids(&tokenizer, n_prompt)?;
+    eprintln!("Tokenised prompt: {} ids", single_prompt.len());
+
+    // Build B identical prompts when batching. Identical content keeps
+    // the measurement focused on the protocol overhead (mask + GPU +
+    // attention) and removes tokenisation noise across sequences.
+    let prompts: Vec<Vec<u32>> = (0..batch_size).map(|_| single_prompt.clone()).collect();
 
     // --- Baseline (R3 off): prefill + decode ---
     eprintln!();
     eprintln!("─── BASELINE (R3 off, in-TEE compute_logits) ───");
-    let (b_prefill, b_decode) =
-        run_prefill_decode("baseline", &cfg, &weights, &rope, &mut exec, &prompt_ids, max_tokens, false)?;
+    let (b_prefill, b_decode) = if batch_size == 1 {
+        run_prefill_decode(
+            "baseline", &cfg, &weights, &rope, &mut exec, &single_prompt, max_tokens, false,
+        )?
+    } else {
+        run_prefill_decode_batched(
+            "baseline", &cfg, &weights, &rope, &mut exec, &prompts, max_tokens, false,
+        )?
+    };
 
     b_prefill.snap.dump(&format!(
-        "{:?} BASELINE prefill profile (n={n_prompt})",
+        "{:?} BASELINE prefill profile (B={batch_size} n={n_prompt})",
         variant
     ));
     b_decode.snap.dump(&format!(
-        "{:?} BASELINE decode profile (K={max_tokens})",
+        "{:?} BASELINE decode profile (B={batch_size} K={max_tokens})",
         variant
     ));
 
     // --- R3 on: prefill + decode ---
-    // Note: prefill never calls compute_logits, so R3's prefill numbers
-    // should track baseline prefill (with mask-state independence noise).
     eprintln!();
     eprintln!("─── R3 ON (LM_HEAD_GPU_OFFLOAD, GPU LM-head) ───");
-    let (r_prefill, r_decode) =
-        run_prefill_decode("R3", &cfg, &weights, &rope, &mut exec, &prompt_ids, max_tokens, true)?;
+    let (r_prefill, r_decode) = if batch_size == 1 {
+        run_prefill_decode(
+            "R3", &cfg, &weights, &rope, &mut exec, &single_prompt, max_tokens, true,
+        )?
+    } else {
+        run_prefill_decode_batched(
+            "R3", &cfg, &weights, &rope, &mut exec, &prompts, max_tokens, true,
+        )?
+    };
 
     r_prefill.snap.dump(&format!(
-        "{:?} R3 prefill profile (n={n_prompt})",
+        "{:?} R3 prefill profile (B={batch_size} n={n_prompt})",
         variant
     ));
     r_decode.snap.dump(&format!(
-        "{:?} R3 decode profile (K={max_tokens})",
+        "{:?} R3 decode profile (B={batch_size} K={max_tokens})",
         variant
     ));
 

@@ -63,7 +63,6 @@ fn qwen3_1_7b_greedy_generates_under_both_executors() -> Result<()> {
         max_tokens: 8,
         eos_token_ids: Vec::new(),
         sampler: SamplerConfig::Greedy,
-        lm_head_via_gpu_offload: false,
     };
 
     // 1. Plaintext branch.
@@ -194,5 +193,13 @@ fn provision_decoder_weights<X: TrustedExecutor>(
         exec.provision_weight_bf16(WeightHandle::new(li16, WeightKind::FfnUp), layer.w_up.as_ref().expect("offloadable weight").view())?;
         exec.provision_weight_bf16(WeightHandle::new(li16, WeightKind::FfnDown), layer.w_down.as_ref().expect("offloadable weight").view())?;
     }
+    // M1.12 R3 — LM head is the default-and-only path; the
+    // `(hidden, vocab)` transpose has to land in the executor
+    // before `generation::generate` dispatches its per-token offload.
+    let lm_head_t = weights.token_embedding.t().as_standard_layout().to_owned();
+    exec.provision_weight_bf16(
+        WeightHandle::new(0, WeightKind::LmHead),
+        lm_head_t.view(),
+    )?;
     Ok(())
 }

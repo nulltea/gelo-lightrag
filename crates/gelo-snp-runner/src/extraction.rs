@@ -18,7 +18,7 @@ use gelo_embedder::decoder::generation::{
 };
 use gelo_embedder::decoder::rope::RopeTables;
 use gelo_embedder::decoder::weights::{
-    DecoderWeights, lm_head_gpu_offload_enabled, provision_into, provision_lm_head_into,
+    DecoderWeights, provision_into, provision_lm_head_into,
 };
 use gelo_embedder::GeloQwenEmbedder;
 use gelo_protocol::{GpuOffloadEngine, InProcessTrustedExecutor, PermAttnConfig};
@@ -49,12 +49,6 @@ pub struct DecoderRuntime<E: GpuOffloadEngine> {
     /// `cfg.max_position_embeddings` minus a safety margin for the
     /// generation budget.
     pub max_prompt_tokens: usize,
-    /// M1.12 R3 — true when `LM_HEAD_GPU_OFFLOAD=1` was set at
-    /// runtime startup. Decided once in
-    /// [`Self::from_config_and_dir`]; mirrored into
-    /// `GenerationConfig::lm_head_via_gpu_offload` on every
-    /// generate. Default off until c6 clears.
-    pub lm_head_via_gpu_offload: bool,
 }
 
 impl<E: GpuOffloadEngine> DecoderRuntime<E> {
@@ -129,21 +123,14 @@ impl<E: GpuOffloadEngine> DecoderRuntime<E> {
         }
         provision_into(&mut weights, &cfg, &mut exec)?;
 
-        // **M1.12 R3 opt-in** (`LM_HEAD_GPU_OFFLOAD=1`): provision the
-        // tied input/output embedding as a VRAM weight and flip the
-        // generate path's per-step LM-head matmul onto the masked
-        // offload path. Default off pending c6 AloePri attack-suite
-        // re-run at the LM-head shape — see
-        // `docs/plans/m1-12-tee-gpu-throughput.md` §4.
-        let lm_head_via_gpu_offload = lm_head_gpu_offload_enabled();
-        if lm_head_via_gpu_offload {
-            provision_lm_head_into(&weights, &mut exec)?;
-            tracing::info!(
-                target: "gelo_snp_runner::extraction",
-                "M1.12 R3 enabled: LM-head routes through masked GPU offload \
-                 (LM_HEAD_GPU_OFFLOAD=1)"
-            );
-        }
+        // M1.12 R3 — LM-head GPU masked offload is the production
+        // default. The tied input/output embedding is always
+        // provisioned as a VRAM weight; the generate path's per-step
+        // LM-head matmul always rides the masked offload path.
+        // Security validation lives in the c6 AloePri condition; see
+        // `docs/plans/m1-12-tee-gpu-throughput.md` §4 and
+        // `evals/aloepri-attacks/src/lib.rs::Condition::C6LmHeadOffload`.
+        provision_lm_head_into(&weights, &mut exec)?;
 
         let weights = Arc::new(weights);
 
@@ -159,7 +146,6 @@ impl<E: GpuOffloadEngine> DecoderRuntime<E> {
             exec,
             eos_token_ids,
             max_prompt_tokens,
-            lm_head_via_gpu_offload,
         })
     }
 }
@@ -230,7 +216,6 @@ impl<E: GpuOffloadEngine> ExtractionDecoder for DecoderRuntime<E> {
             max_tokens: budget,
             eos_token_ids: self.eos_token_ids.clone(),
             sampler: SamplerConfig::Greedy,
-            lm_head_via_gpu_offload: self.lm_head_via_gpu_offload,
         };
         let t = Instant::now();
         let out = decoder_generate(
@@ -316,7 +301,6 @@ impl<E: GpuOffloadEngine> ExtractionDecoder for DecoderRuntime<E> {
             max_tokens: budget,
             eos_token_ids: self.eos_token_ids.clone(),
             sampler: SamplerConfig::Greedy,
-            lm_head_via_gpu_offload: self.lm_head_via_gpu_offload,
         };
         let t_gen = Instant::now();
         let outs = decoder_generate_batched(

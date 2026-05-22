@@ -63,6 +63,18 @@ pub enum Condition {
     /// suites. Holding shield constant between C2 and C3 isolates
     /// the mask family as the only variable.
     C3Hd3,
+    /// C6 — same as C2 except the LM-head projection
+    /// (`(1, hidden) × (hidden, vocab)`) is routed through the masked
+    /// offload path instead of running in-TEE. Tests whether the new
+    /// `(1+k, vocab)` masked-output shape (37× wider than the QKV
+    /// `(1+k, q_dim)` shapes the existing AloePri suite exercises)
+    /// opens an inverse-recovery surface the c1–c3 conditions don't
+    /// cover. Decode-shape capture: forces `max_tokens ≥ 1` so
+    /// `compute_logits_gpu` fires at least once per prompt. Acceptance
+    /// per `docs/plans/m1-12-tee-gpu-throughput.md` §4: attack
+    /// accuracy on every recovery driver within sample-noise of c2.
+    /// Flag → revert the LM-head-on-GPU default.
+    C6LmHeadOffload,
 }
 
 impl Condition {
@@ -72,6 +84,7 @@ impl Condition {
             Condition::C1MaskOnly => "c1_mask_only",
             Condition::C2Default => "c2_default",
             Condition::C3Hd3 => "c3_hd3",
+            Condition::C6LmHeadOffload => "c6_lm_head_offload",
         }
     }
 
@@ -81,8 +94,11 @@ impl Condition {
             "c1" | "c1_mask_only" | "mask_only" => Ok(Condition::C1MaskOnly),
             "c2" | "c2_default" | "default" => Ok(Condition::C2Default),
             "c3" | "c3_hd3" | "hd3" => Ok(Condition::C3Hd3),
+            "c6" | "c6_lm_head_offload" | "lm_head_offload" => {
+                Ok(Condition::C6LmHeadOffload)
+            }
             other => Err(anyhow!(
-                "unknown condition slug '{other}' (expected c0 / c1 / c2 / c3)"
+                "unknown condition slug '{other}' (expected c0 / c1 / c2 / c3 / c6)"
             )),
         }
     }

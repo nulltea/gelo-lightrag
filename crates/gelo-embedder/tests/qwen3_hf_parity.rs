@@ -152,7 +152,6 @@ fn qwen3_1_7b_greedy_matches_hf_transformers() -> Result<()> {
         max_tokens: fix.reference_tokens.len(),
         eos_token_ids: Vec::new(),
         sampler: SamplerConfig::Greedy,
-        lm_head_via_gpu_offload: false,
     };
     let out = generate(&cfg, &weights, &rope, &mut exec, &fix.prompt_ids, &gen_cfg)?;
 
@@ -246,5 +245,11 @@ fn provision_decoder_weights<X: TrustedExecutor>(
         exec.provision_weight_bf16(WeightHandle::new(li16, WeightKind::FfnUp), layer.w_up.as_ref().expect("offloadable weight").view())?;
         exec.provision_weight_bf16(WeightHandle::new(li16, WeightKind::FfnDown), layer.w_down.as_ref().expect("offloadable weight").view())?;
     }
+    // M1.12 R3 — LM head is the default-and-only path.
+    let lm_head_t = weights.token_embedding.t().as_standard_layout().to_owned();
+    exec.provision_weight_bf16(
+        WeightHandle::new(0, WeightKind::LmHead),
+        lm_head_t.view(),
+    )?;
     Ok(())
 }
