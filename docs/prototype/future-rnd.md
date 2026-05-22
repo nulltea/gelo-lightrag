@@ -287,6 +287,43 @@ and the `homomorphic_dot` interface stay the same.
   Cost: ~1.5× larger σ.
 - **Vec2Text empirical ablation** as a release-gate task, testing both
   the standalone DP path and the GELO + DP defence-in-depth composition.
+- **Encrypted-KV-cache on GPU.** Under the current GELO §3 threat
+  model the autoregressive KV cache stays host-resident in TEE RAM
+  because post-RoPE K/V encode the prompt content the protocol is
+  built to hide; moving it to the untrusted GPU would expose
+  prompt-derived structure across decode steps. At long context this
+  is the binding host-RAM cost (B · max_cache_len · 0.29 GiB on
+  Qwen3-4B — e.g. ~5 GiB at B=8 max_cache_len=2052, ~10 GiB at
+  B=8 max_cache_len=4100). Two research lines could relax the
+  constraint and put the cache in VRAM:
+  - *SCX-style encoded-KV* (SIGCOMM '25, has code) — apply a fresh
+    per-step orthogonal cover to cached K/V before they leave the
+    TEE, similar to GELO's mask but on the cache axis. Adds a
+    decode-step round-trip cost in exchange for VRAM residency.
+    Estimated 12-month research effort: needs a security argument
+    that the per-step refresh closes the cross-step correlation
+    leak under Amulet-class equivariance attacks, plus engineering
+    integration with the existing `KvCache` API.
+  - *GELO §3 re-validation for ciphertext-KV* — directly extend the
+    mask-protected-PCIe argument to cache-line storage on GPU.
+    Cheaper but riskier: the cache is read repeatedly across all
+    decode steps (unlike per-offload activations which are
+    masked-and-stripped within one forward), so a Gram-leak on the
+    cache reuses the same `A` across many reads. Needs a freshness
+    primitive (rolling shield rows, period-π refresh, etc.) and
+    the corresponding shield-energy proof on the cache axis.
+    Smaller scope (~3-month research spike) but may not yield a
+    deployable design.
+
+  Parked because (a) host RAM at 64 GiB is not yet the binding
+  constraint on Strix Halo for our production B/max_cache_len; (b)
+  the GPU-side win is bounded — the cache is read repeatedly but
+  the read is in-TEE-attention (not GPU matmul) under the current
+  M1.11 design. The unlock is only meaningful if R1.4
+  batched-attention-on-GPU also lands, because then the GPU would
+  consume the cache directly and host-VRAM transit per decode step
+  becomes the bottleneck. See M1.11 plan §3.1 and the
+  2026-05-22 handoff for the residency table that frames this.
 
 ---
 

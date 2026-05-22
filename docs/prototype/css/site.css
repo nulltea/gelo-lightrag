@@ -355,6 +355,33 @@ section {
   font-style: italic;
 }
 
+/* ────── HEADING ANCHORS ────── */
+/* Click target next to a heading that links to that heading's own
+   anchor. Hidden by default; appears on hover of the parent heading
+   or when the heading is the URL target. Used on h2.section-title
+   and the §08 / §09 h3 subsections. */
+.heading-anchor {
+  display: inline-block;
+  margin-left: 8px;
+  color: var(--ink-3);
+  text-decoration: none;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.6em;
+  font-weight: 400;
+  opacity: 0;
+  transition: opacity 120ms ease;
+  vertical-align: middle;
+}
+.section-title:hover .heading-anchor,
+h3:hover .heading-anchor,
+.heading-anchor:focus,
+:target > .heading-anchor {
+  opacity: 1;
+}
+.heading-anchor:hover {
+  color: var(--tee);
+}
+
 /* ────── LEGEND ────── */
 .legend {
   display: grid;
