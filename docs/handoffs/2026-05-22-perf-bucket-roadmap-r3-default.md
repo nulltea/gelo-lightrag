@@ -90,48 +90,153 @@ Acceptance: attack accuracy on c6 within sample-noise of c2. If c6
 flags, revert the default and re-design (LM-head shape is 37× wider
 than QKV — known to scale recovery surface).
 
-### 2. Batched GPU attention kernel (the R1.4 lever)
+### 2. ~~Batched GPU attention kernel (R1.4 lever)~~ — **ABORTED 2026-05-22 at Phase A spike**
 
-Current bottleneck (post-R3, B=8 n_kv ≈ 2 100): `tee:attn_cached_inplace_many`
-at **49.7 % of decode wall** (58.3 s of 113 s). At prefill the
-`tee:attn_inplace_many` analogue is 11.6 %.
+Plan was written at `docs/plans/m1-12-permuted-attention-batched-decode.md`
+(11-question grilled design); Phase A crossover spike measurement
+landed and **failed the gate by 16×**.
 
-**Engineering**: substrate already exposes `engine.fused_attention_batched`.
-Missing: per-sequence right-padding + causal-mask construction +
-dispatch wire-up in the two decoder-block call sites
-(`decoder_block_batched` for prefill, `decoder_block_cached_batched`
-for decode). Estimate **2–3 days** per the prior handoff (R1.4).
+**Measured** at Qwen3-4B GQA shape (B=8, num_heads=32, num_kv_heads=8,
+d_head=128) on Strix Halo iGPU (Radeon 8060S / RADV gfx1151 via wgpu
+Vulkan f16):
 
-**Impact estimate**: if the bucket goes to zero on the GPU, ~50 %
-decode wall reduction on top of R3 (i.e. another 1.8–2× on top of
-the 2.7× R3 already gives at B=8). Best-case Qwen3-4B B=8 decode
-~55 s for 64 × 8 = 512 tokens → ~9 tok/s aggregate.
+| Shape (B=8) | in_tee_rayon_b8 | gpu_batched_b8 (burn-chain f16) | GPU vs in-TEE |
+|---|---:|---:|---:|
+| n_kv = 256  |  1.06 ms |  48.5 ms | 45.9× slower |
+| n_kv = 1024 |  7.13 ms | 186.2 ms | 26.1× slower |
+| n_kv = 2048 | 22.3 ms  | 364.8 ms | **16.4× slower** |
 
-**Validation**: existing parity tests in `decoder_parity.rs` cover the
-mask round-trip; need new tests that the batched GPU attention path
-matches the in-TEE reference per-sequence.
+The acceptance gate required ≥ 1.5× faster GPU; result was 0.06×.
 
-### 3. bf16 mask GEMM on GPU — prefill bandwidth-contention lever
+**Why the M1.11 "crossover at B 11–16" hypothesis was wrong**: the
+22 ms at B=1 from the prior attn-offload-spike was already
+compute-bound, not launch-dominated. Batching scales GPU compute
+linearly too, so the gap doesn't close. Side-finding (Q11):
+burn-cubecl-fusion folds the `+ mask` add — `with_mask` vs
+`no_mask` delta is <2 % — so a custom WGSL FlashAttention-D kernel
+wouldn't help either (mask-elision is already free; remaining gap
+is compute throughput, not memory bandwidth: scores tensor is only
+~1 MB at decode-m=1 shape).
+
+**Don't re-spike on iGPU.** The bench cells stay in
+`crates/gelo-gpu-wgpu/benches/amulet_attention.rs` (group
+`amulet_attention_r1_4/`) as a re-runnable comparison harness — any
+future bucket-2 revival (custom WGSL, cubecl-hip backend swap,
+dGPU substrate) must beat the same `in_tee_rayon_b8` baseline.
+
+Full retro in plan §"Phase A result" + memory
+`bucket_2_batched_gpu_attention_aborted.md`.
+
+**Next priority shifts down**: bucket 3 (bf16/f16-native activation
+pipeline — 3a narrow OpenBLAS sbgemm mask path for fast prefill
+win, 3b broader end-to-end activation-storage rework that closes
+the upload-pipeline tax and unlocks any future dGPU revival of
+bucket 2) or bucket 4 (R4 async pipelining, blocked on Q#2
+RADV-async spike). Recommended order: bucket 3a (1 day) → Q#2
+spike (½ day) → decide between bucket 3b and bucket 4 based on
+the Q#2 result.
+
+### 3. bf16/f16-native activation pipeline (mask GEMM + storage) — bandwidth-contention lever
+
+Two layers under one bucket: the **narrow** prefill mask-GEMM win
+plus the **broader** end-to-end activation-storage rework that
+composes with it (and would have been bucket 2's enabler had bucket
+2 not aborted on iGPU per §2 above). Both share the same root cause
+— f32 activations + per-boundary f32↔f16/bf16 conversions hammer
+DDR5 on the same UMA bus the GPU matmul uses — and both rely on the
+same Zen 5 AVX-512_FP16 / `_BF16` instruction surface to land.
+
+#### 3a — bf16 mask GEMM (the narrow, ship-fast variant)
 
 Current bottleneck (B=8 prefill, n=2048): `gelo:mask_unapply` 24.5 %
 (45 s) + `gelo:mask_apply` 14.9 % (27 s) — **39 % of prefill wall on
 CPU DDR5**, contending with GPU matmul on the same UMA bus.
 
-**Engineering**: 1–2 weeks. OpenBLAS `cblas_sbgemm` is the 1-day path
-but pulls in the BLAS dep on the offload side; hand-roll over wgpu
-compute shader is cleaner. The `bf16_mask_gemm_skipped` memory's
-"~10 % TTFT, gain shrinks after HD₃" estimate was at B=1 — at B=8 the
-bucket scales linearly so the share **and** the win are larger
-(~25–30 %).
+**Engineering**: 1–2 weeks. OpenBLAS `cblas_sbgemm` is the 1-day
+path but pulls in the BLAS dep on the offload side; hand-roll over
+wgpu compute shader is cleaner long-term. The
+`bf16_mask_gemm_skipped` memory's "~10 % TTFT, gain shrinks after
+HD₃" estimate was at B=1 — at B=8 the bucket scales linearly so the
+share **and** the win are larger (~25–30 %).
 
 **Impact estimate**: ~25–30 % prefill wall reduction on iGPU UMA via
 unbussing the CPU-side FWHT bandwidth. On dGPU PCIe the win is
-structural in a different way — frees CPU thread occupancy and removes
-the FWHT memory-bandwidth ceiling on the host.
+structural in a different way — frees CPU thread occupancy and
+removes the FWHT memory-bandwidth ceiling on the host.
 
-**Order interaction with bucket 4 (R4)**: shipping bucket 3 first
-collapses R4's payoff (no CPU mask bucket to overlap with). Decide
-order based on the dGPU timeline — see bucket 4.
+**Scope:** only the mask path (`gelo:mask_apply` /
+`gelo:mask_unapply`). The masked-operand output of mask_apply is
+still f32; the GPU upload still pays the f32→f16 host-side
+conversion. That residual cost is what 3b addresses.
+
+#### 3b — bf16/f16-native activation storage end-to-end
+
+The wider rework: keep activations as `Array2<bf16>` (or `f16`)
+throughout `gelo-embedder/src/decoder/forward.rs` rather than f32.
+Weights are already bf16-native on host (post-loader work); the
+activations are the remaining f32 occupant of the forward-pass
+working set.
+
+**What it changes:**
+- Activation tensors in the forward pass become bf16/f16. Every
+  per-layer `Array2<f32>` (`h`, `h_norm`, residuals, attention
+  context, FFN gate/up/down outputs, etc.) downsized 2×.
+- `mask_apply` / `mask_unapply` consume bf16 in, produce bf16 out
+  (natural fit with 3a's bf16 GEMM kernel — they compose; no
+  intermediate widening).
+- GPU upload path is bf16/f16-native — eliminates the host-side
+  f32→f16 conversion + one DDR5 traverse per offload (per the
+  bucket-2 spike post-mortem, the upload was paying
+  ~1.5 GB DDR5 traffic per call at decode-attention shape; ~½ GB
+  of that was the conversion itself).
+- TEE matmul path (`tee_matmul_bf16`) is already bf16-aware; no
+  change needed there.
+- `apply_qk_norm`, RMSNorm, RoPE, residual adds — each needs a
+  bf16-aware variant or a temporary widening at the kernel
+  boundary. AVX-512_FP16 (Zen 5) handles f16 fmla natively; bf16
+  needs explicit widening on the FMA loop (Zen 5 also has
+  AVX-512_BF16 for the GEMM cores but not for arbitrary ops).
+
+**Engineering**: ~2-3 weeks. Larger than 3a because it touches
+every forward-pass tensor, every elementwise kernel, the precision
+contract on the `GpuOffloadEngine` boundary, and the parity tests
+that assert f32-floor agreement (which need re-baselined to bf16
+precision).
+
+**Impact estimate**:
+- Prefill: composes with 3a — adds another ~5-10 % on top by
+  eliminating the upload-side conversion (small per call but
+  many calls).
+- Decode: was bucket-2's enabler on iGPU. With bucket 2 deferred,
+  the decode-side win is bounded by the residual `gelo:mask_apply`
+  / `_unapply` cost at decode shapes (~5 % of decode wall today).
+- **dGPU revival of bucket 2 requires 3b** as a prerequisite — the
+  ~10× upload-pipeline tax in the bucket-2 abort post-mortem
+  doesn't shrink on PCIe, it gets worse. Any future dGPU-side
+  attention offload must consume bf16/f16-native activations end-
+  to-end or it'll repeat the iGPU failure mode on a different
+  bottleneck mix.
+- Satisfies the `feedback_memory_efficiency_priority` "never
+  upcast bf16 → f32" rule more thoroughly than today's path,
+  which holds f32 activations transiently between offloads.
+
+**Order interaction with 3a:** start with 3a as the 1-day OpenBLAS
+spike to confirm the bf16 GEMM kernel exists and the mask path
+parity holds at bf16. Then 3b builds on it incrementally —
+forward-pass tensor conversions are most of the work, and 3a
+proves the precision contract before we commit to it across the
+whole forward pass.
+
+#### Order interaction with bucket 4 (R4)
+
+Shipping 3a first collapses R4's payoff (no CPU mask bucket to
+overlap with). Decide order based on the dGPU timeline — see
+bucket 4.
+
+3b is largely orthogonal to R4 — it reduces the bytes the CPU mask
+path moves rather than overlapping the moves with GPU work. If R4
+turns out dead on iGPU (Q#2 says RADV serialises), 3b becomes the
+only path to recover the prefill bucket structurally.
 
 ### 4. Async pipelining (M1.12 R4) — DECIDE BEFORE STARTING
 
@@ -193,12 +298,26 @@ covered by existing GELO §3.2 bounds).
 ceiling, lowest confidence. Don't put on the M1.12-extension critical
 path; pre-spike via Python sim first.
 
-### 7. Production dGPU substrate bring-up (M5.9)
+### 7. Production dGPU substrate bring-up (M5.9) — see separate handoff
 
-Strix Halo iGPU UMA is the architectural ceiling for buckets 2 / 3 /
-4. SEV-SNP + VFIO discrete GPU lifts it — HBM ~3 TB/s vs DDR5 ~80
-GB/s, ~40× memory-bandwidth ceiling. New floor: PCIe DMA (~30 GB/s
-realised) on the offload round-trip.
+The dGPU-specific attention follow-ups (persistent K/V on GPU,
+GQA-aware custom WGSL kernel, single-pass FlashAttention) moved
+into their own handoff so they don't share a critical path with
+the in-flight iGPU buckets 3/4. The substrate-bring-up overview +
+bandwidth model + bucket-2 revival plan + recommended sequencing
+on M5.9 boot all live in:
+
+→ [`2026-05-22-dgpu-attention-revival.md`](2026-05-22-dgpu-attention-revival.md)
+
+**TL;DR rationale:** Strix Halo iGPU UMA is the architectural
+ceiling for buckets 2 / 3b / 4. SEV-SNP + VFIO discrete GPU lifts
+it — HBM ~3 TB/s kernel-read vs PCIe ~30 GB/s upload (**100× ratio
+vs iGPU UMA's 4×**), making "persistent K/V on GPU" go from
+modest-win on iGPU to primary-lever on dGPU. The bucket-2 abort
+on iGPU was a "right answer, wrong hardware" — re-measure on dGPU
+when M5.9 lands. Step 0 of the new handoff is a half-day re-run
+of the `amulet_attention_r1_4/` bench cells that gates everything
+downstream.
 
 **Order**: hand off to M5.9 hardware bring-up. Re-run the microbench
 + the per-op breakdown bench there before re-prioritising — many
