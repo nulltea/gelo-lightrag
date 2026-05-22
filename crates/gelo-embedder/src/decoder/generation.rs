@@ -20,7 +20,7 @@
 use anyhow::{Result, anyhow};
 use ndarray::ArrayView1;
 
-use gelo_protocol::TrustedExecutor;
+use gelo_protocol::{profile, TrustedExecutor};
 
 use super::config::{AttentionClass, DecoderConfig};
 use super::forward;
@@ -106,27 +106,29 @@ fn compute_logits(
     weights: &DecoderWeights,
     h_last: ArrayView1<'_, f32>,
 ) -> ndarray::Array1<f32> {
-    let vocab = weights.token_embedding.nrows();
-    let mut logits = ndarray::Array1::<f32>::zeros(vocab);
-    for v in 0..vocab {
-        // bf16-stored row × f32 hidden state. Widening per element,
-        // accumulating in f32 — bit-identical to the pre-bf16 path
-        // (the on-disk weights were bf16 anyway).
-        let row = weights.token_embedding.row(v);
-        let dot: f32 = h_last
-            .iter()
-            .zip(row.iter())
-            .map(|(a, b)| a * b.to_f32())
-            .sum();
-        logits[v] = dot;
-    }
-    if let Some(cap) = cfg.final_logit_softcapping {
-        let inv = 1.0_f32 / cap;
-        for x in logits.iter_mut() {
-            *x = (*x * inv).tanh() * cap;
+    profile::time("tee:compute_logits", || {
+        let vocab = weights.token_embedding.nrows();
+        let mut logits = ndarray::Array1::<f32>::zeros(vocab);
+        for v in 0..vocab {
+            // bf16-stored row × f32 hidden state. Widening per element,
+            // accumulating in f32 — bit-identical to the pre-bf16 path
+            // (the on-disk weights were bf16 anyway).
+            let row = weights.token_embedding.row(v);
+            let dot: f32 = h_last
+                .iter()
+                .zip(row.iter())
+                .map(|(a, b)| a * b.to_f32())
+                .sum();
+            logits[v] = dot;
         }
-    }
-    logits
+        if let Some(cap) = cfg.final_logit_softcapping {
+            let inv = 1.0_f32 / cap;
+            for x in logits.iter_mut() {
+                *x = (*x * inv).tanh() * cap;
+            }
+        }
+        logits
+    })
 }
 
 /// Run prefill + decode loop. Returns the newly-sampled tokens (prompt
