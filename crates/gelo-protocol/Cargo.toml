@@ -65,3 +65,8 @@ criterion = { version = "0.5", default-features = false, features = ["cargo_benc
 [[bench]]
 name = "shield_gaussian"
 harness = false
+
+[[bench]]
+name = "mask_bf16_lpgemm"
+harness = false
+required-features = ["blas"]
