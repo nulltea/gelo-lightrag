@@ -576,3 +576,97 @@ The numbers in §1 are measured against these.
   mask RNG; precision-orthogonal)
 - `docs/handoffs/2026-05-22-perf-bucket-roadmap-r3-default.md` §3
   — bucket-3 spec (3a + 3b split)
+
+---
+
+## 10. Measured 3a results + threads-scaling addendum (2026-05-22)
+
+Microbench at production prefill mask shape (`s = 2056, d = 2560`,
+Qwen3-4B post-shield Haar mask GEMM) — `cargo bench -p gelo-protocol
+--features blas --bench mask_bf16_lpgemm prefill`.
+
+### 10.1 Per-call kernel time, by thread count
+
+| `GELO_BLIS_THREADS` | f32 BLIS apply | bf16 LPGEMM apply | bf16 vs f32 | f32 vs threads=1 |
+|---:|---:|---:|---:|---:|
+| **1** (production default) | 81.93 ms | 37.15 ms | **2.21× faster** | 1.00× |
+| **4**  | 21.85 ms | 10.80 ms | 2.02× faster | 3.75× |
+| **8**  | 12.59 ms |  6.75 ms | 1.86× faster | 6.51× |
+| **16** |  8.62 ms |  5.16 ms | 1.67× faster | **9.50×** |
+
+Unapply paths track within ~3 % of apply at each thread count
+(symmetric `s × s × d` GEMM with transposed left operand).
+
+### 10.2 Two independent levers, not one
+
+The bf16 ratio *shrinks* with threads (2.21× → 1.67×). bf16 wins
+on **memory bandwidth** (half-precision operand reads); threads
+wins on **compute parallelism**. As compute parallelises across
+cores, the kernel becomes more bandwidth-bound, narrowing bf16's
+remaining advantage. They compose multiplicatively but at
+diminishing marginal return.
+
+### 10.3 Projected prefill-wall reduction at B=8
+
+Mask buckets are 39 % of B=8 prefill wall (~72 s of 192 s,
+threads=1 baseline from M1.12 microbench):
+
+| Config | Mask wall | Δ vs baseline | Prefill wall reduction |
+|---|---:|---:|---:|
+| threads=1, f32 (current baseline) | ~72 s | — | — |
+| **threads=1, bf16** (this plan's 3a target) | ~32 s | −40 s | **−20.6 %** |
+| **threads=16, f32** (no bf16, no protocol change) | ~7.6 s | −64 s | **−33.5 %** |
+| **threads=16, bf16** (compound) |  ~4.6 s | −67 s | **−35.1 %** |
+
+**Headline:** the threads-scaling lever alone is ~1.6× the size of
+the bf16 lever at prefill. Combined, only a 1.6-percentage-point
+incremental bump from layering bf16 on top of threads=16.
+
+### 10.4 Why this isn't a "just set threads=16" decision
+
+The threads setting is **process-global** (set once via
+`GELO_BLIS_THREADS` env var → `bli_thread_set_num_threads` on
+first GEMM call, OnceCell-pinned per thread). Three workloads
+share the same global value AND would regress at threads=16:
+
+1. **Embedder + rerank** — per-call mask GEMMs are small AND
+   parallelised by an outer rayon loop. Multi-thread BLIS
+   over-subscribes; each thread's barrier dominates the
+   small kernel.
+2. **Decode m=1** — per-call mask GEMM is ~tens of microseconds.
+   BLIS thread-barrier setup is ~tens of microseconds too.
+   Multi-thread cost exceeds kernel cost.
+3. **Batched prefill** (M1.11 PerSequence path, rayon-over-B) —
+   same over-subscription pattern as embedder.
+
+The current `threads=1` default protects these 3; the long-n
+single-stream prefill workload pays the cost. To unlock the
+threads=16 lever without regressing 1-3, we need per-shape /
+per-context dispatch. See follow-up plan
+`docs/plans/m1-12-blis-thread-dispatch.md`.
+
+### 10.5 Bucket-3a default-flip decision still stands
+
+Even ignoring the threads-scaling discussion, the 3a 20.6 %
+prefill wall reduction (at threads=1) clears the §1.1 ≥ 20 %
+gate. The bucket-3a plan ships independently of the threads
+work. After 3a lands and we run the full forward-pass
+integration test, we measure whether the headline holds at
+real-weight scale.
+
+### 10.6 Decode-shape sanity check
+
+At `s = 16, d = 2560` (M1.11 shape-adaptive decode):
+
+| Threads | f32 BLIS apply | bf16 LPGEMM apply | bf16 vs f32 |
+|---:|---:|---:|---:|
+| 1 | 6.17 µs | 14.56 µs | **2.4× SLOWER** |
+
+The bf16 path's per-call f32→bf16 conversion of `hidden` (~80 KB
+at this shape) dominates the small `s² = 256` matmul. Absolute
+regression: ~9 µs/call × 36 layers × 64 steps × 2 (apply+unapply)
+× 5 offloads/layer ≈ 200 ms per forward → **0.18 % of decode
+wall** (well inside the §1.1 ±5 % gate).
+
+This regression disappears once 3b lands and activations are
+bf16-native end-to-end (no per-call conversion needed).
