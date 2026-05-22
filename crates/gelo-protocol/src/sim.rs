@@ -226,6 +226,14 @@ pub struct InProcessTrustedExecutor<E: GpuOffloadEngine> {
     /// stacked-with-shield operand to `s_pad = s.next_power_of_two()`,
     /// so the GPU sees `s_pad/s ≈ 2×` more rows per call.
     mask_kind: MaskKind,
+    /// **M1.12 bucket-3a opt-in.** When `true`, Haar masks are
+    /// constructed via [`crate::mask::GeloMask::fresh_bf16`] (eager
+    /// bf16 cache populated alongside f32 sample). Apply / unapply
+    /// then route through `aocl_gemm_bf16bf16f32of32` (AVX-512_BF16)
+    /// instead of f32 BLIS. Default `false`. Flip via
+    /// [`Self::with_haar_mask_bf16`]; no effect on HD₃ / DCT-IV
+    /// (those use structured transforms, not GEMM).
+    haar_mask_bf16: bool,
 }
 
 /// Clone the executor sharing the underlying engine (engines that opt
@@ -287,6 +295,7 @@ impl<E: GpuOffloadEngine + Clone> Clone for InProcessTrustedExecutor<E> {
                 .as_ref()
                 .map(|c| SnapshotCapture::new(c.config())),
             mask_kind: self.mask_kind,
+            haar_mask_bf16: self.haar_mask_bf16,
         }
     }
 }
@@ -385,6 +394,12 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             // `perf(gelo-protocol): MaskKind::Auto (HD₃ + DCT-IV)`
             // commit (recent).
             mask_kind: MaskKind::Auto,
+            // 2026-05-22: M1.12 bucket-3a default off. Flip via
+            // `with_haar_mask_bf16()` to opt into the AOCL LPGEMM
+            // bf16 path. Only affects Haar masks — HD₃ / DCT-IV
+            // use structured transforms, not GEMM, so the bf16
+            // GEMM path doesn't apply to them.
+            haar_mask_bf16: false,
         }
     }
 
@@ -423,6 +438,7 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             // those tests target. Production paths use `new` /
             // `with_seed` which default to `MaskKind::Auto`.
             mask_kind: MaskKind::Haar,
+            haar_mask_bf16: false,
         }
     }
 
@@ -509,6 +525,80 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
 
     pub fn mask_kind(&self) -> MaskKind {
         self.mask_kind
+    }
+
+    /// **M1.12 bucket-3a opt-in.** Route Haar mask apply/unapply
+    /// through the AOCL-BLIS LPGEMM addon's bf16 GEMM kernel
+    /// (`aocl_gemm_bf16bf16f32of32`, AVX-512_BF16 via vdpbf16ps)
+    /// instead of the f32 BLIS path. Sample-side semantics are
+    /// unchanged: Haar `A` is still f32-sampled in TEE with the
+    /// Mezzadri sign-correction (load-bearing for Haar-uniformity);
+    /// the downcast happens once at construction time
+    /// ([`crate::mask::GeloMask::fresh_bf16`]) and is cached
+    /// alongside the f32 source.
+    ///
+    /// **No effect on HD₃ / DCT-IV** — those use structured
+    /// orthogonal transforms (FWHT, DCT-IV) rather than GEMM, so a
+    /// bf16 GEMM kernel isn't on their critical path. If
+    /// `mask_kind` is HD₃ or DCT-IV when this flag is set, the
+    /// flag is silently inert at the apply/unapply boundary — only
+    /// Haar consults it.
+    ///
+    /// **Security argument:** bf16 quantisation noise on the
+    /// masked operand `A · H` is strictly larger than the f32 →
+    /// f16 noise at the existing GPU upload boundary, so adversary
+    /// observations are noisier. AloePri attack drivers
+    /// (anchor_ica / JADE / JD / gram_error) operate on
+    /// observation noise floors; a noisier observation strictly
+    /// weakens recovery rates. No new AloePri gate required — see
+    /// `docs/plans/m1-12-bf16-activation-pipeline.md` §5 for the
+    /// math-only argument.
+    ///
+    /// **Requires:** `--features blas` AND a build with the AOCL
+    /// LPGEMM addon enabled. The install script
+    /// `scripts/install-aocl-blis.sh` passes
+    /// `--enable-addon=aocl_gemm` since 2026-05-22; pre-2026-05-22
+    /// builds will get auto-rebuilt on next invocation of the
+    /// install script.
+    ///
+    /// **Default:** off. Flip after the perf gate at
+    /// `docs/plans/m1-12-bf16-activation-pipeline.md` §1.1 clears
+    /// (≥ 20 % prefill wall reduction at Qwen3-4B B=8 n=2048) AND
+    /// real-weight parity tests on `qwen3_generation_e2e` and the
+    /// v7 extraction bench preserve greedy token output.
+    #[cfg(feature = "blas")]
+    pub fn with_haar_mask_bf16(mut self) -> Self {
+        self.haar_mask_bf16 = true;
+        // Invalidate any session that was sampled at f32 — the
+        // caller must re-bracket with `begin_forward_pass` after
+        // toggling precision.
+        self.session = None;
+        self.stacked_scratch.clear();
+        self
+    }
+
+    /// `true` if Haar masks will be constructed via the bf16 LPGEMM
+    /// path. Always `false` on non-`blas` builds (the bf16 kernel
+    /// lives in AOCL-BLIS).
+    pub fn is_haar_mask_bf16(&self) -> bool {
+        self.haar_mask_bf16
+    }
+
+    /// Construct a Haar mask honoring the executor's bf16-mode flag.
+    /// Centralised so every `MaskKind::Haar` arm picks up the bf16
+    /// path the same way; flipping `with_haar_mask_bf16` once at
+    /// executor construction propagates to every per-forward-pass
+    /// mask sample (5 call sites today: `begin_forward_pass`,
+    /// `begin_prefill_pass`, `begin_decode_pass`, plus their PerSequence
+    /// variants).
+    fn make_haar_mask(&mut self, stacked_n: usize) -> MaskFamily {
+        #[cfg(feature = "blas")]
+        {
+            if self.haar_mask_bf16 {
+                return MaskFamily::Haar(GeloMask::fresh_bf16(stacked_n, &mut self.rng));
+            }
+        }
+        MaskFamily::Haar(GeloMask::fresh(stacked_n, &mut self.rng))
     }
 
     /// Override the **shape-adaptive small-n shield** (the overlay
@@ -785,7 +875,7 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             }
         } else {
             profile::time("gelo:mask_sample", || match resolved_kind {
-                MaskKind::Haar => MaskFamily::Haar(GeloMask::fresh(stacked_n, &mut self.rng)),
+                MaskKind::Haar => self.make_haar_mask(stacked_n),
                 MaskKind::Hd3 => MaskFamily::Hd3(Hd3Mask::fresh(stacked_n, &mut self.rng)),
                 MaskKind::Dct4 => {
                     MaskFamily::Dct4(crate::dct4::Dct4Mask::fresh(stacked_n, &mut self.rng))
@@ -1352,7 +1442,7 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         let stacked_n = n + self.shield.k;
         let resolved_kind = crate::mask::resolve_mask_kind_for_shape(self.mask_kind, stacked_n);
         let mask = profile::time("gelo:mask_sample", || match resolved_kind {
-            MaskKind::Haar => MaskFamily::Haar(GeloMask::fresh(stacked_n, &mut self.rng)),
+            MaskKind::Haar => self.make_haar_mask(stacked_n),
             MaskKind::Hd3 => {
                 // HD₃ requires power-of-two side length.
                 let s_pad = stacked_n.next_power_of_two().max(2);
@@ -1425,7 +1515,7 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         let mut masks = Vec::with_capacity(batch_size);
         for _b in 0..batch_size {
             let mask = profile::time("gelo:mask_sample", || match resolved_kind {
-                MaskKind::Haar => MaskFamily::Haar(GeloMask::fresh(stacked_n, &mut self.rng)),
+                MaskKind::Haar => self.make_haar_mask(stacked_n),
                 MaskKind::Hd3 => {
                     let s_pad = stacked_n.next_power_of_two().max(2);
                     MaskFamily::Hd3(Hd3Mask::fresh(s_pad, &mut self.rng))
@@ -1478,7 +1568,7 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
             let resolved_kind =
                 crate::mask::resolve_mask_kind_for_shape(self.mask_kind, stacked_n);
             let mask = profile::time("gelo:mask_sample", || match resolved_kind {
-                MaskKind::Haar => MaskFamily::Haar(GeloMask::fresh(stacked_n, &mut self.rng)),
+                MaskKind::Haar => self.make_haar_mask(stacked_n),
                 MaskKind::Hd3 => {
                     let s_pad = stacked_n.next_power_of_two().max(2);
                     MaskFamily::Hd3(Hd3Mask::fresh(s_pad, &mut self.rng))
@@ -1508,7 +1598,7 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         let mut masks = Vec::with_capacity(batch_size);
         for _b in 0..batch_size {
             let mask = profile::time("gelo:mask_sample", || match resolved_kind {
-                MaskKind::Haar => MaskFamily::Haar(GeloMask::fresh(stacked_n, &mut self.rng)),
+                MaskKind::Haar => self.make_haar_mask(stacked_n),
                 MaskKind::Hd3 => {
                     let s_pad = stacked_n.next_power_of_two().max(2);
                     MaskFamily::Hd3(Hd3Mask::fresh(s_pad, &mut self.rng))
@@ -2076,6 +2166,75 @@ mod tests {
         }
         for ((i, j), e) in expected_v.indexed_iter() {
             assert!((v[[i, j]] - e).abs() < 1e-3);
+        }
+    }
+
+    /// **M1.12 bucket-3a** — `with_haar_mask_bf16()` produces the
+    /// same downstream output as `PlaintextExecutor` to bf16-floor.
+    /// Validates that the executor-level builder flag actually
+    /// routes Haar mask construction through `GeloMask::fresh_bf16`
+    /// at `begin_forward_pass` AND that `apply` / `unapply` route
+    /// through the AOCL LPGEMM bf16 path.
+    #[cfg(feature = "blas")]
+    #[test]
+    fn haar_bf16_executor_agrees_with_plaintext() {
+        let mut rng = ChaCha20Rng::from_seed([23u8; 32]);
+        let normal = StandardNormal;
+        let n = 16;
+        let d = 12;
+        let p = 8;
+
+        let hidden = Array2::<f32>::from_shape_fn((n, d), |_| normal.sample(&mut rng));
+        let weight = Array2::<f32>::from_shape_fn((d, p), |_| normal.sample(&mut rng));
+        let handle = WeightHandle::new(0, WeightKind::Q);
+
+        let mut plain = PlaintextExecutor::new(RayonCpuEngine::new());
+        plain.provision_weight(handle, weight.view()).unwrap();
+        let plain_out = plain.offload_linear(handle, hidden.view()).unwrap();
+
+        let mut bf16 = InProcessTrustedExecutor::with_seed(
+            RayonCpuEngine::new(),
+            MaskSeed::from_bytes([29u8; 32]),
+        )
+        .with_haar_mask()       // pin Haar (default is Auto = HD₃/DCT-IV)
+        .with_haar_mask_bf16(); // opt into the AOCL LPGEMM bf16 path
+        assert_eq!(bf16.mask_kind(), MaskKind::Haar);
+        assert!(bf16.is_haar_mask_bf16());
+
+        bf16.provision_weight(handle, weight.view()).unwrap();
+        bf16.begin_forward_pass(n).unwrap();
+        let bf16_out = bf16.offload_linear(handle, hidden.view()).unwrap();
+        bf16.end_forward_pass().unwrap();
+
+        assert_eq!(bf16_out.dim(), plain_out.dim());
+        // Tolerance: bf16 mask round-trip + shield + matmul + unapply
+        // through the full executor pipeline. bf16 has 7 mantissa
+        // bits → per-element ULP ≈ 0.78 % of magnitude. The chain
+        // accumulates:
+        //   1. Mask apply A·H at bf16 (one matmul of depth s_pad)
+        //   2. Shield stack + matmul · weight at engine f32 (depth d)
+        //   3. Mask unapply Aᵀ·(·) at bf16 (one matmul of depth s_pad)
+        // Per-element relative error budget ≈ √(s_pad + d) · 2¯⁷
+        // For StandardNormal inputs of magnitude ~1 at s_pad ≈ 32
+        // (n=16 + k=8 = 24, padded to 32), d=12:
+        //   √(32+12) · 0.0078 ≈ 5.2 %  → ~0.05 absolute at unit scale
+        // Empirically observed 0.030 at this shape — within budget.
+        // Production-shape tolerance (n ≈ 2048, d ≈ 2560) is the
+        // job of the integration parity tests at the embedder layer.
+        for ((i, j), &e) in plain_out.indexed_iter() {
+            let got = bf16_out[[i, j]];
+            let delta = (got - e).abs();
+            let scale = e.abs().max(1.0);
+            let rel = delta / scale;
+            // Hybrid tolerance: absolute 1e-1 covers small-value
+            // elements where relative error blows up but absolute is
+            // bounded; relative 8 % covers larger-magnitude elements
+            // where √(s_pad+d)·2¯⁷ ≈ 5–7 % is the real bf16 floor
+            // at this shape (s_pad=32, d=12, with rare ~5σ outliers).
+            assert!(
+                delta < 1e-1 || rel < 0.08,
+                "({i},{j}): plain={e} bf16={got} diff={delta} rel={rel:.4} exceeds bf16-floor"
+            );
         }
     }
 

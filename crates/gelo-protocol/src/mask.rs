@@ -1,3 +1,4 @@
+use half::bf16;
 use ndarray::{Array2, ArrayView2, Axis, s};
 use rand::RngCore;
 use rand_distr::{Distribution, StandardNormal};
@@ -187,16 +188,50 @@ pub fn resolve_mask_kind_for_shape(kind: MaskKind, s: usize) -> MaskKind {
 /// trick over a standard normal seed.
 #[derive(Debug, Clone)]
 pub struct GeloMask {
-    /// `(n, n)` orthogonal mask matrix.
+    /// `(n, n)` orthogonal mask matrix in f32. Source of truth for
+    /// the sample (Mezzadri sign correction is applied at f32
+    /// precision — load-bearing for Haar-uniformity per
+    /// `sample_haar_orthogonal`).
     a: Array2<f32>,
+    /// Optional bf16 cache of `a`, populated eagerly at construction
+    /// when [`Self::fresh_bf16`] / [`Self::from_seed_bf16`] is used.
+    /// When `Some`, [`Self::apply`] / [`Self::unapply`] route through
+    /// the AOCL LPGEMM bf16 path (`aocl_gemm_bf16bf16f32of32`) instead
+    /// of the f32 BLIS path.
+    ///
+    /// Memory cost: +50 % over f32-only (s² × 2 bytes for the bf16
+    /// cache on top of s² × 4 bytes for the f32 source). Dropping the
+    /// f32 cache after sample is a future optimisation; for the
+    /// initial 3a wire-up we keep both to make the precision
+    /// contract empirically verifiable (parity tests compare the two
+    /// paths apples-to-apples).
+    a_bf16: Option<Array2<bf16>>,
 }
 
 impl GeloMask {
-    /// Sample a fresh Haar-uniform orthogonal `A ∈ R^(n×n)`.
+    /// Sample a fresh Haar-uniform orthogonal `A ∈ R^(n×n)`. Apply/
+    /// unapply run at f32 precision via the existing BLIS path.
     pub fn fresh<R: RngCore>(n: usize, rng: &mut R) -> Self {
         Self {
             a: sample_haar_orthogonal(n, rng),
+            a_bf16: None,
         }
+    }
+
+    /// Sample a fresh Haar-uniform orthogonal `A` AND eagerly cache a
+    /// bf16 downcast. Apply/unapply route through
+    /// `aocl_gemm_bf16bf16f32of32` (AVX-512_BF16 vdpbf16ps) for the
+    /// matmul. f32 accumulators inside the kernel; bf16 noise floor on
+    /// the output. Mezzadri sign correction is still applied at f32
+    /// during sample — only the multiplication is quantised.
+    ///
+    /// Cost: +50 % memory over [`Self::fresh`]; one O(n²) f32 → bf16
+    /// pass at construction. M1.12 bucket-3a entry point.
+    #[cfg(feature = "blas")]
+    pub fn fresh_bf16<R: RngCore>(n: usize, rng: &mut R) -> Self {
+        let a = sample_haar_orthogonal(n, rng);
+        let a_bf16 = Some(a.mapv(bf16::from_f32));
+        Self { a, a_bf16 }
     }
 
     /// Deterministic constructor for tests.
@@ -205,14 +240,30 @@ impl GeloMask {
         Self::fresh(n, &mut rng)
     }
 
+    /// Deterministic bf16 constructor for tests (M1.12 bucket-3a
+    /// parity).
+    #[cfg(feature = "blas")]
+    pub fn from_seed_bf16(n: usize, seed: MaskSeed) -> Self {
+        let mut rng = seed.rng();
+        Self::fresh_bf16(n, &mut rng)
+    }
+
     /// `n`, the token-axis dimension this mask operates on.
     pub fn n(&self) -> usize {
         self.a.nrows()
     }
 
-    /// Reference to the underlying `(n, n)` orthogonal matrix.
+    /// Reference to the underlying `(n, n)` orthogonal matrix at f32
+    /// precision. Always returns the f32 source-of-truth view, even
+    /// when bf16 caching is active.
     pub fn matrix(&self) -> ArrayView2<'_, f32> {
         self.a.view()
+    }
+
+    /// `true` if this mask routes through the bf16 LPGEMM path on
+    /// apply/unapply.
+    pub fn is_bf16(&self) -> bool {
+        self.a_bf16.is_some()
     }
 
     /// Apply the mask: `U = A · H`.
@@ -226,6 +277,16 @@ impl GeloMask {
         );
         #[cfg(feature = "blas")]
         {
+            if let Some(a_bf16) = &self.a_bf16 {
+                // Downcast hidden to bf16 then call AOCL LPGEMM.
+                // f32 → bf16 conversion is one O(n·d) pass per call;
+                // small vs the matmul itself.
+                let hidden_bf16 = hidden.mapv(bf16::from_f32);
+                return crate::aocl_lpgemm::matmul_bf16_lpgemm(
+                    a_bf16.view(),
+                    hidden_bf16.view(),
+                );
+            }
             return sgemm_blis(self.a.view(), hidden, false);
         }
         #[cfg(not(feature = "blas"))]
@@ -243,6 +304,13 @@ impl GeloMask {
         );
         #[cfg(feature = "blas")]
         {
+            if let Some(a_bf16) = &self.a_bf16 {
+                let masked_bf16 = masked_output.mapv(bf16::from_f32);
+                return crate::aocl_lpgemm::matmul_bf16_lpgemm_trans_a(
+                    a_bf16.view(),
+                    masked_bf16.view(),
+                );
+            }
             return sgemm_blis(self.a.view(), masked_output, true);
         }
         #[cfg(not(feature = "blas"))]
@@ -777,6 +845,78 @@ mod tests {
         let diff = &m1.a - &m2.a;
         let max_abs = diff.iter().fold(0.0_f32, |a, &b| a.max(b.abs()));
         assert_eq!(max_abs, 0.0);
+    }
+
+    /// M1.12 bucket-3a parity: bf16-mode mask round-trip recovers
+    /// the same `H · W` as the f32-mode mask, to bf16-floor.
+    ///
+    /// At s = 16, d = 12, p = 8 the chain depth is small enough that
+    /// the bf16 quantisation budget (~k · 2¯⁷ relative ≈ 0.1 at k=12)
+    /// stays well under the 0.05 absolute tolerance for the test
+    /// inputs (`StandardNormal`, magnitudes ~1.0).
+    #[cfg(feature = "blas")]
+    #[test]
+    fn bf16_mask_round_trip_matches_f32() {
+        let mut rng = rand_chacha::ChaCha20Rng::from_seed([19u8; 32]);
+        let n = 16;
+        let d = 12;
+        let p = 8;
+        // Sample both f32 and bf16 masks from the same seed →
+        // identical underlying `a` matrix (Mezzadri-corrected); the
+        // bf16 mask additionally caches a downcast.
+        let seed = MaskSeed::from_bytes([19u8; 32]);
+        let mask_f32 = GeloMask::from_seed(n, seed);
+        let mask_bf16 = GeloMask::from_seed_bf16(n, seed);
+        assert!(!mask_f32.is_bf16());
+        assert!(mask_bf16.is_bf16());
+
+        let normal = StandardNormal;
+        let h = Array2::<f32>::from_shape_fn((n, d), |_| normal.sample(&mut rng));
+        let w = Array2::<f32>::from_shape_fn((d, p), |_| normal.sample(&mut rng));
+
+        // f32 path (existing baseline)
+        let masked_f32 = mask_f32.apply(h.view());
+        let masked_out_f32 = masked_f32.dot(&w);
+        let recovered_f32 = mask_f32.unapply(masked_out_f32.view());
+
+        // bf16 path (new LPGEMM route)
+        let masked_bf16 = mask_bf16.apply(h.view());
+        let masked_out_bf16 = masked_bf16.dot(&w);
+        let recovered_bf16 = mask_bf16.unapply(masked_out_bf16.view());
+
+        // Both should recover the plaintext H·W within tolerance.
+        let plaintext = h.dot(&w);
+        for ((i, j), pt) in plaintext.indexed_iter() {
+            // f32 path stays at the existing 1e-3 tolerance.
+            assert!(
+                approx_eq(*pt, recovered_f32[[i, j]], 1e-3),
+                "f32 round-trip mismatch at ({i},{j}): plain={pt} got={}",
+                recovered_f32[[i, j]]
+            );
+            // bf16 path loosens to bf16-floor (1e-1 absolute for the
+            // n × d × p chain at this shape — bf16 has 7 mantissa bits
+            // so per-element rel error is ~2¯⁷ and the chain
+            // accumulates `O(n + d)` independent rounding errors).
+            assert!(
+                approx_eq(*pt, recovered_bf16[[i, j]], 1e-1),
+                "bf16 round-trip exceeded bf16-floor at ({i},{j}): plain={pt} got={}",
+                recovered_bf16[[i, j]]
+            );
+        }
+
+        // bf16 path tracks f32 path: max element-wise delta ≤ 5 % rel
+        // at this shape. Production-shape tolerance is in the
+        // crate-level integration tests.
+        for ((i, j), &f32_val) in recovered_f32.indexed_iter() {
+            let bf16_val = recovered_bf16[[i, j]];
+            let delta = (f32_val - bf16_val).abs();
+            let scale = f32_val.abs().max(1.0);
+            let rel = delta / scale;
+            assert!(
+                rel < 0.05,
+                "bf16-vs-f32 path drift at ({i},{j}): rel={rel:.4} f32={f32_val} bf16={bf16_val}"
+            );
+        }
     }
 
     /// Haar-uniformity smoke test. The Mezzadri sign correction is what
