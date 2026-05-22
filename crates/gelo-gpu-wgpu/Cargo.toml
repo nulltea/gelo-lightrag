@@ -43,6 +43,10 @@ rand_distr.workspace = true
 hf-hub.workspace = true
 serde_json.workspace = true
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+# libc only used by the M1.12 R1 microbench to call `malloc_trim(0)`
+# so the RSS measurement reflects kernel-visible free space, not
+# glibc's free-list residency.
+libc = "0.2"
 # ROCm/HIP runtime — only pulled in for the Q4-on-HIP spike test
 # (`tests/q4_hip_kernel_spike.rs`). Requires ROCm 6.x installed
 # at /opt/rocm; build will fail loudly if not.

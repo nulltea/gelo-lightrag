@@ -152,6 +152,7 @@ fn qwen3_1_7b_greedy_matches_hf_transformers() -> Result<()> {
         max_tokens: fix.reference_tokens.len(),
         eos_token_ids: Vec::new(),
         sampler: SamplerConfig::Greedy,
+        lm_head_via_gpu_offload: false,
     };
     let out = generate(&cfg, &weights, &rope, &mut exec, &fix.prompt_ids, &gen_cfg)?;
 

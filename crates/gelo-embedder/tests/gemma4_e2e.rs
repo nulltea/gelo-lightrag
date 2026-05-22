@@ -109,6 +109,7 @@ fn gemma4_e2b_greedy_generates_to_completion() -> Result<()> {
                 max_tokens: 16,
                 eos_token_ids: Vec::new(),
                 sampler: SamplerConfig::Greedy,
+                lm_head_via_gpu_offload: false,
             },
         )?;
         assert!(!out.tokens.is_empty(), "expected ≥1 token from generate()");

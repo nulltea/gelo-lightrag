@@ -33,6 +33,14 @@ pub enum WeightKind {
     FfnGate,
     FfnUp,
     FfnDown,
+    /// LM-head (logits projection). M1.12 R3 — see
+    /// `docs/plans/m1-12-tee-gpu-throughput.md` §3. Registered only
+    /// when callers opt in via `LM_HEAD_GPU_OFFLOAD=1`. Tied-embedding
+    /// models register the transpose of `token_embedding` here
+    /// (`(hidden, vocab)`); the host-side `token_embedding`
+    /// `(vocab, hidden)` stays alive for `embedding_lookup`. The layer
+    /// index is by convention `0` — there's only one LM head per model.
+    LmHead,
 }
 
 /// The untrusted accelerator side of the split protocol.

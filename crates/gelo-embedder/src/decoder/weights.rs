@@ -163,6 +163,53 @@ pub fn provision_into_shared<X: TrustedExecutor>(
     Ok(())
 }
 
+/// Provision the tied input/output embedding into the executor as
+/// `WeightKind::LmHead`. Materialises a transpose of
+/// `weights.token_embedding` (`(vocab, hidden)` → `(hidden, vocab)`)
+/// at standard layout so the engine's row-major upload matches GELO's
+/// `(in_features, out_features)` weight convention. The host-side
+/// `token_embedding` stays alive (used by `embedding_lookup` for the
+/// input-side gather) — untying via the offline conversion script in
+/// `private-rag-path-2/python/aloepri-llm/obfuscate_qwen3_gguf.py` is
+/// the escape hatch if the 2× residency (host `(vocab, hidden)` +
+/// VRAM `(hidden, vocab)`) ever becomes binding.
+///
+/// M1.12 R3 — see `docs/plans/m1-12-tee-gpu-throughput.md` §3. The
+/// transpose materialises ~778 MB transient host RAM during
+/// provisioning on Qwen3-4B (152 064 × 2 560 bf16); after the Arc is
+/// consumed by the wgpu upload only the original `token_embedding`
+/// host bytes remain.
+pub fn provision_lm_head_into<X: TrustedExecutor>(
+    weights: &DecoderWeights,
+    exec: &mut X,
+) -> Result<()> {
+    let lm_head_t = weights.token_embedding.t().as_standard_layout().to_owned();
+    exec.provision_weight_bf16_shared(
+        WeightHandle::new(0, WeightKind::LmHead),
+        Arc::new(lm_head_t),
+    )
+}
+
+/// Returns `true` when `LM_HEAD_GPU_OFFLOAD=1` (or `=true`) is set in
+/// the environment. Cached per-process via `OnceLock` — env reads
+/// happen once per process, never per token. Runtimes call this once
+/// at startup to decide both whether to call
+/// [`provision_lm_head_into`] and whether to set
+/// `GenerationConfig::lm_head_via_gpu_offload`.
+///
+/// M1.12 R3 — see `docs/plans/m1-12-tee-gpu-throughput.md` §3.
+/// Default off until the c6 AloePri spot-check at the LM-head shape
+/// clears.
+pub fn lm_head_gpu_offload_enabled() -> bool {
+    use std::sync::OnceLock;
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| {
+        std::env::var("LM_HEAD_GPU_OFFLOAD")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    })
+}
+
 impl DecoderWeights {
     /// Load decoder weights from one or many safetensors files.
     pub fn from_safetensors(paths: &[&Path], cfg: &DecoderConfig) -> Result<Self> {

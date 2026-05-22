@@ -171,6 +171,7 @@ fn greedy_generate_is_deterministic_across_runs() {
         max_tokens: 5,
         eos_token_ids: Vec::new(),
         sampler: SamplerConfig::Greedy,
+        lm_head_via_gpu_offload: false,
     };
 
     let (mut exec_a, w_a, cfg_a, rope_a) = make_exec_and_weights();
@@ -198,6 +199,7 @@ fn decode_replays_under_prefill() {
         max_tokens: 5,
         eos_token_ids: Vec::new(),
         sampler: SamplerConfig::Greedy,
+        lm_head_via_gpu_offload: false,
     };
 
     let (mut exec, weights, cfg, rope) = make_exec_and_weights();
@@ -256,6 +258,7 @@ fn generate_stops_on_eos_token() {
             max_tokens: 1,
             eos_token_ids: Vec::new(),
             sampler: SamplerConfig::Greedy,
+            lm_head_via_gpu_offload: false,
         },
     )
     .unwrap();
@@ -272,6 +275,7 @@ fn generate_stops_on_eos_token() {
             max_tokens: 10,
             eos_token_ids: vec![first_token],
             sampler: SamplerConfig::Greedy,
+            lm_head_via_gpu_offload: false,
         },
     )
     .unwrap();
@@ -307,6 +311,7 @@ fn max_tokens_zero_returns_empty() {
             max_tokens: 0,
             eos_token_ids: Vec::new(),
             sampler: SamplerConfig::Greedy,
+            lm_head_via_gpu_offload: false,
         },
     )
     .unwrap();
@@ -378,6 +383,7 @@ fn gemma4_shaped_decoder_runs_generate() {
             max_tokens: 3,
             eos_token_ids: Vec::new(),
             sampler: SamplerConfig::Greedy,
+            lm_head_via_gpu_offload: false,
         },
     )
     .unwrap();
@@ -421,6 +427,7 @@ fn hybrid_with_max_window_matches_all_global() {
         max_tokens: 4,
         eos_token_ids: Vec::new(),
         sampler: SamplerConfig::Greedy,
+        lm_head_via_gpu_offload: false,
     };
 
     let mut engine_a = RayonCpuEngine::new();
@@ -576,6 +583,7 @@ fn kv_shared_matches_separate_when_wk_equals_wv() {
             max_tokens: 3,
             eos_token_ids: Vec::new(),
             sampler: SamplerConfig::Greedy,
+            lm_head_via_gpu_offload: false,
         },
     )
     .unwrap();
@@ -593,6 +601,7 @@ fn kv_shared_matches_separate_when_wk_equals_wv() {
             max_tokens: 3,
             eos_token_ids: Vec::new(),
             sampler: SamplerConfig::Greedy,
+            lm_head_via_gpu_offload: false,
         },
     )
     .unwrap();
@@ -709,6 +718,7 @@ fn hybrid_decode_replay_invariant_holds() {
         max_tokens: 4,
         eos_token_ids: Vec::new(),
         sampler: SamplerConfig::Greedy,
+        lm_head_via_gpu_offload: false,
     };
 
     let mut engine_a = RayonCpuEngine::new();
@@ -762,6 +772,7 @@ fn overflow_max_position_embeddings_errors() {
             max_tokens: 10,
             eos_token_ids: Vec::new(),
             sampler: SamplerConfig::Greedy,
+            lm_head_via_gpu_offload: false,
         },
     )
     .unwrap_err();
@@ -812,6 +823,7 @@ fn permuted_cached_dispatch_at_sigma_zero_matches_in_tee() {
             max_tokens: 6,
             eos_token_ids: Vec::new(),
             sampler: SamplerConfig::Greedy,
+            lm_head_via_gpu_offload: false,
         },
     )
     .unwrap();
@@ -832,6 +844,7 @@ fn permuted_cached_dispatch_at_sigma_zero_matches_in_tee() {
             max_tokens: 6,
             eos_token_ids: Vec::new(),
             sampler: SamplerConfig::Greedy,
+            lm_head_via_gpu_offload: false,
         },
     )
     .unwrap();

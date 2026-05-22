@@ -18,9 +18,10 @@ use gelo_embedder::decoder::rope::RopeTables;
 use gelo_embedder::decoder::weights::{DecoderLayerWeights, DecoderWeights};
 use gelo_protocol::rng::MaskSeed;
 use gelo_protocol::{
-    GpuOffloadEngine, InProcessTrustedExecutor, PlaintextExecutor, RayonCpuEngine, WeightHandle,
-    WeightKind,
+    GpuOffloadEngine, InProcessTrustedExecutor, PlaintextExecutor, RayonCpuEngine, TrustedExecutor,
+    WeightHandle, WeightKind,
 };
+use ndarray::Axis;
 
 fn tiny_decoder_config(
     num_layers: usize,
@@ -355,6 +356,7 @@ fn synthetic_generate_batched_b1_matches_single_stream() {
         max_tokens: 6,
         eos_token_ids: Vec::new(),
         sampler: SamplerConfig::Greedy,
+        lm_head_via_gpu_offload: false,
     };
 
     // Single-stream reference.
@@ -429,6 +431,7 @@ fn synthetic_generate_batched_per_sequence_matches_single_stream() {
         max_tokens: 5,
         eos_token_ids: Vec::new(),
         sampler: SamplerConfig::Greedy,
+        lm_head_via_gpu_offload: false,
     };
 
     // Reference: serial single-stream generates.
@@ -497,6 +500,7 @@ fn synthetic_generate_batched_per_sequence_eos_freezes() {
         max_tokens: 5,
         eos_token_ids: Vec::new(),
         sampler: SamplerConfig::Greedy,
+        lm_head_via_gpu_offload: false,
     };
     let mut refs = Vec::with_capacity(prompts.len());
     for p in &prompts {
@@ -541,6 +545,7 @@ fn synthetic_generate_batched_per_sequence_eos_freezes() {
         max_tokens: 5,
         eos_token_ids: vec![eos_token],
         sampler: SamplerConfig::Greedy,
+        lm_head_via_gpu_offload: false,
     };
 
     // Find the expected stop-step for sequence 0: the first index
@@ -616,6 +621,7 @@ fn synthetic_generate_batched_shared_a_per_sequence_matches_single_stream() {
         max_tokens: 4,
         eos_token_ids: Vec::new(),
         sampler: SamplerConfig::Greedy,
+        lm_head_via_gpu_offload: false,
     };
 
     // Build references with env cleared (single-stream doesn't read
@@ -658,4 +664,142 @@ fn synthetic_generate_batched_shared_a_per_sequence_matches_single_stream() {
             got.tokens, want.tokens,
         );
     }
+}
+
+/// Helper: register the tied-embedding transpose at
+/// `WeightKind::LmHead`. Mirrors
+/// `gelo_embedder::decoder::weights::provision_lm_head_into` but at
+/// the engine layer so the synthetic-weight tests below can wire it
+/// independently of the executor type.
+fn register_lm_head<E: GpuOffloadEngine>(weights: &DecoderWeights, engine: &mut E) {
+    let lm_head_t = weights.token_embedding.t().as_standard_layout().to_owned();
+    engine
+        .register_weight_bf16(WeightHandle::new(0, WeightKind::LmHead), lm_head_t.view())
+        .unwrap();
+}
+
+/// **M1.12 R3 acceptance — single-shot LM-head parity.** A fresh
+/// hidden state vector projected through `exec.offload_linear(LmHead,
+/// …)` under the substrate's per-forward mask + shield must agree
+/// with the in-TEE bf16 dot-product loop to mask round-trip floor
+/// (~1e-3). Greedy argmax stable.
+#[test]
+fn synthetic_lm_head_gpu_offload_matches_in_tee_to_mask_floor() {
+    let cfg = tiny_decoder_config(/*L*/ 2, /*d*/ 32, /*n_q*/ 4, /*n_kv*/ 2, /*head*/ 8, /*f*/ 64);
+    let mut rng = ChaCha20Rng::from_seed([101u8; 32]);
+    let weights = synth_weights(&cfg, &mut rng);
+
+    // Build a deterministic hidden state — use random Gaussian at
+    // realistic scale (post-RMSNorm activations are O(1) per channel).
+    let h_last: Array1<f32> = rand2(1, cfg.hidden_size, &mut rng, 0.4).row(0).to_owned();
+
+    // CPU baseline: same arithmetic as `compute_logits` — bf16 row ×
+    // f32 hidden, per-element widening, f32 accumulator.
+    let mut logits_cpu = Array1::<f32>::zeros(cfg.vocab_size);
+    for v in 0..cfg.vocab_size {
+        let row = weights.token_embedding.row(v);
+        logits_cpu[v] = h_last
+            .iter()
+            .zip(row.iter())
+            .map(|(a, b)| a * b.to_f32())
+            .sum();
+    }
+
+    // GPU offload: through the masked substrate.
+    let mut engine = RayonCpuEngine::new();
+    register_lm_head(&weights, &mut engine);
+    let mut exec = InProcessTrustedExecutor::with_seed(
+        engine,
+        MaskSeed::from_bytes([102u8; 32]),
+    );
+    let h2 = h_last.view().insert_axis(Axis(0));
+    exec.begin_forward_pass(1).unwrap();
+    let logits_gpu_2d = exec
+        .offload_linear(WeightHandle::new(0, WeightKind::LmHead), h2)
+        .unwrap();
+    exec.end_forward_pass().unwrap();
+    assert_eq!(logits_gpu_2d.shape(), &[1, cfg.vocab_size]);
+    let logits_gpu = logits_gpu_2d.row(0).to_owned();
+
+    // Mask round-trip floor: ~1e-3 at f32, matching the existing
+    // masked-vs-plaintext tolerance on synthetic weights.
+    let max_diff = logits_cpu
+        .iter()
+        .zip(logits_gpu.iter())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(
+        max_diff < 5e-3,
+        "lm-head GPU offload diverged from in-TEE compute_logits: \
+         max_diff={max_diff:.3e}\n cpu={logits_cpu:?}\n gpu={logits_gpu:?}",
+    );
+
+    // Greedy argmax stable across the two paths.
+    let argmax = |a: &Array1<f32>| -> usize {
+        a.iter()
+            .enumerate()
+            .max_by(|x, y| x.1.partial_cmp(y.1).unwrap())
+            .unwrap()
+            .0
+    };
+    assert_eq!(
+        argmax(&logits_cpu),
+        argmax(&logits_gpu),
+        "greedy argmax flipped under mask round-trip noise",
+    );
+}
+
+/// **M1.12 R3 acceptance — `generate()` parity under PlaintextExecutor.**
+/// With no masking (PlaintextExecutor passes operands through to the
+/// engine matmul untouched), `lm_head_via_gpu_offload=true` must
+/// produce the same token sequence as the in-TEE loop for several
+/// decode steps. This exercises the dispatch wiring + the
+/// (`(1, hidden)` × `(hidden, vocab)`) GPU matmul shape end-to-end.
+#[test]
+fn synthetic_generate_with_lm_head_gpu_offload_matches_in_tee_plaintext() {
+    let cfg = tiny_decoder_config(/*L*/ 2, /*d*/ 32, /*n_q*/ 4, /*n_kv*/ 2, /*head*/ 8, /*f*/ 64);
+    let mut rng = ChaCha20Rng::from_seed([111u8; 32]);
+    let weights = Arc::new(synth_weights(&cfg, &mut rng));
+    let rope = RopeTables::new(
+        cfg.head_dim_value(),
+        cfg.max_position_embeddings,
+        cfg.rope_theta,
+    );
+    let prompt: Vec<u32> = vec![3, 11, 17, 22, 29];
+
+    let base_cfg = GenerationConfig {
+        max_tokens: 4,
+        eos_token_ids: Vec::new(),
+        sampler: SamplerConfig::Greedy,
+        lm_head_via_gpu_offload: false,
+    };
+    let gpu_cfg = GenerationConfig {
+        lm_head_via_gpu_offload: true,
+        ..base_cfg.clone()
+    };
+
+    // Reference: PlaintextExecutor + in-TEE compute_logits loop.
+    let mut ref_engine = RayonCpuEngine::new();
+    provision_decoder(&weights, &cfg, &mut ref_engine);
+    let mut ref_exec = PlaintextExecutor::new(ref_engine);
+    let ref_out =
+        generation::generate(&cfg, &weights, &rope, &mut ref_exec, &prompt, &base_cfg)
+            .expect("reference generate");
+
+    // GPU offload: PlaintextExecutor + LmHead provisioned + flag on.
+    let mut gpu_engine = RayonCpuEngine::new();
+    provision_decoder(&weights, &cfg, &mut gpu_engine);
+    register_lm_head(&weights, &mut gpu_engine);
+    let mut gpu_exec = PlaintextExecutor::new(gpu_engine);
+    let gpu_out =
+        generation::generate(&cfg, &weights, &rope, &mut gpu_exec, &prompt, &gpu_cfg)
+            .expect("gpu lm-head generate");
+
+    assert_eq!(
+        gpu_out.tokens, ref_out.tokens,
+        "lm-head GPU offload diverged from in-TEE compute_logits under \
+         PlaintextExecutor: gpu={:?} ref={:?}",
+        gpu_out.tokens, ref_out.tokens,
+    );
+    assert_eq!(gpu_out.stopped_on_eos, ref_out.stopped_on_eos);
 }

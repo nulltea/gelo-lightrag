@@ -598,6 +598,7 @@ fn run_one_prompt<E: GpuOffloadEngine>(
             max_tokens,
             eos_token_ids: Vec::new(),
             sampler: SamplerConfig::Greedy,
+            lm_head_via_gpu_offload: false,
         };
         match executor {
             ExecVariant::Plain(e) => {

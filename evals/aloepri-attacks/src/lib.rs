@@ -99,6 +99,12 @@ pub fn kind_slug(kind: WeightKind) -> &'static str {
         WeightKind::FfnGate => "gate_proj",
         WeightKind::FfnUp => "up_proj",
         WeightKind::FfnDown => "down_proj",
+        // M1.12 R3 — new VRAM-only LM-head handle. The c6 AloePri
+        // spot-check will add a `lm_head_proj` capture path; until
+        // then the snapshot exporter doesn't see this kind because
+        // the LM-head offload is gated by `LM_HEAD_GPU_OFFLOAD=1`
+        // and the existing c1–c5 capture conditions don't set it.
+        WeightKind::LmHead => "lm_head_proj",
     }
 }
 

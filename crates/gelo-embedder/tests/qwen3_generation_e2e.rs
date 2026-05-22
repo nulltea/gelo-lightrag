@@ -63,6 +63,7 @@ fn qwen3_1_7b_greedy_generates_under_both_executors() -> Result<()> {
         max_tokens: 8,
         eos_token_ids: Vec::new(),
         sampler: SamplerConfig::Greedy,
+        lm_head_via_gpu_offload: false,
     };
 
     // 1. Plaintext branch.
