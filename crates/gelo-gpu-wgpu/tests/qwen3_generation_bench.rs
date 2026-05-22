@@ -45,12 +45,10 @@ use gelo_embedder::decoder::config::DecoderConfig;
 use gelo_embedder::decoder::generation::{GenerationConfig, SamplerConfig, generate};
 use gelo_embedder::decoder::qwen3::Qwen3Variant;
 use gelo_embedder::decoder::rope::RopeTables;
-use gelo_embedder::decoder::weights::DecoderWeights;
+use gelo_embedder::decoder::weights::{DecoderWeights, provision_into_shared};
 use gelo_gpu_wgpu::WgpuVulkanEngine;
 use gelo_protocol::rng::MaskSeed;
-use gelo_protocol::{
-    InProcessTrustedExecutor, PlaintextExecutor, TrustedExecutor, WeightHandle, WeightKind,
-};
+use gelo_protocol::{InProcessTrustedExecutor, PlaintextExecutor, TrustedExecutor};
 use hf_hub::api::sync::{ApiBuilder, ApiRepo};
 
 const VARIANT: Qwen3Variant = Qwen3Variant::Q1_7B;
@@ -276,20 +274,7 @@ fn provision_decoder_weights<X: TrustedExecutor>(
     weights: &DecoderWeights,
     exec: &mut X,
 ) -> Result<()> {
-    for (li, layer) in weights.layers.iter().enumerate() {
-        if !cfg.offload_layer(li) {
-            continue;
-        }
-        let li16 = li as u16;
-        exec.provision_weight_bf16(WeightHandle::new(li16, WeightKind::Q), layer.wq.as_ref().expect("offloadable weight").view())?;
-        exec.provision_weight_bf16(WeightHandle::new(li16, WeightKind::K), layer.wk.as_ref().expect("offloadable weight").view())?;
-        exec.provision_weight_bf16(WeightHandle::new(li16, WeightKind::V), layer.wv.as_ref().expect("offloadable weight").view())?;
-        exec.provision_weight_bf16(WeightHandle::new(li16, WeightKind::O), layer.wo.as_ref().expect("offloadable weight").view())?;
-        exec.provision_weight_bf16(WeightHandle::new(li16, WeightKind::FfnGate), layer.w_gate.as_ref().expect("offloadable weight").view())?;
-        exec.provision_weight_bf16(WeightHandle::new(li16, WeightKind::FfnUp), layer.w_up.as_ref().expect("offloadable weight").view())?;
-        exec.provision_weight_bf16(WeightHandle::new(li16, WeightKind::FfnDown), layer.w_down.as_ref().expect("offloadable weight").view())?;
-    }
-    Ok(())
+    provision_into_shared(weights, cfg, exec)
 }
 
 fn pct_over(c: &CellTiming, base: &CellTiming) -> String {
@@ -375,6 +360,7 @@ fn qwen3_1_7b_generation_overhead_breakdown() -> Result<()> {
         max_tokens: 2,
         eos_token_ids: Vec::new(),
         sampler: SamplerConfig::Greedy,
+        lm_head_via_gpu_offload: false,
     };
     let _ = generate(&cfg_offload, &weights, &rope, &mut gpu_plain, &prompt_ids, &warmup)?;
     let _ = generate(&cfg_offload, &weights, &rope, &mut gpu_gelo, &prompt_ids, &warmup)?;

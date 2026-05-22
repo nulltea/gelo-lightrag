@@ -8,6 +8,8 @@ use safetensors::SafeTensors;
 use safetensors::tensor::{Dtype, TensorView};
 use sha2::{Digest, Sha256};
 
+use gelo_protocol::{TrustedExecutor, WeightHandle, WeightKind};
+
 use super::config::DecoderConfig;
 
 /// Weights for a decoder-LLM-as-embedder (Qwen3 / LLaMA / Mistral family).
@@ -77,6 +79,88 @@ pub struct DecoderLayerWeights {
     /// pre-Qwen3 behaviour.
     pub q_norm: Option<Array1<f32>>,
     pub k_norm: Option<Array1<f32>>,
+}
+
+/// Provision every offloadable layer's bf16 projection matrices into
+/// `exec`, **consuming** each Arc out of `weights`. With the wgpu engine
+/// the upload converts bf16 → f16 device-side and the Arc's refcount
+/// drops on return — releasing the host RAM that was backing the
+/// matrix. From this point on, `weights.layers[li].{wq,wk,…,w_down}` is
+/// `None`. With skip-first / skip-last layers off (the default) no
+/// forward-path read ever touches these slots again.
+///
+/// Used by all three production decoder call sites
+/// (`GeloQwenEmbedder::new`,
+/// `CausalDiscriminatorRerankService::new`,
+/// `DecoderRuntime::from_config_and_dir`). M1.12 R1 — see
+/// `docs/plans/m1-12-tee-gpu-throughput.md` §2 and
+/// `feedback_memory_efficiency_priority.md`.
+pub fn provision_into<X: TrustedExecutor>(
+    weights: &mut DecoderWeights,
+    cfg: &DecoderConfig,
+    exec: &mut X,
+) -> Result<()> {
+    for li in 0..weights.layers.len() {
+        if !cfg.offload_layer(li) {
+            continue;
+        }
+        let li16 = li as u16;
+        let layer = &mut weights.layers[li];
+        let pairs: [(WeightKind, Option<Arc<Array2<bf16>>>); 7] = [
+            (WeightKind::Q, layer.wq.take()),
+            (WeightKind::K, layer.wk.take()),
+            (WeightKind::V, layer.wv.take()),
+            (WeightKind::O, layer.wo.take()),
+            (WeightKind::FfnGate, layer.w_gate.take()),
+            (WeightKind::FfnUp, layer.w_up.take()),
+            (WeightKind::FfnDown, layer.w_down.take()),
+        ];
+        for (kind, slot) in pairs {
+            let arc = slot.ok_or_else(|| {
+                anyhow!("layer {li} {kind:?}: weight already taken")
+            })?;
+            exec.provision_weight_bf16_shared(WeightHandle::new(li16, kind), arc)?;
+        }
+    }
+    Ok(())
+}
+
+/// Arc-sharing variant of [`provision_into`]. The Arcs in `weights`
+/// are not consumed — host bytes stay alive. Used by parity benches
+/// that need to construct multiple services from the same
+/// `DecoderWeights` (plaintext-vs-masked side-by-side) and by the
+/// `with_shared_weights` builders. Production paths should call
+/// [`provision_into`] which releases host bytes after upload.
+pub fn provision_into_shared<X: TrustedExecutor>(
+    weights: &DecoderWeights,
+    cfg: &DecoderConfig,
+    exec: &mut X,
+) -> Result<()> {
+    for (li, layer) in weights.layers.iter().enumerate() {
+        if !cfg.offload_layer(li) {
+            continue;
+        }
+        let li16 = li as u16;
+        for (kind, slot) in [
+            (WeightKind::Q, layer.wq.as_ref()),
+            (WeightKind::K, layer.wk.as_ref()),
+            (WeightKind::V, layer.wv.as_ref()),
+            (WeightKind::O, layer.wo.as_ref()),
+            (WeightKind::FfnGate, layer.w_gate.as_ref()),
+            (WeightKind::FfnUp, layer.w_up.as_ref()),
+            (WeightKind::FfnDown, layer.w_down.as_ref()),
+        ] {
+            let arc = slot.ok_or_else(|| {
+                anyhow!(
+                    "layer {li} {kind:?}: weight already taken — `provision_into_shared` \
+                     requires fresh DecoderWeights (not one previously consumed by \
+                     `provision_into`)"
+                )
+            })?;
+            exec.provision_weight_bf16_shared(WeightHandle::new(li16, kind), Arc::clone(arc))?;
+        }
+    }
+    Ok(())
 }
 
 impl DecoderWeights {

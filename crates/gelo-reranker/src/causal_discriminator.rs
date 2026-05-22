@@ -25,9 +25,9 @@ use gelo_embedder::common::tokenizer::HfTokenizer;
 use gelo_embedder::decoder::config::DecoderConfig;
 use gelo_embedder::decoder::forward;
 use gelo_embedder::decoder::rope::RopeTables;
-use gelo_embedder::decoder::weights::DecoderWeights;
+use gelo_embedder::decoder::weights::{DecoderWeights, provision_into};
 use gelo_protocol::profile;
-use gelo_protocol::{TrustedExecutor, WeightHandle, WeightKind};
+use gelo_protocol::TrustedExecutor;
 
 use crate::head::YesNoHead;
 use crate::output::EncryptedRerankBundle;
@@ -68,29 +68,7 @@ impl<X: TrustedExecutor> CausalDiscriminatorRerankService<X> {
         head: YesNoHead,
         mut exec: X,
     ) -> Result<Self> {
-        for li in 0..weights.layers.len() {
-            if !cfg.offload_layer(li) {
-                continue;
-            }
-            let li16 = li as u16;
-            let layer = &mut weights.layers[li];
-            // bf16-native + take() — see GeloQwenEmbedder::new for the
-            // rationale (host RAM drops once Arc refcount hits 0).
-            let wq = layer.wq.take().ok_or_else(|| anyhow::anyhow!("layer {li}: wq already taken"))?;
-            exec.provision_weight_bf16_shared(WeightHandle::new(li16, WeightKind::Q), wq)?;
-            let wk = layer.wk.take().ok_or_else(|| anyhow::anyhow!("layer {li}: wk already taken"))?;
-            exec.provision_weight_bf16_shared(WeightHandle::new(li16, WeightKind::K), wk)?;
-            let wv = layer.wv.take().ok_or_else(|| anyhow::anyhow!("layer {li}: wv already taken"))?;
-            exec.provision_weight_bf16_shared(WeightHandle::new(li16, WeightKind::V), wv)?;
-            let wo = layer.wo.take().ok_or_else(|| anyhow::anyhow!("layer {li}: wo already taken"))?;
-            exec.provision_weight_bf16_shared(WeightHandle::new(li16, WeightKind::O), wo)?;
-            let w_gate = layer.w_gate.take().ok_or_else(|| anyhow::anyhow!("layer {li}: w_gate already taken"))?;
-            exec.provision_weight_bf16_shared(WeightHandle::new(li16, WeightKind::FfnGate), w_gate)?;
-            let w_up = layer.w_up.take().ok_or_else(|| anyhow::anyhow!("layer {li}: w_up already taken"))?;
-            exec.provision_weight_bf16_shared(WeightHandle::new(li16, WeightKind::FfnUp), w_up)?;
-            let w_down = layer.w_down.take().ok_or_else(|| anyhow::anyhow!("layer {li}: w_down already taken"))?;
-            exec.provision_weight_bf16_shared(WeightHandle::new(li16, WeightKind::FfnDown), w_down)?;
-        }
+        provision_into(&mut weights, &cfg, &mut exec)?;
         let max_len = cfg.max_seq_len.min(cfg.max_position_embeddings);
         let mut hasher = Sha256::new();
         hasher.update(weights.model_identity);

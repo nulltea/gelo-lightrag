@@ -4,13 +4,13 @@ use std::sync::Arc;
 use anyhow::{Context, Result, anyhow};
 use hf_hub::api::sync::ApiBuilder;
 
-use gelo_protocol::{TrustedExecutor, WeightHandle, WeightKind};
+use gelo_protocol::TrustedExecutor;
 use rag_core::Embedder;
 
 use super::config::DecoderConfig;
 use super::forward;
 use super::rope::RopeTables;
-use super::weights::DecoderWeights;
+use super::weights::{DecoderWeights, provision_into, provision_into_shared};
 use crate::common::pool;
 use crate::common::tokenizer::HfTokenizer;
 
@@ -50,65 +50,7 @@ impl<X: TrustedExecutor> GeloQwenEmbedder<X> {
         rope: Arc<RopeTables>,
         mut exec: X,
     ) -> Result<Self> {
-        for li in 0..weights.layers.len() {
-            if !cfg.offload_layer(li) {
-                continue;
-            }
-            let li16 = li as u16;
-            let layer = &mut weights.layers[li];
-            // Take each Arc out — when the engine's upload consumes
-            // the Arc and returns, refcount → 0 and the host bytes
-            // drop. From this point on, `layer.wq` (etc.) is None.
-            let wq = layer.wq.take().ok_or_else(|| {
-                anyhow::anyhow!("layer {li}: wq already taken")
-            })?;
-            exec.provision_weight_bf16_shared(
-                WeightHandle::new(li16, WeightKind::Q),
-                wq,
-            )?;
-            let wk = layer.wk.take().ok_or_else(|| {
-                anyhow::anyhow!("layer {li}: wk already taken")
-            })?;
-            exec.provision_weight_bf16_shared(
-                WeightHandle::new(li16, WeightKind::K),
-                wk,
-            )?;
-            let wv = layer.wv.take().ok_or_else(|| {
-                anyhow::anyhow!("layer {li}: wv already taken")
-            })?;
-            exec.provision_weight_bf16_shared(
-                WeightHandle::new(li16, WeightKind::V),
-                wv,
-            )?;
-            let wo = layer.wo.take().ok_or_else(|| {
-                anyhow::anyhow!("layer {li}: wo already taken")
-            })?;
-            exec.provision_weight_bf16_shared(
-                WeightHandle::new(li16, WeightKind::O),
-                wo,
-            )?;
-            let w_gate = layer.w_gate.take().ok_or_else(|| {
-                anyhow::anyhow!("layer {li}: w_gate already taken")
-            })?;
-            exec.provision_weight_bf16_shared(
-                WeightHandle::new(li16, WeightKind::FfnGate),
-                w_gate,
-            )?;
-            let w_up = layer.w_up.take().ok_or_else(|| {
-                anyhow::anyhow!("layer {li}: w_up already taken")
-            })?;
-            exec.provision_weight_bf16_shared(
-                WeightHandle::new(li16, WeightKind::FfnUp),
-                w_up,
-            )?;
-            let w_down = layer.w_down.take().ok_or_else(|| {
-                anyhow::anyhow!("layer {li}: w_down already taken")
-            })?;
-            exec.provision_weight_bf16_shared(
-                WeightHandle::new(li16, WeightKind::FfnDown),
-                w_down,
-            )?;
-        }
+        provision_into(&mut weights, &cfg, &mut exec)?;
         let max_len = cfg.max_seq_len.min(cfg.max_position_embeddings);
         let _ = rope.head_dim(); // silence "unused field" if dead-code path triggers
         let model_identity = hex::encode(weights.model_identity);
@@ -147,32 +89,7 @@ impl<X: TrustedExecutor> GeloQwenEmbedder<X> {
         rope: Arc<RopeTables>,
         mut exec: X,
     ) -> Result<Self> {
-        for (li, layer) in weights.layers.iter().enumerate() {
-            if !cfg.offload_layer(li) {
-                continue;
-            }
-            let li16 = li as u16;
-            // Arc::clone (no take) — host bytes stay alive.
-            for (kind, slot) in [
-                (WeightKind::Q, layer.wq.as_ref()),
-                (WeightKind::K, layer.wk.as_ref()),
-                (WeightKind::V, layer.wv.as_ref()),
-                (WeightKind::O, layer.wo.as_ref()),
-                (WeightKind::FfnGate, layer.w_gate.as_ref()),
-                (WeightKind::FfnUp, layer.w_up.as_ref()),
-                (WeightKind::FfnDown, layer.w_down.as_ref()),
-            ] {
-                let arc = slot.ok_or_else(|| anyhow!(
-                    "layer {li} {kind:?}: weight already taken — `with_shared_weights` \
-                     requires a fresh DecoderWeights (not one previously consumed by \
-                     `new()`)"
-                ))?;
-                exec.provision_weight_bf16_shared(
-                    WeightHandle::new(li16, kind),
-                    Arc::clone(arc),
-                )?;
-            }
-        }
+        provision_into_shared(&weights, &cfg, &mut exec)?;
         let max_len = cfg.max_seq_len.min(cfg.max_position_embeddings);
         let _ = rope.head_dim();
         let model_identity = hex::encode(weights.model_identity);
