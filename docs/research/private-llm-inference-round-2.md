@@ -1,3 +1,12 @@
+---
+type: research
+status: current
+created: 2026-05-18
+updated: 2026-05-18
+tags: [inference, llm]
+supersedes: [private-inference]
+---
+
 # Private LLM Inference — Research Round 2
 
 > **Research date:** 2026-05-18. Follow-up to
@@ -16,11 +25,11 @@
 > **Companion docs**:
 > [`private-inference.md`](private-inference.md) (round 1, the canonical
 > survey),
-> [`../prototype/gelo.md`](../prototype/gelo.md) (embedding prototype that
+> [`../dev/prototype/gelo.md`](../dev/prototype/gelo.md) (embedding prototype that
 > implements the GELO+TwinShield design),
-> [`../prototype/gelo-llm.md`](../prototype/gelo-llm.md) (forward-looking
+> [`../dev/prototype/gelo-llm.md`](../dev/prototype/gelo-llm.md) (forward-looking
 > LLM-generation extension),
-> [`../prototype/future-rnd.md`](../prototype/future-rnd.md) (committed
+> [`../dev/prototype/future-rnd.md`](../dev/prototype/future-rnd.md) (committed
 > roadmap items).
 
 ---

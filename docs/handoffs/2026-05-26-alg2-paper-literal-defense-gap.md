@@ -1,3 +1,11 @@
+---
+type: handoff
+status: current
+created: 2026-05-26
+updated: 2026-05-26
+tags: [alg2, aloepri, attacks]
+---
+
 # Handoff — paper-literal Alg2 closes most of the 87→0 pp Table 4 gap
 
 **Date:** 2026-05-26 (evening)

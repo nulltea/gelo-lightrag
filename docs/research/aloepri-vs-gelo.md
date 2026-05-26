@@ -1,3 +1,11 @@
+---
+type: research
+status: current
+created: 2026-05-18
+updated: 2026-05-18
+tags: [aloepri, gelo]
+---
+
 # AloePri vs GELO+TwinShield — Applicability Analysis
 
 > **Date:** 2026-05-18. Deep-dive on Yu Lin et al., *Towards Privacy-
@@ -10,7 +18,7 @@
 > position that **model-weight privacy is NOT a goal at this stage of
 > the project**. Our deployment continues to target openweight Qwen3 /
 > Gemma / Llama under the threat model in
-> [`../prototype/gelo.md`](../prototype/gelo.md) §2: trusted SEV-SNP
+> [`../dev/prototype/gelo.md`](../dev/prototype/gelo.md) §2: trusted SEV-SNP
 > CVM, untrusted GPU/host with VRAM read access, public model weights
 > by construction.
 >
@@ -398,7 +406,7 @@ AloePri commit. Run each attack against snapshots from:
 - Qwen3 + GELO mask + shield rows (default: should recover <5%)
 
 **Status:** ⏳ pending — see
-[`docs/prototype/aloepri-attack-harness.md`](../prototype/aloepri-attack-harness.md)
+[`docs/dev/prototype/aloepri-attack-harness.md`](../dev/prototype/aloepri-attack-harness.md)
 for the handoff doc with the safetensors serialisation contract,
 the AloePri commit pin, the three-condition control matrix, and
 the Python-side attack-driver skeleton.
@@ -545,7 +553,7 @@ the resolved answer:
   [`private-llm-inference-round-2.md`](private-llm-inference-round-2.md)
   §A.2 (initial classification).
 - Threat-model baseline:
-  [`../prototype/gelo.md`](../prototype/gelo.md) §2, §6.
+  [`../dev/prototype/gelo.md`](../dev/prototype/gelo.md) §2, §6.
 - Attack-class taxonomy:
-  [`../prototype/gelo.md`](../prototype/gelo.md) §6,
+  [`../dev/prototype/gelo.md`](../dev/prototype/gelo.md) §6,
   [[gelo-research-round-2]] memory.

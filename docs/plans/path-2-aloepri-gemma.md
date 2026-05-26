@@ -1,3 +1,12 @@
+---
+type: plan
+status: current
+created: 2026-05-18
+updated: 2026-05-21
+tags: [path-2, aloepri, gemma]
+companion: [path-2-status]
+---
+
 # AloePri Private LLM Inference — Gemma 4 E2B / E4B on llama.cpp
 
 > **Worktree:** `../private-rag-path-2/` (separate git worktree on
@@ -35,7 +44,7 @@ This repository implements **private RAG** — retrieval-augmented
 generation where prompts and retrieved context are kept private from
 the inference provider. Embedding, storage, and reranking run inside
 an SEV-SNP CVM with GELO + TwinShield masked offload to a commodity
-GPU (see [`../prototype/gelo.md`](../prototype/gelo.md),
+GPU (see [`../dev/prototype/gelo.md`](../dev/prototype/gelo.md),
 [`../prototype/reranking.html`](../prototype/reranking.html)).
 
 **This plan adds the generative LLM step** — the post-retrieval LLM
@@ -261,7 +270,7 @@ GGUF weights live.
 
 **Files to add:**
 - `python/aloepri-llm/pyproject.toml` · `requirements.txt` · `.python-version`
-- `docs/plans/path-2-status.md` — running notes log
+- `docs/dev/logs/path-2-status.md` — running notes log
 
 **Concrete checks:**
 
@@ -748,7 +757,7 @@ grep -n "hidden_size\|n_embd\|hparams.n_embd" src/llama-model.cpp | head -40
 - [`private-inference-comparison-framework.md`](private-inference-comparison-framework.md) —
   shared evaluation framework with Path 1
 - [`path-1-gelo-gemma.md`](path-1-gelo-gemma.md) — sibling plan
-- [`../prototype/gelo.md`](../prototype/gelo.md) — GELO protocol
+- [`../dev/prototype/gelo.md`](../dev/prototype/gelo.md) — GELO protocol
   reference (background context)
 - [`../research/private-llm-inference-round-2.md`](../research/private-llm-inference-round-2.md)
   §D — Gemma 4 architecture analysis (PLE, hybrid attention, K=V,

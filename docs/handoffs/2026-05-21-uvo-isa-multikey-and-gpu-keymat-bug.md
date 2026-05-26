@@ -1,3 +1,11 @@
+---
+type: handoff
+status: current
+created: 2026-05-21
+updated: 2026-05-21
+tags: [aloepri, alg2, gpu]
+---
+
 # Handoff — Û_vo Algorithm 2 patch + ISA multi-key + GPU keymat seed-convention bug
 
 **Date:** 2026-05-21 PM

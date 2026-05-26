@@ -1,3 +1,11 @@
+---
+type: research
+status: current
+created: 2026-05-21
+updated: 2026-05-26
+tags: [aloepri, attacks]
+---
+
 # AloePri attack notes
 
 Conceptual descriptions of the attacks in §08 of `docs/prototype/aloepri-llm.html`. Threat-model conclusions live here; harness/driver-fix progress lives in `docs/handoffs/`.

@@ -1,3 +1,11 @@
+---
+type: plan
+status: partial
+created: 2026-05-18
+updated: 2026-05-18
+tags: [m1.10, attention]
+---
+
 # M1.10 — Fused Permuted Attention
 
 > **Worktree:** original (this one).

@@ -1,3 +1,12 @@
+---
+type: research
+status: current
+created: 2026-05-15
+updated: 2026-05-15
+tags: [reranking, gelo, caprise]
+supersedes: [private-reranking-research]
+---
+
 # Private Reranking — Round 2 (GELO+CAPRISE compatibility pass)
 
 > Research date: 2026-05-15. Sources: WebSearch (post-Apr-2026 papers),
@@ -6,8 +15,8 @@
 > Complements `private-reranking-research.md` (rev-4, 2026-04-21).
 >
 > **Goal of this round.** Given the current GELO+TwinShield+CAPRISE
-> direction documented in `docs/prototype/gelo.md` and the LLM extension
-> notes in `docs/prototype/gelo-llm.md`, narrow the reranker design space
+> direction documented in `docs/dev/prototype/gelo.md` and the LLM extension
+> notes in `docs/dev/prototype/gelo-llm.md`, narrow the reranker design space
 > to a concrete architecture and identify the primitives that need to
 > land before implementation can start. Three architectures on the
 > short-list: **bge-reranker-v2-m3**, **Qwen3-Reranker-0.6B**,
@@ -406,8 +415,8 @@ These are notes for the implementer, not commitments:
 
 - `docs/research/private-reranking-research.md` — rev-4 baseline this
   round complements.
-- `docs/prototype/gelo.md` — current protocol.
-- `docs/prototype/gelo-llm.md` — LLM extension plan (fused permuted
+- `docs/dev/prototype/gelo.md` — current protocol.
+- `docs/dev/prototype/gelo-llm.md` — LLM extension plan (fused permuted
   attention, SCX KV-cache).
 - `memory/gelo_research_round_2.md` — 2026-05-14 attack-resistance
   analysis.

@@ -1,3 +1,11 @@
+---
+type: research
+status: current
+created: 2026-05-11
+updated: 2026-05-11
+tags: [fhe, vector-db]
+---
+
 # FHE Approaches for Private / Encrypted Vector DB Storage
 
 > Researched 2026-04-14. Sources: Edgequake (local corpus), OpenAlex (paper metadata), prior research doc.

@@ -1,3 +1,11 @@
+---
+type: plan
+status: current
+created: 2026-05-22
+updated: 2026-05-22
+tags: [m1.12, bf16]
+---
+
 # M1.12 — bf16/f16-native activation pipeline (perf-bucket 3)
 
 > **Parent context:**

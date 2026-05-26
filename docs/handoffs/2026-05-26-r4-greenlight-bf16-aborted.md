@@ -1,3 +1,11 @@
+---
+type: handoff
+status: current
+created: 2026-05-26
+updated: 2026-05-26
+tags: [m1.12, bf16, perf]
+---
+
 # Handoff — 2026-05-26 — R4 green-lit, bf16 activations aborted
 
 Focus for next session: **implement §4.D R4 async overlap on iGPU

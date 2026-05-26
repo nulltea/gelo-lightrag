@@ -1,3 +1,11 @@
+---
+type: research
+status: current
+created: 2026-05-11
+updated: 2026-05-11
+tags: [graph-rag, lightrag]
+---
+
 # Private Graph Search (GraphRAG / LightRAG)
 
 > Research date: 2026-04-23. Sources: Edgequake (existing corpus), OpenAlex, SearxNcrawl, arXiv/ePrint/ACL/USENIX full-PDF fetches. Self-contained step.

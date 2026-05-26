@@ -1,3 +1,11 @@
+---
+type: plan
+status: current
+created: 2026-05-26
+updated: 2026-05-26
+tags: [m1.12, async]
+---
+
 # §4.D R4 — async compute pipelining
 
 Status: **green-lit 2026-05-26**; implementation in progress.

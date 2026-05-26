@@ -1,9 +1,17 @@
+---
+type: plan
+status: current
+created: 2026-05-22
+updated: 2026-05-22
+tags: [m1.12, gpu, perf]
+---
+
 # M1.12 — TEE↔GPU throughput: memory efficiency, round-trip count, bandwidth
 
 > **Parent context:**
 > - Handoff: [`2026-05-22-q3-4b-b8-mask-sweep.md`](../handoffs/2026-05-22-q3-4b-b8-mask-sweep.md) — bottleneck triage from real Qwen3-4B B=8 n=2040 measurement.
 > - Plan: [`m1-11-batched-decode.md`](m1-11-batched-decode.md) — the batched substrate this rides on.
-> - Threat-model parking note: [`docs/prototype/future-rnd.md`](../prototype/future-rnd.md) §5 (encrypted-KV-on-GPU — explicitly out of scope).
+> - Threat-model parking note: [`docs/dev/prototype/future-rnd.md`](../dev/prototype/future-rnd.md) §5 (encrypted-KV-on-GPU — explicitly out of scope).
 >
 > **Status:** plan, post-grilling-session revisions baked in.
 > **Author date:** 2026-05-22.

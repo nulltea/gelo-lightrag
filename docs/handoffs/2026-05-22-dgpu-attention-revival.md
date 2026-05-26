@@ -1,3 +1,11 @@
+---
+type: handoff
+status: current
+created: 2026-05-22
+updated: 2026-05-22
+tags: [attention, gpu]
+---
+
 # Handoff — 2026-05-22 — dGPU attention revival (M5.9 follow-ups)
 
 Focus area for the M5.9 production-dGPU substrate bring-up. This
@@ -308,7 +316,7 @@ today's iGPU in-TEE path.
 - `docs/handoffs/2026-05-22-perf-bucket-roadmap-r3-default.md` —
   parent perf roadmap; §7 (production dGPU substrate bring-up M5.9)
   now points back to this handoff
-- `docs/handoffs/2026-05-21-attn-offload-spike.md` — prior B=1
+- `docs/archive/handoffs/2026-05-21-attn-offload-spike.md` — prior B=1
   spike on Strix Halo iGPU; provides the substrate-level shape data
 - `~/.claude/projects/.../memory/bucket_2_batched_gpu_attention_aborted.md` —
   abort findings memory (load-bearing; explains why iGPU is dead)

@@ -1,3 +1,11 @@
+---
+type: research
+status: current
+created: 2026-05-11
+updated: 2026-05-11
+tags: [reranking]
+---
+
 # Private Reranking / Filtering for RAG
 
 > Research date: 2026-04-21 (rev-4). Sources: OpenAlex (primary — 6 targeted searches + citation expansion), SearxNcrawl (web, products, repos), arXiv + USENIX + IEEE + ACM full-PDF fetch for benchmark tables, Edgequake (existing corpus check), local `./docs/`.

@@ -1,3 +1,11 @@
+---
+type: plan
+status: partial
+created: 2026-05-20
+updated: 2026-05-20
+tags: [q4, gpu]
+---
+
 # Q4 GPU weight quantization — implementation plan
 
 > **Status:** 2026-05-20, drafted then **Phase 0 ran with negative
@@ -18,7 +26,7 @@
 > - `crates/gelo-gpu-wgpu/src/lib.rs` — current f32/f16 `GpuOffloadEngine`
 > - `crates/gelo-protocol/src/substrate.rs` — `GpuOffloadEngine` trait + `WeightHandle`
 > - `crates/gelo-protocol/src/dct4.rs`, `hd3.rs` — existing fast orthogonal kernels (reused for hidden-axis rotation)
-> - `docs/research/hd3-non-pow2-fix.md` §6 — the design that ties HD₃/DCT-IV to Q4
+> - `docs/dev/prototype/hd3-non-pow2-fix.md` §6 — the design that ties HD₃/DCT-IV to Q4
 > - `memory/qwen3_4b_perf_2026_05_20.md` — measured bottlenecks
 > - `memory/bf16_mask_gemm_skipped.md` — bf16 was ruled out in favour of this Q4 path
 

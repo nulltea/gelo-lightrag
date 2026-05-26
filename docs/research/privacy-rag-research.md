@@ -1,3 +1,11 @@
+---
+type: research
+status: current
+created: 2026-05-11
+updated: 2026-05-11
+tags: [rag, privacy]
+---
+
 # Privacy-Enhanced RAG: Research & Market Landscape
 
 > Researched 2026-04-14. Sources: OpenAlex (academic papers), SearXNG (projects/market data).

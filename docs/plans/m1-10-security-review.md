@@ -1,3 +1,11 @@
+---
+type: plan
+status: current
+created: 2026-05-18
+updated: 2026-05-18
+tags: [m1.10, security]
+---
+
 # M1.10 Phase 0 — Security Review: Causal-Mask Leak in Permuted Attention
 
 > **Status:** drafted 2026-05-18. Companion to

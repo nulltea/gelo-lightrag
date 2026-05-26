@@ -1,3 +1,11 @@
+---
+type: research
+status: current
+created: 2026-05-11
+updated: 2026-05-11
+tags: [inference]
+---
+
 # Private Transformer Inference (Embedding, Reranking, Generation)
 
 > Research date: 2026-04-21. Covers private/confidential inference for **any** transformer in a RAG pipeline — embedding generation, cross-encoder reranking, and LLM response generation — where the inference server cannot see the plaintext input, the model weights, or both.

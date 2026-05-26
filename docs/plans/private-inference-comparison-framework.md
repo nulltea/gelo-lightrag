@@ -1,3 +1,11 @@
+---
+type: reference
+status: current
+created: 2026-05-18
+updated: 2026-05-18
+tags: [comparison, path-1, path-2]
+---
+
 # Private LLM Inference Comparison: GELO vs AloePri on Gemma E2B/E4B
 
 > **Plan date:** 2026-05-18. Shared framework for two parallel
@@ -386,9 +394,9 @@ as round-3.
   — technique-level comparison rationale.
 - [`../research/private-llm-inference-round-2.md`](../research/private-llm-inference-round-2.md)
   — Gemma 4 architectural analysis (round 2 §D).
-- [`../prototype/gelo.md`](../prototype/gelo.md) — GELO protocol
+- [`../dev/prototype/gelo.md`](../dev/prototype/gelo.md) — GELO protocol
   reference.
-- [`../prototype/gelo-llm.md`](../prototype/gelo-llm.md) — LLM-
+- [`../dev/prototype/gelo-llm.md`](../dev/prototype/gelo-llm.md) — LLM-
   generation forward plan (Path 1 baseline).
 - AloePri paper: arXiv 2603.01499.
 - AloePri reference code: `github.com/sheng1feng/Aloepri`.

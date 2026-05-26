@@ -1,3 +1,12 @@
+---
+type: research
+status: current
+created: 2026-05-19
+updated: 2026-05-19
+tags: [inference, llm, perf]
+supersedes: [private-llm-inference-round-2]
+---
+
 # Private LLM Inference — Research Round 3
 
 > **Research date:** 2026-05-19. Follow-up to
@@ -6,7 +15,7 @@
 > (MoE / hybrid-attention / PLE). This round covers the *make it fast*
 > axis: candidate primitives, threat-model relaxations, and code-side
 > levers that can move the 90 % CPU-mask wall measured in
-> [`../prototype/gelo-complexity-analysis.md`](../prototype/gelo-complexity-analysis.md)
+> [`../dev/prototype/gelo-complexity-analysis.md`](../dev/prototype/gelo-complexity-analysis.md)
 > at n=2048 prefill on Qwen3-1.7B.
 >
 > **Hardware scope (unchanged from round 2):** SEV-SNP CVM + commodity
@@ -16,10 +25,10 @@
 > not the primary path.
 >
 > **Companion docs**:
-> [`../prototype/gelo-complexity-analysis.md`](../prototype/gelo-complexity-analysis.md)
+> [`../dev/prototype/gelo-complexity-analysis.md`](../dev/prototype/gelo-complexity-analysis.md)
 > — the bottleneck breakdown driving this round;
-> [`../prototype/gelo.md`](../prototype/gelo.md),
-> [`../prototype/gelo-llm.md`](../prototype/gelo-llm.md),
+> [`../dev/prototype/gelo.md`](../dev/prototype/gelo.md),
+> [`../dev/prototype/gelo-llm.md`](../dev/prototype/gelo-llm.md),
 > [`private-llm-inference-round-2.md`](private-llm-inference-round-2.md).
 
 ---
@@ -294,7 +303,7 @@ break precomputed-basis schemes).
 
 ## 1. The problem (recap)
 
-[`../prototype/gelo-complexity-analysis.md`](../prototype/gelo-complexity-analysis.md)
+[`../dev/prototype/gelo-complexity-analysis.md`](../dev/prototype/gelo-complexity-analysis.md)
 established that at n=2048 on Qwen3-1.7B:
 
 - mask round-trip = 90 % of TTFT (62 s of 73 s wall)
@@ -813,7 +822,7 @@ internal to this session; sources cited are public artefacts.
 
 ### Primary GELO paper and threat-model background
 - [Belikov & Fedotov, *Good-Enough LLM Obfuscation*, arXiv:2603.05035](https://arxiv.org/abs/2603.05035)
-- [`../prototype/gelo-complexity-analysis.md`](../prototype/gelo-complexity-analysis.md) — bottleneck numbers driving this round
+- [`../dev/prototype/gelo-complexity-analysis.md`](../dev/prototype/gelo-complexity-analysis.md) — bottleneck numbers driving this round
 - [`private-llm-inference-round-2.md`](private-llm-inference-round-2.md) — predecessor
 
 ### Hadamard / structured orthogonal family (§2)

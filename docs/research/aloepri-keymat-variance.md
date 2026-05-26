@@ -1,3 +1,11 @@
+---
+type: theory
+status: current
+created: 2026-05-21
+updated: 2026-05-21
+tags: [aloepri, alg1]
+---
+
 # AloePri Algorithm 1 keymat — K=64 sample-variance dominates TTRSR at d=2560
 
 **Status:** investigation closed 2026-05-21. Theory 2 (K=64 sample variance) confirmed; Theory 1 (rocSOLVER basis orientation) refuted; the original "Philox + rocSOLVER GPU port bug" diagnosis is **retracted**.

@@ -1,3 +1,11 @@
+---
+type: research
+status: current
+created: 2026-05-11
+updated: 2026-05-11
+tags: [embedding]
+---
+
 # Private Embedding Generation
 
 > Research date: 2026-04-21. Embedding-specific framing for private transformer inference: **how to run an embedding model (BERT-base, gtr-t5-base, mxbai-embed-large, etc.) such that the operator cannot see the input text**.

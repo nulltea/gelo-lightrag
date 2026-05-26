@@ -1,3 +1,11 @@
+---
+type: research
+status: current
+created: 2026-05-11
+updated: 2026-05-11
+tags: [pir]
+---
+
 # Private & Oblivious Information Retrieval for RAG
 
 > Research date: April 2026. Covers systems that make the *retrieval step* of RAG private — hiding query content, access patterns, or both from an untrusted retrieval server.
