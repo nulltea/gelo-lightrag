@@ -1,10 +1,12 @@
 ---
 type: dev-log
-status: current
+status: stale
 created: 2026-05-18
 updated: 2026-05-26
 tags: [gelo, perf, mask, bf16, hd3, dct4, bench, auto-dispatch]
 companion: [2026-05-18-m1-10-perf, 2026-05-19-bf16-mask-deferred, 2026-05-19-hd3-followups, 2026-05-21-attn-offload-spike, 2026-05-21-gelo-perf-shield-attn-batched, 2026-05-22-dgpu-attention-revival, 2026-05-22-perf-bucket-roadmap-r3-default, 2026-05-22-q3-4b-b8-mask-sweep, 2026-05-26-mask-instrumentation-and-auto-tune, 2026-05-26-r4-greenlight-bf16-aborted]
+superseded_by: gelo-llm-perf-chronicle
+archive_reason: "Earlier (2026-05-26) distillation of mask-family hierarchy + R-series outcomes + signature numbers table. Fully absorbed into the comprehensive perf chronicle, which adds protocol primitives cost model, dGPU revival design, methodology discipline, and additional dated entries."
 ---
 
 # GELO mask + performance — distilled bench log

@@ -1,10 +1,12 @@
 ---
 type: dev-log
-status: current
+status: stale
 created: 2026-05-18
 updated: 2026-05-26
 tags: [aloepri, attacks, ttrsr, alg2, m2.7]
 companion: [2026-05-18-aloepri-attack-resistance, 2026-05-19-m2-7-attack-findings, 2026-05-19-option-c-m2-7-rerun-findings, 2026-05-19-option-c-steps-0-1-2a-findings, 2026-05-19-aloepri-attack-surface-followups, 2026-05-20-aloepri-attacks-status-and-paired-data-defences, 2026-05-26-alg2-paper-literal-defense-gap]
+superseded_by: aloepri-attack-chronicle
+archive_reason: "Earlier (2026-05-26) distillation of TTRSR tables across 7 handoffs. Fully absorbed into the comprehensive chronicle, which adds taxonomy, threat-model, harness design, and 11 additional handoffs."
 ---
 
 # AloePri attack bench — distilled measurement log

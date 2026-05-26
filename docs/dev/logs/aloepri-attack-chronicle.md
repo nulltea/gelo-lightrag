@@ -741,10 +741,10 @@ Phase 2 acceptance requires:
 
 ### Companion docs (same workstream, narrower scope)
 
-- [`aloepri-attack-bench-log.md`](aloepri-attack-bench-log.md) — earlier distillation focused on TTRSR tables (subset of §4 here).
-- [`aloepri-attack-harness-findings.md`](aloepri-attack-harness-findings.md) — Phase 1 OOM incident (subsumed into §4 entry for 2026-05-19; original preserved as standalone reference).
-- [`alg2-threat-model-log.md`](alg2-threat-model-log.md) — broader threat-model + bug log (Qwen3 architectural gaps, Ẑ_block / QK-norm / Û_vo deep dives).
-- [`aloepri-deployment-log.md`](aloepri-deployment-log.md) — deployment fixes (special-token, server patches, quantisation).
+- [`aloepri-attack-bench-log.md`](../../archive/dev/logs/aloepri-attack-bench-log.md) (archived) — earlier distillation focused on TTRSR tables (subset of §4 here).
+- [`aloepri-attack-harness-findings.md`](../../archive/dev/logs/aloepri-attack-harness-findings.md) (archived) — Phase 1 OOM incident (subsumed into §4 entry for 2026-05-19; original preserved as standalone reference).
+- [`alg2-threat-model-log.md`](../../archive/dev/logs/alg2-threat-model-log.md) (archived) — broader threat-model + bug log (Qwen3 architectural gaps, Ẑ_block / QK-norm / Û_vo deep dives).
+- [`aloepri-deployment-log.md`](../../archive/dev/logs/aloepri-deployment-log.md) (archived) — deployment fixes (special-token, server patches, quantisation).
 - [`aloepri-status.md`](aloepri-status.md) — running plan log for path-2 work.
 
 ### Static reference

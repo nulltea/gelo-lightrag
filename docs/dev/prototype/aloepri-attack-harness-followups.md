@@ -11,7 +11,7 @@ companion: [aloepri-attack-harness]
 
 Companion to:
 - [`aloepri-attack-harness.md`](aloepri-attack-harness.md) — the Phase 2 spec.
-- [`../logs/aloepri-attack-harness-findings.md`](../logs/aloepri-attack-harness-findings.md) — the OOM incident + safeguards.
+- [`../logs/aloepri-attack-chronicle.md`](../logs/aloepri-attack-chronicle.md) — comprehensive chronicle absorbing the OOM incident + safeguards (originally `aloepri-attack-harness-findings.md`, now in `../../archive/dev/logs/`).
 
 This file tracks attacks the harness either **does not yet implement** or that depend on Phase 1 capture-surface extensions still to be built. It is the source of truth for "what's not measured" — referenced from `run_all.py`'s acceptance-gate documentation.
 

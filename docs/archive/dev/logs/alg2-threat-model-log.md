@@ -1,10 +1,12 @@
 ---
 type: dev-log
-status: current
+status: stale
 created: 2026-05-19
-updated: 2026-05-21
+updated: 2026-05-26
 tags: [aloepri, alg2, qwen3, threat-model, keymat]
 companion: [2026-05-19-alg2-qwen3-shape-analysis, 2026-05-19-alg2-z-block-degeneracy, 2026-05-20-ima-embedrow-transformer-investigation, 2026-05-21-aloepri-quantisation-and-alg2-gaps, 2026-05-21-ima-transformer-paper-disparity, 2026-05-21-uvo-isa-multikey-and-gpu-keymat-bug]
+superseded_by: aloepri-attack-chronicle
+archive_reason: "Earlier (2026-05-26) distillation focused on Qwen3 architectural delta, matrix-Γ kernel, Ẑ_block bug, Û_vo deployment, quantisation × Alg2. Absorbed into chronicle §3 (threat model) + §4 dated entries."
 ---
 
 # Algorithm 2 + threat-model on Qwen3 — distilled analysis log

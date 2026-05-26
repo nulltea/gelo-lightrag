@@ -1,10 +1,12 @@
 ---
 type: dev-log
-status: current
+status: stale
 created: 2026-05-20
 updated: 2026-05-26
 tags: [aloepri, aloepri, qwen3, llama-cpp, deployment]
 companion: [2026-05-20-aloepri-pi-special-token-fix, 2026-05-20-quantization-tried-deferred, 2026-05-21-strong-pi-server-patch, 2026-05-21-aloepri-next-steps, 2026-05-26-aloepri-recommendations]
+superseded_by: aloepri-attack-chronicle
+archive_reason: "Earlier (2026-05-26) distillation of path-2 deployment fixes (special-token Π fix, strong-Π server patch, quantisation × path-2, paper-literal recommendations). Absorbed into chronicle §4 dated entries (2026-05-20, 2026-05-21, 2026-05-26)."
 ---
 
 # AloePri deployment — distilled fix log

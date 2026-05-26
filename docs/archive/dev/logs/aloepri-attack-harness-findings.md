@@ -1,10 +1,12 @@
 ---
 type: dev-log
-status: current
+status: stale
 created: 2026-05-19
-updated: 2026-05-19
+updated: 2026-05-26
 tags: [aloepri, attacks]
 companion: [aloepri-attack-harness]
+superseded_by: aloepri-attack-chronicle
+archive_reason: "2026-05-19 Phase 1 OOM incident. Absorbed into chronicle §4 entry for 2026-05-19 (and §2 harness design)."
 ---
 
 # AloePri attack harness — OOM incident + safeguards
