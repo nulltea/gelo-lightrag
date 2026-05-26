@@ -46,4 +46,6 @@ pub use ple::PleTable;
 pub use shield::ShieldConfig;
 pub use sim::{InProcessTrustedExecutor, PlaintextExecutor, RayonCpuEngine};
 pub use snapshot::{PcieSnapshot, SnapshotCapture, SnapshotConfig};
-pub use substrate::{GpuOffloadEngine, MatmulToken, TrustedExecutor, WeightHandle, WeightKind};
+pub use substrate::{
+    GpuOffloadEngine, MatmulToken, OffloadHandle, TrustedExecutor, WeightHandle, WeightKind,
+};

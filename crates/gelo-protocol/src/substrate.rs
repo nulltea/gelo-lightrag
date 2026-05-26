@@ -4,6 +4,7 @@ use anyhow::{Result, anyhow};
 use half::bf16;
 use ndarray::{Array2, Array3, ArrayView2, ArrayView3, Axis};
 
+use crate::mask::MaskFamily;
 use crate::ple::PleTable;
 
 /// Opaque handle for a matmul issued via [`GpuOffloadEngine::matmul_async`].
@@ -50,6 +51,108 @@ impl MatmulToken {
 impl std::fmt::Debug for MatmulToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("MatmulToken(<pending>)")
+    }
+}
+
+/// **R4 async** handle returned by [`TrustedExecutor::offload_linear_async`]
+/// (and siblings). Holds the substrate-side state needed to complete the
+/// offload — the mask family (or per-sequence mask vec) for the unapply
+/// step, the masked operand buffer that the GPU is reading from, and one
+/// [`MatmulToken`] per output projection.
+///
+/// **Must** be consumed via [`TrustedExecutor::wait_offload`] for the
+/// scratch buffer to be returned to the executor's per-`d` scratch pool.
+/// Dropping the handle without waiting **blocks** on the engine to drain
+/// the pending matmuls (so the GPU command queue stays clean) and then
+/// discards the result; the masked buffer drops normally (not pooled
+/// back) — small per-call RSS churn on the error path is the cost.
+///
+/// `Send` so the substrate's R4 wire-up can move handles between the
+/// main thread and worker threads doing shield/cascade prep. Not `Sync`
+/// — single-consumer.
+///
+/// Plan: `docs/plans/m1-12-r4-async-overlap.md` §E.
+#[must_use = "OffloadHandle must be consumed via TrustedExecutor::wait_offload; dropping blocks on the GPU and leaks scratch"]
+pub struct OffloadHandle {
+    pub(crate) kind: OffloadHandleKind,
+    pub(crate) tokens: Vec<MatmulToken>,
+    /// Per-output `WeightHandle` for snapshot recording in
+    /// `wait_offload`. Length matches `tokens`. Empty when snapshot
+    /// is disabled (the default).
+    pub(crate) snapshot_handles: Vec<WeightHandle>,
+}
+
+/// Internal kind discriminator for [`OffloadHandle`]. `Single` covers the
+/// non-batched (Single-session) path used by `decoder_block`. `PerSequence`
+/// covers the M1.11 batched-prefill path used by `decoder_block_batched`.
+/// `Empty` is the sentinel state after `wait_offload` has moved the kind
+/// fields out — used so the Drop impl can no-op on consumed handles
+/// without an Option indirection.
+pub(crate) enum OffloadHandleKind {
+    Single {
+        mask: MaskFamily,
+        masked: Array2<f32>,
+        n_data: usize,
+    },
+    PerSequence {
+        masks: Vec<MaskFamily>,
+        concat_masked: Array2<f32>,
+        batch_size: usize,
+        data_n: usize,
+    },
+    /// Sentinel for "wait_offload has taken ownership". Drop is a no-op
+    /// when the kind is `Empty`.
+    Empty,
+}
+
+impl OffloadHandle {
+    /// Number of expected outputs (1 for `offload_linear_async`, 3 for
+    /// `offload_qkv_async`, N for `offload_linear_many_async`).
+    pub fn len(&self) -> usize {
+        self.tokens.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tokens.is_empty()
+    }
+}
+
+impl std::fmt::Debug for OffloadHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let kind = match &self.kind {
+            OffloadHandleKind::Single { masked, n_data, .. } => {
+                format!("Single({:?},n_data={n_data})", masked.dim())
+            }
+            OffloadHandleKind::PerSequence {
+                concat_masked,
+                batch_size,
+                data_n,
+                ..
+            } => format!(
+                "PerSequence({:?},B={batch_size},data_n={data_n})",
+                concat_masked.dim()
+            ),
+            OffloadHandleKind::Empty => "Empty".to_string(),
+        };
+        f.debug_struct("OffloadHandle")
+            .field("kind", &kind)
+            .field("n_tokens", &self.tokens.len())
+            .finish()
+    }
+}
+
+impl Drop for OffloadHandle {
+    fn drop(&mut self) {
+        if matches!(self.kind, OffloadHandleKind::Empty) {
+            return;
+        }
+        // Block on each pending matmul and discard the result. The GPU
+        // command queue must drain before we can let the engine forget
+        // about these tokens. The masked buffer drops normally — its
+        // pool-return path is only taken via wait_offload.
+        for token in self.tokens.drain(..) {
+            let _ = token.into_array();
+        }
     }
 }
 
@@ -854,6 +957,78 @@ pub trait TrustedExecutor {
             .iter()
             .map(|h| self.offload_linear(*h, hidden))
             .collect()
+    }
+
+    /// **R4 async** sibling of [`Self::offload_linear`]. Builds the mask
+    /// + shield + applies the cascade, issues an async matmul to the
+    /// engine, and returns immediately with an [`OffloadHandle`].
+    ///
+    /// The caller drains the handle via [`Self::wait_offload`] to get
+    /// the final `Vec<Array2<f32>>` (length 1 for this method).
+    /// Between submit and wait, the caller is free to do other CPU
+    /// work — including shield/cascade prep on worker threads — so
+    /// long as the work doesn't itself need this matmul's output.
+    ///
+    /// Contract: executors with `verify_probes > 0` **must** reject
+    /// this call (panic or `Err`) — verify is only supported on the
+    /// sync path. The async path is for production runs, not
+    /// correctness checks.
+    ///
+    /// Default impl panics; executors targeting R4 override (currently
+    /// `InProcessTrustedExecutor`).
+    ///
+    /// Plan: `docs/plans/m1-12-r4-async-overlap.md` §E.
+    fn offload_linear_async(
+        &mut self,
+        _handle: WeightHandle,
+        _hidden: ArrayView2<f32>,
+    ) -> Result<OffloadHandle> {
+        Err(anyhow!(
+            "TrustedExecutor: offload_linear_async not implemented for this executor"
+        ))
+    }
+
+    /// **R4 async** sibling of [`Self::offload_qkv`]. The returned
+    /// [`OffloadHandle`] drains to a `Vec<Array2<f32>>` of length 3 in
+    /// (Q, K, V) order.
+    fn offload_qkv_async(
+        &mut self,
+        _layer: u16,
+        _hidden: ArrayView2<f32>,
+    ) -> Result<OffloadHandle> {
+        Err(anyhow!(
+            "TrustedExecutor: offload_qkv_async not implemented for this executor"
+        ))
+    }
+
+    /// **R4 async** sibling of [`Self::offload_linear_many`]. The
+    /// returned [`OffloadHandle`] drains to a `Vec<Array2<f32>>` of
+    /// length `handles.len()` in handle order.
+    fn offload_linear_many_async(
+        &mut self,
+        _handles: &[WeightHandle],
+        _hidden: ArrayView2<f32>,
+    ) -> Result<OffloadHandle> {
+        Err(anyhow!(
+            "TrustedExecutor: offload_linear_many_async not implemented for this executor"
+        ))
+    }
+
+    /// **R4 async** consumer. Drains an [`OffloadHandle`] returned by
+    /// any of the `offload_*_async` methods: blocks on the engine's
+    /// pending matmuls, runs unmask + shield strip on each output,
+    /// returns the scratch buffer to the executor's pool, and yields
+    /// the final `Vec<Array2<f32>>` in handle/output order.
+    ///
+    /// Default impl panics; executors that produce real
+    /// [`OffloadHandle`]s via the async methods override this.
+    fn wait_offload(
+        &mut self,
+        _handle: OffloadHandle,
+    ) -> Result<Vec<Array2<f32>>> {
+        Err(anyhow!(
+            "TrustedExecutor: wait_offload not implemented for this executor"
+        ))
     }
 
     /// Offload the attention `Q · Kᵀ` matmul via the TwinShield OutAttnMult

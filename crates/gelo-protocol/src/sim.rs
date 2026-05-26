@@ -16,7 +16,9 @@ use crate::profile;
 use crate::rng::MaskSeed;
 use crate::shield::{ShieldConfig, stack_shield};
 use crate::snapshot::{SnapshotCapture, SnapshotConfig};
-use crate::substrate::{GpuOffloadEngine, TrustedExecutor, WeightHandle, WeightKind};
+use crate::substrate::{
+    GpuOffloadEngine, OffloadHandle, OffloadHandleKind, TrustedExecutor, WeightHandle, WeightKind,
+};
 
 /// **DEPRECATED — DO NOT USE IN NEW CODE.**
 ///
@@ -1484,6 +1486,117 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
         self.return_per_seq_apply_scratch(concat_masked);
         Ok(outputs)
     }
+
+    /// **R4 async** sibling of `offload_linear_per_sequence`. Builds the
+    /// per-sequence shielded operand, issues the matmul asynchronously,
+    /// and returns an `OffloadHandle` carrying the masks, concat buffer,
+    /// and pending token. Caller drains via `wait_offload`.
+    fn offload_linear_async_per_sequence(
+        &mut self,
+        handle: WeightHandle,
+        hidden: ArrayView2<'_, f32>,
+        batch_size: usize,
+        data_n: usize,
+    ) -> Result<OffloadHandle> {
+        assert_eq!(
+            hidden.nrows(),
+            batch_size * data_n,
+            "offload_linear_async_per_sequence: hidden has {} rows; expected B*data_n = {}*{} = {}",
+            hidden.nrows(),
+            batch_size,
+            data_n,
+            batch_size * data_n
+        );
+        if !self.per_forward_mask {
+            return Err(anyhow!(
+                "PerSequence session but per_forward_mask is false — \
+                 batched async offload requires paper-parity mode"
+            ));
+        }
+        let masks: Vec<MaskFamily> = match &self.session {
+            Some(SessionKind::PerSequence { masks, .. }) => masks.clone(),
+            _ => unreachable!("offload_linear_async_per_sequence called outside PerSequence"),
+        };
+        let concat_masked =
+            self.build_per_sequence_masked(hidden, &masks, batch_size, data_n);
+        let token = profile::time("engine:matmul_submit", || {
+            self.engine.matmul_async(handle, concat_masked.view())
+        })?;
+        let snapshot_handles = if self.snapshot_capture.is_some() {
+            vec![handle]
+        } else {
+            Vec::new()
+        };
+        Ok(OffloadHandle {
+            kind: OffloadHandleKind::PerSequence {
+                masks,
+                concat_masked,
+                batch_size,
+                data_n,
+            },
+            tokens: vec![token],
+            snapshot_handles,
+        })
+    }
+
+    /// **R4 async** sibling of `offload_linear_many_per_sequence` (also
+    /// used by `offload_qkv_async`'s per-sequence path — Q/K/V are just
+    /// three handles sharing the concat-masked operand). Returns an
+    /// `OffloadHandle` whose `wait_offload` yields one `Array2<f32>`
+    /// per handle, in handle order.
+    fn offload_linear_many_async_per_sequence(
+        &mut self,
+        handles: &[WeightHandle],
+        hidden: ArrayView2<'_, f32>,
+        batch_size: usize,
+        data_n: usize,
+    ) -> Result<OffloadHandle> {
+        if handles.is_empty() {
+            return Ok(OffloadHandle {
+                kind: OffloadHandleKind::Empty,
+                tokens: Vec::new(),
+                snapshot_handles: Vec::new(),
+            });
+        }
+        if !self.per_forward_mask {
+            return Err(anyhow!(
+                "PerSequence session but per_forward_mask is false — \
+                 batched async offload requires paper-parity mode"
+            ));
+        }
+        let masks: Vec<MaskFamily> = match &self.session {
+            Some(SessionKind::PerSequence { masks, .. }) => masks.clone(),
+            _ => unreachable!(
+                "offload_linear_many_async_per_sequence called outside PerSequence"
+            ),
+        };
+        let concat_masked =
+            self.build_per_sequence_masked(hidden, &masks, batch_size, data_n);
+        let tokens = profile::time("engine:matmul_submit", || {
+            self.engine.matmul_many_async(handles, concat_masked.view())
+        })?;
+        anyhow::ensure!(
+            tokens.len() == handles.len(),
+            "engine.matmul_many_async returned {} tokens; expected {}",
+            tokens.len(),
+            handles.len()
+        );
+        let snapshot_handles = if self.snapshot_capture.is_some() {
+            handles.to_vec()
+        } else {
+            Vec::new()
+        };
+        Ok(OffloadHandle {
+            kind: OffloadHandleKind::PerSequence {
+                masks,
+                concat_masked,
+                batch_size,
+                data_n,
+            },
+            tokens,
+            snapshot_handles,
+        })
+    }
 }
 
 /// Overwrite `shield_dest` (a (k × d) mutable view) with fresh Gaussian
@@ -2012,6 +2125,232 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         });
         self.return_apply_scratch(masked);
         Ok(stripped)
+    }
+
+    /// **R4 async** — see plan `docs/plans/m1-12-r4-async-overlap.md` §E.
+    /// Builds the mask + shield + applies the cascade, issues the matmul
+    /// asynchronously via `engine.matmul_async`, and returns an
+    /// `OffloadHandle` carrying the substrate-side state needed for the
+    /// later `wait_offload` (mask + masked buffer + token).
+    ///
+    /// `verify_probes > 0` is rejected — verify is sync-path only per
+    /// the design tree (decision H).
+    fn offload_linear_async(
+        &mut self,
+        handle: WeightHandle,
+        hidden: ArrayView2<f32>,
+    ) -> Result<OffloadHandle> {
+        if self.verify_probes > 0 {
+            return Err(anyhow!(
+                "offload_linear_async: verify_probes must be 0 on async path; \
+                 use sync offload_linear for verify"
+            ));
+        }
+        let per_sequence_dims = match &self.session {
+            Some(SessionKind::PerSequence {
+                batch_size, data_n, ..
+            }) => Some((*batch_size, *data_n)),
+            _ => None,
+        };
+        if let Some((batch_size, data_n)) = per_sequence_dims {
+            return self.offload_linear_async_per_sequence(handle, hidden, batch_size, data_n);
+        }
+
+        let (mask, masked, n_data) = self.build_shielded_and_apply(hidden);
+        let token = profile::time("engine:matmul_submit", || {
+            self.engine.matmul_async(handle, masked.view())
+        })?;
+        let snapshot_handles = if self.snapshot_capture.is_some() {
+            vec![handle]
+        } else {
+            Vec::new()
+        };
+        Ok(OffloadHandle {
+            kind: OffloadHandleKind::Single {
+                mask,
+                masked,
+                n_data,
+            },
+            tokens: vec![token],
+            snapshot_handles,
+        })
+    }
+
+    /// **R4 async** sibling of `offload_qkv`. Returns an
+    /// `OffloadHandle` whose `wait_offload` yields `Vec<Array2<f32>>` of
+    /// length 3 in `(Q, K, V)` order.
+    fn offload_qkv_async(
+        &mut self,
+        layer: u16,
+        hidden: ArrayView2<f32>,
+    ) -> Result<OffloadHandle> {
+        if self.verify_probes > 0 {
+            return Err(anyhow!(
+                "offload_qkv_async: verify_probes must be 0 on async path"
+            ));
+        }
+        let per_sequence_dims = match &self.session {
+            Some(SessionKind::PerSequence {
+                batch_size, data_n, ..
+            }) => Some((*batch_size, *data_n)),
+            _ => None,
+        };
+        let handles = [
+            WeightHandle::new(layer, WeightKind::Q),
+            WeightHandle::new(layer, WeightKind::K),
+            WeightHandle::new(layer, WeightKind::V),
+        ];
+        if let Some((batch_size, data_n)) = per_sequence_dims {
+            return self.offload_linear_many_async_per_sequence(
+                &handles, hidden, batch_size, data_n,
+            );
+        }
+
+        let (mask, masked, n_data) = self.build_shielded_and_apply(hidden);
+        let tokens = profile::time("engine:matmul_submit", || {
+            self.engine.matmul_many_async(&handles, masked.view())
+        })?;
+        anyhow::ensure!(
+            tokens.len() == 3,
+            "engine.matmul_many_async returned {} tokens; expected 3",
+            tokens.len()
+        );
+        let snapshot_handles = if self.snapshot_capture.is_some() {
+            handles.to_vec()
+        } else {
+            Vec::new()
+        };
+        Ok(OffloadHandle {
+            kind: OffloadHandleKind::Single {
+                mask,
+                masked,
+                n_data,
+            },
+            tokens,
+            snapshot_handles,
+        })
+    }
+
+    /// **R4 async** sibling of `offload_linear_many`. Returns an
+    /// `OffloadHandle` whose `wait_offload` yields `Vec<Array2<f32>>`
+    /// in handle order.
+    fn offload_linear_many_async(
+        &mut self,
+        handles: &[WeightHandle],
+        hidden: ArrayView2<f32>,
+    ) -> Result<OffloadHandle> {
+        if self.verify_probes > 0 {
+            return Err(anyhow!(
+                "offload_linear_many_async: verify_probes must be 0 on async path"
+            ));
+        }
+        if handles.is_empty() {
+            return Ok(OffloadHandle {
+                kind: OffloadHandleKind::Empty,
+                tokens: Vec::new(),
+                snapshot_handles: Vec::new(),
+            });
+        }
+        let per_sequence_dims = match &self.session {
+            Some(SessionKind::PerSequence {
+                batch_size, data_n, ..
+            }) => Some((*batch_size, *data_n)),
+            _ => None,
+        };
+        if let Some((batch_size, data_n)) = per_sequence_dims {
+            return self
+                .offload_linear_many_async_per_sequence(handles, hidden, batch_size, data_n);
+        }
+
+        let (mask, masked, n_data) = self.build_shielded_and_apply(hidden);
+        let tokens = profile::time("engine:matmul_submit", || {
+            self.engine.matmul_many_async(handles, masked.view())
+        })?;
+        anyhow::ensure!(
+            tokens.len() == handles.len(),
+            "engine.matmul_many_async returned {} tokens; expected {}",
+            tokens.len(),
+            handles.len()
+        );
+        let snapshot_handles = if self.snapshot_capture.is_some() {
+            handles.to_vec()
+        } else {
+            Vec::new()
+        };
+        Ok(OffloadHandle {
+            kind: OffloadHandleKind::Single {
+                mask,
+                masked,
+                n_data,
+            },
+            tokens,
+            snapshot_handles,
+        })
+    }
+
+    fn wait_offload(&mut self, mut handle: OffloadHandle) -> Result<Vec<Array2<f32>>> {
+        // Move fields out of the handle. Replacing `kind` with `Empty`
+        // disables the RAII Drop's block-and-discard logic.
+        let kind = std::mem::replace(&mut handle.kind, OffloadHandleKind::Empty);
+        let tokens = std::mem::take(&mut handle.tokens);
+        let snapshot_handles = std::mem::take(&mut handle.snapshot_handles);
+        drop(handle);
+
+        // Drain every token first (one device sync, then N-1 free reads
+        // for matmul_many_async).
+        let masked_outs: Vec<Array2<f32>> = tokens
+            .into_iter()
+            .map(|t| {
+                profile::time("engine:matmul_wait", || self.engine.read_result(t))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        match kind {
+            OffloadHandleKind::Single {
+                mask,
+                masked,
+                n_data,
+            } => {
+                for (i, h) in snapshot_handles.iter().enumerate() {
+                    if let Some(out) = masked_outs.get(i) {
+                        self.record_snapshot(*h, &masked, Some(out));
+                    }
+                }
+                let unapply_cat = mask.unapply_profile_category();
+                let unmasked: Vec<Array2<f32>> = masked_outs
+                    .into_iter()
+                    .map(|m| profile::time(unapply_cat, || mask.unapply_take(m)))
+                    .collect();
+                let slice_n = ndarray::s![..n_data, ..];
+                let stripped: Vec<Array2<f32>> = profile::time("gelo:strip_shield", || {
+                    unmasked
+                        .iter()
+                        .map(|u| u.slice(slice_n).to_owned())
+                        .collect()
+                });
+                self.return_apply_scratch(masked);
+                Ok(stripped)
+            }
+            OffloadHandleKind::PerSequence {
+                masks,
+                concat_masked,
+                batch_size,
+                data_n,
+            } => {
+                for (i, h) in snapshot_handles.iter().enumerate() {
+                    if let Some(out) = masked_outs.get(i) {
+                        self.record_snapshot(*h, &concat_masked, Some(out));
+                    }
+                }
+                let outputs: Vec<Array2<f32>> = masked_outs
+                    .into_iter()
+                    .map(|out| self.unmask_per_sequence(out, &masks, batch_size, data_n))
+                    .collect();
+                self.return_per_seq_apply_scratch(concat_masked);
+                Ok(outputs)
+            }
+            OffloadHandleKind::Empty => Ok(Vec::new()),
+        }
     }
 
     fn offload_attention_qkt(
@@ -2912,5 +3251,323 @@ mod tests {
                 "({i},{j}): batched(B=1)={got} expected={e}",
             );
         }
+    }
+
+    // ─── R4 substrate async parity tests ──────────────────────────
+
+    /// `offload_linear_async` + `wait_offload` matches `offload_linear`
+    /// on the Single-session path (non-batched prefill).
+    #[test]
+    fn offload_linear_async_matches_sync_single() {
+        let mut rng = ChaCha20Rng::from_seed([41u8; 32]);
+        let normal = StandardNormal;
+        let n = 12;
+        let d_in = 8;
+        let d_out = 10;
+
+        let hidden = Array2::<f32>::from_shape_fn((n, d_in), |_| normal.sample(&mut rng));
+        let weight = Array2::<f32>::from_shape_fn((d_in, d_out), |_| normal.sample(&mut rng));
+        let handle = WeightHandle::new(0, WeightKind::O);
+
+        let mut exec_sync = InProcessTrustedExecutor::with_seed(
+            RayonCpuEngine::new(),
+            MaskSeed::from_bytes([42u8; 32]),
+        );
+        exec_sync.provision_weight(handle, weight.view()).unwrap();
+        exec_sync.begin_forward_pass(n).unwrap();
+        let sync_out = exec_sync.offload_linear(handle, hidden.view()).unwrap();
+        exec_sync.end_forward_pass().unwrap();
+
+        let mut exec_async = InProcessTrustedExecutor::with_seed(
+            RayonCpuEngine::new(),
+            MaskSeed::from_bytes([42u8; 32]),
+        );
+        exec_async.provision_weight(handle, weight.view()).unwrap();
+        exec_async.begin_forward_pass(n).unwrap();
+        let h = exec_async
+            .offload_linear_async(handle, hidden.view())
+            .expect("submit");
+        assert_eq!(h.len(), 1);
+        let mut outs = exec_async.wait_offload(h).expect("drain");
+        let async_out = outs.pop().expect("one output");
+        exec_async.end_forward_pass().unwrap();
+
+        for ((i, j), &s) in sync_out.indexed_iter() {
+            let a = async_out[[i, j]];
+            assert!(
+                (s - a).abs() < 1e-3,
+                "({i},{j}): sync={s} async={a}",
+            );
+        }
+    }
+
+    /// `offload_qkv_async` matches sync `offload_qkv` on Single-session.
+    #[test]
+    fn offload_qkv_async_matches_sync_single() {
+        let mut rng = ChaCha20Rng::from_seed([51u8; 32]);
+        let normal = StandardNormal;
+        let n = 6;
+        let d = 4;
+        let hidden = Array2::<f32>::from_shape_fn((n, d), |_| normal.sample(&mut rng));
+        let wq = Array2::<f32>::from_shape_fn((d, d), |_| normal.sample(&mut rng));
+        let wk = Array2::<f32>::from_shape_fn((d, d), |_| normal.sample(&mut rng));
+        let wv = Array2::<f32>::from_shape_fn((d, d), |_| normal.sample(&mut rng));
+
+        let provision = |exec: &mut InProcessTrustedExecutor<RayonCpuEngine>| {
+            exec.provision_weight(WeightHandle::new(0, WeightKind::Q), wq.view())
+                .unwrap();
+            exec.provision_weight(WeightHandle::new(0, WeightKind::K), wk.view())
+                .unwrap();
+            exec.provision_weight(WeightHandle::new(0, WeightKind::V), wv.view())
+                .unwrap();
+        };
+
+        let mut exec_sync = InProcessTrustedExecutor::with_seed(
+            RayonCpuEngine::new(),
+            MaskSeed::from_bytes([52u8; 32]),
+        );
+        provision(&mut exec_sync);
+        exec_sync.begin_forward_pass(n).unwrap();
+        let (q_s, k_s, v_s) = exec_sync.offload_qkv(0, hidden.view()).unwrap();
+        exec_sync.end_forward_pass().unwrap();
+
+        let mut exec_async = InProcessTrustedExecutor::with_seed(
+            RayonCpuEngine::new(),
+            MaskSeed::from_bytes([52u8; 32]),
+        );
+        provision(&mut exec_async);
+        exec_async.begin_forward_pass(n).unwrap();
+        let h = exec_async.offload_qkv_async(0, hidden.view()).unwrap();
+        assert_eq!(h.len(), 3);
+        let outs = exec_async.wait_offload(h).unwrap();
+        exec_async.end_forward_pass().unwrap();
+
+        let (q_a, k_a, v_a) = (&outs[0], &outs[1], &outs[2]);
+        for ((i, j), &s) in q_s.indexed_iter() {
+            assert!((s - q_a[[i, j]]).abs() < 1e-3, "Q ({i},{j})");
+        }
+        for ((i, j), &s) in k_s.indexed_iter() {
+            assert!((s - k_a[[i, j]]).abs() < 1e-3, "K ({i},{j})");
+        }
+        for ((i, j), &s) in v_s.indexed_iter() {
+            assert!((s - v_a[[i, j]]).abs() < 1e-3, "V ({i},{j})");
+        }
+    }
+
+    /// `offload_linear_many_async` matches sync on Single-session (gate/up shape).
+    #[test]
+    fn offload_linear_many_async_matches_sync_single() {
+        let mut rng = ChaCha20Rng::from_seed([61u8; 32]);
+        let normal = StandardNormal;
+        let n = 5;
+        let d = 4;
+        let d_out = 7;
+        let hidden = Array2::<f32>::from_shape_fn((n, d), |_| normal.sample(&mut rng));
+        let w_gate = Array2::<f32>::from_shape_fn((d, d_out), |_| normal.sample(&mut rng));
+        let w_up = Array2::<f32>::from_shape_fn((d, d_out), |_| normal.sample(&mut rng));
+        let handles = [
+            WeightHandle::new(0, WeightKind::FfnGate),
+            WeightHandle::new(0, WeightKind::FfnUp),
+        ];
+
+        let provision = |exec: &mut InProcessTrustedExecutor<RayonCpuEngine>| {
+            exec.provision_weight(handles[0], w_gate.view()).unwrap();
+            exec.provision_weight(handles[1], w_up.view()).unwrap();
+        };
+
+        let mut exec_sync = InProcessTrustedExecutor::with_seed(
+            RayonCpuEngine::new(),
+            MaskSeed::from_bytes([62u8; 32]),
+        );
+        provision(&mut exec_sync);
+        exec_sync.begin_forward_pass(n).unwrap();
+        let sync_outs = exec_sync
+            .offload_linear_many(&handles, hidden.view())
+            .unwrap();
+        exec_sync.end_forward_pass().unwrap();
+
+        let mut exec_async = InProcessTrustedExecutor::with_seed(
+            RayonCpuEngine::new(),
+            MaskSeed::from_bytes([62u8; 32]),
+        );
+        provision(&mut exec_async);
+        exec_async.begin_forward_pass(n).unwrap();
+        let h = exec_async
+            .offload_linear_many_async(&handles, hidden.view())
+            .unwrap();
+        assert_eq!(h.len(), 2);
+        let async_outs = exec_async.wait_offload(h).unwrap();
+        exec_async.end_forward_pass().unwrap();
+
+        for k in 0..2 {
+            for ((i, j), &s) in sync_outs[k].indexed_iter() {
+                assert!((s - async_outs[k][[i, j]]).abs() < 1e-3, "[{k}] ({i},{j})");
+            }
+        }
+    }
+
+    /// `offload_linear_async` matches `offload_linear` on the PerSequence
+    /// (batched-prefill) path.
+    #[test]
+    fn offload_linear_async_matches_sync_per_sequence() {
+        let mut rng = ChaCha20Rng::from_seed([71u8; 32]);
+        let normal = StandardNormal;
+        let batch_size = 2;
+        let data_n = 5;
+        let d_in = 4;
+        let d_out = 6;
+        let hidden = Array2::<f32>::from_shape_fn((batch_size * data_n, d_in), |_| {
+            normal.sample(&mut rng)
+        });
+        let weight =
+            Array2::<f32>::from_shape_fn((d_in, d_out), |_| normal.sample(&mut rng));
+        let handle = WeightHandle::new(0, WeightKind::O);
+
+        let mut exec_sync = InProcessTrustedExecutor::with_seed(
+            RayonCpuEngine::new(),
+            MaskSeed::from_bytes([72u8; 32]),
+        );
+        exec_sync.provision_weight(handle, weight.view()).unwrap();
+        exec_sync.begin_prefill_pass(batch_size, data_n).unwrap();
+        let sync_out = exec_sync.offload_linear(handle, hidden.view()).unwrap();
+        exec_sync.end_forward_pass().unwrap();
+
+        let mut exec_async = InProcessTrustedExecutor::with_seed(
+            RayonCpuEngine::new(),
+            MaskSeed::from_bytes([72u8; 32]),
+        );
+        exec_async.provision_weight(handle, weight.view()).unwrap();
+        exec_async.begin_prefill_pass(batch_size, data_n).unwrap();
+        let h = exec_async
+            .offload_linear_async(handle, hidden.view())
+            .unwrap();
+        let mut outs = exec_async.wait_offload(h).unwrap();
+        let async_out = outs.pop().unwrap();
+        exec_async.end_forward_pass().unwrap();
+
+        for ((i, j), &s) in sync_out.indexed_iter() {
+            assert!(
+                (s - async_out[[i, j]]).abs() < 1e-3,
+                "({i},{j}): sync={s} async={}",
+                async_out[[i, j]]
+            );
+        }
+    }
+
+    /// `offload_qkv_async` matches sync on PerSequence path.
+    #[test]
+    fn offload_qkv_async_matches_sync_per_sequence() {
+        let mut rng = ChaCha20Rng::from_seed([81u8; 32]);
+        let normal = StandardNormal;
+        let batch_size = 2;
+        let data_n = 4;
+        let d = 3;
+        let hidden = Array2::<f32>::from_shape_fn((batch_size * data_n, d), |_| {
+            normal.sample(&mut rng)
+        });
+        let wq = Array2::<f32>::from_shape_fn((d, d), |_| normal.sample(&mut rng));
+        let wk = Array2::<f32>::from_shape_fn((d, d), |_| normal.sample(&mut rng));
+        let wv = Array2::<f32>::from_shape_fn((d, d), |_| normal.sample(&mut rng));
+
+        let provision = |exec: &mut InProcessTrustedExecutor<RayonCpuEngine>| {
+            exec.provision_weight(WeightHandle::new(0, WeightKind::Q), wq.view())
+                .unwrap();
+            exec.provision_weight(WeightHandle::new(0, WeightKind::K), wk.view())
+                .unwrap();
+            exec.provision_weight(WeightHandle::new(0, WeightKind::V), wv.view())
+                .unwrap();
+        };
+
+        let mut exec_sync = InProcessTrustedExecutor::with_seed(
+            RayonCpuEngine::new(),
+            MaskSeed::from_bytes([82u8; 32]),
+        );
+        provision(&mut exec_sync);
+        exec_sync.begin_prefill_pass(batch_size, data_n).unwrap();
+        let (q_s, k_s, v_s) = exec_sync.offload_qkv(0, hidden.view()).unwrap();
+        exec_sync.end_forward_pass().unwrap();
+
+        let mut exec_async = InProcessTrustedExecutor::with_seed(
+            RayonCpuEngine::new(),
+            MaskSeed::from_bytes([82u8; 32]),
+        );
+        provision(&mut exec_async);
+        exec_async.begin_prefill_pass(batch_size, data_n).unwrap();
+        let h = exec_async.offload_qkv_async(0, hidden.view()).unwrap();
+        let outs = exec_async.wait_offload(h).unwrap();
+        exec_async.end_forward_pass().unwrap();
+        let (q_a, k_a, v_a) = (&outs[0], &outs[1], &outs[2]);
+        for ((i, j), &s) in q_s.indexed_iter() {
+            assert!((s - q_a[[i, j]]).abs() < 1e-3, "Q ({i},{j})");
+        }
+        for ((i, j), &s) in k_s.indexed_iter() {
+            assert!((s - k_a[[i, j]]).abs() < 1e-3, "K ({i},{j})");
+        }
+        for ((i, j), &s) in v_s.indexed_iter() {
+            assert!((s - v_a[[i, j]]).abs() < 1e-3, "V ({i},{j})");
+        }
+    }
+
+    /// verify_probes > 0 must reject async calls.
+    #[test]
+    fn async_rejects_verify_probes() {
+        let mut rng = ChaCha20Rng::from_seed([91u8; 32]);
+        let normal = StandardNormal;
+        let n = 4;
+        let d = 3;
+        let hidden = Array2::<f32>::from_shape_fn((n, d), |_| normal.sample(&mut rng));
+        let weight = Array2::<f32>::from_shape_fn((d, d), |_| normal.sample(&mut rng));
+        let handle = WeightHandle::new(0, WeightKind::O);
+
+        let mut exec = InProcessTrustedExecutor::with_seed(
+            RayonCpuEngine::new(),
+            MaskSeed::from_bytes([92u8; 32]),
+        )
+        .with_verify_probes(4);
+        exec.provision_weight(handle, weight.view()).unwrap();
+        exec.begin_forward_pass(n).unwrap();
+        let err = exec
+            .offload_linear_async(handle, hidden.view())
+            .expect_err("verify_probes>0 must reject async");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("verify_probes"),
+            "unexpected error message: {msg}",
+        );
+        exec.end_forward_pass().unwrap();
+    }
+
+    /// Dropping an OffloadHandle without calling wait_offload must drain
+    /// the pending tokens (and not panic). Tests RAII Drop path.
+    #[test]
+    fn offload_handle_drop_drains_tokens() {
+        let mut rng = ChaCha20Rng::from_seed([101u8; 32]);
+        let normal = StandardNormal;
+        let n = 4;
+        let d = 3;
+        let hidden = Array2::<f32>::from_shape_fn((n, d), |_| normal.sample(&mut rng));
+        let weight = Array2::<f32>::from_shape_fn((d, d), |_| normal.sample(&mut rng));
+        let handle = WeightHandle::new(0, WeightKind::O);
+
+        let mut exec = InProcessTrustedExecutor::with_seed(
+            RayonCpuEngine::new(),
+            MaskSeed::from_bytes([102u8; 32]),
+        );
+        exec.provision_weight(handle, weight.view()).unwrap();
+        exec.begin_forward_pass(n).unwrap();
+        {
+            let _h = exec.offload_linear_async(handle, hidden.view()).unwrap();
+            // _h goes out of scope here; Drop should drain the token.
+        }
+        // Should be able to continue using exec normally.
+        let _ = exec.offload_linear(handle, hidden.view()).unwrap();
+        exec.end_forward_pass().unwrap();
+    }
+
+    #[test]
+    fn offload_handle_is_send() {
+        // Compile-time check: OffloadHandle must be Send.
+        fn assert_send<T: Send>() {}
+        assert_send::<OffloadHandle>();
     }
 }
