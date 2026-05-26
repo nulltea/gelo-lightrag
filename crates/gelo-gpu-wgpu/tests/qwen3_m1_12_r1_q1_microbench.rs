@@ -730,3 +730,166 @@ fn m1_12_per_op_breakdown_prefill_decode() -> Result<()> {
 
     Ok(())
 }
+
+// ─── M1.12+ sweep: (B, n, mask_kind) cells ─────────────────────────
+
+/// Mask family selector for the sweep harness.
+#[derive(Copy, Clone, Debug)]
+enum SweepMaskKind {
+    Auto,
+    Hd3,
+}
+
+impl SweepMaskKind {
+    fn from_env() -> Self {
+        match std::env::var("GELO_SWEEP_MASK").as_deref() {
+            Ok("hd3") | Ok("Hd3") | Ok("HD3") => Self::Hd3,
+            _ => Self::Auto,
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Hd3 => "hd3",
+        }
+    }
+}
+
+/// Dump only the buckets the sweep cares about — mask apply/unapply
+/// (split per family), shield, engine matmul, in-TEE attention,
+/// compute_logits, strip. Keeps the output greppable.
+fn dump_sweep_buckets(snap: &profile::Profile, label: &str) {
+    // Order matters for readability: heaviest first.
+    let keys = [
+        "gelo:mask_apply:hd3",
+        "gelo:mask_apply:dct4",
+        "gelo:mask_apply:haar",
+        "gelo:mask_unapply:hd3",
+        "gelo:mask_unapply:dct4",
+        "gelo:mask_unapply:haar",
+        "gelo:mask_sample",
+        "gelo:shield_stack",
+        "gelo:strip_shield",
+        "engine:matmul",
+        "engine:matmul_many",
+        "tee:attn_inplace_many",
+        "tee:attn_cached_inplace_many",
+        "tee:compute_logits",
+    ];
+    eprintln!("--- {label} buckets ---");
+    for k in keys {
+        if let Some((d, n)) = snap.buckets.get(k) {
+            eprintln!(
+                "  {:36} {:>10.1} ms  ({} calls)",
+                k,
+                d.as_secs_f64() * 1000.0,
+                n
+            );
+        }
+    }
+}
+
+/// One sweep cell: (B, n_per_seq, mask_kind) → prefill + decode walls
+/// + per-family mask-bucket walls, dumped in a structured greppable
+/// line so the bash driver can collate.
+#[test]
+#[ignore = "M1.12+ sweep cell: real-weight bench, minutes; driven by scripts/m1-12-hd3-perf-sweep.sh"]
+fn m1_12_sweep_cell() -> Result<()> {
+    let variant = variant_from_env();
+    let batch_size = batch_size_from_env();
+    let n_per_seq = prompt_size_from_env();
+    let max_tokens = max_tokens_from_env();
+    let mask_kind = SweepMaskKind::from_env();
+
+    let cell_label = format!(
+        "{:?} B={batch_size} n={n_per_seq} K={max_tokens} mask={}",
+        variant,
+        mask_kind.label()
+    );
+
+    eprintln!("=== M1.12+ sweep cell: {cell_label} ===");
+    eprintln!("RSS at start: {}", fmt_gib(rss_bytes()));
+
+    let (cfg, tokenizer, mut weights, rope) = load_pretrained(variant)?;
+    eprintln!("RSS after weights load: {}", fmt_gib(rss_bytes()));
+
+    let engine = WgpuVulkanEngine::new_fp16().context("Vulkan adapter (fp16)")?;
+    let exec =
+        InProcessTrustedExecutor::with_seed(engine, MaskSeed::from_bytes([42u8; 32]));
+    // Apply mask-kind override BEFORE provision so the session bracket
+    // uses the right family from the first offload.
+    let mut exec = match mask_kind {
+        SweepMaskKind::Auto => exec.with_auto_mask(),
+        SweepMaskKind::Hd3 => exec.with_hd3_mask(),
+    };
+
+    provision_into(&mut weights, &cfg, &mut exec)?;
+    provision_lm_head_into(&weights, &mut exec)?;
+    glibc_release_freed();
+    eprintln!(
+        "RSS after provision (projections + LmHead): {}",
+        fmt_gib(rss_bytes())
+    );
+
+    let single_prompt = build_prompt_ids(&tokenizer, n_per_seq)?;
+    let prompts: Vec<Vec<u32>> = (0..batch_size).map(|_| single_prompt.clone()).collect();
+
+    let (prefill, decode) = if batch_size == 1 {
+        run_prefill_decode(
+            &cell_label,
+            &cfg,
+            &weights,
+            &rope,
+            &mut exec,
+            &single_prompt,
+            max_tokens,
+            true, // R3 on (production default at time of sweep)
+        )?
+    } else {
+        run_prefill_decode_batched(
+            &cell_label,
+            &cfg,
+            &weights,
+            &rope,
+            &mut exec,
+            &prompts,
+            max_tokens,
+            true,
+        )?
+    };
+
+    dump_sweep_buckets(&prefill.snap, &format!("{cell_label} PREFILL"));
+    dump_sweep_buckets(&decode.snap, &format!("{cell_label} DECODE"));
+
+    // Per-sequence normalisation: at B>1 the aggregate token count is
+    // batch_size×n_per_seq for prefill and batch_size×max_tokens for
+    // decode; this is what `2026-05-22-q3-4b-b8-mask-sweep.md` and the
+    // M1.12 roadmap §0 quote when comparing across B.
+    let prefill_aggregate_tokens = (batch_size * n_per_seq) as f64;
+    let decode_aggregate_tokens = (batch_size * max_tokens) as f64;
+    let prefill_tps_agg = prefill_aggregate_tokens / prefill.wall.as_secs_f64();
+    let decode_tps_agg = decode_aggregate_tokens / decode.wall.as_secs_f64();
+    let prefill_tps_per_seq = n_per_seq as f64 / prefill.wall.as_secs_f64();
+    let decode_tps_per_seq = max_tokens as f64 / decode.wall.as_secs_f64();
+
+    // Single structured summary line — the bash driver greps for SWEEP_RESULT.
+    eprintln!(
+        "SWEEP_RESULT variant={:?} B={} n={} K={} mask={} \
+         prefill_wall_s={:.3} decode_wall_s={:.3} \
+         prefill_tps_agg={:.2} prefill_tps_per_seq={:.2} \
+         decode_tps_agg={:.2} decode_tps_per_seq={:.2}",
+        variant,
+        batch_size,
+        n_per_seq,
+        max_tokens,
+        mask_kind.label(),
+        prefill.wall.as_secs_f64(),
+        decode.wall.as_secs_f64(),
+        prefill_tps_agg,
+        prefill_tps_per_seq,
+        decode_tps_agg,
+        decode_tps_per_seq,
+    );
+
+    Ok(())
+}

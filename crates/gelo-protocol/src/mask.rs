@@ -128,19 +128,23 @@ pub enum MaskKind {
 
 /// Numerator of the HD₃-vs-DCT-IV pad-ratio threshold used by
 /// [`MaskKind::Auto`]. HD₃ is selected when
-/// `s_pad * HD3_AUTO_MAX_PAD_RATIO_DEN <= s * HD3_AUTO_MAX_PAD_RATIO_NUM`,
-/// i.e., when the pad fraction `(s_pad − s) / s_pad ≤ 1/4`.
+/// `s_pad * HD3_AUTO_MAX_PAD_RATIO_DEN <= s * HD3_AUTO_MAX_PAD_RATIO_NUM`.
 ///
-/// Empirical crossover from the 2026-05-20 Qwen3-4B bench is ~1.39;
-/// 4/3 ≈ 1.333 is a conservative pick that ensures HD₃ is selected
-/// only when clearly faster, with a small "either is fine" zone
-/// between 1.333 and 1.4.
-// 2026-05-21: relaxed from 4/3 (1.333) to 7/5 (1.4). The empirical
-// crossover documented in `qwen3_4b_perf_2026_05_20.md` is ~1.39; at
-// 4/3 Auto rejected HD₃ at the prefill ratio 1.36 observed on Qwen3-4B
-// (s=753, s_pad=1024) even though HD₃ was the faster choice. 7/5 puts
-// the empirical crossover inside the "HD₃ wins" band with ~1 % margin.
-pub const HD3_AUTO_MAX_PAD_RATIO_NUM: usize = 7;
+/// Empirical history:
+/// - **2026-05-20** (4/3 ≈ 1.333): initial setting based on the
+///   `qwen3_4b_perf_2026_05_20.md` bench; conservative.
+/// - **2026-05-21** (7/5 = 1.4): relaxed; the 4/3 setting rejected
+///   HD₃ at ratio 1.36 (s=753, s_pad=1024) even though HD₃ was
+///   faster.
+/// - **2026-05-26** (8/5 = 1.6): bumped after the 2026-05-26 perf sweep
+///   (`docs/plans/gelo-llm-perf-roadmap.md` §1.4). Sweep measured HD₃-forced
+///   wins by 1-2 % at pad ratios 1.56 and 1.59 (n=320 / n=2561
+///   cells); the 7/5 = 1.4 threshold was sending those shapes to
+///   DCT-IV unnecessarily. At pad ratio 1.99 (B=8 n=2048, the
+///   production long-n shape) HD₃-forced loses 19 %, so the
+///   threshold stays below that. Actual crossover is somewhere in
+///   (1.59, 1.99); 8/5 sits in the confirmed-safe range.
+pub const HD3_AUTO_MAX_PAD_RATIO_NUM: usize = 8;
 pub const HD3_AUTO_MAX_PAD_RATIO_DEN: usize = 5;
 
 /// Resolve a configured [`MaskKind`] (possibly [`MaskKind::Auto`]) to

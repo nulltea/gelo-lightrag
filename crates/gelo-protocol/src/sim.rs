@@ -201,6 +201,15 @@ pub struct InProcessTrustedExecutor<E: GpuOffloadEngine> {
     ///
     /// Cleared on `end_forward_pass`.
     stacked_scratch: HashMap<usize, Array2<f32>>,
+    /// **M1.12+ batched scratch reuse.** Per-input-width pool of the
+    /// `(batch_size * stacked_n, d_in)` concat-masked buffer built by
+    /// [`Self::build_per_sequence_masked`]. Without pooling, each
+    /// batched offload allocated ~335 MB at Qwen3-4B B=8 long-n and
+    /// dropped it on return — ~84 GB of allocator churn per prefill.
+    /// Returned via [`Self::return_per_seq_apply_scratch`] after the
+    /// engine round-trip + unmask completes. Cleared on
+    /// `end_forward_pass`.
+    per_seq_apply_scratch: HashMap<usize, Array2<f32>>,
     /// Configuration for the permutation-shielded attention protocol
     /// (Tier 1). Defaults to no noise (pure permutation equivariance).
     /// Set via [`Self::with_perm_attention`] /
@@ -283,6 +292,7 @@ impl<E: GpuOffloadEngine + Clone> Clone for InProcessTrustedExecutor<E> {
             per_forward_mask: self.per_forward_mask,
             session: None,
             stacked_scratch: HashMap::new(),
+            per_seq_apply_scratch: HashMap::new(),
             perm_attn: self.perm_attn,
             // Arc-share the PLE table across clones — no buffer copy.
             ple_table: self.ple_table.clone(),
@@ -368,7 +378,7 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             shield_default,
             // 2026-05-21: at m=1 decode the default k=8 gives
             // stacked_n = 9 and Auto falls to DCT-IV (pad 16/9 = 1.78×
-            // > 1.4 threshold). Overlay k=15 makes stacked_n = 16
+            // > 1.6 threshold). Overlay k=15 makes stacked_n = 16
             // exactly — HD₃ zero-pad. Decode mask bucket drops from
             // ~64 s of wall to an estimated ~20–25 s on Qwen3-4B
             // chunks. Security-wise k=15 is strictly safer than k=8
@@ -380,6 +390,7 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             per_forward_mask: true,
             session: None,
             stacked_scratch: HashMap::new(),
+            per_seq_apply_scratch: HashMap::new(),
             perm_attn: PermAttnConfig::default(),
             ple_table: None,
             snapshot_capture: None,
@@ -429,6 +440,7 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             per_forward_mask: false,
             session: None,
             stacked_scratch: HashMap::new(),
+            per_seq_apply_scratch: HashMap::new(),
             perm_attn: PermAttnConfig::default(),
             ple_table: None,
             snapshot_capture: None,
@@ -452,6 +464,7 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
         self.mask_kind = MaskKind::Haar;
         self.session = None;
         self.stacked_scratch.clear();
+        self.per_seq_apply_scratch.clear();
         self
     }
 
@@ -475,6 +488,7 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
         // `begin_forward_pass` after switching kinds.
         self.session = None;
         self.stacked_scratch.clear();
+        self.per_seq_apply_scratch.clear();
         self
     }
 
@@ -496,20 +510,24 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
         self.mask_kind = MaskKind::Dct4;
         self.session = None;
         self.stacked_scratch.clear();
+        self.per_seq_apply_scratch.clear();
         self
     }
 
     /// Switch to the shape-adaptive mask dispatch: picks HD₃ when the
-    /// pad penalty `s_pad / s` is small (≤ 4/3 ≈ 33 % pad), DCT-IV
-    /// otherwise. Resolution happens at `begin_forward_pass` (per-
-    /// forward-pass mode) or per-call (per-offload mode), so the
+    /// pad penalty `s_pad / s ≤ 8/5 = 1.6` (the
+    /// [`crate::mask::HD3_AUTO_MAX_PAD_RATIO_NUM`] / `_DEN` constants),
+    /// DCT-IV otherwise. Resolution happens at `begin_forward_pass`
+    /// (per-forward-pass mode) or per-call (per-offload mode), so the
     /// physical mask family used at each call adapts to the shape
     /// without caller intervention.
     ///
     /// Use this as the default for production workloads with mixed
     /// prompt sizes — both HD₃ at pow2-aligned shapes and DCT-IV at
-    /// non-pow2 shapes beat Haar; the crossover is at ~40 % pad and
-    /// the 4/3 threshold sits safely on the HD₃ side.
+    /// far-from-pow2 shapes beat Haar; the empirical crossover is
+    /// somewhere in pad ratio (1.59, 1.99) per the 2026-05-26 sweep
+    /// (`docs/plans/gelo-llm-perf-roadmap.md` §1.4); 8/5 = 1.6 sits in the
+    /// confirmed-HD₃-wins band.
     ///
     /// Inherits the security caveats of both [`Self::with_hd3_mask`]
     /// and [`Self::with_dct4_mask`] — neither has a published
@@ -520,6 +538,7 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
         self.mask_kind = MaskKind::Auto;
         self.session = None;
         self.stacked_scratch.clear();
+        self.per_seq_apply_scratch.clear();
         self
     }
 
@@ -574,6 +593,7 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
         // toggling precision.
         self.session = None;
         self.stacked_scratch.clear();
+        self.per_seq_apply_scratch.clear();
         self
     }
 
@@ -679,6 +699,7 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
         self.shield = ShieldConfig::NONE;
         self.session = None;
         self.stacked_scratch.clear();
+        self.per_seq_apply_scratch.clear();
         self
     }
 
@@ -1073,7 +1094,22 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
         // the GELO shield-energy argument since shield rows of
         // different sequences are independent by construction.
         let mut concat_masked = profile::time("gelo:shield_stack", || {
-            let mut buf = Array2::<f32>::zeros((batch_size * stacked_n, d_in));
+            // **M1.12+ batched scratch reuse.** Pull a pooled
+            // `(B * stacked_n, d_in)` buffer if one's available at this
+            // width; otherwise allocate. The returned-after-use path
+            // re-inserts via [`Self::return_per_seq_apply_scratch`]
+            // from each batched offload site. Saves ~335 MB alloc per
+            // offload at Qwen3-4B B=8 long-n prefill.
+            let total_rows = batch_size.saturating_mul(stacked_n);
+            let mut buf = self
+                .per_seq_apply_scratch
+                .remove(&d_in)
+                .filter(|b| b.shape() == [total_rows, d_in])
+                .unwrap_or_else(|| Array2::<f32>::zeros((total_rows, d_in)));
+            // Zero the pad region eagerly — previous call may have
+            // left non-zero data there. Cheap vs the alternative of
+            // tracking pad-row state per slot.
+            // (Data + shield rows are overwritten below.)
             // Pre-derive B Xoshiro seeds from the parent shield RNG.
             // Single-threaded; cheap (B * 32 bytes RNG output).
             let seeds: Vec<[u8; 32]> = (0..batch_size)
@@ -1114,47 +1150,97 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
                             &mut local_rng,
                         );
                     }
-                    // Pad region (rows shield_end_local..stacked_n)
-                    // stays zero from initial allocation.
+                    // Pad region (rows shield_end_local..stacked_n).
+                    // **Reused scratch may hold stale data here** from
+                    // a prior offload, so we always zero it. Cheap vs
+                    // tracking per-block pad-row freshness.
+                    if shield_end_local < stacked_n {
+                        block_view
+                            .slice_mut(ndarray::s![shield_end_local.., ..])
+                            .fill(0.0);
+                    }
                 });
             buf
         });
 
-        // Step 2 (R1.5): rayon-parallel per-block mask apply.
-        // `axis_chunks_iter_mut(Axis(0), stacked_n)` produces B
-        // mutable views; each parallel worker handles one.
-        profile::time("gelo:mask_apply", || {
-            use ndarray::parallel::prelude::*;
-            concat_masked
-                .axis_chunks_iter_mut(ndarray::Axis(0), stacked_n)
-                .into_par_iter()
+        // Step 2 (R1.5): rayon-parallel per-block mask apply. The
+        // outer profile category mirrors `MaskFamily::apply_profile_category`
+        // so per-family wall time is visible on the batched path —
+        // otherwise `Auto`'s runtime HD₃-vs-DCT-IV split is invisible
+        // in the prefill profile dump (the single-mask path at
+        // build_shielded_and_apply already splits this way).
+        profile::time(masks[0].apply_profile_category(), || {
+            use rayon::prelude::*;
+            // **M1.12+** — drive the per-block apply on raw `&mut [f32]`
+            // chunks so HD₃/DCT-IV `apply_in_place_slice` runs directly
+            // on the concat buffer. The previous `block_view.to_owned()
+            // + apply_in_place + block_view.assign` triple paid ~1.5 GB
+            // of extra memory traffic per offload at B=8 long-n
+            // prefill; the slice path is allocation-free.
+            let chunk_len = stacked_n.saturating_mul(d_in);
+            let slice = concat_masked
+                .as_slice_mut()
+                .expect("concat_masked must be row-major contiguous");
+            slice
+                .par_chunks_mut(chunk_len)
                 .enumerate()
-                .for_each(|(b, mut block_view)| match &masks[b] {
-                    MaskFamily::Hd3(hd3) => {
-                        let mut block = block_view.to_owned();
-                        hd3.apply_in_place(&mut block);
-                        block_view.assign(&block);
-                    }
-                    MaskFamily::Dct4(dct4) => {
-                        let mut block = block_view.to_owned();
-                        dct4.apply_in_place(&mut block);
-                        block_view.assign(&block);
-                    }
+                .for_each(|(b, block)| match &masks[b] {
+                    MaskFamily::Hd3(hd3) => hd3.apply_in_place_slice(block, d_in),
+                    MaskFamily::Dct4(dct4) => dct4.apply_in_place_slice(block, d_in),
                     MaskFamily::Haar(_) => {
-                        let masked_block = masks[b].apply(block_view.view());
-                        block_view.assign(&masked_block);
+                        // Haar still goes through the allocating GEMM
+                        // path (separate output workspace required).
+                        let view = ndarray::ArrayView2::from_shape(
+                            (stacked_n, d_in),
+                            block,
+                        )
+                        .expect("chunk has the right shape");
+                        let masked = masks[b].apply(view);
+                        block.copy_from_slice(
+                            masked
+                                .as_slice()
+                                .expect("fresh Array2 is contiguous"),
+                        );
                     }
                 });
         });
         concat_masked
     }
 
-    /// **M1.11 R1.5** — rayon-parallel per-sequence unmask + shield
-    /// strip. Given a `(batch_size * stacked_n, d_out)` engine output,
-    /// produces a `(batch_size * data_n, d_out)` user-facing tensor.
+    /// Re-pool a concat-masked buffer returned by [`Self::build_per_sequence_masked`].
+    /// Called by the batched offload sites after the engine round-trip
+    /// + unmask completes; keys by input width `d_in` so the next
+    /// offload at the same width picks it up.
+    fn return_per_seq_apply_scratch(&mut self, buf: Array2<f32>) {
+        // Only worthwhile under paper-parity + non-Haar — Haar masks
+        // would still pay the to_owned in the apply loop (see above),
+        // so pooling buys nothing there; and per-offload mode owns
+        // its own buffers.
+        if self.per_forward_mask
+            && matches!(
+                self.mask_kind,
+                MaskKind::Hd3 | MaskKind::Dct4 | MaskKind::Auto
+            )
+        {
+            let d_in = buf.ncols();
+            self.per_seq_apply_scratch.insert(d_in, buf);
+        }
+    }
+
+    /// **M1.11 R1.5 / M1.12+** — rayon-parallel per-sequence unmask + shield
+    /// strip. Consumes the `(batch_size * stacked_n, d_out)` engine output
+    /// by value so HD₃/DCT-IV can unmask in place on its slice; produces a
+    /// `(batch_size * data_n, d_out)` user-facing tensor.
+    ///
+    /// The previous `view`-flavored signature forced a per-block
+    /// `(stacked_n, d_out)` allocation inside the rayon closure (via
+    /// `mask.unapply()`) — ~96 MB / block at Qwen3-4B d=2560 stacked=4096,
+    /// times B per offload. Taking the buffer by value lets us run
+    /// `_in_place_slice` on each chunk and only pay the `(data_n, d_out)`
+    /// memcpy into the output buffer.
     fn unmask_per_sequence(
         &self,
-        concat_out: ArrayView2<'_, f32>,
+        mut concat_out: Array2<f32>,
         masks: &[MaskFamily],
         batch_size: usize,
         data_n: usize,
@@ -1162,20 +1248,47 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
         let stacked_n = masks[0].n();
         let d_out = concat_out.ncols();
         let mut output = Array2::<f32>::zeros((batch_size * data_n, d_out));
-        profile::time("gelo:mask_unapply", || {
-            use ndarray::parallel::prelude::*;
-            // Pair up B input blocks (concat_out chunks of stacked_n
-            // rows) with B output blocks (output chunks of data_n
-            // rows) — both have the same number of chunks.
-            output
-                .axis_chunks_iter_mut(ndarray::Axis(0), data_n)
-                .into_par_iter()
+        profile::time(masks[0].unapply_profile_category(), || {
+            use rayon::prelude::*;
+            let in_chunk_len = stacked_n.saturating_mul(d_out);
+            let out_chunk_len = data_n.saturating_mul(d_out);
+            let prefix_len = out_chunk_len; // bytes-equivalent: data_n * d_out f32s
+            let in_slice = concat_out
+                .as_slice_mut()
+                .expect("concat_out must be row-major contiguous");
+            let out_slice = output
+                .as_slice_mut()
+                .expect("fresh Array2 is contiguous");
+            in_slice
+                .par_chunks_mut(in_chunk_len)
+                .zip(out_slice.par_chunks_mut(out_chunk_len))
                 .enumerate()
-                .for_each(|(b, mut out_block)| {
-                    let in_block = concat_out
-                        .slice(ndarray::s![b * stacked_n..(b + 1) * stacked_n, ..]);
-                    let unmasked = masks[b].unapply(in_block);
-                    out_block.assign(&unmasked.slice(ndarray::s![..data_n, ..]));
+                .for_each(|(b, (in_block, out_block))| match &masks[b] {
+                    MaskFamily::Hd3(hd3) => {
+                        hd3.unapply_in_place_slice(in_block, d_out);
+                        out_block.copy_from_slice(&in_block[..prefix_len]);
+                    }
+                    MaskFamily::Dct4(dct4) => {
+                        dct4.unapply_in_place_slice(in_block, d_out);
+                        out_block.copy_from_slice(&in_block[..prefix_len]);
+                    }
+                    MaskFamily::Haar(_) => {
+                        // Haar still allocates — Aᵀ · M needs a separate
+                        // workspace for the GEMM output.
+                        let view = ndarray::ArrayView2::from_shape(
+                            (stacked_n, d_out),
+                            in_block,
+                        )
+                        .expect("chunk has the right shape");
+                        let unmasked = masks[b].unapply(view);
+                        out_block.copy_from_slice(
+                            unmasked
+                                .slice(ndarray::s![..data_n, ..])
+                                .to_owned()
+                                .as_slice()
+                                .expect("contiguous"),
+                        );
+                    }
                 });
         });
         output
@@ -1239,7 +1352,10 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             })?;
         }
 
-        Ok(self.unmask_per_sequence(concat_out.view(), &masks, batch_size, data_n))
+        let result =
+            self.unmask_per_sequence(concat_out, &masks, batch_size, data_n);
+        self.return_per_seq_apply_scratch(concat_masked);
+        Ok(result)
     }
 
     /// **M1.11 R1.6** — batched per-sequence offload_qkv path. Builds
@@ -1304,9 +1420,10 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             }
         }
 
-        let q = self.unmask_per_sequence(mq.view(), &masks, batch_size, data_n);
-        let k_out = self.unmask_per_sequence(mk.view(), &masks, batch_size, data_n);
-        let v_out = self.unmask_per_sequence(mv.view(), &masks, batch_size, data_n);
+        let q = self.unmask_per_sequence(mq, &masks, batch_size, data_n);
+        let k_out = self.unmask_per_sequence(mk, &masks, batch_size, data_n);
+        let v_out = self.unmask_per_sequence(mv, &masks, batch_size, data_n);
+        self.return_per_seq_apply_scratch(concat_masked);
         Ok((q, k_out, v_out))
     }
 
@@ -1362,8 +1479,9 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
 
         let outputs: Vec<Array2<f32>> = masked_outs
             .into_iter()
-            .map(|m| self.unmask_per_sequence(m.view(), &masks, batch_size, data_n))
+            .map(|m| self.unmask_per_sequence(m, &masks, batch_size, data_n))
             .collect();
+        self.return_per_seq_apply_scratch(concat_masked);
         Ok(outputs)
     }
 }
@@ -1459,12 +1577,14 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         // unusable now — clear to avoid silently feeding the wrong row
         // count into mask.apply().
         self.stacked_scratch.clear();
+        self.per_seq_apply_scratch.clear();
         Ok(())
     }
 
     fn end_forward_pass(&mut self) -> Result<()> {
         self.session = None;
         self.stacked_scratch.clear();
+        self.per_seq_apply_scratch.clear();
         Ok(())
     }
 
@@ -1536,6 +1656,7 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         // single-mask scratch so the per-sequence offload path
         // doesn't accidentally pick it up.
         self.stacked_scratch.clear();
+        self.per_seq_apply_scratch.clear();
         Ok(())
     }
 
@@ -1583,6 +1704,7 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
                 data_n: batch_size,
             }));
             self.stacked_scratch.clear();
+        self.per_seq_apply_scratch.clear();
             return Ok(());
         }
 
@@ -1616,6 +1738,7 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
             batch_size,
         });
         self.stacked_scratch.clear();
+        self.per_seq_apply_scratch.clear();
         Ok(())
     }
 
@@ -2458,29 +2581,30 @@ mod tests {
 
     /// `MaskKind::Auto` resolves to HD₃ at pow2-aligned and near-pow2
     /// shapes and to DCT-IV at "far-from-pow2" shapes. Verifies the
-    /// pad-ratio dispatch boundary at the 7/5 = 1.4 threshold
-    /// (tightened from 4/3 in commit b49ba7a after the per-family
-    /// profile-split tuning).
+    /// pad-ratio dispatch boundary at the 8/5 = 1.6 threshold
+    /// (relaxed from 7/5 = 1.4 on 2026-05-26 after the perf
+    /// sweep showed HD₃-forced wins at pad ratios 1.56-1.59;
+    /// `docs/plans/gelo-llm-perf-roadmap.md` §1.4).
     #[test]
     fn auto_dispatch_resolves_by_pad_ratio() {
         // Pow2 exact: s_pad/s = 1.0 → HD₃.
         assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 2048), MaskKind::Hd3);
         // Near pow2 (1 row of pad): s_pad/s = 2048/2047 ≈ 1.0005 → HD₃.
         assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 2047), MaskKind::Hd3);
-        // s=2055 → s_pad=4096, ratio ≈ 1.99 → DCT-IV.
+        // s=2055 → s_pad=4096, ratio ≈ 1.99 → DCT-IV (production long-n shape).
         assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 2055), MaskKind::Dct4);
-        // s=3072 → s_pad=4096, ratio = 4/3 ≈ 1.333 < 7/5 → HD₃.
-        // s_pad * 5 = 20480, s * 7 = 21504 → 20480 ≤ 21504 → HD₃.
-        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 3072), MaskKind::Hd3);
-        // s=3071 → s_pad=4096, ratio ≈ 1.334 < 7/5 → HD₃.
-        // Check: s_pad * 5 = 20480, s * 7 = 21497 → 20480 ≤ 21497 → HD₃.
-        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 3071), MaskKind::Hd3);
-        // s=2925 → s_pad=4096, ratio ≈ 1.400 (exact 7/5).
-        // s_pad * 5 = 20480, s * 7 = 20475 → 20480 > 20475 → DCT-IV.
-        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 2925), MaskKind::Dct4);
-        // s=2926 → s_pad=4096, ratio just under 7/5.
-        // s_pad * 5 = 20480, s * 7 = 20482 → 20480 ≤ 20482 → HD₃.
-        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 2926), MaskKind::Hd3);
+        // s=2561 → s_pad=4096, ratio = 4096/2561 ≈ 1.59 < 8/5 = 1.6 → HD₃.
+        // (Sweep cell B=1 n=2561+k=8 confirmed HD₃ wins by 1 % here.)
+        // s_pad * 5 = 20480, s * 8 = 20488 → 20480 ≤ 20488 → HD₃.
+        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 2561), MaskKind::Hd3);
+        // s=328 → s_pad=512, ratio ≈ 1.56 < 8/5 → HD₃.
+        // (Sweep cell B=8 n=320+k=8 confirmed HD₃ wins by 2 % here.)
+        // s_pad * 5 = 2560, s * 8 = 2624 → 2560 ≤ 2624 → HD₃.
+        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 328), MaskKind::Hd3);
+        // s=2560 → s_pad=4096, ratio = 1.6 exact. 4096*5 = 20480 = 2560*8 → HD₃.
+        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 2560), MaskKind::Hd3);
+        // s=2559 → s_pad=4096, ratio just over 1.6. 4096*5 = 20480 > 2559*8 = 20472 → DCT-IV.
+        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 2559), MaskKind::Dct4);
         // Non-Auto kinds pass through.
         assert_eq!(resolve_mask_kind_for_shape(MaskKind::Haar, 2056), MaskKind::Haar);
         assert_eq!(resolve_mask_kind_for_shape(MaskKind::Hd3, 2056), MaskKind::Hd3);

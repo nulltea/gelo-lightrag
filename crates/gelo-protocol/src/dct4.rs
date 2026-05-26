@@ -196,13 +196,14 @@ impl Dct4Mask {
             self.n
         );
         // Apply right-to-left: C, D₁, C, D₂, C, D₃.
+        // `inv_norm` is fused into the final D₃ pass to save one
+        // full-tensor read-write — same trick as `Hd3Mask::apply_in_place`.
         dct4_cols_inplace(buf, self.dct4.as_ref());
         apply_diag_inplace(buf, &self.d1);
         dct4_cols_inplace(buf, self.dct4.as_ref());
         apply_diag_inplace(buf, &self.d2);
         dct4_cols_inplace(buf, self.dct4.as_ref());
-        apply_diag_inplace(buf, &self.d3);
-        scale_inplace(buf, self.inv_norm);
+        apply_diag_scaled_inplace(buf, &self.d3, self.inv_norm);
     }
 
     /// Remove the mask: `H·W = Aᵀ · (U·W)`. `masked_output` must have
@@ -231,6 +232,23 @@ impl Dct4Mask {
     ///
     /// `Aᵀ = (D₃·C·D₂·C·D₁·C)ᵀ = Cᵀ·D₁ᵀ·Cᵀ·D₂ᵀ·Cᵀ·D₃ᵀ
     ///     = C·D₁·C·D₂·C·D₃` (since `C = Cᵀ` for DCT-IV and `Dᵢ = Dᵢᵀ`).
+    /// Slice-flavored variant of [`Self::apply_in_place`] — see
+    /// [`crate::hd3::Hd3Mask::apply_in_place_slice`] for the rationale.
+    pub fn apply_in_place_slice(&self, buf: &mut [f32], cols: usize) {
+        assert_eq!(
+            buf.len(),
+            self.n.saturating_mul(cols),
+            "Dct4Mask::apply_in_place_slice: buf has {} f32s, expected n={} * cols={}",
+            buf.len(), self.n, cols,
+        );
+        dct4_cols_inplace_slice(buf, self.n, cols, self.dct4.as_ref());
+        apply_diag_inplace_slice(buf, &self.d1, cols);
+        dct4_cols_inplace_slice(buf, self.n, cols, self.dct4.as_ref());
+        apply_diag_inplace_slice(buf, &self.d2, cols);
+        dct4_cols_inplace_slice(buf, self.n, cols, self.dct4.as_ref());
+        apply_diag_scaled_inplace_slice(buf, &self.d3, cols, self.inv_norm);
+    }
+
     pub fn unapply_in_place(&self, buf: &mut Array2<f32>) {
         assert_eq!(
             buf.nrows(),
@@ -239,13 +257,30 @@ impl Dct4Mask {
             buf.nrows(),
             self.n
         );
-        apply_diag_inplace(buf, &self.d3);
+        // Trailing `inv_norm` fused into the leading D₃ — same
+        // commutativity argument as `Hd3Mask::unapply_in_place`.
+        apply_diag_scaled_inplace(buf, &self.d3, self.inv_norm);
         dct4_cols_inplace(buf, self.dct4.as_ref());
         apply_diag_inplace(buf, &self.d2);
         dct4_cols_inplace(buf, self.dct4.as_ref());
         apply_diag_inplace(buf, &self.d1);
         dct4_cols_inplace(buf, self.dct4.as_ref());
-        scale_inplace(buf, self.inv_norm);
+    }
+
+    /// Slice-flavored variant of [`Self::unapply_in_place`].
+    pub fn unapply_in_place_slice(&self, buf: &mut [f32], cols: usize) {
+        assert_eq!(
+            buf.len(),
+            self.n.saturating_mul(cols),
+            "Dct4Mask::unapply_in_place_slice: buf has {} f32s, expected n={} * cols={}",
+            buf.len(), self.n, cols,
+        );
+        apply_diag_scaled_inplace_slice(buf, &self.d3, cols, self.inv_norm);
+        dct4_cols_inplace_slice(buf, self.n, cols, self.dct4.as_ref());
+        apply_diag_inplace_slice(buf, &self.d2, cols);
+        dct4_cols_inplace_slice(buf, self.n, cols, self.dct4.as_ref());
+        apply_diag_inplace_slice(buf, &self.d1, cols);
+        dct4_cols_inplace_slice(buf, self.n, cols, self.dct4.as_ref());
     }
 }
 
@@ -259,12 +294,30 @@ impl Dct4Mask {
 fn dct4_cols_inplace(buf: &mut Array2<f32>, dct4: &(dyn Dct4<f32> + Send + Sync)) {
     let n = buf.nrows();
     let d = buf.ncols();
-    if n < 2 || d == 0 {
-        return;
-    }
     let slice = buf
         .as_slice_mut()
         .expect("dct4_cols_inplace: matrix must be standard layout");
+    dct4_cols_inplace_slice(slice, n, d, dct4);
+}
+
+/// Slice-flavored body of [`dct4_cols_inplace`]. Operates on a row-major
+/// `(n, d)` `&mut [f32]` directly so the batched per-block dispatch in
+/// `crate::sim` can avoid materialising a per-block `Array2`.
+fn dct4_cols_inplace_slice(
+    slice: &mut [f32],
+    n: usize,
+    d: usize,
+    dct4: &(dyn Dct4<f32> + Send + Sync),
+) {
+    debug_assert_eq!(
+        slice.len(),
+        n.saturating_mul(d),
+        "dct4_cols_inplace_slice: slice has {} f32s, expected n={} * d={}",
+        slice.len(), n, d,
+    );
+    if n < 2 || d == 0 {
+        return;
+    }
 
     // Process columns. Each column is strided (stride `d` in row-major
     // (n, d) layout). We copy-out → DCT → copy-back per column.
@@ -339,17 +392,26 @@ struct ColScratch {
 /// to [`crate::hd3::apply_diag_inplace`]; copied here to avoid a
 /// cross-module re-export.
 fn apply_diag_inplace(m: &mut Array2<f32>, d: &[f32]) {
-    let n_rows = m.nrows();
     let cols = m.ncols();
-    debug_assert_eq!(d.len(), n_rows);
-    if cols == 0 {
-        return;
-    }
     let slice = m
         .as_slice_mut()
         .expect("apply_diag_inplace: matrix must be standard layout");
+    apply_diag_inplace_slice(slice, d, cols);
+}
+
+fn apply_diag_inplace_slice(slice: &mut [f32], d: &[f32], cols: usize) {
+    let n_rows = d.len();
+    debug_assert_eq!(
+        slice.len(),
+        n_rows.saturating_mul(cols),
+        "apply_diag_inplace_slice: slice has {} f32s, expected d.len()={} * cols={}",
+        slice.len(), n_rows, cols,
+    );
+    if cols == 0 {
+        return;
+    }
     let total_work = n_rows.saturating_mul(cols);
-    if total_work >= 65_536 {
+    if total_work >= crate::hd3::FWHT_RAYON_WORK_THRESHOLD {
         slice
             .par_chunks_mut(cols)
             .zip(d.par_iter())
@@ -372,18 +434,47 @@ fn apply_diag_inplace(m: &mut Array2<f32>, d: &[f32]) {
     }
 }
 
-fn scale_inplace(m: &mut Array2<f32>, factor: f32) {
-    if factor == 1.0 {
-        return;
-    }
+/// Fused diagonal + scalar pass — mirror of `crate::hd3::apply_diag_scaled_inplace`.
+/// Multiplies row `i` by `d[i] * factor` in one full-tensor pass,
+/// replacing the `apply_diag_inplace + scale_inplace` pair at the
+/// D₃ boundary of `apply` / `unapply`.
+fn apply_diag_scaled_inplace(m: &mut Array2<f32>, d: &[f32], factor: f32) {
+    let cols = m.ncols();
     let slice = m
         .as_slice_mut()
-        .expect("scale_inplace: matrix must be standard layout");
-    if slice.len() >= 65_536 {
-        slice.par_iter_mut().for_each(|v| *v *= factor);
+        .expect("apply_diag_scaled_inplace: matrix must be standard layout");
+    apply_diag_scaled_inplace_slice(slice, d, cols, factor);
+}
+
+fn apply_diag_scaled_inplace_slice(slice: &mut [f32], d: &[f32], cols: usize, factor: f32) {
+    let n_rows = d.len();
+    debug_assert_eq!(
+        slice.len(),
+        n_rows.saturating_mul(cols),
+        "apply_diag_scaled_inplace_slice: slice has {} f32s, expected d.len()={} * cols={}",
+        slice.len(), n_rows, cols,
+    );
+    if cols == 0 {
+        return;
+    }
+    let total_work = n_rows.saturating_mul(cols);
+    if total_work >= crate::hd3::FWHT_RAYON_WORK_THRESHOLD {
+        slice
+            .par_chunks_mut(cols)
+            .zip(d.par_iter())
+            .for_each(|(row, &sign)| {
+                let mult = sign * factor;
+                for v in row.iter_mut() {
+                    *v *= mult;
+                }
+            });
     } else {
-        for v in slice.iter_mut() {
-            *v *= factor;
+        for (row_idx, &sign) in d.iter().enumerate() {
+            let row_offset = row_idx * cols;
+            let mult = sign * factor;
+            for v in &mut slice[row_offset..row_offset + cols] {
+                *v *= mult;
+            }
         }
     }
 }

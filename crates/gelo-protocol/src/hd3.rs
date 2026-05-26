@@ -81,7 +81,7 @@ pub use crate::rng::MaskSeed;
 /// Picked at 65 536 elements = 64 KB of f32 data per FWHT stage: a
 /// 32×2048 stage or 256×256 stage is the smallest where parallelism
 /// amortises spawn cost.
-const FWHT_RAYON_WORK_THRESHOLD: usize = 65_536;
+pub(crate) const FWHT_RAYON_WORK_THRESHOLD: usize = 65_536;
 
 /// When `h * 8 <= n`, `fwht_rows_inplace` fuses three radix-2 stages
 /// (at distances `h`, `2h`, `4h`) into one radix-8 pass. The fused
@@ -210,13 +210,15 @@ impl Hd3Mask {
         );
         // A · x = D₃ · H · D₂ · H · D₁ · H · x.
         // Apply right-to-left: H first, then D₁, then H, then D₂, then H, then D₃.
+        // The trailing scalar `inv_norm` is fused into the final D₃ pass
+        // (each row gets ±inv_norm) — saves one full-tensor read-write
+        // vs a separate `scale_inplace`.
         fwht_rows_inplace(buf);
         apply_diag_inplace(buf, &self.d1);
         fwht_rows_inplace(buf);
         apply_diag_inplace(buf, &self.d2);
         fwht_rows_inplace(buf);
-        apply_diag_inplace(buf, &self.d3);
-        scale_inplace(buf, self.inv_norm);
+        apply_diag_scaled_inplace(buf, &self.d3, self.inv_norm);
     }
 
     /// Remove the mask: `H·W = Aᵀ · (U·W)`. `masked_output` must have
@@ -245,6 +247,26 @@ impl Hd3Mask {
     /// Remove the mask in place: `buf ← Aᵀ · buf`. Same shape contract
     /// as [`Self::unapply`]. Avoids the per-call allocation + copy by
     /// mutating the engine's output buffer directly.
+    /// Slice-flavored variant of [`Self::apply_in_place`] that operates
+    /// directly on a row-major `(n, cols)` `&mut [f32]`. Used by the
+    /// batched per-block dispatch in `crate::sim` to avoid materialising
+    /// a per-block `Array2` (which would force `to_owned` + `assign`,
+    /// doubling memory traffic on the rayon-parallel mask apply).
+    pub fn apply_in_place_slice(&self, buf: &mut [f32], cols: usize) {
+        assert_eq!(
+            buf.len(),
+            self.n.saturating_mul(cols),
+            "Hd3Mask::apply_in_place_slice: buf has {} f32s, expected n={} * cols={}",
+            buf.len(), self.n, cols,
+        );
+        fwht_rows_inplace_slice(buf, self.n, cols);
+        apply_diag_inplace_slice(buf, &self.d1, cols);
+        fwht_rows_inplace_slice(buf, self.n, cols);
+        apply_diag_inplace_slice(buf, &self.d2, cols);
+        fwht_rows_inplace_slice(buf, self.n, cols);
+        apply_diag_scaled_inplace_slice(buf, &self.d3, cols, self.inv_norm);
+    }
+
     pub fn unapply_in_place(&self, buf: &mut Array2<f32>) {
         assert_eq!(
             buf.nrows(),
@@ -256,13 +278,33 @@ impl Hd3Mask {
         // Aᵀ = (D₃·H·D₂·H·D₁·H)ᵀ = Hᵀ·D₁ᵀ·Hᵀ·D₂ᵀ·Hᵀ·D₃ᵀ
         //    = H·D₁·H·D₂·H·D₃   (since H = Hᵀ and Dᵢ = Dᵢᵀ).
         // Apply right-to-left: D₃ first, then H, then D₂, then H, then D₁, then H.
-        apply_diag_inplace(buf, &self.d3);
+        // The trailing `scale_inplace` is fused into the leading D₃ —
+        // `inv_norm` commutes with the linear FWHT/diag cascade, so
+        // scaling at the input gives identical output with one fewer
+        // full-tensor pass.
+        apply_diag_scaled_inplace(buf, &self.d3, self.inv_norm);
         fwht_rows_inplace(buf);
         apply_diag_inplace(buf, &self.d2);
         fwht_rows_inplace(buf);
         apply_diag_inplace(buf, &self.d1);
         fwht_rows_inplace(buf);
-        scale_inplace(buf, self.inv_norm);
+    }
+
+    /// Slice-flavored variant of [`Self::unapply_in_place`]. See
+    /// [`Self::apply_in_place_slice`] for the design motivation.
+    pub fn unapply_in_place_slice(&self, buf: &mut [f32], cols: usize) {
+        assert_eq!(
+            buf.len(),
+            self.n.saturating_mul(cols),
+            "Hd3Mask::unapply_in_place_slice: buf has {} f32s, expected n={} * cols={}",
+            buf.len(), self.n, cols,
+        );
+        apply_diag_scaled_inplace_slice(buf, &self.d3, cols, self.inv_norm);
+        fwht_rows_inplace_slice(buf, self.n, cols);
+        apply_diag_inplace_slice(buf, &self.d2, cols);
+        fwht_rows_inplace_slice(buf, self.n, cols);
+        apply_diag_inplace_slice(buf, &self.d1, cols);
+        fwht_rows_inplace_slice(buf, self.n, cols);
     }
 }
 
@@ -290,18 +332,32 @@ impl Hd3Mask {
 fn fwht_rows_inplace(m: &mut Array2<f32>) {
     let n = m.nrows();
     let d = m.ncols();
+    let slice = m
+        .as_slice_mut()
+        .expect("fwht_rows_inplace: matrix must be standard layout");
+    fwht_rows_inplace_slice(slice, n, d);
+}
+
+/// Slice-flavored body of [`fwht_rows_inplace`]. Operates on a row-major
+/// `(n, d)` buffer with `n` a power of two. Used by both the `Array2`
+/// public wrapper and the `_slice` per-block path in
+/// `crate::sim::build_per_sequence_masked` (avoids the `to_owned` +
+/// `assign` that materialising a temporary `Array2` would force).
+fn fwht_rows_inplace_slice(slice: &mut [f32], n: usize, d: usize) {
     debug_assert!(
         n.is_power_of_two(),
-        "fwht_rows_inplace: row count {} must be a power of two",
+        "fwht_rows_inplace_slice: row count {} must be a power of two",
         n
+    );
+    debug_assert_eq!(
+        slice.len(),
+        n.saturating_mul(d),
+        "fwht_rows_inplace_slice: slice has {} f32s, expected n={} * d={}",
+        slice.len(), n, d,
     );
     if n < 2 || d == 0 {
         return;
     }
-    let slice = m
-        .as_slice_mut()
-        .expect("fwht_rows_inplace: matrix must be standard layout");
-
     let use_avx512 = avx512f_supported();
     let use_avx2 = !use_avx512 && avx2_supported();
     let total_work = n.saturating_mul(d);
@@ -832,24 +888,26 @@ fn avx2_supported() -> bool {
 /// at small shapes the inner loop is already fast enough that
 /// spawn overhead dominates.
 fn apply_diag_inplace(m: &mut Array2<f32>, d: &[f32]) {
-    let n_rows = m.nrows();
     let cols = m.ncols();
+    let slice = m
+        .as_slice_mut()
+        .expect("apply_diag_inplace: matrix must be standard layout");
+    apply_diag_inplace_slice(slice, d, cols);
+}
+
+fn apply_diag_inplace_slice(slice: &mut [f32], d: &[f32], cols: usize) {
+    let n_rows = d.len();
     debug_assert_eq!(
-        d.len(),
-        n_rows,
-        "apply_diag_inplace: diagonal length {} ≠ row count {}",
-        d.len(),
-        n_rows
+        slice.len(),
+        n_rows.saturating_mul(cols),
+        "apply_diag_inplace_slice: slice has {} f32s, expected d.len()={} * cols={}",
+        slice.len(), n_rows, cols,
     );
     if cols == 0 {
         return;
     }
-    let slice = m
-        .as_slice_mut()
-        .expect("apply_diag_inplace: matrix must be standard layout");
     let total_work = n_rows.saturating_mul(cols);
     if total_work >= FWHT_RAYON_WORK_THRESHOLD {
-        // Parallelise row-by-row. Each row is independent.
         slice
             .par_chunks_mut(cols)
             .zip(d.par_iter())
@@ -872,21 +930,52 @@ fn apply_diag_inplace(m: &mut Array2<f32>, d: &[f32]) {
     }
 }
 
-/// In-place scalar multiplication of every element by `factor`.
-/// Rayon-parallel above the work threshold; LLVM auto-vectorises the
-/// inner multiply for both AVX-2 and AVX-512.
-fn scale_inplace(m: &mut Array2<f32>, factor: f32) {
-    if factor == 1.0 {
-        return;
-    }
+/// Fused diagonal + scalar pass: `m[i, *] *= d[i] * factor` for each
+/// row `i`. Replaces the `apply_diag_inplace(m, d); scale_inplace(m, factor)`
+/// pair with a single full-tensor pass — saves one read-modify-write
+/// cycle (~32 MB at the long-context shape n=4096 d=2048).
+///
+/// `d[i]` is expected to be ±1.0; the effective per-row multiplier is
+/// therefore `±factor`. Unlike `apply_diag_inplace` (which can skip
+/// rows where `d[i] = +1`), this pass always touches every row because
+/// `factor != 1`.
+fn apply_diag_scaled_inplace(m: &mut Array2<f32>, d: &[f32], factor: f32) {
+    let cols = m.ncols();
     let slice = m
         .as_slice_mut()
-        .expect("scale_inplace: matrix must be standard layout");
-    if slice.len() >= FWHT_RAYON_WORK_THRESHOLD {
-        slice.par_iter_mut().for_each(|v| *v *= factor);
+        .expect("apply_diag_scaled_inplace: matrix must be standard layout");
+    apply_diag_scaled_inplace_slice(slice, d, cols, factor);
+}
+
+fn apply_diag_scaled_inplace_slice(slice: &mut [f32], d: &[f32], cols: usize, factor: f32) {
+    let n_rows = d.len();
+    debug_assert_eq!(
+        slice.len(),
+        n_rows.saturating_mul(cols),
+        "apply_diag_scaled_inplace_slice: slice has {} f32s, expected d.len()={} * cols={}",
+        slice.len(), n_rows, cols,
+    );
+    if cols == 0 {
+        return;
+    }
+    let total_work = n_rows.saturating_mul(cols);
+    if total_work >= FWHT_RAYON_WORK_THRESHOLD {
+        slice
+            .par_chunks_mut(cols)
+            .zip(d.par_iter())
+            .for_each(|(row, &sign)| {
+                let m = sign * factor;
+                for v in row.iter_mut() {
+                    *v *= m;
+                }
+            });
     } else {
-        for v in slice.iter_mut() {
-            *v *= factor;
+        for (row_idx, &sign) in d.iter().enumerate() {
+            let row_offset = row_idx * cols;
+            let mult = sign * factor;
+            for v in &mut slice[row_offset..row_offset + cols] {
+                *v *= mult;
+            }
         }
     }
 }
