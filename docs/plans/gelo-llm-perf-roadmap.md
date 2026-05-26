@@ -42,14 +42,19 @@
    estimate). §3.2 #1 R1 weight Arc drop ✅ **shipped** (5.28 GiB
    measured RSS reclaim). §3.2 #2 UMA allocator unblock ✅
    **resolved as a non-issue** — B=16 runs clean but doesn't
-   amortise prefill at long-n (GPU compute already saturated at
-   B=8). Remaining iGPU work in EV order:
+   amortise prefill at long-n. §4.E bf16 activation pipeline ❌
+   **deprioritised 2026-05-26** — standalone cascade microbench
+   showed DCT-IV bf16 wins only +8 % (projects ~1.6 % wall, below
+   variance) and HD₃ bf16 regresses 2× (current bulk widen-narrow
+   impl). The post-cascade-refactor L2-resident tile design
+   already captured the bandwidth gains bf16 was meant to deliver.
+   Remaining iGPU work in EV order:
    §3.1 #2 variance sweep (calibrates everything below),
    Q#2 RADV-async spike → §4.D R4 async overlap (the next
-   ~15 % wall lever, if Q#2 clears),
-   §4.E.1 bf16 HD₃ FWHT inner kernel (cross-cuts; composes
-   with §4.A.1 cascade), §4.E.3 end-to-end bf16 activations
-   (multi-week; unblocks dGPU bucket-2).
+   ~15 % wall lever, if Q#2 clears), and dGPU substrate prep
+   (§4.B.2 / §4.C.2). Phase 1-3a infrastructure remains useful
+   for dGPU revival where bf16-native compute kernels change
+   the math.
 
 ---
 
@@ -534,6 +539,39 @@ Touches buckets A, B, C, F. Three composable scopes — all in
 this bucket per the grilling decision (bf16 work shipped as a
 single coordinated effort rather than fragmented across the
 perf buckets it benefits).
+
+**Status — DEPRIORITISED 2026-05-26 by standalone cascade
+microbench** (`bench-results/bf16-cascade-microbench-2026-05-26_13-47-56`).
+Engine-side Path β (shipped 7abb9f1) + bf16 elementwise kernels
+(shipped 98271f0) + bf16 mask cascade variants (shipped a05eb8a)
+delivered the precision-contract infrastructure cleanly, but
+the validation microbench shows the cascade DRAM savings don't
+translate to a wall lever at production scale on iGPU:
+
+| Cascade | Shape | f32 wall | bf16 wall | Speedup | Notes |
+|---|---|---:|---:|---:|---|
+| DCT-IV | n=2056 d=2560 (prod prefill) | 11.16 ms | 10.28 ms | 1.085× | Tile-fused widen-narrow; +8 % standalone |
+| HD₃ | n=4096 d=2560 (prod HD₃ shape) | 20.35 ms | 39.06 ms | 0.521× | Bulk widen-narrow + per-call alloc; 2× slower |
+
+Projecting to production prefill (B=8 n=2048, cascade = 20 % of
+wall): DCT-IV cascade gain × cascade share = **~1.6 % wall**
+reduction — below the §1.5 ~7 % variance floor. HD₃ at decode
+mask = 4 % wall × 2× slowdown = **~4 % decode regression** at
+HD₃ shapes.
+
+The hypothesis from `m1-12-bf16-activation-pipeline.md` ("3-10 %
+iGPU direct wall reduction") does not survive standalone
+measurement. The post-cascade-refactor design already ensures
+L2-resident tiles, so the bf16 DRAM saving at the tile boundary
+is small in absolute terms — and the widen-narrow at the boundary
+eats some of it back.
+
+Multi-week phase 3b (substrate offload_linear_bf16) and phase 3c
+(forward.rs wire-up) are NOT WORTH PURSUING on iGPU. The
+infrastructure landed across phases 1-3a remains useful for the
+dGPU substrate revival (dGPU has bf16-native compute kernels via
+cuBLAS, so the precision story flips). On iGPU, the next iGPU
+lever is **Q#2 RADV-async spike → R4 async overlap** (§4.D).
 
 #### §4.E.1 Inner-kernel rewrite (FWHT + DCT-IV in bf16)
 
