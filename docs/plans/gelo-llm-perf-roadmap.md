@@ -40,12 +40,16 @@
    column-locality cascade ✅ **shipped** — measured **−22 %
    prefill wall** at production shape (2.3× the original
    estimate). §3.2 #1 R1 weight Arc drop ✅ **shipped** (5.28 GiB
-   measured RSS reclaim). Remaining iGPU work in EV order:
-   §3.2 #2 UMA allocator unblock (gates B≥16 amortisation —
-   biggest at long-n HD₃ shapes where matmul dominates),
-   §4.E.1 bf16 inner kernels (cross-cuts both families),
-   §4.D R4 async overlap (gated on Q#2 spike), §4.E.3 end-to-end
-   bf16 activations (multi-week; unblocks dGPU bucket-2).
+   measured RSS reclaim). §3.2 #2 UMA allocator unblock ✅
+   **resolved as a non-issue** — B=16 runs clean but doesn't
+   amortise prefill at long-n (GPU compute already saturated at
+   B=8). Remaining iGPU work in EV order:
+   §3.1 #2 variance sweep (calibrates everything below),
+   Q#2 RADV-async spike → §4.D R4 async overlap (the next
+   ~15 % wall lever, if Q#2 clears),
+   §4.E.1 bf16 HD₃ FWHT inner kernel (cross-cuts; composes
+   with §4.A.1 cascade), §4.E.3 end-to-end bf16 activations
+   (multi-week; unblocks dGPU bucket-2).
 
 ---
 
@@ -289,7 +293,7 @@ sweep resolved §3.1 #1, #3, #4 (see below); the variance sweep
 | # | Item | Status | Impact | Engineering |
 |---:|---|---|---|---|
 | 1 | **R1 weight Arc drop** | ✅ **shipped** 2026-05-22 (commit 4686b8f) | **5.28 GiB measured host RSS reclaim** post-VRAM upload (7.67 → 2.39 GiB at Qwen3-4B, confirmed by `dct4-cascade-microbench-2026-05-26`). `provision_into` `.take()`s per-layer Arcs; default `register_weight_bf16_shared` consumes the Arc after VRAM upload. Residual 2.39 GiB ≈ `token_embedding` (778 MB, still needed for `embedding_lookup`) + layer norms + config + allocator slack. | — |
-| 2 | **UMA allocator unblock** | pending | Removes wgpu/Vulkan ~8 GiB per-submission command-buffer cap. Unblocks B=16/32 long-n cells that today command-submission-OOM (per the 2026-05-22 B=2 n=4096 + B=8 n=2048 abort retro). | 1-2 days spike |
+| 2 | **UMA allocator unblock** | ✅ **resolved as a non-issue** 2026-05-26 (`bench-results/uma-spike-2026-05-26`) | B=16 n=2048 K=8 runs clean — no OOM, no `VK_ERROR_OUT_OF_DEVICE_MEMORY`. Cubecl's `tasks_max=32` default already chunks the forward into safe submissions; the 2026-05-22 cap was a three-executors-alive squeeze that the current sequential-executor pattern doesn't reproduce. **But also: no aggregate-tok/s lift at this shape.** B=8→16 prefill aggregate moves 121.3 → 114.8 tok/s (−5 % — slightly worse; GPU compute is already saturated). Decode aggregate moves 4.62 → 5.66 tok/s (+22 %, the surviving launch-overhead-amortised gain at `n_q=1`). The "B≥16 unlocks aggregate throughput" thesis was wrong — at long-n shapes there's no compute headroom to amortise. | — |
 
 ---
 
@@ -428,16 +432,20 @@ on dGPU.
 
 DDR5-bandwidth-bound; **no direct kernel lever exists on iGPU**.
 The GPU matmul kernels themselves aren't the cost — the bus is.
-Indirect levers via §3.2 substrate prereqs:
 
-- §3.2 #1 R1 Arc drop unlocks B=16 → amortises GPU dispatch
-  across more sequences per call.
-- §3.2 #2 UMA allocator unblock removes the 8 GiB per-submission
-  cap that today caps B/n at large shapes.
+**B≥16 amortisation does not help at production shape**
+(§3.2 #2 spike resolved 2026-05-26): B=8 → B=16 at n=2048
+measured prefill aggregate 121.3 → 114.8 tok/s — slightly
+worse, not better. GPU compute is already saturated at B=8 on
+this shape; doubling B doubles the work without amortising
+the dominant matmul bucket. Decode aggregate amortises +22 %
+at B=16 (4.62 → 5.66 tok/s — the surviving launch-overhead
+gain at `n_q=1`).
 
-Neither reduces per-call cost; both lift the bench-runnable
-B/n ceiling so the bucket's wall amortises across more
-useful work.
+Where B-scaling DOES help: short-n shapes where dispatch
+launch overhead dominates compute. At those shapes B≥16 has
+real amortisation headroom — but they're not the binding
+production workload.
 
 #### §4.B.2 dGPU
 

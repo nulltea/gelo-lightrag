@@ -1,0 +1,57 @@
+=== UMA spike: B=16 n=2048 reproduction attempt ===
+Tue May 26 12:34:26 CEST 2026
++ B=16 n=2048 mask=auto K=8 (smaller K to fail fast if it does)
+warning: use of deprecated struct `sim::RayonCpuEngine`: RayonCpuEngine is the reference CPU impl; use `gelo_gpu_wgpu::WgpuVulkanEngine` for all measurements, benches, and production runtimes — see `feedback_benches_use_gelo_gpu.md` + `feedback_no_rayon_cpu_engine.md`.
+  --> crates/gelo-protocol/src/lib.rs:47:60
+   |
+47 | pub use sim::{InProcessTrustedExecutor, PlaintextExecutor, RayonCpuEngine};
+   |                                                            ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: `gelo-protocol` (lib) generated 1 warning
+warning: function `tensor_to_2d` is never used
+   --> crates/gelo-embedder/src/decoder/weights.rs:305:4
+    |
+305 | fn tensor_to_2d(view: TensorView<'_>) -> Result<Array2<f32>> {
+    |    ^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `gelo-embedder` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 0.23s
+     Running tests/qwen3_m1_12_r1_q1_microbench.rs (target/release/deps/qwen3_m1_12_r1_q1_microbench-996a308e7db6a8b1)
+
+running 1 test
+=== M1.12+ sweep cell: Q4B B=16 n=2048 K=8 mask=auto ===
+RSS at start: 0.01 GiB
+RSS after weights load: 7.67 GiB
+RSS after provision (projections + LmHead): 2.39 GiB
+test m1_12_sweep_cell has been running for over 60 seconds
+[Q4B B=16 n=2048 K=8 mask=auto] PREFILL: B=16 n_max=2048, wall 285.36s, prefill 7.2 tok/s/seq
+[Q4B B=16 n=2048 K=8 mask=auto] DECODE:  B=16 K=8, wall 22.62s, decode 0.4 tok/s/seq, per-step mean 2827 ms (= 176.7 ms / tok / seq)
+--- Q4B B=16 n=2048 K=8 mask=auto PREFILL buckets ---
+  gelo:mask_apply:dct4                    17396.8 ms  (144 calls)
+  gelo:mask_unapply:dct4                  34772.7 ms  (252 calls)
+  gelo:mask_sample                            0.6 ms  (16 calls)
+  gelo:shield_stack                        2660.9 ms  (144 calls)
+  engine:matmul                           63547.8 ms  (72 calls)
+  engine:matmul_many                      99981.3 ms  (72 calls)
+  tee:attn_inplace_many                   42555.9 ms  (36 calls)
+--- Q4B B=16 n=2048 K=8 mask=auto DECODE buckets ---
+  gelo:mask_apply:hd3                       295.0 ms  (1280 calls)
+  gelo:mask_unapply:hd3                     702.8 ms  (2144 calls)
+  gelo:mask_sample                            0.1 ms  (256 calls)
+  gelo:shield_stack                         520.4 ms  (1280 calls)
+  gelo:strip_shield                           1.6 ms  (128 calls)
+  engine:matmul                            4727.1 ms  (704 calls)
+  engine:matmul_many                       4290.3 ms  (576 calls)
+  tee:attn_cached_inplace_many            11792.9 ms  (288 calls)
+  tee:compute_logits                       1170.2 ms  (128 calls)
+SWEEP_RESULT variant=Q4B B=16 n=2048 K=8 mask=auto prefill_wall_s=285.363 decode_wall_s=22.615 prefill_tps_agg=114.83 prefill_tps_per_seq=7.18 decode_tps_agg=5.66 decode_tps_per_seq=0.35
+test m1_12_sweep_cell ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 337.50s
+
+
+Tue May 26 12:40:04 CEST 2026
