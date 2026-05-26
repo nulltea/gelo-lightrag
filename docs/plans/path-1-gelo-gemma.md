@@ -11,7 +11,7 @@ tags: [path-1, gelo, gemma, qwen3]
 > **Worktree:** original (this one). Branch: `path-1-gelo-gemma`
 > (to be created from `master`).
 >
-> **Sibling plan:** [`path-2-aloepri-gemma.md`](path-2-aloepri-gemma.md)
+> **Sibling plan:** [`aloepri-gemma.md`](aloepri-gemma.md)
 > develops in `../private-rag-path-2`.
 >
 > **Shared framework:** [`private-inference-comparison-framework.md`](private-inference-comparison-framework.md).
@@ -20,7 +20,7 @@ tags: [path-1, gelo, gemma, qwen3]
 > validated on Qwen3-Embedding-0.6B) to support **autoregressive text
 > generation on Gemma E2B/E4B** with the openweight threat model
 > preserved. Produce performance, accuracy, and attack-resistance
-> numbers comparable to Path 2 on the same models.
+> numbers comparable to AloePri on the same models.
 
 ---
 
@@ -544,7 +544,7 @@ SKU becomes available.
 
 Plus shared work:
 - M0.1 + M0.2 inline with M1.0–M1.2 (~1.5 weeks of dual effort)
-- M0.3 inline with M1.9 (~3 weeks shared with Path 2)
+- M0.3 inline with M1.9 (~3 weeks shared with AloePri)
 - M0.4 after both paths: ~1 week
 
 ---
@@ -568,7 +568,7 @@ joins.
 
 ---
 
-## 5. Disjoint-directory contract with Path 2
+## 5. Disjoint-directory contract with AloePri
 
 To minimize merge pain between worktrees, Path 1 only writes to:
 
@@ -582,14 +582,14 @@ To minimize merge pain between worktrees, Path 1 only writes to:
 - `docs/plans/path-1-*.md`
 - `results/path-1-*.json`
 
-Path 2 only writes to:
+AloePri only writes to:
 
 - `vendor/aloepri-py/**` (vendored Python)
 - `scripts/path-2-*.py`
 - `docs/plans/path-2-*.md`
 - `results/path-2-*.json`
 
-If Path 1 needs changes to Path-2-owned files (e.g., to read
+If Path 1 needs changes to AloePri-owned files (e.g., to read
 AloePri snapshots for attack harness), file a PR back to master.
 
 ---
@@ -946,7 +946,7 @@ in this same plan structure.
 
 - [`private-inference-comparison-framework.md`](private-inference-comparison-framework.md)
   (shared)
-- [`path-2-aloepri-gemma.md`](path-2-aloepri-gemma.md) (sibling)
+- [`aloepri-gemma.md`](aloepri-gemma.md) (sibling)
 - [`../dev/prototype/gelo.md`](../dev/prototype/gelo.md) — protocol baseline
 - [`../dev/prototype/gelo-llm.md`](../dev/prototype/gelo-llm.md) — LLM
   generation forward plan

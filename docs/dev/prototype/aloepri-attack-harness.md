@@ -55,7 +55,7 @@ binaries.
 
 ## 1. AloePri attack taxonomy (what we are evaluating against)
 
-From `path-2-aloepri/vendor/aloepri-py/src/security_qwen/matrix.py` and
+From `aloepri-aloepri/vendor/aloepri-py/src/security_qwen/matrix.py` and
 `docs/research/aloepri-vs-gelo.md` §4:
 
 | Attack | File | What it tries to recover | Inputs it needs |
@@ -155,7 +155,7 @@ not the protocol crate.
 
 AloePri lives in the `path-2-aloepri-gemma` sibling worktree under
 `vendor/aloepri-py/` (commit hash documented in
-`../../plans/path-2-aloepri-gemma.md` M2.1). The attacks are
+`../../plans/aloepri-gemma.md` M2.1). The attacks are
 organized as:
 
 ```
@@ -262,7 +262,7 @@ When the Phase 2 worker (or a future session) picks this up:
 
 1. Read `docs/research/aloepri-vs-gelo.md` §4 end to end first.
 2. Verify the AloePri vendored commit is still at the pin documented
-   in `path-2-aloepri-gemma.md` M2.1.
+   in `aloepri-gemma.md` M2.1.
 3. Land the snapshot serialiser in `crates/gelo-embedder/` (§2.2
    above) before touching any Python.
 4. The Phase 1 snapshot-capture API is **frozen** as far as Phase 2
@@ -277,8 +277,8 @@ When the Phase 2 worker (or a future session) picks this up:
   §4 — the source-of-truth rationale + 3-phase plan
 - [`../../plans/path-1-gelo-gemma.md`](../../plans/path-1-gelo-gemma.md)
   §M1.9 — Path 1 milestone this work delivers
-- [`../../plans/path-2-aloepri-gemma.md`](../../plans/path-2-aloepri-gemma.md)
-  M2.7 — Path 2's analogous attack-resistance milestone (different
+- [`../../plans/aloepri-gemma.md`](../../plans/aloepri-gemma.md)
+  M2.7 — AloePri's analogous attack-resistance milestone (different
   obfuscation scheme, same attack suite)
 - AloePri reference code:
   `~/repos/private-rag-path-2/vendor/aloepri-py/src/security_qwen/`

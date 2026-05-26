@@ -31,7 +31,7 @@ The current GGUF is
 `~/.cache/huggingface/path-2-aloepri/qwen3-1.7b/keymat-h128-pi-noise-alg2-FULL-zfix-hadamard-fp32.gguf`.
 
 Six of eight §6.3 gates pass at this condition; **IMA-L0-activation
-and IMA paper-like (path-2 variants, activation surface at layer 0)
+and IMA paper-like (aloepri variants, activation surface at layer 0)
 fail at 88.9 % / 38–47 %** — Algorithm 2 cannot reach the
 `attn_norm-0` surface (pre-W_q). See
 [`2026-05-19-option-c-steps-0-1-2a-findings.md`](2026-05-19-option-c-steps-0-1-2a-findings.md)
@@ -47,7 +47,7 @@ new QK-norm Γ eigendecomposition attack. Threat-model doc lives at
 
 ### 1. Reframe and re-measure the "weight-inversion" attacks as prompt-inversion via weights
 
-**Diagnosis.** Path-2's docs mislabel VMA / IA / paper-IMA-basic /
+**Diagnosis.** AloePri's docs mislabel VMA / IA / paper-IMA-basic /
 paper-IMA-paper-like as "weight inversion attacks (out of scope
 because weight privacy isn't load-bearing)". All four are actually
 **prompt-inversion attacks** — they recover τ (the token
@@ -57,12 +57,12 @@ inversion" framing in the doc was conflating *observation surface*
 (weight tensor rows) with *attack goal* (recover τ → decode
 prompts).
 
-**Why this matters.** Path-2 distributes the obfuscated GGUF openly,
+**Why this matters.** AloePri distributes the obfuscated GGUF openly,
 so an attacker has both `W_e_obf` and `W_e_plain` simultaneously.
 They can run any of VMA / IA / paper-IMA-basic / paper-IMA-paper-like
 *offline*, no server access needed. Paper Table 1 reports these all
 pass the 15 % gate on Qwen2.5-14B under full Algorithm 2, but **we
-have not measured them against the path-2 Qwen3-1.7B
+have not measured them against the aloepri Qwen3-1.7B
 FULL-zfix-hadamard deployment**. If they fail on Qwen3, prompt
 privacy is already broken regardless of activation-side defences.
 
@@ -81,7 +81,7 @@ privacy is already broken regardless of activation-side defences.
   "Prompt-inversion attacks via static weights" and move it back to
   in-scope. Re-classify each row's verdict (pass/fail) once measured.
 
-### 2. Sweep Algorithm 1 parameters to close the path-2 IMA-L0-activation gap
+### 2. Sweep Algorithm 1 parameters to close the aloepri IMA-L0-activation gap
 
 **Diagnosis.** IMA-L0-activation at 88.9 % reflects that
 `attn_norm-0` is dominated by:
@@ -91,7 +91,7 @@ privacy is already broken regardless of activation-side defences.
    ridge.
 
 Algorithm 2 (intra-head) cannot reach this surface — M_q lives
-post-W_q. The path-2 deployment is at paper defaults that the paper
+post-W_q. The aloepri deployment is at paper defaults that the paper
 chose for the *wire-side* attacker, not the activation-side
 attacker.
 
@@ -106,7 +106,7 @@ on a held-out corpus, coherent-generation smoke):
 
 Pre-flight question: at what `(α_e, h)` does IMA-L0-activation drop
 ≤ 15 %? At what point does perplexity diverge unacceptably from
-plain? The crossover sets the path-2 deployment defaults.
+plain? The crossover sets the aloepri deployment defaults.
 
 **Stretch.** Non-linear keymat fold (small MLP applied after
 `P̂_R · x`). Paper-divergent; new research. Defer until the linear
@@ -160,7 +160,7 @@ under `crates/gelo-*/`).
 - Survey the path-1 GELO masking primitives: Haar, HD₃ Hadamard
   cascade (memory `[hd3_mask_landed]`), per-forward-pass +
   per-offload variants.
-- Spec a path-2 deployment story: where would per-prompt fresh masks
+- Spec a aloepri deployment story: where would per-prompt fresh masks
   land in the obfuscation pipeline? Candidate: replace the static
   Γ_q / Γ_k tensors with a per-prompt-sampled M_q · γ · M_q<sup>T</sup>
   shipped via a thin client handshake. Breaks the "no protocol
@@ -168,19 +168,19 @@ under `crates/gelo-*/`).
 - **Measure Gram leakage.** GELO's path-1 research round 2 / 3
   (memory `[gelo_research_round_2]`, `[private_llm_inference_round_3]`)
   identifies Gram-matrix attacks as the main residual surface even
-  under fresh masking. The path-2 attack harness extension for these
+  under fresh masking. The aloepri attack harness extension for these
   attacks is in
   `docs/research/aloepri-attack-harness-followups.md` (per memory
   `[aloepri_hd3_gate_phase_a_b]`) — four attack drivers
   (anchor_ica / jade / jd / gram_error) already in evals. Run them
-  against the static path-2 deployment + the proposed dynamic-mask
+  against the static aloepri deployment + the proposed dynamic-mask
   variant, compare leakage.
 
 This thread is the largest of the five — likely 2-3 weeks of
-spike work — but if path-2's mission is durable prompt privacy on
+spike work — but if aloepri's mission is durable prompt privacy on
 Qwen3, it's the right destination.
 
-### 5. Resolve the paper-vs-path-2 surface-mismatch in public docs
+### 5. Resolve the paper-vs-aloepri surface-mismatch in public docs
 
 **Diagnosis.** Section §08 of `aloepri-llm.html` and the surrounding
 prose still has some "out of scope" framing that conflated weight
@@ -190,7 +190,7 @@ this session is worth a dedicated callout in §03 + §08:
 
 - AloePri's paper threat model: attacker has wire I/O + θ̃ + θ; the
   secret to protect is τ. All §F.1 attacks reduce to τ-recovery.
-- Path-2's deployment: the wire-side threat is the same, but the
+- AloePri's deployment: the wire-side threat is the same, but the
   activation-side attacker (with τ known) is also relevant if the
   honest-but-curious server has runtime memory access. Layer-0
   activation surface defends differently from the deep-layer surface
@@ -200,7 +200,7 @@ this session is worth a dedicated callout in §03 + §08:
 between the in-scope and weight-inversion tables) titled "What
 'covariant obfuscation' covers and doesn't" — restate that all
 paper attacks are τ-recovery routes, define the additional
-threat-model assumptions path-2 brings (activation access + known
+threat-model assumptions aloepri brings (activation access + known
 τ), and link to the threat-model doc.
 
 Threads 1 and 5 are coupled — best to do them together as a single
@@ -211,7 +211,7 @@ doc-correction pass.
 1. **Thread 1 (½ day)** — port the four paper prompt-inversion-via-weights
    attacks, measure on the current GGUF, update §08 framing. Cheap,
    high-leverage, settles whether the paper-claimed defence holds at
-   path-2's scale (Qwen3-1.7B with current keymat/noise defaults).
+   aloepri's scale (Qwen3-1.7B with current keymat/noise defaults).
 2. **Thread 5 (parallel-safe with 1)** — rewrite the "out of scope"
    framing in §08; add the covariant-obfuscation callout. Doc-only.
 3. **Thread 3 (½ day)** — measure the eigendecomposition leak
@@ -243,7 +243,7 @@ doc-correction pass.
 ## Suggested skills
 
 - `/diagnose` if any of threads 1-3 produce unexpected numbers
-  (especially thread 1 — if weight-IMA fails on path-2 but passes on
+  (especially thread 1 — if weight-IMA fails on aloepri but passes on
   paper's Qwen2.5-14B, the gap is informative).
 - `/grill-with-docs` against the threat-model doc when starting
   thread 4 — GELO terminology + threat model needs to be precisely
@@ -265,15 +265,15 @@ doc-correction pass.
   for M_q · M_k<sup>T</sup> = I but ~32 % attention-score drift after
   RoPE — generation tolerates it but it's a known quality cost. Worth
   documenting the perplexity hit before scaling β beyond 8.
-- **Where does the path-2 dynamic-mask handshake live?** GELO uses
-  the `InProcessTrustedExecutor` boundary; path-2 doesn't have an
+- **Where does the aloepri dynamic-mask handshake live?** GELO uses
+  the `InProcessTrustedExecutor` boundary; aloepri doesn't have an
   equivalent. Likely requires a thin client handshake over the
   HTTP/completion endpoint — sketch the protocol before measuring
   Gram leakage.
 
 ## Artifacts produced in this session (uncommitted, ready to commit)
 
-**Code (path-2 Python + attack harness):**
+**Code (aloepri Python + attack harness):**
 - `python/aloepri-llm/obfuscate_qwen3_gguf.py` — `--alg2-qk-norm-matrix`,
   `--alg2-h-hadamard-signs`.
 - `python/aloepri-llm/lib/alg2.py` — `generate_block_perm` rewrite,

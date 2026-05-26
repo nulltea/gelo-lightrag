@@ -125,7 +125,7 @@ the API contract is deliberately frozen at the Phase 1 boundary.
 |---|---|
 | AloePri attack expects a tensor shape we don't capture | `docs/dev/prototype/aloepri-attack-harness.md` §5 "frozen API" rule — file a Phase 2 follow-up, don't reach back into `gelo-protocol` |
 | TTRSR ≥ 10% on C2 (defaults) | `docs/dev/prototype/gelo.md` §3.3 (shield rows) and §3.2 (per-forward vs per-offload mask); consider running C3 = per-offload mask, shield off to isolate which protocol piece is doing the work |
-| AloePri vendored repo missing / wrong commit | Path-2 plan `docs/plans/path-2-aloepri-gemma.md` M2.1 documents the pin |
+| AloePri vendored repo missing / wrong commit | AloePri plan `docs/plans/aloepri-gemma.md` M2.1 documents the pin |
 | Python harness needs intermediate state we didn't capture (e.g. KV cache) | Out of scope for Phase 1; surface as Phase 2 follow-up per §5 |
 | Snapshot serialiser doesn't fit in `gelo-embedder` | OK to put it in a new crate `gelo-attack-export` — just keep it out of `gelo-protocol` |
 

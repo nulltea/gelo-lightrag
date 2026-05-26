@@ -3,10 +3,10 @@ type: handoff
 status: current
 created: 2026-05-18
 updated: 2026-05-21
-tags: [path-2, aloepri]
+tags: [aloepri, aloepri]
 ---
 
-# Path 2 (AloePri) — next steps handoff
+# AloePri (AloePri) — next steps handoff
 
 > **Written:** 2026-05-18, after first working AloePri obfuscation on
 > Qwen3 1.7B (commit [`124703e`](../../../../commit/124703e), fp32 keymat
@@ -20,8 +20,8 @@ tags: [path-2, aloepri]
 >
 > **Don't duplicate** the following — reference them by path:
 >
-> - Plan: [`../../plans/path-2-aloepri-gemma.md`](../../plans/path-2-aloepri-gemma.md)
-> - Running status (chronological): [`../../dev/logs/path-2-status.md`](../../dev/logs/path-2-status.md)
+> - Plan: [`../../plans/aloepri-gemma.md`](../../plans/aloepri-gemma.md)
+> - Running status (chronological): [`../../dev/logs/aloepri-status.md`](../../dev/logs/aloepri-status.md)
 > - Protocol doc: [`../prototype/aloepri-llm.html`](../prototype/aloepri-llm.html)
 > - Gemma 4 deferred work: [`2026-05-21-aloepri-gemma-deferred.md`](2026-05-21-aloepri-gemma-deferred.md)
 > - Paper: AloePri, arXiv 2603.01499
@@ -270,7 +270,7 @@ reproducibility.
 
 Port `sheng1feng/Aloepri/src/security_qwen/{vma,ia,isa,ima,nn,tfma,sda}.py`
 into `evals/aloepri-attacks/` (already on the to-do list as Path 1's
-M0.3 — but the source code lives in our Path 2 vendor tree, so we
+M0.3 — but the source code lives in our AloePri vendor tree, so we
 own it). Run the seven attacks against the obfuscated Qwen3 1.7B
 artifact, report TTRSR per attack. Acceptance: ≤ 15 % per paper
 Table 2 (measured on Qwen2.5-14B; we're on Qwen3 1.7B which is

@@ -238,7 +238,7 @@ in the matrix-γ form". The deployment defends what it always
 defended: the seven attacks in §6.3 minus VMA/IA. Nothing about the
 security argument changes.
 
-**When this is enough.** When path-2's goal is paper-faithful
+**When this is enough.** When aloepri's goal is paper-faithful
 replication of §6.3 / Table 3 against the paper's own attack suite.
 This is the current M2.7 mission.
 
@@ -270,7 +270,7 @@ ArrowMatch when eigenvalue heterogeneity is high — see memory
 `private_embedding_findings.md`.
 
 **Verdict.** Plausible research direction; not a 1-week deployment.
-Path-2 should not invest here unless the threat model
+AloePri should not invest here unless the threat model
 unambiguously requires weight-privacy and HE is rejected on
 performance grounds.
 
@@ -293,12 +293,12 @@ The two paths converge: static intra-head obfuscation is structurally
 unable to defend against weight-analysing adversaries; fresh-per-
 prompt masking is structurally able.
 
-**Why this is out of scope for path-2.** Path-2 exists to deliver
+**Why this is out of scope for aloepri.** AloePri exists to deliver
 the AloePri deployment exactly. Per-prompt M_q sampling makes it a
 GELO variant, not AloePri. If we wanted that, we already have path-1.
 
-**Verdict.** Not the right move for path-2. If we need this defence,
-the right answer is "use path-1", not "rebuild path-2 to look like
+**Verdict.** Not the right move for aloepri. If we need this defence,
+the right answer is "use path-1", not "rebuild aloepri to look like
 path-1".
 
 ### 4.4 Hide γ_q's eigenvalue structure entirely (folded into W_q)

@@ -29,9 +29,9 @@ deployed the missing intra-head transforms. Results:
   across every Algorithm 2 build variant. The failing surface
   (`attn_norm-0`) is **pre-W_q**; M_q acts post-W_q. Algorithm 2 is
   structurally the wrong defence here.
-- Plus: the path-2 attack named "IMA basic" is different from the
+- Plus: the aloepri attack named "IMA basic" is different from the
   paper's `run_ima_baseline` (which is a static weight-inversion attack
-  paired by τ, in the VMA/IA family). The path-2 version inverts
+  paired by τ, in the VMA/IA family). The aloepri version inverts
   layer-0 activations from forward inference and is a stricter
   privacy property than the paper measures.
 
@@ -253,9 +253,9 @@ the M2.7 work:
 
 ```
 4919b55  docs(README): document M2.7 submodule + docker build flow
-3ccfed0  path-2: pin vendor/llama.cpp at nulltea fork (M2.7 commit baked in)
-f1e7088  path-2: vendor/llama.cpp as submodule + M2.7 patch on top
-fd531c4  path-2: M2.7 — AloePri attack-resistance harness against §05 obfuscated GGUF
+3ccfed0  aloepri: pin vendor/llama.cpp at nulltea fork (M2.7 commit baked in)
+f1e7088  aloepri: vendor/llama.cpp as submodule + M2.7 patch on top
+fd531c4  aloepri: M2.7 — AloePri attack-resistance harness against §05 obfuscated GGUF
 ```
 
 Working tree is clean. Branch is **not** pushed to remote.

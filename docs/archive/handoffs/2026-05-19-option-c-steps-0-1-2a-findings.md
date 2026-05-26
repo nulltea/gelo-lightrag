@@ -213,7 +213,7 @@ move the dial on ISA but not IMA.
    ISA HS now passes; IMA basic still fails; document why.
 3. **(Open)** Decide whether to invest in IMA-specific defences
    (keymat / noise / non-linear fold) or accept that L0 IMA is
-   the path-2 deployment's known weakness and document the threat
+   the aloepri deployment's known weakness and document the threat
    model boundary accordingly. This is a strategic call.
 4. **Commit the alg2.py + obfuscator + attack-driver changes.**
    They're production-quality; the GGUF naming convention with

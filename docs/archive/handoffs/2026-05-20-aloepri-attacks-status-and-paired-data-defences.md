@@ -130,7 +130,7 @@ This breaks down per-surface:
 Dimensional headroom argument, captured in §09 of `aloepri-llm.html`:
 
 - Paper config: d=5120, α_e=1.0 → per-row noise norm `1.0·σ·√5120 ≈ 71.5σ`
-- Path-2 config: d=2048, α_e=0.1 → per-row noise norm `0.1·σ·√2048 ≈ 4.5σ`
+- AloePri config: d=2048, α_e=0.1 → per-row noise norm `0.1·σ·√2048 ≈ 4.5σ`
 - Ratio: ~16× weaker per row, in 2.5× fewer dimensions → ~25× weaker
   effective scatter in the attack-utility subspace.
 
@@ -151,7 +151,7 @@ neutralised by design).
 **Hypothesis:** at d ≥ 4096, paper's α_e=1.0 should be back in scope
 without breaking accuracy, and the IMA-EmbedRow / IMA-L0 gates should
 land in paper-claimed range. Confirms the dimensional argument
-empirically and gives path-2 a deployable demonstrator at a model
+empirically and gives aloepri a deployable demonstrator at a model
 size that actually clears all gates.
 
 **Concrete experiments:**
@@ -207,7 +207,7 @@ otherwise isolates its memory, the attack collapses to wire-side only.
 inference. Just access control.
 **Cons:** breaks paper's "compatible with public LMaaS infrastructure"
 thesis. Requires trust in the operator who holds `W̃` and key custody.
-**Status:** known design lever, never explicitly considered in path-2
+**Status:** known design lever, never explicitly considered in aloepri
 docs. Probably the right move if "no AI on this codebase" is too
 strong a constraint to lift cleanly.
 
@@ -251,7 +251,7 @@ a. **Where does the fresh mask come from?** Two candidates:
      Server applies it to W̃ before the forward pass. Breaks the
      "stateless server" thesis but matches GELO's deployment.
    - **TEE-resident generator**: server-side TEE samples the mask
-     each forward pass. Path-2 doesn't currently have a TEE
+     each forward pass. AloePri doesn't currently have a TEE
      primitive; would need to either embed one in llama-server or
      pre-stage a stream of masks signed by an attested generator.
 
@@ -284,7 +284,7 @@ attacks as the residual surface under fresh masking. The four new
 attack drivers under `evals/aloepri-attacks/attack_drivers/`
 (`run_anchor_ica.py`, `run_jade.py`, `run_jd.py`, `run_gram_error.py`)
 are exactly the toolkit to validate any dynamic-masking design. Should
-run them against (i) the current static path-2 deployment, (ii) any
+run them against (i) the current static aloepri deployment, (ii) any
 prototyped dynamic-mask variant — comparative numbers settle the
 design.
 
@@ -296,7 +296,7 @@ design.
 | 2 — sweep (α_e, h) to close IMA-L0-activation | **partly done**. We learned α_e>0.3 destroys accuracy at d=2048; α_e=0.1 became the operational default. h sweep not run; deferred to direction 1 (do it at d=4B/8B instead). |
 | 3 — measure QK-norm Γ eigendecomposition leak | **deferred**. The matrix-Γ design ships `Γ = M^T·Diag(γ)·M` which is a similarity transform — `numpy.linalg.eig` recovers M directly. Threat-model doc covers this. Empirical measurement against the actual GGUF still TBD but the analytical attack is unambiguous. |
 | 4 — port GELO-like dynamic defences + Gram leakage | **carried forward** into direction 2C. |
-| 5 — resolve paper-vs-path-2 surface-mismatch in public docs | **done**. §08 attack table reorganised; §09 dimensional-headroom note added; FIG. 03a/03b updated. |
+| 5 — resolve paper-vs-aloepri surface-mismatch in public docs | **done**. §08 attack table reorganised; §09 dimensional-headroom note added; FIG. 03a/03b updated. |
 
 ## Suggested ordering for the next session
 
@@ -304,7 +304,7 @@ design.
    plain GGUFs, build the +Alg2 cells at paper defaults, run the full
    attack suite. This is the highest-information experiment available
    and confirms or refutes the dimensional argument.
-2. **If cells 1+4 confirm the argument** — write up "path-2 demonstrator
+2. **If cells 1+4 confirm the argument** — write up "aloepri demonstrator
    pivot from Qwen3-1.7B to Qwen3-{4,8}B" as the recommendation; update
    `aloepri-llm.html` §04 (supported models) and §09 (status).
 3. **If cells 1+4 don't close the gate** — Direction 2 becomes
@@ -322,7 +322,7 @@ design.
 - **Branch**: `path-2-aloepri-gemma`, clean, merged with master at
   `4c7aff5`. All changes from today committed (8 commits since the
   prior handoff).
-- **GGUFs**: only the path-2-aloepri/qwen3-1.7b/ directory has the
+- **GGUFs**: only the aloepri-aloepri/qwen3-1.7b/ directory has the
   current cells. The ablation GGUFs (gamma-only, keymat-only, etc.)
   were cleaned up during the disk-recovery pass earlier today; they
   rebuild in ~40 s from
@@ -372,7 +372,7 @@ design.
 - **Per-prompt fresh-mask handshake design** for Direction 2C —
   needs a sketch before measuring Gram leakage. The path-1 GELO
   protocol lives at `crates/gelo-protocol/` but assumes an in-process
-  TEE boundary; path-2's HTTP /completion endpoint is a different
+  TEE boundary; aloepri's HTTP /completion endpoint is a different
   shape entirely.
 - **Effective ridge sample-budget at d=4096/d=5120** — does the
   attacker still get clean closed-form recovery with the same

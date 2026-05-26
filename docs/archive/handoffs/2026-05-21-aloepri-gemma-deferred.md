@@ -24,8 +24,8 @@ tags: [aloepri, gemma]
 >
 > **What this doc does NOT duplicate** (reference instead):
 >
-> - Plan: [`../../plans/path-2-aloepri-gemma.md`](../../plans/path-2-aloepri-gemma.md)
-> - Running status: [`../../dev/logs/path-2-status.md`](../../dev/logs/path-2-status.md)
+> - Plan: [`../../plans/aloepri-gemma.md`](../../plans/aloepri-gemma.md)
+> - Running status: [`../../dev/logs/aloepri-status.md`](../../dev/logs/aloepri-status.md)
 > - Protocol reference: [`./aloepri-llm.html`](./aloepri-llm.html)
 > - Round-2 architecture analysis (Gemma 4 PLE, K=V, p-RoPE, hybrid):
 >   [`../../research/private-llm-inference-round-2.md`](../../research/private-llm-inference-round-2.md)
@@ -147,7 +147,7 @@ and dim `(d, h)`, so `‖xC‖²/‖x‖² ≈ h ≈ 128`.
 
 The §5.2.5-corrected κ used at the norm site is
 `κ_correct = κ_E · √(d/(d+2h)) ≈ 7.42` — derived in
-[`../../dev/logs/path-2-status.md`](../../dev/logs/path-2-status.md). This
+[`../../dev/logs/aloepri-status.md`](../../dev/logs/aloepri-status.md). This
 accounts for the change in RMSNorm denominator dim. Documented but
 not yet sufficient to make Gemma 4 work because of the post-norm
 issue.
@@ -352,4 +352,4 @@ protocol is mature on a simpler architecture.
 
 *Written by Claude Opus 4.7 (1M context) on 2026-05-18 as a session
 handoff. Conversation log: see git history of
-`docs/dev/logs/path-2-status.md` for the chronological account.*
+`docs/dev/logs/aloepri-status.md` for the chronological account.*

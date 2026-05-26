@@ -3,7 +3,7 @@ type: plan
 status: partial
 created: 2026-05-16
 updated: 2026-05-26
-tags: [graph-rag, lightrag, path-1, path-2]
+tags: [graph-rag, lightrag, path-1, aloepri]
 companion: [private-graph-rag-design, private-rag-system-design]
 ---
 

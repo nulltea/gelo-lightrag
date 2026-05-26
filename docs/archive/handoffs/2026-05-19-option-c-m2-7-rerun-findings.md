@@ -134,7 +134,7 @@ through M_q, which is the per-prompt-fixed unknown the paper expects
 the IMA inverter to fail on.
 
 **This is the missing measurement.** Filing as the immediate follow-up
-priority for the path-2 attack harness.
+priority for the aloepri attack harness.
 
 ## What Option C still buys, independent of the M2.7 result
 

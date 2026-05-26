@@ -3,8 +3,8 @@ type: plan
 status: current
 created: 2026-05-18
 updated: 2026-05-21
-tags: [path-2, aloepri, gemma]
-companion: [path-2-status]
+tags: [aloepri, aloepri, gemma]
+companion: [aloepri-status]
 ---
 
 # AloePri Private LLM Inference — Gemma 4 E2B / E4B on llama.cpp
@@ -270,7 +270,7 @@ GGUF weights live.
 
 **Files to add:**
 - `python/aloepri-llm/pyproject.toml` · `requirements.txt` · `.python-version`
-- `docs/dev/logs/path-2-status.md` — running notes log
+- `docs/dev/logs/aloepri-status.md` — running notes log
 
 **Concrete checks:**
 
@@ -298,7 +298,7 @@ python -c "import gguf; r = gguf.GGUFReader('<PATH>'); print([t.name for t in r.
 **Acceptance:**
 - Plaintext E2B runs an 8-token completion under stock llama.cpp.
 - `gguf-py` reads E2B tensors and metadata fields.
-- Documented finding in `path-2-status.md`: does Gemma 4 architecture
+- Documented finding in `aloepri-status.md`: does Gemma 4 architecture
   exist in llama.cpp mainline yet? If not, document the fallback
   (Gemma 3 4B has no PLE — strictly easier protocol-wise but loses
   the E-series PLE work).
@@ -447,7 +447,7 @@ asserting on shape mismatches.
 - `llama-cli -m obfuscated-e2b.gguf -p "<obfuscated_test_prompt>"
   -n 8` produces *some* output (correctness is M2.5's job; this
   milestone is just "does it run").
-- Documented outcome in `path-2-status.md`; if (2) or (3), patch /
+- Documented outcome in `aloepri-status.md`; if (2) or (3), patch /
   fork plan written.
 
 **Effort:** 1 week (outcome 1) to 6 weeks (outcome 3). Plan as 2
@@ -648,7 +648,7 @@ Plus shared work coordinating M0.* with Path 1 and writing M0.4
 
 ## 5. Disjoint-directory contract with Path 1
 
-To minimise merge pain, Path 2 only writes to:
+To minimise merge pain, AloePri only writes to:
 
 - `vendor/aloepri-py/**` (vendored AloePri reference)
 - `vendor/llama.cpp/**` (vendored llama.cpp; only modified if M2.3
@@ -669,12 +669,12 @@ Path 1 only writes to:
 - `evals/private-inference-corpus/**` (M0.1)
 - `evals/run-eval.py` + `evals/lib/**` (M0.2)
 - `evals/attack-harness/**` (M0.3 — though ownership may flip to
-  Path 2 since the attack code lives in our vendored tree; see §6)
+  AloePri since the attack code lives in our vendored tree; see §6)
 - `docs/plans/path-1-*.md`
 - `results/path-1-*.json`
 
-If Path 2 needs changes to Path-1-owned files, file a PR to master;
-Path 1 reviews and merges before Path 2 consumes.
+If AloePri needs changes to Path-1-owned files, file a PR to master;
+Path 1 reviews and merges before AloePri consumes.
 
 ---
 
@@ -682,8 +682,8 @@ Path 1 reviews and merges before Path 2 consumes.
 
 - **M0.3 attack-harness ownership.** Framework doc gives it to Path 1.
   But the source attacks live in `vendor/aloepri-py/src/security_qwen/`,
-  which is Path-2-owned. Cleanest resolution: move M0.3 ownership to
-  Path 2; Path 1 consumes the harness. Pending sync with Path 1 owner.
+  which is AloePri-owned. Cleanest resolution: move M0.3 ownership to
+  AloePri; Path 1 consumes the harness. Pending sync with Path 1 owner.
 - **Tokenizer dual-implementation.** llama.cpp has its own
   tokeniser; the client wrapper uses HuggingFace's. Need to verify
   byte-level equivalence beyond the basic roundtrip property (M2.4)
@@ -717,7 +717,7 @@ git status
 git log --oneline -5
 
 # 2. Read the handoff + the protocol doc
-less docs/plans/path-2-aloepri-gemma.md             # this file
+less docs/plans/aloepri-gemma.md             # this file
 less docs/prototype/aloepri-llm.html                # protocol reference
 less docs/plans/private-inference-comparison-framework.md
 less docs/research/aloepri-vs-gelo.md

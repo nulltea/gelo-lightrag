@@ -72,7 +72,7 @@ For plain identity-τ control: pass `--identity-tau` and `--obfuscated $PLAIN` (
 - Disable checkpointing with `--paper-checkpoint-dir ''`.
 
 **Currently cached checkpoints:**
-- `~/.cache/aloepri-ima-checkpoints/ima_xformer_2cb1dff683633e8a.pt` (7.1 GB) — obfuscated 4B real-τ, ep=100. Hash derived from current path-2-aloepri/qwen3-4b paths.
+- `~/.cache/aloepri-ima-checkpoints/ima_xformer_2cb1dff683633e8a.pt` (7.1 GB) — obfuscated 4B real-τ, ep=100. Hash derived from current aloepri-aloepri/qwen3-4b paths.
 
 ### 4. Eval-cadence patch — full-vocab cosine NN was 80 % of runtime
 
@@ -131,14 +131,14 @@ Even though we ported `run_ima_paper_like` byte-for-byte from the reference impl
 
 - **Inverter arch**: paper says "Qwen2 model with 2 decoder layers and 8 attention heads." We use `Qwen/Qwen2.5-0.5B-Instruct` config → Qwen2Model class via `AutoModel.from_config`. Need to verify Qwen2.5 hf-transformers wrapper is identical to whatever the paper-authors used in 2025.
 - **Public corpus**: we use `vendor/aloepri-py/docs/*` (paper, internal docs, README) — total ~110 KB. Paper §7.1 mentions "CCI3, Huatuo26M-Lite, MedDialog" datasets but doesn't specify which is used to train the IMA inverter. If paper uses a domain-mismatched corpus (medical text against general English target deployment), training data might be much weaker than ours.
-- **`observed_embed` source**: reference impl loads `observed_embed` from the deployment's actual obfuscated weights (`server_dir/model.safetensors`). We load from our obfuscated GGUF. Should be byte-equivalent if our obfuscator + dequantiser is correct. But: any divergence between reference's obfuscator and ours (path-2's `obfuscate_qwen3_gguf.py`) would produce a different `W̃` and a different attack baseline.
+- **`observed_embed` source**: reference impl loads `observed_embed` from the deployment's actual obfuscated weights (`server_dir/model.safetensors`). We load from our obfuscated GGUF. Should be byte-equivalent if our obfuscator + dequantiser is correct. But: any divergence between reference's obfuscator and ours (aloepri's `obfuscate_qwen3_gguf.py`) would produce a different `W̃` and a different attack baseline.
 - **Hyperparam mismatch**: paper §F.2 fixes `epochs=2`. We're at ep=100. **Paper might genuinely consider "constrained-attacker = 2 epochs" the load-bearing claim** — i.e., paper's 0 % is the ep=2 reading, which we also got (~2 %). If so, the disparity is on the *interpretation* axis: paper's claim is "constrained attacker can't recover," not "no attacker can recover."
 
-**Test:** run our ep=100+ inverter against the **reference impl's Stage-K obfuscated artifact** (vendored at `vendor/aloepri-py/artifacts/stage_k_release/`). If we get the same 12.70 %-and-climbing, the disparity is paper's claim ≠ what their own measurement supports — our attack is the truer reading. If we get 0 %, the disparity is in our deployment (path-2 GGUF differs from reference's stage_k obfuscation in a way that lets ridge-class attacks succeed).
+**Test:** run our ep=100+ inverter against the **reference impl's Stage-K obfuscated artifact** (vendored at `vendor/aloepri-py/artifacts/stage_k_release/`). If we get the same 12.70 %-and-climbing, the disparity is paper's claim ≠ what their own measurement supports — our attack is the truer reading. If we get 0 %, the disparity is in our deployment (aloepri GGUF differs from reference's stage_k obfuscation in a way that lets ridge-class attacks succeed).
 
 ### Hypothesis B — Our AloePri obfuscation is weaker than paper's
 
-Path-2's `python/aloepri-llm/obfuscate_qwen3_gguf.py` could have a bug or weaker default that paper's reference doesn't:
+AloePri's `python/aloepri-llm/obfuscate_qwen3_gguf.py` could have a bug or weaker default that paper's reference doesn't:
 
 - α_e = 1.0 (paper default — match)
 - α_h = 0.2 (paper default — match)
@@ -189,9 +189,9 @@ This isolates "is the attack different?" from "is the deployment different?":
 
 - Reference Stage-K artifact: `vendor/aloepri-py/artifacts/stage_k_release/` (need to verify presence + load path).
 - Reuse the same Qwen2.5 inverter + same hyperparams.
-- Compare top-1 trajectory vs our path-2 obfuscated 4B.
+- Compare top-1 trajectory vs our aloepri obfuscated 4B.
 
-If reference Stage-K behaves like our path-2 → paper's 0 % is the 2-epoch reading. If reference Stage-K behaves differently → path-2's obfuscator diverges from reference.
+If reference Stage-K behaves like our aloepri → paper's 0 % is the 2-epoch reading. If reference Stage-K behaves differently → aloepri's obfuscator diverges from reference.
 
 ### Step 3 — Slim the checkpoint format (optional, after disparity is resolved)
 
@@ -216,7 +216,7 @@ Together: ~7.1 GB → ~1 GB. Easy win once we're past the disparity investigatio
 
 ```
 M  docs/research/aloepri-attacks.md           (threat-model overhaul — already coherent)
-M  docs/prototype/aloepri-llm.html            (§08 cleaned of "row" / "path-2" mentions)
+M  docs/prototype/aloepri-llm.html            (§08 cleaned of "row" / "aloepri" mentions)
 M  evals/aloepri-attacks/m2_7/run_ima_embedrow_attacks.py   (paper-faithful inverter + checkpoint + eval cadence)
 M  evals/aloepri-attacks/m2_7/run_in_gpu_container.sh        (new file — Docker wrapper)
 M  evals/aloepri-attacks/m2_7/Dockerfile.ima-trainer         (new file)
@@ -228,6 +228,6 @@ Commit recommendation: bundle the IMA-EmbedRow-transformer overhaul + GPU pipeli
 
 ## Suggested skills for the next session
 
-- **`/diagnose`** when running Step 2 (reference vs path-2 obfuscation diff) — disciplined hypothesis-test loop is the right shape for "where does this 12.70 % come from?"
+- **`/diagnose`** when running Step 2 (reference vs aloepri obfuscation diff) — disciplined hypothesis-test loop is the right shape for "where does this 12.70 % come from?"
 - **`/grill-with-docs`** if drafting the "paper's IMA claim is actually the constrained-attacker reading" framing for `aloepri-attacks.md` — the threat-model writeup needs careful language alignment with paper §5.1's "constrained attackers" remark.
 - Skip `/handoff` at the end of the next session unless an unexpected branch opens — the disparity investigation is well-scoped.

@@ -9,7 +9,7 @@ tags: [pi]
 # Handoff — strong-Π + chat_parser=epsilon workaround
 
 **Date:** 2026-05-21
-**Branch:** `path-2-aloepri-gemma` (uncommitted: obfuscator `--pi-include-specials`, path-2 client `_EPSILON_CHAT_PARSER`, capture-script payload field, fresh strong-Π 4B GGUF)
+**Branch:** `path-2-aloepri-gemma` (uncommitted: obfuscator `--pi-include-specials`, aloepri client `_EPSILON_CHAT_PARSER`, capture-script payload field, fresh strong-Π 4B GGUF)
 **Goal:** Close the ~293-pair specials/UNUSED structural leak by permuting all 151669 active tokens (strong-Π) and keep llama-server's `/completion` endpoint 100 % robust under the resulting multi-language gibberish output — **without patching llama.cpp**.
 
 ## What landed

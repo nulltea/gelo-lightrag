@@ -14,7 +14,7 @@ tags: [aloepri, pi]
 
 ## The 30-second version
 
-The path-2 Qwen3-1.7B obfuscator was permuting token IDs in `[0, 151669)` **including the EOS, BOS, im_start, im_end, fim_*, and tool-call special tokens**. After Π, the inference server's standard "stop on EOS token id 151645" check never fires (the model has learnt to emit `inv_τ[151645]` to mean stop, but the server sees a different obf id). Every obfuscated `/completion` runs to `max_tokens`, the model drifts off-manifold past its natural stop point, eventually emits an invalid utf-8 sequence, and llama-server's JSON encoder returns 500.
+The aloepri Qwen3-1.7B obfuscator was permuting token IDs in `[0, 151669)` **including the EOS, BOS, im_start, im_end, fim_*, and tool-call special tokens**. After Π, the inference server's standard "stop on EOS token id 151645" check never fires (the model has learnt to emit `inv_τ[151645]` to mean stop, but the server sees a different obf id). Every obfuscated `/completion` runs to `max_tokens`, the model drifts off-manifold past its natural stop point, eventually emits an invalid utf-8 sequence, and llama-server's JSON encoder returns 500.
 
 HumanEval pass@1 ledger:
 

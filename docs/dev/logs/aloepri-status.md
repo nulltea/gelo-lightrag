@@ -3,11 +3,11 @@ type: dev-log
 status: current
 created: 2026-05-18
 updated: 2026-05-21
-tags: [path-2, aloepri]
+tags: [aloepri, aloepri]
 companion: [path-2-aloepri-gemma]
 ---
 
-# Path 2 — running status log
+# AloePri — running status log
 
 Update at the end of each milestone or whenever findings invalidate
 a plan assumption. Most recent entry on top.
@@ -47,7 +47,7 @@ approximation is off per-input, and attention scores degrade enough
 to make the model produce high-prior-token loops.
 
 This was foreseeable from the earlier grill but I underweighted
-the *empirical* impact. The norm-doubling concern in path-2-status
+the *empirical* impact. The norm-doubling concern in aloepri-status
 (57 → 113 κ-sites) wasn't just an accuracy budget worry — for
 QK-norm specifically, even one site breaks attention because the
 per-input bias compounds inside the softmax.
@@ -246,7 +246,7 @@ code completion) drift more. Plausible mechanism: e_C^AloePri
 compounds multiplicatively across hundreds of generated tokens vs.
 a single-token decision in multi-choice.
 
-**Decision-tree position** per `path-2-aloepri-next-steps.md` Gate C:
+**Decision-tree position** per `aloepri-next-steps.md` Gate C:
 - MMLU clearly **≤ 3.5%** (paper-bound)
 - PIQA / HumanEval in the **3.5%–10% band** ("paper-bound territory…
   proceed but flag in M0.4 report"), with sampling noise making the

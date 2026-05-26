@@ -3,7 +3,7 @@ type: reference
 status: current
 created: 2026-05-18
 updated: 2026-05-18
-tags: [comparison, path-1, path-2]
+tags: [comparison, path-1, aloepri]
 ---
 
 # Private LLM Inference Comparison: GELO vs AloePri on Gemma E2B/E4B
@@ -12,7 +12,7 @@ tags: [comparison, path-1, path-2]
 > development paths:
 > - **Path 1** (`path-1-gelo-gemma.md`): GELO TEE-GPU split inference
 >   for Gemma E2B/E4B. Continues in the original worktree.
-> - **Path 2** (`path-2-aloepri-gemma.md`): AloePri offline-rewrite
+> - **AloePri** (`aloepri-gemma.md`): AloePri offline-rewrite
 >   inference for Gemma E2B/E4B. Develops in `../private-rag-path-2`
 >   worktree.
 >
@@ -36,7 +36,7 @@ tags: [comparison, path-1, path-2]
 | Term | Meaning |
 |---|---|
 | **Path 1** | GELO TEE-GPU split inference (this project's existing protocol family). |
-| **Path 2** | AloePri offline-rewrite inference (new addition; pre-existing reference code at `sheng1feng/Aloepri`). |
+| **AloePri** | AloePri offline-rewrite inference (new addition; pre-existing reference code at `sheng1feng/Aloepri`). |
 | **E2B / E4B** | Gemma 4 effective-2B and effective-4B variants. |
 | **PLE** | Per-Layer Embeddings — Gemma 3n / Gemma 4 cache table indexed by `token_id`. |
 | **K=V trick** | Gemma 4 global-layer optimization: K and V tensors share storage. |
@@ -53,7 +53,7 @@ tags: [comparison, path-1, path-2]
 Confirmed compatibility per architectural feature (see chat
 2026-05-18 for derivation):
 
-| Feature | Path 1 (GELO) | Path 2 (AloePri) |
+| Feature | Path 1 (GELO) | AloePri (AloePri) |
 |---|---|---|
 | Hybrid attention 5:1 (E4B) / 4:1 (E2B), W=512 | ✓ Clean (in-TEE local, offload global) | ✓ Clean (Algorithm 2 is attention-pattern-agnostic) |
 | PLE table 262144×256×N | ⚠ Must live in TEE DRAM (~1.3 GB E4B int8) | ✓ Token-permute the table at offline-rewrite |
@@ -95,7 +95,7 @@ research stream. Out of scope for v1 comparison.
 
 These milestones must complete **before** either path can produce
 publishable comparison numbers. They live in the **original
-worktree** (Path 1) and are referenced by Path 2.
+worktree** (Path 1) and are referenced by AloePri.
 
 ### M0.1 — Common test corpus
 
@@ -116,7 +116,7 @@ evaluate on, sized for fast iteration + release-grade comparison.
 **Artifact:** `evals/private-inference-corpus/` — JSON files,
 pinned commit hash, scripts to refresh from upstream.
 
-**Owner:** Path 1 worker (this session). Path 2 reads.
+**Owner:** Path 1 worker (this session). AloePri reads.
 
 **Effort:** ~3 days.
 
@@ -137,7 +137,7 @@ evals/run-eval.py \
 - Accuracy: MMLU accuracy, IFEval pass rate, PIQA accuracy,
   HumanEval pass@1
 - Performance: TTFT, TPOT, peak-memory (TEE-RAM for Path 1, total
-  for Path 2), throughput (tok/s)
+  for AloePri), throughput (tok/s)
 - Quality: top-1 token match against plain reference, cosine
   similarity of final hidden states
 
@@ -155,11 +155,11 @@ standalone harness, runnable against either protocol's output.
 Detailed plan in `../research/aloepri-vs-gelo.md` §4.1. Three
 phases:
 1. Snapshot capture in TrustedExecutor (Path 1) and in the
-   AloePri client wrapper (Path 2)
+   AloePri client wrapper (AloePri)
 2. Attack-harness wiring against pinned AloePri commit
 3. Integration into release-gate CI
 
-**Owner:** Path 1 worker writes the harness; Path 2 wires its own
+**Owner:** Path 1 worker writes the harness; AloePri wires its own
 snapshot capture into the same harness.
 
 **Effort:** ~2-3 weeks (already on Path 1's roadmap as P1 spike).
@@ -180,7 +180,7 @@ contributes their numbers.
 
 ## 4. Cadence and synchronization
 
-| Phase | Path 1 (this worktree) | Path 2 (worktree 2) | Sync point |
+| Phase | Path 1 (this worktree) | AloePri (worktree 2) | Sync point |
 |---|---|---|---|
 | Setup | Write Path 1 plan (this doc batch) | Read handoff doc, set up env | — |
 | Week 1-2 | M0.1 corpus + M0.2 harness | Verify vLLM Gemma 4 support; fall back to Gemma 3 if needed | M0.1 + M0.2 land on master |
@@ -188,18 +188,18 @@ contributes their numbers.
 | Week 5-8 | M1.2 PLE in TEE, M1.3 hybrid attn, M1.4 K=V, M1.5 p-RoPE | M2.2 offline obfuscation pipeline | — |
 | Week 9-10 | M1.6 E2B bench | M2.3 vLLM integration, M2.4 client | — |
 | Week 11-12 | M1.7 E4B scaling, M1.8 accuracy | M2.5-M2.7 benches + accuracy | **Comparison sync** |
-| Week 13-14 | M0.3 attack harness on Path 1 | M2.8 attack harness on Path 2 | Both run same suite |
+| Week 13-14 | M0.3 attack harness on Path 1 | M2.8 attack harness on AloePri | Both run same suite |
 | Week 15 | M0.4 comparison report | M0.4 comparison report | Joint write-up |
 
 **Total: ~15 weeks** in calendar time if both paths progress in
 parallel. Path 1 critical path is M1.3 (hybrid attention).
-Path 2 critical path is M2.3 (vLLM integration, dependent on
+AloePri critical path is M2.3 (vLLM integration, dependent on
 upstream Gemma 4 support).
 
 **Communication:**
 - Shared `master` branch holds M0.* artifacts.
 - Path 1 develops on `path-1-gelo-gemma` branch.
-- Path 2 develops on `path-2-aloepri-gemma` branch (separate
+- AloePri develops on `path-2-aloepri-gemma` branch (separate
   worktree at `../private-rag-path-2`).
 - Weekly handoff: each side updates its plan doc's "status" section.
 
@@ -216,7 +216,7 @@ answer:
 |---|---|
 | TTFT @ 512-token prompt | One run per (model, protocol); average of 10 |
 | TPOT (steady-state) @ 256-token continuation | Same |
-| Peak memory (TEE RAM for Path 1; total VRAM for Path 2) | OS-level read |
+| Peak memory (TEE RAM for Path 1; total VRAM for AloePri) | OS-level read |
 | Throughput (tok/s) at batch=1 and batch=32 | Wall-clock |
 | Wall-clock overhead vs plain baseline (% slowdown) | TPOT relative to plain Gemma |
 
@@ -251,7 +251,7 @@ absolute.
 | Final hidden-state cosine similarity vs plain | Same |
 
 **Expected**: Path 1 is bit-exact in fp32 (`top1 = 1.00` per
-`gelo.md` Appendix). Path 2 loses 0-3.5% per AloePri paper on
+`gelo.md` Appendix). AloePri loses 0-3.5% per AloePri paper on
 Qwen/Llama/DeepSeek — Gemma 4 untested by paper. Direct
 measurement is the point.
 
@@ -285,16 +285,16 @@ worth documenting.
 | Lines of code added | `git diff` against current `master` |
 | New external dependencies | Cargo.toml / requirements.txt deltas |
 | Ongoing maintenance surface | Subjective — each path summarizes |
-| Compatibility with existing inference stacks | Path 2: vLLM/SGLang; Path 1: ours alone |
+| Compatibility with existing inference stacks | AloePri: vLLM/SGLang; Path 1: ours alone |
 
-**Expected**: Path 2 wins on integration (vLLM unmodified). Path 1
+**Expected**: AloePri wins on integration (vLLM unmodified). Path 1
 wins on dependency footprint (no Python serving stack).
 
 ### 5.6 Threat-model framing
 
 Recapped for the report (no measurement; descriptive only).
 
-| Property | Path 1 | Path 2 |
+| Property | Path 1 | AloePri |
 |---|---|---|
 | Adversary | Honest-but-curious GPU + host operator | Honest-but-curious server |
 | Per-request entropy | Fresh Haar `A_b` per forward | None — static `τ`, static `θ̃` |
@@ -311,10 +311,10 @@ Recapped for the report (no measurement; descriptive only).
 **Symptom**: M2.3 blocks because vLLM doesn't have Gemma 4 model
 implementation in mainline.
 
-**Mitigation**: Path 2 falls back to Gemma 3 (1B → 4B same hybrid
+**Mitigation**: AloePri falls back to Gemma 3 (1B → 4B same hybrid
 family, no PLE). Document the substitution; rerun M0.* corpus on
 Gemma 3. Path 1 sticks with Gemma 4 unless instructed otherwise.
-Comparison becomes "Path 1 on Gemma 4 vs Path 2 on Gemma 3" with
+Comparison becomes "Path 1 on Gemma 4 vs AloePri on Gemma 3" with
 an explicit caveat that the model architectures differ slightly
 (no PLE in Gemma 3 → no PLE-leak fix needed → not directly
 comparable on that axis).
@@ -355,12 +355,12 @@ deferred" section. Land M0.3 post-comparison.
 **Mitigation**: Both paths only write to **disjoint directories**.
 - Path 1 modifies `crates/gelo-embedder`, `crates/gelo-protocol`,
   `crates/gelo-gpu-wgpu`, `crates/gelo-snp-runner`.
-- Path 2 writes to `vendor/aloepri-py/` (Python), `evals/`,
+- AloePri writes to `vendor/aloepri-py/` (Python), `evals/`,
   `scripts/path-2-*`. No Rust touches.
 - Shared infrastructure (`evals/private-inference-corpus/`,
   `evals/run-eval.py`, `evals/attack-harness/`) lives on master
-  and is updated by Path 1, consumed by both. Path 2 doesn't
-  modify these; if Path 2 needs changes, send a PR back to master.
+  and is updated by Path 1, consumed by both. AloePri doesn't
+  modify these; if AloePri needs changes, send a PR back to master.
 
 ---
 
@@ -381,7 +381,7 @@ includes:
 - [ ] Table 5.5 fully populated; LOC counts and dependency
       manifests included as appendices.
 - [ ] Recommendation paragraph: under which deployment scenarios
-      should the project use Path 1 vs Path 2.
+      should the project use Path 1 vs AloePri.
 
 This output feeds back into [`../archive/research/private-llm-inference-R2-2026-05-18.md`](../archive/research/private-llm-inference-R2-2026-05-18.md)
 as round-3.

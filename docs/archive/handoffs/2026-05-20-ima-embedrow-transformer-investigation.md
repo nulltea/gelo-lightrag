@@ -95,7 +95,7 @@ The current §08 IMA-EmbedRow-transformer row (with plain "0.4 %" / obfuscated "
 2. **Update §08 acceptance gates table** — change `ima_embedrow_transformer_below_15pct` from "provisional pass" to "skipped (attack broken)".
 3. **Update §08 headline reading** — change "8 of 11 pass" to "7 of 10 pass; 1 attack broken (IMA-EmbedRow-transformer)".
 4. **Commit the m2_7 renames + plain-control changes.** Branch has been uncommitted for two sessions; the static-weight harness state is reproducible enough to ship as-is.
-5. (Optional) Re-attempt IMA-EmbedRow-transformer with closed-form init OR contrastive loss; only worth the effort if path-2 wants a "trained-inverter" plain-side claim. Otherwise drop the variant.
+5. (Optional) Re-attempt IMA-EmbedRow-transformer with closed-form init OR contrastive loss; only worth the effort if aloepri wants a "trained-inverter" plain-side claim. Otherwise drop the variant.
 
 ## Pre-flight notes for the next session
 

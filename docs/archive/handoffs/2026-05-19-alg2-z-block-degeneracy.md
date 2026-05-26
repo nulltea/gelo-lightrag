@@ -52,7 +52,7 @@ The §05 Qwen3 deployment forces `q_matrix = k_matrix = I` (see
 therefore `z_block` — were not exercised in inference. M2.7 attack
 ledger numbers reflect head-shuffle + keymat + α-noise only; the
 "block permutation" column of paper Table 3 was never actually wired
-through to runtime on path-2.
+through to runtime on aloepri.
 
 ## What paper Table 3 actually attributes to "Head&BlockPerm"
 
@@ -76,7 +76,7 @@ that the matrix-Γ kernel ferries through. We deploy R̂_qk + (head
 shuffle from `Π_head` via `tau_kv`/`tau_group`). We don't deploy
 Ĥ_qk (dropped by the orthogonality MVP) or Ẑ_block (silently I).
 
-So the path-2 Option C deployment is **R̂_qk + Π_head only** out of
+So the aloepri Option C deployment is **R̂_qk + Π_head only** out of
 the paper's three named intra-head primitives. If M2.7 IMA still
 crosses the 15 % gate after Option C, this is the obvious next
 component to investigate fixing.

@@ -13,13 +13,13 @@ tags: [aloepri, alg2, q4]
 
 ```
 a5003a9 merge master into path-2-aloepri-gemma · pulls in AloePri attack-harness handoff
-5e54cc7 path-2: AloePri Qwen3 1.7B — Π token permutation + α_e/α_h noise + partial Algorithm 2
-ee932ed path-2: handoff doc — three gates before deferred privacy work
+5e54cc7 aloepri: AloePri Qwen3 1.7B — Π token permutation + α_e/α_h noise + partial Algorithm 2
+ee932ed aloepri: handoff doc — three gates before deferred privacy work
 ```
 
 The committed state is correct. Reference for the wider context:
 
-- Plan: [`../../plans/path-2-aloepri-gemma.md`](../../plans/path-2-aloepri-gemma.md) · running status [`../../dev/logs/path-2-status.md`](../../dev/logs/path-2-status.md) · next-steps handoff [`2026-05-21-path-2-aloepri-next-steps.md`](2026-05-21-path-2-aloepri-next-steps.md)
+- Plan: [`../../plans/aloepri-gemma.md`](../../plans/aloepri-gemma.md) · running status [`../../dev/logs/aloepri-status.md`](../../dev/logs/aloepri-status.md) · next-steps handoff [`2026-05-21-aloepri-next-steps.md`](2026-05-21-aloepri-next-steps.md)
 - Protocol doc: [`docs/prototype/aloepri-llm.html`](docs/prototype/aloepri-llm.html) — §07 perf, §08 gaps
 - Implementation: `python/aloepri-llm/{obfuscate_qwen3_gguf.py, aloepri_client.py, lib/alg2.py, evals/}`
 
@@ -35,7 +35,7 @@ do not duplicate that work.
 **Verdict landed: fp32 is required.** All three llama.cpp
 production-quant formats break the obfuscation chain.
 
-Numbers (from `docs/dev/logs/path-2-status.md` "Gate A" entry):
+Numbers (from `docs/dev/logs/aloepri-status.md` "Gate A" entry):
 
 | Format | Size | Smoke output on "What is the capital of France?" |
 |---|---:|---|
@@ -147,7 +147,7 @@ per-input scale errors push attention toward uniformity (high-prior
 token loops) or away from semantic peaks. The model degenerates to
 high-frequency-token emission ("a again ... ... ...").
 
-The same dynamic is the reason path-2-status.md flagged Gemma 4
+The same dynamic is the reason aloepri-status.md flagged Gemma 4
 post-norms as a blocker — 5 norm sites × multiplicative κ-bias
 compounding pushes accuracy loss past ~10%. For QK-norm, even one
 site breaks attention because softmax amplifies the error.
@@ -243,7 +243,7 @@ work the list. **Empirical check first, math second.**
 
 ## Suggested fresh-session opening moves
 
-1. Read this handoff + `docs/dev/logs/path-2-status.md` (entries dated
+1. Read this handoff + `docs/dev/logs/aloepri-status.md` (entries dated
    2026-05-18) end to end.
 2. Read protocol doc §07 and §08 in `docs/prototype/aloepri-llm.html`
    (the doc is served at `http://127.0.0.1:8000/aloepri-llm.html`

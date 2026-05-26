@@ -133,11 +133,11 @@ This is a narrower paper-faithful variant that captures most of the defense gain
 
 ### 5. Re-deploy decision
 
-If accuracy holds under (3) AND A1+A2 give the measured defense gain, the recommended path-2 deployment changes from `default Alg2` to `--alg2-paper-literal` across all future Q3-4B / Q3-8B / Q2.5-14B obfuscation runs. The deployed cell becomes the paper-literal variant; the prior CAVEAT in `alg2.py:244-262` becomes wrong (deliberate non-covariance was the bug, not the feature). HTML §08 + theorem doc need updating to reflect the recommended construction.
+If accuracy holds under (3) AND A1+A2 give the measured defense gain, the recommended aloepri deployment changes from `default Alg2` to `--alg2-paper-literal` across all future Q3-4B / Q3-8B / Q2.5-14B obfuscation runs. The deployed cell becomes the paper-literal variant; the prior CAVEAT in `alg2.py:244-262` becomes wrong (deliberate non-covariance was the bug, not the feature). HTML §08 + theorem doc need updating to reflect the recommended construction.
 
 ### 6. Step 3 (paper-faithful gradient-opt ISA) — still needed for 87% baseline
 
-Independent of the above, the 87 % Noise+KeyMat baseline in paper Table 4 still requires paper's gradient-opt attack to reproduce. Lowest-priority since the construction story above accounts for most of the path-2 narrative.
+Independent of the above, the 87 % Noise+KeyMat baseline in paper Table 4 still requires paper's gradient-opt attack to reproduce. Lowest-priority since the construction story above accounts for most of the aloepri narrative.
 
 ## Suggested skill for next session
 
