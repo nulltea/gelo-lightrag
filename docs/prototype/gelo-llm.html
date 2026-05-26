@@ -3443,21 +3443,281 @@
             >
           </h2>
           <div class="section-meta">
-            Qwen3-1.7B short-prompt (2026-05-18) · Qwen3-4B long-context
-            (2026-05-20)
+            Qwen3-4B production state (2026-05-26) · Qwen3-1.7B baseline
+            (2026-05-18) · Qwen3-4B pre-cascade baseline (2026-05-20)
           </div>
         </header>
         <p class="lede">
-          First end-to-end measurement of the GELO protocol on real-weight
-          generation. The cells mirror the embedder/reranker overhead taxonomy:
-          <strong>gpu_plain</strong> (no privacy baseline) ·
-          <strong>gpu_gelo</strong> (paper-parity: per-forward Haar
-          <code>A</code> + shield(8, 4.0)) ·
-          <strong>gpu_full_stack</strong> (gpu_gelo + Freivalds U-Verify
-          <code>k = 2</code>). OutAttnMult forced on at every
+          End-to-end measurement of the GELO protocol on real-weight generation.
+          The headline subsection below records the current Qwen3-4B production
+          state — fp16 wgpu engine, LM-head GPU-offloaded under the same
+          masked-offload boundary, mask family auto-dispatched by pad ratio (HD₃
+          at pad ≤ 1.6, DCT-IV cascade above), and the CPU DCT-IV path running
+          as a tile-fused six-stage cascade entirely in L2 per column tile.
+          Historical baselines (Qwen3-1.7B short prompt; Qwen3-4B pre-cascade
+          long-context) follow for the gpu_plain / gpu_gelo / gpu_full_stack
+          comparison that the embedder/reranker tables also use.
+        </p>
+
+        <h3 style="margin-top: 32px">
+          Qwen3-4B · current measured throughput across shapes
+        </h3>
+        <p class="prose">
+          Five shapes spanning the Auto-family decision space, ordered by pad
+          ratio. Auto picks the mask family that minimises GPU pad penalty: HD₃
+          when <code>s_pad / s ≤ 1.6</code> (zero-pad to next pow2 is cheap),
+          DCT-IV cascade otherwise. The DCT-IV path runs all three DCT stages
+          and three diagonal multiplications fused over 16-column tiles so the
+          whole cascade lives in L2 per tile — no inter-stage DDR5 round-trip —
+          which cut prefill wall by <strong>22 %</strong> at the
+          production-extraction shape vs the prior 3-stage path. Single-sample
+          cells; long-n run-to-run variance ~7 %.
+        </p>
+        <table class="spec" style="margin-top: 12px">
+          <thead>
+            <tr>
+              <th>Shape (B · n)</th>
+              <th>pad ratio</th>
+              <th>Auto family</th>
+              <th>Prefill wall (s)</th>
+              <th>Prefill agg. tok/s</th>
+              <th>Decode wall (s)</th>
+              <th>Decode agg. tok/s</th>
+              <th>Decode tok/s · seq</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><b>8 · 3 500</b> · long-n HD₃</td>
+              <td class="num">1.17</td>
+              <td>HD₃</td>
+              <td class="num">289.09</td>
+              <td class="num">96.85</td>
+              <td class="num">80.64</td>
+              <td class="num">3.17</td>
+              <td class="num">0.40</td>
+            </tr>
+            <tr>
+              <td><b>8 · 320</b> · short-n HD₃</td>
+              <td class="num">1.56</td>
+              <td>HD₃</td>
+              <td class="num">24.22</td>
+              <td class="num">105.7</td>
+              <td class="num">26.82</td>
+              <td class="num">9.55</td>
+              <td class="num">1.19</td>
+            </tr>
+            <tr>
+              <td><b>1 · 2 561</b> · single-stream</td>
+              <td class="num">1.59</td>
+              <td>HD₃</td>
+              <td class="num">31.45</td>
+              <td class="num">81.43</td>
+              <td class="num">22.28</td>
+              <td class="num">1.44</td>
+              <td class="num">1.44</td>
+            </tr>
+            <tr>
+              <td><b>8 · 2 400</b> · crossover band</td>
+              <td class="num">1.70</td>
+              <td>DCT-IV</td>
+              <td class="num">169.76</td>
+              <td class="num">113.10</td>
+              <td class="num">61.42</td>
+              <td class="num">4.17</td>
+              <td class="num">0.52</td>
+            </tr>
+            <tr style="background: #f6f8fa">
+              <td><b>8 · 2 048</b> · <em>production extraction</em></td>
+              <td class="num">1.99</td>
+              <td>DCT-IV</td>
+              <td class="num"><b>135.13</b></td>
+              <td class="num"><b>121.25</b></td>
+              <td class="num"><b>55.44</b></td>
+              <td class="num"><b>4.62</b></td>
+              <td class="num">0.58</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="prose" style="margin-top: 8px; font-size: 13px">
+          <em>Adapter:</em> AMD Radeon 8060S (Strix Halo, RADV gfx1151, iGPU),
+          Mesa Vulkan, fp16 wgpu engine. <em>Model:</em>
+          <code>Qwen/Qwen3-4B</code> bf16 weights, GPU-resident post-provision
+          (host RSS ~ 2.4 GiB residual = token-embedding + layer norms + config;
+          per-layer weight Arcs released after VRAM upload).
+          <em>Workload:</em> identical-length prompts per batch, greedy, K = 32
+          decode tokens, R3 LM-head GPU offload on (paper- parity per-forward
+          fresh mask + shield(8, 4.0)). Bench code:
+          <code>crates/gelo-gpu-wgpu/tests/qwen3_m1_12_r1_q1_microbench.rs</code
+          >; driver: <code>scripts/measurement-gaps-sweep.sh</code>.
+        </p>
+
+        <h4 style="margin-top: 24px">
+          Per-bucket attribution — production shape
+        </h4>
+        <p class="prose">
+          Prefill wall at <code>B = 8 · n = 2 048</code> (pad 1.99, DCT-IV
+          cascade) decomposes into four buckets. Decode at the same shape is
+          dominated by in-TEE attention (the DDR5-bandwidth-bound per-step GQA
+          kernel over the cached <code>n_kv ≈ 2 056</code> prefix).
+        </p>
+        <table class="spec" style="margin-top: 12px">
+          <thead>
+            <tr>
+              <th>Bucket</th>
+              <th>Prefill share</th>
+              <th>Decode share</th>
+              <th>Reach for the lever</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>CPU mask (DCT-IV cascade)</td>
+              <td class="num"><b>20.4 %</b></td>
+              <td class="num">~4 %</td>
+              <td>
+                Cascade landed (was 38.0 % pre-2026-05-26); bf16 inner kernel
+                remains as a follow-up.
+              </td>
+            </tr>
+            <tr>
+              <td>GPU matmul (QKV / O / gate / up / down)</td>
+              <td class="num">~52 %</td>
+              <td class="num">~38 %</td>
+              <td>
+                Iso-engine on iGPU — DDR5-shared; ceiling lifts on dGPU (HBM,
+                ~40× kernel-bandwidth headroom).
+              </td>
+            </tr>
+            <tr>
+              <td>In-TEE attention (GQA over <code>n_kv</code>)</td>
+              <td class="num">~16 %</td>
+              <td class="num"><b>53.9 %</b></td>
+              <td>
+                Iso-engine on iGPU — moving it to GPU regressed 16× at this
+                shape (memory-bound kernel on shared DDR5). dGPU with persistent
+                K/V on HBM is the path.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                Shield + strip + misc (rmsnorm, qk-norm, RoPE, SwiGLU,
+                residuals, kv scatter)
+              </td>
+              <td class="num">~7 %</td>
+              <td class="num">~3 %</td>
+              <td>
+                Each individually below the variance floor; end-to-end bf16
+                activations compress these incidentally.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="prose" style="margin-top: 8px; font-size: 13px">
+          <em>compute_logits</em> (R3 LM-head GPU offload) lands at 4.2 % of
+          decode wall under the masked-offload boundary — nesting inside the
+          engine matmul span listed above, not double-counted. Pre-R3 the in-TEE
+          LM-head was 46-58 % of decode wall; the GPU offload cut it 97.6 % at
+          <code>B = 8 · K = 64</code>.
+        </p>
+
+        <h4 style="margin-top: 24px">
+          Cascade headline — what shifted the production-shape number
+        </h4>
+        <p class="prose">
+          At the production shape the prior 3-stage DCT-IV path paid six
+          full-buffer DDR5 traverses per <code>apply</code> /
+          <code>unapply</code> (one stride-<code>d</code> copy plus a
+          full-tensor diagonal multiply per stage). The tile-fused cascade loads
+          a 16-column tile once, runs all three DCT stages and all three
+          diagonal multiplications inside L2, then writes the tile out — pricing
+          the cascade at one copy-in plus one copy-out per tile.
+        </p>
+        <table class="spec" style="margin-top: 12px">
+          <thead>
+            <tr>
+              <th><code>B = 8 · n = 2 048</code> (pad 1.99)</th>
+              <th>3-stage path (pre-cascade)</th>
+              <th>Tile-fused cascade</th>
+              <th>Δ</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Prefill wall</td>
+              <td class="num">174.92 s</td>
+              <td class="num"><b>135.13 s</b></td>
+              <td>
+                <span class="accent" style="color: #1e7050"
+                  ><b>−22.7 %</b></span
+                >
+              </td>
+            </tr>
+            <tr>
+              <td>Mask bucket (apply + unapply)</td>
+              <td class="num">66.5 s · 38.0 %</td>
+              <td class="num"><b>27.57 s · 20.4 %</b></td>
+              <td>
+                <span class="accent" style="color: #1e7050"
+                  ><b>−58.5 % bucket</b></span
+                >
+              </td>
+            </tr>
+            <tr>
+              <td>Aggregate prefill tok/s</td>
+              <td class="num">93.7</td>
+              <td class="num"><b>121.3</b></td>
+              <td>
+                <span class="accent" style="color: #1e7050"
+                  ><b>+29.4 %</b></span
+                >
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="prose" style="margin-top: 12px">
+          A second DCT-IV cell at the crossover band (<code>n = 2 400</code>,
+          pad 1.70) shows the same picture (prefill 216.15 s → 169.76 s, −21.5
+          %; bucket −53.1 %). At long-n HD₃ shapes (<code>n = 3 500</code>, pad
+          1.17) the cascade is a no-op — the prefill wall stays at 289.09 s (HD₃
+          shapes don't run the DCT-IV path).
+        </p>
+
+        <h4 style="margin-top: 24px">
+          Why decode tok/s is not on the prefill curve
+        </h4>
+        <p class="prose">
+          The headline iGPU ceiling is the in-TEE attention bucket at decode. At
+          <code>B = 8 · n = 2 048</code> it owns 53.9 % of decode wall (rising
+          to 63 % at <code>B = 1 · n = 2 561</code> and 66 % at
+          <code>B = 8 · n = 3 500</code>) — a memory-bound per-step GQA kernel
+          reading the cached <code>n_kv</code>
+          prefix. Lifting it to iGPU compute regressed 16× at the production
+          shape (the bus that feeds the in-TEE kernel is the same DDR5 the CPU
+          mask cascade already saturates). The 40+ tok/s decode target lives on
+          dGPU substrate: HBM
+          <code>~3 TB/s</code> kernel-side reads (~75× headroom over shared
+          DDR5) plus persistent K/V on device so each decode step uploads only
+          the new <code>K<sub>t</sub>, V<sub>t</sub></code>
+          row (32 KB) instead of the full 256 MB cached prefix. Compressing the
+          decode bucket on iGPU isn't gated on engineering — it's gated on the
+          memory hierarchy.
+        </p>
+
+        <h3 style="margin-top: 32px">
+          Historical baselines — gpu_plain / gpu_gelo / gpu_full_stack
+        </h3>
+        <p class="prose">
+          The two subsections below predate the cascade and the R3 LM-head
+          offload. They remain useful as the
+          <strong>gpu_plain</strong> (no privacy) ·
+          <strong>gpu_gelo</strong> (paper-parity per-forward Haar
+          <code>A</code> + shield(8, 4.0)) · <strong>gpu_full_stack</strong> (+
+          Freivalds U-Verify <code>k = 2</code>) overhead taxonomy that the
+          embedder and reranker tables also use. OutAttnMult forced on at every
           <code>n</code> (<code>out_attn_mult_min_seq_len = Some(0)</code>) so
           the 4-partition path is exercised even at decode-shape
-          <code>n_q = 1</code>; the production auto-switch would otherwise keep
+          <code>n_q = 1</code>; production auto-switch would otherwise keep
           every linear in-TEE at these short shapes. Bench code:
           <code>crates/gelo-gpu-wgpu/tests/qwen3_generation_bench.rs</code>.
         </p>
@@ -3523,19 +3783,19 @@
         </p>
 
         <h4 style="margin-top: 32px">
-          Qwen3-4B · long-context prefill · 2026-05-20
+          Qwen3-4B · long-context prefill · 2026-05-20 · pre-cascade, pre-R3
         </h4>
         <p class="prose">
           Same protocol surface, the production model size, and the
           production-shape prompt length (n = 2 048 prefill + 4 decode tokens).
-          The table below records two historical
-          <code>MaskKind::Auto</code> measurements — one on the HD₃ branch (n =
-          2 040, exact pow2) and one on the DCT-IV branch (n = 2 048, non-pow2).
-          The current design retires DCT-IV in favour of universal HD₃ via
-          shield-as-padding (§08); at n = 2 048 that replaces the +93 % DCT-IV
-          row with the HD₃-with-shield-pad path (+172 %, paying the next-pow2
-          jump to s = 4 096) — the trade accepted for one mask family, one
-          kernel path. Bench code:
+          The table below records two
+          <code>MaskKind::Auto</code> measurements at this baseline — one on the
+          HD₃ branch (n = 2 040, exact pow2) and one on the DCT-IV branch (n = 2
+          048, non-pow2). The Auto resolver later moved its threshold up to pad
+          ratio 1.6 (HD₃ wins decisively up to 1.59, confirmed in the 2026-05-26
+          sweep), and the DCT-IV path itself moved to the tile-fused cascade —
+          the current-state table above supersedes this row for the production
+          shape. Bench code:
           <code>crates/gelo-gpu-wgpu/tests/qwen3_long_context_bench.rs</code>.
         </p>
         <table class="spec" style="margin-top: 12px">
@@ -3595,14 +3855,15 @@
           <em>BLIS:</em> AOCL-BLIS at <code>GELO_BLIS_THREADS = 16</code>.
         </p>
         <p class="prose" style="margin-top: 12px">
-          The two rows are pre-deprecation Auto branches:
+          The two rows are Auto branches at this baseline:
           <code>s = n + k_shield = 2 048</code> at n = 2 040 is exact pow2 →
-          HD₃; <code>s = 2 056</code> at n = 2 048 is not pow2 → historical Auto
-          picked DCT-IV (the +93 % row above) to skip the 4 096-row HD₃ pad.
-          Both branches beat the dense Haar baseline at the same shape (Haar at
-          n = 2 048: TTFT 25.87 s — see §08). Under the current
-          shield-as-padding design Auto reduces to HD₃ at every shape; the n = 2
-          048 row would be replaced by HD₃-pow2 (TTFT 32.01 s, +172 % vs plain).
+          HD₃; <code>s = 2 056</code> at n = 2 048 is not pow2 → DCT-IV (skip
+          the 4 096-row HD₃ pad penalty). Both branches beat the dense Haar
+          baseline at the same shape (Haar at n = 2 048: TTFT 25.87 s — see
+          §08). Auto still routes pad-1.99 shapes to DCT-IV today; the
+          difference vs the current-state table above is the tile-fused cascade
+          replacing the prior 3-stage path (and R3 lifting the LM-head GPU-side)
+          — together those land the production-shape prefill at 135 s.
         </p>
 
         <h4 style="margin-top: 32px">
