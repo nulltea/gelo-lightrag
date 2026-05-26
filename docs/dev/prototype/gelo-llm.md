@@ -13,6 +13,11 @@ tags: [gelo, llm]
 > Nothing in this document is implemented; it's a forward-looking plan that
 > sits behind a workload trigger.
 >
+> **Mask-family choice** for long-context shapes is orthogonal to this
+> design and lives in [`hd3-non-pow2-fix.md`](hd3-non-pow2-fix.md) —
+> the Auto-dispatch (HD₃ at pow2, Haar elsewhere) is the current
+> default and is what any long-context throughput numbers below assume.
+>
 > The protocol primitives already exist in the codebase
 > (`crates/gelo-protocol/src/attention.rs` — Tier 1 phases 1-6 landed
 > 2026-05-14, see commits `3b5b587..fffce6e`). What's missing is (a) the

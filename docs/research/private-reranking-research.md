@@ -10,7 +10,7 @@ tags: [reranking]
 
 > Research date: 2026-04-21 (rev-4); rev-5 literature update added 2026-05-15 (see §Update — rev-5 below). Sources: OpenAlex (primary — 6 targeted searches + citation expansion), SearxNcrawl (web, products, repos), arXiv + USENIX + IEEE + ACM full-PDF fetch for benchmark tables, Edgequake (existing corpus check), local `./docs/`.
 >
-> **Design counterpart:** [`../dev/prototype/private-reranking-design.md`](../dev/prototype/private-reranking-design.md) — the implementation-side decisions (bge / Qwen3 / jina shortlist, score-export discipline, AES-key path, implementer notes) that follow from this research. Keep this doc as the literature artifact; design and decision content lives there.
+> **Design counterpart:** [`../dev/prototype/reranking.md`](../dev/prototype/reranking.md) — the implementation-side design + decisions (bge / Qwen3 / jina shortlist, score-export discipline, AES-key path, implementer notes) that follow from this research.
 
 ---
 

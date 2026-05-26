@@ -1,9 +1,10 @@
 ---
-type: prototype-note
-status: current
+type: plan
+status: partial
 created: 2026-05-16
-updated: 2026-05-16
-tags: [graph-rag, lightrag]
+updated: 2026-05-26
+tags: [graph-rag, lightrag, path-1, path-2]
+companion: [private-graph-rag-design, private-rag-system-design]
 ---
 
 # Private LightRAG — Variant A (TEE-anchored): Detailed Implementation Plan

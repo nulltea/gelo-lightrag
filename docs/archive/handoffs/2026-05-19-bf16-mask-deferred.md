@@ -18,7 +18,7 @@ tags: [bf16, mask]
 > - `docs/research/private-llm-inference-round-3.md` — full research
 >   round including the measured outcomes section that landed steps
 >   1-3 of the perf plan (§7). bf16 is step 2 there.
-> - `docs/dev/prototype/gelo-complexity-analysis.md` — the bottleneck
+> - `docs/archive/prototype/gelo-complexity-analysis.md` — the bottleneck
 >   breakdown that motivates this whole round.
 > - `crates/gelo-protocol/tests/bf16_mask_parity.rs` — the parity
 >   simulation test that's checked in (regression anchor).

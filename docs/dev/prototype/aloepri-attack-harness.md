@@ -153,9 +153,10 @@ not the protocol crate.
 
 ### 2.3 AloePri commit pin
 
-Vendored at `/home/timo/repos/private-rag-path-2/vendor/aloepri-py/`
-(commit hash documented in `path-2-aloepri-gemma.md` M2.1). The
-attacks live at:
+AloePri lives in the `path-2-aloepri-gemma` sibling worktree under
+`vendor/aloepri-py/` (commit hash documented in
+`../../plans/path-2-aloepri-gemma.md` M2.1). The attacks are
+organized as:
 
 ```
 vendor/aloepri-py/src/security_qwen/
@@ -169,10 +170,11 @@ vendor/aloepri-py/src/security_qwen/
   └── matrix.py                                            (attack/target matrix definition)
 ```
 
-Phase 2's `run_*.py` files should `import sys; sys.path.insert(0,
-"../../private-rag-path-2/vendor/aloepri-py")` (or use a pyproject
-`[tool.uv.sources]` git-pin for reproducibility) and call the
-attacks' public entry points with shapes adapted via
+For reproducibility use a pyproject `[tool.uv.sources]` git-pin against
+the commit recorded in M2.1, **not** a fragile sibling-worktree path —
+this doc deliberately omits the absolute path so a relocated checkout
+won't silently keep working with the wrong tree. Phase 2's `run_*.py`
+files call the attacks' public entry points with shapes adapted via
 `snapshots_loader.py`.
 
 **Shape adaptation:** AloePri's attacks expect tensors keyed by

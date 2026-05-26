@@ -8,6 +8,16 @@ tags: [dp, gelo]
 
 # DP-Forward Prototype
 
+> ⚠ **Utility-collapse risk.** Measured 2026-05-14: DP-Forward at the
+> reference ε regime destroys zero-shot retrieval (nDCG@10
+> 0.42 → 0.008, ~2 %). The formal `(ε,δ)`-SeqLDP guarantee holds, but
+> the mechanism is **not usable as-is** for the stated RAG use case
+> — the four mitigation paths in §Risks below are speculative and
+> none are implemented. For query/embedding privacy that preserves
+> retrieval, use the `(n,ε)`-DistanceDP construction in
+> [`remote-rag.md`](remote-rag.md). DP-Forward remains documented
+> here as a known design point with known utility limits.
+
 > **Scope.** Design document for the DP-Forward (Recipe B) layer in
 > `crates/dp-forward` and the `dp-forward` Cargo feature of
 > `crates/gelo-embedder`. Documents the *what and why*, not the *how* — for

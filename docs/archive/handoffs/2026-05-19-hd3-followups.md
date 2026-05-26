@@ -26,7 +26,7 @@ tags: [hd3, mask]
 > - `evals/aloepri-attacks/README.md` — the harness's own operator runbook (capture → attack matrix → JSON)
 > - `crates/gelo-protocol/src/snapshot.rs` — the PCIe-side snapshot capture API the harness consumes
 > - `docs/research/private-llm-inference-round-3.md` — round 3 research doc; HD₃ is plan B; §B.3 is the attack-defence gate
-> - `docs/dev/prototype/gelo-complexity-analysis.md` — bottleneck breakdown that motivates HD₃
+> - `docs/archive/prototype/gelo-complexity-analysis.md` — bottleneck breakdown that motivates HD₃
 > - `crates/gelo-protocol/src/hd3.rs` module docs — math, SIMD/rayon kernel, padding contract
 > - `memory/hd3_mask_landed.md` — short-form summary
 > - Predecessor handoffs: `2026-05-19-bf16-mask-deferred.md` (bf16 closeout), `2026-05-18-m1-10-perf.md` (round-2 perf handoff)

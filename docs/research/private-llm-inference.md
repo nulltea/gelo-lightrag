@@ -41,7 +41,7 @@ of 2026-05-26:
 > (MoE / hybrid-attention / PLE). This round covers the *make it fast*
 > axis: candidate primitives, threat-model relaxations, and code-side
 > levers that can move the 90 % CPU-mask wall measured in
-> [`../dev/prototype/gelo-complexity-analysis.md`](../dev/prototype/gelo-complexity-analysis.md)
+> [`../archive/prototype/gelo-complexity-analysis.md`](../archive/prototype/gelo-complexity-analysis.md)
 > at n=2048 prefill on Qwen3-1.7B.
 >
 > **Hardware scope (unchanged from round 2):** SEV-SNP CVM + commodity
@@ -51,7 +51,7 @@ of 2026-05-26:
 > not the primary path.
 >
 > **Companion docs**:
-> [`../dev/prototype/gelo-complexity-analysis.md`](../dev/prototype/gelo-complexity-analysis.md)
+> [`../archive/prototype/gelo-complexity-analysis.md`](../archive/prototype/gelo-complexity-analysis.md)
 > — the bottleneck breakdown driving this round;
 > [`../dev/prototype/gelo.md`](../dev/prototype/gelo.md),
 > [`../dev/prototype/gelo-llm.md`](../dev/prototype/gelo-llm.md),
@@ -329,7 +329,7 @@ break precomputed-basis schemes).
 
 ## 1. The problem (recap)
 
-[`../dev/prototype/gelo-complexity-analysis.md`](../dev/prototype/gelo-complexity-analysis.md)
+[`../archive/prototype/gelo-complexity-analysis.md`](../archive/prototype/gelo-complexity-analysis.md)
 established that at n=2048 on Qwen3-1.7B:
 
 - mask round-trip = 90 % of TTFT (62 s of 73 s wall)
@@ -848,7 +848,7 @@ internal to this session; sources cited are public artefacts.
 
 ### Primary GELO paper and threat-model background
 - [Belikov & Fedotov, *Good-Enough LLM Obfuscation*, arXiv:2603.05035](https://arxiv.org/abs/2603.05035)
-- [`../dev/prototype/gelo-complexity-analysis.md`](../dev/prototype/gelo-complexity-analysis.md) — bottleneck numbers driving this round
+- [`../archive/prototype/gelo-complexity-analysis.md`](../archive/prototype/gelo-complexity-analysis.md) — bottleneck numbers driving this round
 - [`../archive/research/private-llm-inference-R2-2026-05-18.md`](../archive/research/private-llm-inference-R2-2026-05-18.md) — predecessor
 
 ### Hadamard / structured orthogonal family (§2)

@@ -19,6 +19,10 @@ tags: [rnd, ckks]
 
 ## 1. CKKS as an alternative to Paillier for RemoteRAG's rerank
 
+> **Status:** parked — awaiting (a) `openfhe-rs` stabilization for
+> production-quality CKKS in Rust and (b) a deployment with a measured
+> Paillier hotspot that justifies migration cost. Not abandoned.
+
 The Paillier hot path in `RemoteRagService::query` is the single biggest
 crypto cost in the prototype. CKKS (Cheon-Kim-Kim-Song) is the
 cryptographically natural alternative for this exact workload.
@@ -90,6 +94,10 @@ Stay on Paillier when:
 ---
 
 ## 2. The "encrypted ANN" problem — why CKKS doesn't unify RemoteRAG and CAPRISE
+
+> **Status:** structural impossibility argument; not a roadmap item.
+> Documented here so future "let's just use FHE" proposals can be
+> short-circuited by reading this section.
 
 A natural question after seeing CKKS is whether it lets us encrypt the
 *docs* server-side too — getting CAPRISE-style at-rest confidentiality
@@ -197,6 +205,10 @@ rerank faster within the same threat model.
 ---
 
 ## 3. FHE-friendly LSH — bucketing-with-bounded-leakage research direction
+
+> **Status:** research-stage survey; no implementation budget. Track
+> upstream papers; pick up when a candidate construction matures
+> enough to bound the bucket-leakage rigorously.
 
 Recent research tries to thread the needle: filter candidates without
 revealing geometry, then exact rerank inside FHE. Examples:

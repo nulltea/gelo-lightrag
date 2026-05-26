@@ -1,9 +1,10 @@
 ---
 type: prototype-note
-status: current
+status: stale
 created: 2026-05-13
 updated: 2026-05-18
 tags: [gelo, perf]
+archive_reason: "May 13–18 speculative tier'd optimization plan. Tier 1–2 outcomes have since landed; subsequent perf work + measured truth now lives in docs/plans/m1-12-tee-gpu-throughput.md, m1-12-bf16-activation-pipeline.md, m1-12-blis-thread-dispatch.md, m1-12-r4-async-overlap.md, and the docs/handoffs/ entries from 2026-05-22 onward."
 ---
 
 # GELO inference engine — optimization report

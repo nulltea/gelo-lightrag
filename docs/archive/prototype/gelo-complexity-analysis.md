@@ -1,9 +1,10 @@
 ---
 type: prototype-note
-status: current
+status: stale
 created: 2026-05-19
 updated: 2026-05-19
 tags: [gelo, perf]
+archive_reason: "2026-05-19 Qwen3-1.7B Haar baseline; predates HD₃ adoption (2026-05-19+) and the M1.12 perf work. Methodology (per-bucket accounting, FLOPs × throughput cross-check) is referenceable via git history; numbers are stale. Current perf truth: docs/plans/m1-12-*.md + docs/handoffs/2026-05-22+, plus docs/dev/prototype/hd3-non-pow2-fix.md for mask-family choice."
 ---
 
 # GELO Complexity Analysis — Qwen3-1.7B Long-Context Forward

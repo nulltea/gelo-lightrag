@@ -384,36 +384,7 @@ Residual leakage relative to a perfect ideal (cleartext-only-inside-client):
 
 ## 8. Recommended implementation sequence
 
-Tied to the existing prototype roadmap in `docs/prototype/`:
-
-**Phase 0 — Baseline private LightRAG (no new primitives, fastest to ship)**
-
-- Run plain LightRAG inside the existing CAPRISE-encrypted storage + DistanceDP query path of Approach 1/3/4. Three VDBs, both KV stores, the chunk store — all CAPRISE/AES at rest, DistanceDP on `ll_emb`/`hl_emb`/`q_emb`.
-- This gives storage-layer privacy and query-content privacy. Access patterns leak. Acceptable for low-sensitivity tenants.
-- Effort: ~1 week. No new crypto primitives — just compose existing parts with LightRAG's `kg_query` entry point.
-
-**Phase 1 — Access-pattern hiding for the three VDBs (Compass under TEE)**
-
-- Drop in Compass as the HNSW backend for `entities_vdb`, `relationships_vdb`, `chunks_vdb`. ORAM controller in the Embedding TEE (same TDX/SEV-SNP VM that already runs embeddings in Approach 4).
-- This closes the access-pattern leak on the VDB lookups, which is the single largest unaddressed surface after Phase 0.
-- Effort: 4-6 weeks. Largest single integration in the roadmap; the Compass paper has a reference implementation we can fork.
-
-**Phase 2 — Volume-hiding for the adjacency and source_id EMMs**
-
-- XorMM EMM for `get_nodes_edges_batch` and for the `source_id` multi-map.
-- Add per-session HMAC keying for cross-session unlinkability.
-- Effort: 2-3 weeks. XorMM has reference implementations; the integration is in indexing time + query-time KV reads.
-
-**Phase 3 — Compose with generation-side defenses**
-
-- Wrap LightRAG output assembly with PrivGemo-style structural-anonymization (supernode clustering, per-session entity-ID pseudonymization).
-- Add DP-KSA-style output DP at the generation step. Both are orthogonal to the retrieval crypto.
-- Effort: 2-4 weeks. Requires aligning with the generation-privacy layer (GELO / ObfuscaTune / TEE-LLM).
-
-**Phase 4 — Verifiability (optional, research-tracking)**
-
-- ZKGraph-style proof of correct 1-hop expansion; lifted to multi-hop only if we add multi-hop expansion to LightRAG later.
-- Effort: open. Tracking only until proof-size / verifier-time numbers appear in the literature.
+The phased rollout (Phase 0 baseline → Phase 1 Compass → Phase 2 XorMM → Phase 3 generation defenses → Phase 4 ZKGraph verifiability) with concrete crate layout, milestone gates, risk register, and effort estimates lives in [`../../plans/lightrag-variant-a-implementation-plan.md`](../../plans/lightrag-variant-a-implementation-plan.md). That doc is the source of truth for execution; this design doc covers the *what* and *why* of the primitives the plan composes.
 
 ---
 

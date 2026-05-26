@@ -19,9 +19,9 @@ tags: [reranking, gelo]
 >
 > Research context: [`../../research/private-reranking-research.md`](../../research/private-reranking-research.md)
 > (rev-4 + rev-5 update — literature survey + GELO-compatibility re-evaluation).
-> Design counterpart with the Qwen3-Reranker-0.6B primary /
-> bge-reranker-v2-m3 fallback decisions:
-> [`private-reranking-design.md`](private-reranking-design.md).
+> This doc is the canonical design + implementation reference; the
+> Qwen3-Reranker-0.6B primary / bge-reranker-v2-m3 fallback decisions
+> live in §3 below.
 
 ---
 
@@ -678,8 +678,6 @@ ignored release-gate tests run on demand.
 
 - `docs/research/private-reranking-research.md` — rev-4 survey of
   the field, with rev-5 GELO-compatibility re-evaluation appended.
-- `docs/dev/prototype/private-reranking-design.md` — the design pass
-  that picked the two architectures shipped here.
 - `gelo.md` — the protocol substrate the reranker reuses unchanged.
 - `gelo-llm.md` — the long-context fused-attention work that
   unblocks listwise rerankers like jina-v3.
