@@ -1,3 +1,11 @@
+---
+type: handoff
+status: current
+created: 2026-05-21
+updated: 2026-05-21
+tags: [aloepri, alg2, gpu]
+---
+
 # Handoff — Û_vo Algorithm 2 patch + ISA multi-key + GPU keymat seed-convention bug
 
 **Date:** 2026-05-21 PM
@@ -11,7 +19,7 @@ This handoff focuses on (1) the ISA HiddenState investigation that landed `run_i
 ## Headline
 
 - Paper-faithful labelled-ridge ISA driver (`run_isa_multikey.py`) ships with multi-key attacker synthesis (K=64 keymats), row-split realistic methodology, GPU support, and CPU-fallback for the ridge solve.
-- Audit determined path-2's Algorithm 2 implementation **omits Û_vo** (the V↔O random projection from paper §5.2.3). Both `vendor/aloepri-py` and our `python/aloepri-llm/lib/alg2.py` had the same gap. Paper Table 4 attributes the last ~0.82 % → 0.0 % HiddenState reduction to Û_vo specifically.
+- Audit determined aloepri's Algorithm 2 implementation **omits Û_vo** (the V↔O random projection from paper §5.2.3). Both `vendor/aloepri-py` and our `python/aloepri-llm/lib/alg2.py` had the same gap. Paper Table 4 attributes the last ~0.82 % → 0.0 % HiddenState reduction to Û_vo specifically.
 - Patched: `lib/alg2.py` and `obfuscate_qwen3_gguf.py` now support `--alg2-u-vo`. Math is end-to-end verified (`(X · W̃_v.T) · W̃_o.T = X · W_v.T · W_o.T` to 1e-6 relative on in-memory test).
 - Re-obfuscated Q3-4B + Q3-8B with Û_vo; captured plain Q3-8B hidden states; ran ISA multi-key on the Û_vo deployments.
 - **4B Û_vo result with vendor CPU keymat**: 3.41 % top-1 (down from 5.11 % pre-Û_vo) — Û_vo working as expected.
@@ -219,7 +227,7 @@ M  python/aloepri-llm/obfuscate_qwen3_gguf.py           (Û_vo wiring)
 A  docs/research/aloepri-attacks.md                     (ISA HiddenState section)
 ```
 
-Commit recommendation: bundle into "**path-2: Û_vo Algorithm 2 + ISA multi-key paper-faithful driver + GPU support**" once the 8B number lands. The GPU-keymat port can stay in the commit with the experimental docstring.
+Commit recommendation: bundle into "**aloepri: Û_vo Algorithm 2 + ISA multi-key paper-faithful driver + GPU support**" once the 8B number lands. The GPU-keymat port can stay in the commit with the experimental docstring.
 
 ## §5 Suggested skills for next session
 

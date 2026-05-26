@@ -1,6 +1,19 @@
+---
+type: theory
+status: current
+created: 2026-05-21
+updated: 2026-05-21
+tags: [aloepri, alg1]
+---
+
 # AloePri Algorithm 1 keymat — K=64 sample-variance dominates TTRSR at d=2560
 
 **Status:** investigation closed 2026-05-21. Theory 2 (K=64 sample variance) confirmed; Theory 1 (rocSOLVER basis orientation) refuted; the original "Philox + rocSOLVER GPU port bug" diagnosis is **retracted**.
+
+> **Implication for [`aloepri-attacks.md`](aloepri-attacks.md):** the finding
+> below (single-seed TTRSR readings carry ~5 pp noise at d=2560) applies to
+> all ISA TTRSR measurements in the attacks doc — comparisons within that
+> band are not significant.
 
 A 2×2 PRNG×LinAlg factorial on the attacker's Algorithm 1 keymat builder
 appeared to expose wildly divergent TTRSR readings depending on whether the

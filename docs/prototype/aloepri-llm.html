@@ -1210,11 +1210,11 @@
                   >, <code>α<sub>h</sub></code>
                 </td>
                 <td>
-                  1.0, 0.2 (paper) · 0.1, 0.033 (path-2 default for d=2048)
+                  1.0, 0.2 (paper) · 0.1, 0.033 (aloepri default for d=2048)
                 </td>
                 <td>
                   §5.2.2 Gaussian noise scale on embedding / LM head · larger =
-                  harder direct row recovery · at our path-2 default the noise
+                  harder direct row recovery · at our aloepri default the noise
                   is &lt;¼ of paper's per row (see §09 dimensional-headroom
                   note)
                 </td>
@@ -1541,7 +1541,7 @@
               ④ apply §5.2.5 fusion + Π + noise + Algorithm 1 + Algorithm 2
             </text>
             <text x="350" y="410" class="box-mono" text-anchor="middle">
-              W̃_embed = Π · (W_e + α_e·σ_e·ε) · P̂_embed (α_e = 0.1 path-2
+              W̃_embed = Π · (W_e + α_e·σ_e·ε) · P̂_embed (α_e = 0.1 aloepri
               default; paper 1.0)
             </text>
             <text x="350" y="424" class="box-mono" text-anchor="middle">
@@ -3813,12 +3813,12 @@
                 heads by L2 distance on the SV vector. SVs are
                 right-mult-invariant under R̂<sub>qk</sub> + Ĥ<sub>qk</sub>±1 +
                 Û<sub>vo</sub>, so the signature targets Π<sub>head</sub>
-                specifically. Path-2 attack driver:
+                specifically. AloePri attack driver:
                 <code>run_per_head_fingerprint.py</code>.
               </td>
               <td class="num">
                 <span style="font-size: 12px; color: #888"
-                  >novel (path-2 only)</span
+                  >novel (aloepri only)</span
                 >
               </td>
               <td class="num accent">100.0 % (identity perm — trivial)</td>
@@ -3861,12 +3861,12 @@
                 O-match, and (V, O) joint under GQA grouping. Magnitudes are
                 preserved by all Alg 2 components EXCEPT Û<sub>vo</sub>
                 (QR+0.05 σ Gaussian perturb shifts per-head channel L2) →
-                signature designed to expose Û<sub>vo</sub>. Path-2 driver:
+                signature designed to expose Û<sub>vo</sub>. AloePri driver:
                 <code>run_vo_channel_pair.py</code>.
               </td>
               <td class="num">
                 <span style="font-size: 12px; color: #888"
-                  >novel (path-2 only)</span
+                  >novel (aloepri only)</span
                 >
               </td>
               <td class="num accent">100.0 % (identity perm — trivial)</td>
@@ -4640,7 +4640,7 @@
         <p class="prose">
           <strong>Setup.</strong> Paper Table 2 reports IMA TTRSR = 0.0 % on
           Qwen2.5-14B at the default config (d=5120, α<sub>e</sub>=1.0, h=128,
-          λ=0.3). Our measured IMA-EmbedRow-ridge on Qwen3-1.7B at the path-2
+          λ=0.3). Our measured IMA-EmbedRow-ridge on Qwen3-1.7B at the aloepri
           default (d=2048, α<sub>e</sub>=0.1, h=128, λ=0.3, Algorithm 2 enabled
           with matrix-Γ) is 99.22 %. The 4 % vs 99 % gap is not an obfuscation
           bug — it is a dimensionality argument inherent to the attack and the
@@ -4674,7 +4674,7 @@
         </p>
         <p class="prose">
           <strong>The numbers.</strong> Paper noise norm per row at d=5120,
-          α<sub>e</sub>=1.0: <code>1.0 · σ · √5120 ≈ 71.5 · σ</code>. Our path-2
+          α<sub>e</sub>=1.0: <code>1.0 · σ · √5120 ≈ 71.5 · σ</code>. Our aloepri
           default at d=2048, α<sub>e</sub>=0.1:
           <code>0.1 · σ · √2048 ≈ 4.5 · σ</code>. Ratio is ~16× weaker per row,
           in 2.5× fewer dimensions — net effective attack-utility ratio on the

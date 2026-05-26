@@ -1,6 +1,21 @@
+---
+type: research
+status: current
+created: 2026-05-11
+updated: 2026-05-11
+tags: [fhe, vector-db]
+---
+
 # FHE Approaches for Private / Encrypted Vector DB Storage
 
 > Researched 2026-04-14. Sources: Edgequake (local corpus), OpenAlex (paper metadata), prior research doc.
+>
+> **Scope boundary:** this doc focuses on *at-rest* encryption and FHE-native
+> retrieval schemes. For privacy during the *retrieval* step (query hiding,
+> access-pattern hiding, ORAM, DP), see
+> [`private-information-retrieval.md`](private-information-retrieval.md).
+> For embedding-layer privacy before storage, see
+> [`private-embedding-research.md`](private-embedding-research.md).
 
 ---
 

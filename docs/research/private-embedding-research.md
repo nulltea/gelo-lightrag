@@ -1,11 +1,29 @@
+---
+type: research
+status: current
+created: 2026-05-11
+updated: 2026-05-11
+tags: [embedding]
+---
+
 # Private Embedding Generation
 
 > Research date: 2026-04-21. Embedding-specific framing for private transformer inference: **how to run an embedding model (BERT-base, gtr-t5-base, mxbai-embed-large, etc.) such that the operator cannot see the input text**.
 >
-> **This doc is a lens on `private-inference.md`.** The general catalogue of MPC / FHE / TEE / obfuscation / TEE-split-inference systems lives there. Below we (1) anchor the embedding-specific threat (Vec2Text, EDNN), (2) list embedding-stage-specific applicability notes, and (3) map recommendations to the RAG embedding step.
+> **This doc is a lens on the round-1 inference systems survey.** Every
+> in-body reference to `` `private-inference.md` `` (and its §A–§F section
+> letters) below points to the now-archived round-1 doc at
+> [`../archive/research/private-inference-R1-2026-04-21.md`](../archive/research/private-inference-R1-2026-04-21.md).
+> The current canonical [`private-llm-inference.md`](private-llm-inference.md) is a
+> follow-up focused on measured perf levers; it does not re-catalogue the
+> §A–§F systems.
+>
+> Below we (1) anchor the embedding-specific threat (Vec2Text, EDNN),
+> (2) list embedding-stage-specific applicability notes, and (3) map
+> recommendations to the RAG embedding step.
 >
 > **Sibling docs:**
-> - `private-inference.md` §A MPC, §B FHE, §C TEE, §E TEE Split-Inference, §F Obfuscation — canonical system entries
+> - `private-inference.md` §A MPC, §B FHE, §C TEE, §E TEE Split-Inference, §F Obfuscation — canonical system entries (archived round-1, see note above)
 > - `private-reranking-research.md` — reranker-stage adaptations
 > - `private-information-retrieval.md` — retrieval-stage privacy (query + access-pattern)
 > - `fhe-encrypted-vector-db.md` — encrypted vector storage
@@ -367,22 +385,6 @@ Statistical / information-theoretic levers (apply post-encoder, often stacked):
 | **Fisher-Approx. Shannon** ([2504.10016](https://arxiv.org/abs/2504.10016)) | tractable `I(in; activation)` bound | info-theoretic argument | argument only, not a defense by itself | 0 | none |
 
 Cheapest practical stack (no retraining, no formal proof): **INT8 absmax + Matryoshka prefix `k=256/384`** before SAP encryption. Empirically blunts Vec2Text by ~60 % with negligible retrieval cost; ~5 LOC in Rust.
-
-### D7. Concrete buildable recipes for our RAG codebase
-
-The `crates/approach4` workspace already has SAP/CAPRISE storage encryption + AES-GCM payloads. The embedding-side recipes that compose cleanly:
-
-**Recipe A — H100-CC + INT8 + MRL (ship in a week).** Qwen3-Embedding-0.6B inside a Privatemode-style attested H100 CC enclave; output truncated to MRL prefix `k=256/512` and INT8 absmax-quantized before SAP encryption. Threat model: honest-but-curious cloud op. Components: NVIDIA NIM/vLLM with CC, [edgelesssys/contrast](https://github.com/edgelesssys), Qwen3-Embedding, existing `approach4` SAP. No inversion proof, but ~60 % empirical Vec2Text BLEU drop from quantization alone.
-
-**Recipe B — DP-Forward at pooled output (formal DP, simplest).** Run embedder in TEE; before SAP-encrypting the result, apply the aMGM mechanism (~30 lines of Rust, port `matrix_gaussian_noise` + L2-clip + Gaussian add). ε ∈ [2, 8]. Formally `(ε,δ)`-SeqLDP. Adds <10 µs per query on the client/TEE side. Stacks with Recipe A.
-
-**Recipe C — RemoteRAG-style two-stage retrieval (preserves exact recall).** Wrap Recipe B in over-fetch + PHE rerank. Noise on the sent query, encrypted-but-clean query for rerank against `k'=2k–5k` candidates. ~200 LOC + a Paillier/CKKS dep. Recovers 100 % recall@k. Composable with SAP for at-rest encryption of the index.
-
-**Recipe D — GELO-style TEE+commodity-GPU split (no H100 CC needed).** TDX or SEV-SNP VM holds the encoder spine (LayerNorm/softmax/GeLU/FFN/embedding table/pooling) + per-batch fresh orthogonal+shield masks. Commodity GPU (any L40S/H100, **CC mode off**) runs Q/K/V/O GEMMs on masked hidden states. ~25–40 % total overhead. Major cost win vs H100 CC. Implementation cost: ~2–3 weeks; the hardest part is the shield-vector construction and BF16 numerical stability of `A⁻¹` (use orthogonal `A` so `A⁻¹ = Aᵀ`).
-
-**Recipe E — Pure-MPC PUMA-on-SPU baseline (cryptographic, no hardware trust).** Fork [secretflow/spu](https://github.com/secretflow/spu) with the BERT-base path cribbed from OpenBumbleBee. BGE-base or E5-base under PUMA's 3PC. Mean pool is free; L2 normalize via SecFormer Goldschmidt `1/√x` (the cost the papers omit — port it). Expected: 20–40 s per query, ~10 GB comm, <1 % MTEB delta. Cost: requires 3 non-colluding parties.
-
-The **L2-normalize step is the missing-from-the-papers cost** for every Recipe E/F variant — budget one extra inverse-sqrt beyond the published encoder latency. In MPC use SecFormer Goldschmidt; in FHE use Panda 2022/423.
 
 ### D8. Code maturity grade (skeptical reading)
 
