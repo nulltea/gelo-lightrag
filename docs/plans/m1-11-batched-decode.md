@@ -1,8 +1,16 @@
+---
+type: plan
+status: current
+created: 2026-05-21
+updated: 2026-05-21
+tags: [m1.11, decode]
+---
+
 # M1.11 — Optimal Batched Decode + Batched Prefill
 
 > **Parent context:**
-> - Handoff: [`2026-05-21-attn-offload-spike.md`](../handoffs/2026-05-21-attn-offload-spike.md) (cubek-attention spike, GPU offload at decode m=1 confirmed non-viable on Strix Halo)
-> - Handoff: [`2026-05-21-gelo-perf-shield-attn-batched.md`](../handoffs/2026-05-21-gelo-perf-shield-attn-batched.md) §C (initial batched-decode scoping)
+> - Handoff: [`2026-05-21-attn-offload-spike.md`](../archive/handoffs/2026-05-21-attn-offload-spike.md) (cubek-attention spike, GPU offload at decode m=1 confirmed non-viable on Strix Halo)
+> - Handoff: [`2026-05-21-gelo-perf-shield-attn-batched.md`](../archive/handoffs/2026-05-21-gelo-perf-shield-attn-batched.md) §C (initial batched-decode scoping)
 > - Parent plan: [`m1-10-fused-permuted-attention.md`](m1-10-fused-permuted-attention.md)
 >
 > **Status:** design, not implementation. No tasks landed yet.
@@ -328,7 +336,7 @@ forward. Shield + mask are sampled once for `stacked_n = B + shield_k`.
 Kernel choice inside `decoder_block_batched`: routed through
 `engine.fused_attention_batched`, which **shape-keys internally**
 between cubek-attention `Strategy::Unit` and the burn-tensor chain
-(see §3 of the [`2026-05-21-attn-offload-spike`](../handoffs/2026-05-21-attn-offload-spike.md)
+(see §3 of the [`2026-05-21-attn-offload-spike`](../archive/handoffs/2026-05-21-attn-offload-spike.md)
 handoff for why the kernels are non-substitutable). The provisional
 threshold is `n_q ≥ N_CUBEK_MIN`, default 32; **R3 must measure the
 real crossover** — at B=16, num_heads=14 (Qwen3-Reranker-0.6B), the

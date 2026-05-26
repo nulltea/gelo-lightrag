@@ -1,6 +1,33 @@
+---
+type: theory
+status: current
+created: 2026-05-21
+updated: 2026-05-21
+tags: [aloepri, alg1]
+---
+
 # AloePri Algorithm 1 keymat — variance sources + K_a × K_d universality
 
 **Status:** 2026-05-22 investigation. Q3-4B Û_vo at L=17, K=64.
+
+> **Implication for [`aloepri-attacks.md`](aloepri-attacks.md):** the finding
+> below (single-seed TTRSR readings carry ~5 pp noise at d=2560) applies to
+> all ISA TTRSR measurements in the attacks doc — comparisons within that
+> band are not significant.
+
+A 2×2 PRNG×LinAlg factorial on the attacker's Algorithm 1 keymat builder
+appeared to expose wildly divergent TTRSR readings depending on whether the
+generator was CPU MT19937 or CUDA Philox and whether QR/SVD ran on CPU
+LAPACK or rocSOLVER (3.41 % – 11.92 % spread). A first-pass diagnosis
+blamed Philox+rocSOLVER device numerics. Two follow-up probes —
+direct nullspace-basis comparison and a 5-seed sweep of all four corners
+— ruled that out: rocSOLVER's nullspace basis is a Haar-random rotation
+of LAPACK's (distributionally identical), and all four corners sample
+TTRSR from indistinguishable distributions (Welch t-test p > 0.4
+pairwise). The K=64 attacker-keymat-pool sample variance is ~5 pp at
+d=2560 — much larger than the 3.2 pp the disparities memo estimated —
+and a single-seed comparison can produce an apparent ~8 pp "effect"
+purely from noise.
 
 > **Framing correction (2026-05-25).** Throughout this document the
 > claim "Algorithm 2 amplifies the K_a × K_d interaction ~3-5×" should

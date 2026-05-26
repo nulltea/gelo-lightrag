@@ -1,3 +1,12 @@
+---
+type: plan
+status: stale
+created: 2026-05-22
+updated: 2026-05-22
+tags: [m1.12, attention]
+archive_reason: "R1.4 Phase A aborted; failed gate by 16x on iGPU. Bucket 2 deferred indefinitely."
+---
+
 # M1.12 — Permuted-attention batched-decode kernel (perf-bucket 2)
 
 > **Parent context:**
@@ -6,7 +15,7 @@
 > - Plan: [`m1-11-batched-decode.md`](m1-11-batched-decode.md) — the batched substrate this rides on (D1.8 stopgap that this lever replaces).
 > - Plan: [`m1-10-fused-permuted-attention.md`](m1-10-fused-permuted-attention.md) — Amulet softmax-equivariance + Hidden-No-More + F1+ origin.
 > - Plan: [`m1-10-security-review.md`](m1-10-security-review.md) — F1–F8 option survey, F1+ chosen.
-> - Handoff: [`2026-05-21-attn-offload-spike.md`](../handoffs/2026-05-21-attn-offload-spike.md) — prior B=1 spike showing why batching is the unlock.
+> - Handoff: [`2026-05-21-attn-offload-spike.md`](../archive/handoffs/2026-05-21-attn-offload-spike.md) — prior B=1 spike showing why batching is the unlock.
 >
 > **Status:** **R1.4 aborted at Phase A — gate failed by 16×.** Plan retained for the spike methodology + abort rationale. Bucket 2 deferred indefinitely on iGPU.
 > **Author date:** 2026-05-22.
@@ -641,7 +650,7 @@ cargo test -p gelo-reranker --release --test comparative_bench \
   `WgpuVulkanEngine::fused_attention_batched` (burn-chain override)
 - `crates/gelo-embedder/src/decoder/forward.rs:309` —
   `decoder_block_cached_batched` (the call site this lever rewires)
-- `docs/handoffs/2026-05-21-attn-offload-spike.md` — prior B=1 spike
+- `docs/archive/handoffs/2026-05-21-attn-offload-spike.md` — prior B=1 spike
   showing why batching is the unlock
 - `docs/plans/m1-10-security-review.md` — F1+ origin (and F7 / F8
   / TwinShield-Xue follow-up references)

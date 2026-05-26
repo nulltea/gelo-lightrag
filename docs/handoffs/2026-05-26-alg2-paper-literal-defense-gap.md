@@ -1,3 +1,11 @@
+---
+type: handoff
+status: current
+created: 2026-05-26
+updated: 2026-05-26
+tags: [alg2, aloepri, attacks]
+---
+
 # Handoff — no-R experimental Alg2 closes most of the 87→0 pp Table 4 gap
 
 **Date:** 2026-05-26 (evening)
@@ -134,9 +142,11 @@ This is a narrower paper-faithful variant that captures most of the defense gain
 
 If accuracy holds under (3) AND A1+A2 give the measured defense gain, the recommended path-2 deployment would require an explicit hardening decision beyond paper (`--alg2-paper-literal-k-no-r`), not a silent migration from default Alg2 across all future Q3-4B / Q3-8B / Q2.5-14B obfuscation runs. The deployed cell becomes the no-R experimental variant; the prior CAVEAT in `alg2.py:244-262` becomes wrong (deliberate non-covariance was the bug, not the feature). HTML §08 + theorem doc need updating to reflect the recommended construction.
 
+> Deployment recommendations that flowed from these measurements live in [`docs/archive/handoffs/2026-05-26-aloepri-recommendations.md`](../archive/handoffs/2026-05-26-aloepri-recommendations.md).
+
 ### 6. Step 3 (paper-faithful gradient-opt ISA) — still needed for 87% baseline
 
-Independent of the above, the 87 % Noise+KeyMat baseline in paper Table 4 still requires paper's gradient-opt attack to reproduce. Lowest-priority since the construction story above accounts for most of the path-2 narrative.
+Independent of the above, the 87 % Noise+KeyMat baseline in paper Table 4 still requires paper's gradient-opt attack to reproduce. Lowest-priority since the construction story above accounts for most of the aloepri narrative.
 
 ## Suggested skill for next session
 

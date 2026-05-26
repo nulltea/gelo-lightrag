@@ -1,9 +1,17 @@
+---
+type: plan
+status: current
+created: 2026-05-18
+updated: 2026-05-18
+tags: [path-1, gelo, gemma, qwen3]
+---
+
 # Path 1 — GELO TEE-GPU Split Inference for Gemma E2B/E4B
 
 > **Worktree:** original (this one). Branch: `path-1-gelo-gemma`
 > (to be created from `master`).
 >
-> **Sibling plan:** [`path-2-aloepri-gemma.md`](path-2-aloepri-gemma.md)
+> **Sibling plan:** [`aloepri-gemma.md`](aloepri-gemma.md)
 > develops in `../private-rag-path-2`.
 >
 > **Shared framework:** [`private-inference-comparison-framework.md`](private-inference-comparison-framework.md).
@@ -12,7 +20,7 @@
 > validated on Qwen3-Embedding-0.6B) to support **autoregressive text
 > generation on Gemma E2B/E4B** with the openweight threat model
 > preserved. Produce performance, accuracy, and attack-resistance
-> numbers comparable to Path 2 on the same models.
+> numbers comparable to AloePri on the same models.
 
 ---
 
@@ -30,7 +38,7 @@
 | 2026-05-18 | M1.4 K=V tying landed (commit `66bba90`): `LayerKvCache` becomes a Separate/Shared enum; `KvCache::new_with_sharing(shared: &[bool])` halves global-layer cache memory; `decoder_block_cached` skips the V matmul when `kv_shared_in_global` + layer is Global. Parity (wk==wv → identical output) + memory (75% of all-separate at 4-layer 2:1) tests green. |
 | 2026-05-18 | M1.10a + M1.6 + M1.8 scaffolding landed (commit `dc9074d`): `GpuOffloadEngine::fused_attention_batched` default-impl composition (no kernel yet); `gemma4_e2e.rs` + `gemma4_hf_parity.rs` `#[ignore]`-gated integration tests with documented un-ignore prerequisites. |
 | 2026-05-18 | **Gemma 4 weight source + architecture audit.** Fetched real `google/gemma-4-E2B` and `-E4B` config.json from HuggingFace (public/non-gated; safetensors bf16 at ~4 GB / ~8 GB). Confirmed `google/gemma-4-*` is the canonical v1 source — GGUF detour dropped per user decision. The audit revealed several architectural inaccuracies in M1.0–M1.5: E2B intermediate_size was 8192 (real: 6144); E4B was 16384 (real: 10240); E4B num_key_value_heads was 1 (real: 2); max_position was 32768 (real: 131072); hidden_activation was `silu` (real: `gelu_pytorch_tanh`, i.e. GeGLU); M1.4 implemented within-layer K=V tying but real Gemma 4 has `attention_k_eq_v: false` and uses cross-layer KV sharing via `num_kv_shared_layers: 20` (E2B) / 18 (E4B); per-class head_dim differs (local 256 / global 512); per-class rope_theta differs (10_000 local / 1_000_000 global); final_logit_softcapping = 30.0 was missing. **Phase 1 fixes landed** (commit `<TBD>`): all numeric constants corrected, `DecoderConfig::final_logit_softcapping` added + wired through `compute_logits`, `Gemma4Variant` now exposes the Phase 1.5 metadata (global_head_dim, rope_theta_global, num_kv_shared_layers, ple_dim) for the follow-up workstream. **Real-weight inference still blocked on Phase 1.5** (~3-4 weeks): per-class head_dim refactor, per-class RoPE, cross-layer KV sharing, GeGLU dispatch, AltUp. See plan §8 (new) for Phase 1.5 milestone list. |
-| 2026-05-18 | **v1 demonstrator pivot to Qwen3-1.7B.** All Phase 1.5 items are Gemma-only architecture work; pivoting v1 to a vanilla GQA decoder unblocks real-weight end-to-end generation today while Gemma support continues as a separate workstream (see [`../prototype/gemma4-architecture-roadmap.md`](../prototype/gemma4-architecture-roadmap.md)). **Investigated and rejected: Qwen3.5** (2B/4B/9B/35B-A3B) — `Qwen3_5ForConditionalGeneration` is a multimodal VLM with GDN-style `linear_attention` (Mamba/SSM) layers in 3:1 hybrid with `full_attention`, MRoPE, `partial_rotary_factor: 0.25`, MTP head, `attn_output_gate`. Strictly harder than Gemma 4, not easier. **Qwen3-1.7B** confirmed vanilla `Qwen3ForCausalLM` (28 layers, 16/8 GQA, head_dim 128, full RoPE θ=1M, SwiGLU, tied embeddings, no sliding window, no softcap) with one Qwen3-vs-Qwen2 addition: per-head RMSNorm on Q and K **before** RoPE (`self_attn.{q,k}_norm.weight`). Landed (commit `<TBD>`): `Qwen3Variant::{Q1_7B, Q4B}` config builder, `DecoderLayerWeights.{q_norm, k_norm}: Option<Array1<f32>>` (back-compat — `None` for Qwen2/LLaMA/Mistral), `rms_norm::apply_qk_norm` helper, both `decoder_block` and `decoder_block_cached` apply QK-norm when populated. Latent bug fixed: Qwen3-Embedding-0.6B (existing parity-test target) was silently dropping the same QK-norm step → embedder numbers will shift; parity property preserved (both branches change identically). New `tests/qwen3_generation_e2e.rs` runs greedy `generate()` against `Qwen/Qwen3-1.7B` bf16 safetensors under both `PlaintextExecutor` and `InProcessTrustedExecutor` and asserts identical token sequences. **PASS 2026-05-18** — emitted `" jumps over the lazy dog. 1"` (8 tokens, bit-identical on both branches; 377 s wall-clock on CPU). See plan §10. |
+| 2026-05-18 | **v1 demonstrator pivot to Qwen3-1.7B.** All Phase 1.5 items are Gemma-only architecture work; pivoting v1 to a vanilla GQA decoder unblocks real-weight end-to-end generation today while Gemma support continues as a separate workstream (see [`../archive/handoffs/2026-05-18-gemma4-architecture-support.md`](../archive/handoffs/2026-05-18-gemma4-architecture-support.md)). **Investigated and rejected: Qwen3.5** (2B/4B/9B/35B-A3B) — `Qwen3_5ForConditionalGeneration` is a multimodal VLM with GDN-style `linear_attention` (Mamba/SSM) layers in 3:1 hybrid with `full_attention`, MRoPE, `partial_rotary_factor: 0.25`, MTP head, `attn_output_gate`. Strictly harder than Gemma 4, not easier. **Qwen3-1.7B** confirmed vanilla `Qwen3ForCausalLM` (28 layers, 16/8 GQA, head_dim 128, full RoPE θ=1M, SwiGLU, tied embeddings, no sliding window, no softcap) with one Qwen3-vs-Qwen2 addition: per-head RMSNorm on Q and K **before** RoPE (`self_attn.{q,k}_norm.weight`). Landed (commit `<TBD>`): `Qwen3Variant::{Q1_7B, Q4B}` config builder, `DecoderLayerWeights.{q_norm, k_norm}: Option<Array1<f32>>` (back-compat — `None` for Qwen2/LLaMA/Mistral), `rms_norm::apply_qk_norm` helper, both `decoder_block` and `decoder_block_cached` apply QK-norm when populated. Latent bug fixed: Qwen3-Embedding-0.6B (existing parity-test target) was silently dropping the same QK-norm step → embedder numbers will shift; parity property preserved (both branches change identically). New `tests/qwen3_generation_e2e.rs` runs greedy `generate()` against `Qwen/Qwen3-1.7B` bf16 safetensors under both `PlaintextExecutor` and `InProcessTrustedExecutor` and asserts identical token sequences. **PASS 2026-05-18** — emitted `" jumps over the lazy dog. 1"` (8 tokens, bit-identical on both branches; 377 s wall-clock on CPU). See plan §10. |
 
 (Update this table at every weekly sync.)
 
@@ -397,7 +405,7 @@ the entire `gelo_protocol::snapshot` module:
   `crates/gelo-protocol/tests/snapshot_capture.rs`).
 
 **Phase 2 — Python attack harness (⏳ pending).** Handoff in
-[`../prototype/aloepri-attack-harness.md`](../prototype/aloepri-attack-harness.md):
+[`../dev/prototype/aloepri-attack-harness.md`](../dev/prototype/aloepri-attack-harness.md):
 safetensors serialisation contract, AloePri commit pin, three-condition
 control matrix (plain / mask-only / mask+shield), per-attack drivers
 at `evals/aloepri-attacks/run_{vma,ima,isa,tfma,sda,ia}.py`.
@@ -536,7 +544,7 @@ SKU becomes available.
 
 Plus shared work:
 - M0.1 + M0.2 inline with M1.0–M1.2 (~1.5 weeks of dual effort)
-- M0.3 inline with M1.9 (~3 weeks shared with Path 2)
+- M0.3 inline with M1.9 (~3 weeks shared with AloePri)
 - M0.4 after both paths: ~1 week
 
 ---
@@ -560,7 +568,7 @@ joins.
 
 ---
 
-## 5. Disjoint-directory contract with Path 2
+## 5. Disjoint-directory contract with AloePri
 
 To minimize merge pain between worktrees, Path 1 only writes to:
 
@@ -574,14 +582,14 @@ To minimize merge pain between worktrees, Path 1 only writes to:
 - `docs/plans/path-1-*.md`
 - `results/path-1-*.json`
 
-Path 2 only writes to:
+AloePri only writes to:
 
 - `vendor/aloepri-py/**` (vendored Python)
 - `scripts/path-2-*.py`
 - `docs/plans/path-2-*.md`
 - `results/path-2-*.json`
 
-If Path 1 needs changes to Path-2-owned files (e.g., to read
+If Path 1 needs changes to AloePri-owned files (e.g., to read
 AloePri snapshots for attack harness), file a PR back to master.
 
 ---
@@ -626,7 +634,7 @@ and the decode-phase cost breakdown is measured.
 **Reference:** Yuan et al., "SCX: Stateless KV-Cache Encoding
 for Cloud-Scale Confidential Transformer Serving," SIGCOMM
 2025. Code: `yuanmu97/scx`. Discussed in
-[`../prototype/gelo-llm.md`](../prototype/gelo-llm.md) §4.3.
+[`../dev/prototype/gelo-llm.md`](../dev/prototype/gelo-llm.md) §4.3.
 
 **Problem it solves.** Decode-phase π under our protocol is
 structurally awkward: fresh π per step is incompatible with KV
@@ -673,7 +681,7 @@ on the critical path.
 ### 7.2 Other deferred items
 
 Briefly, for completeness — full discussion in
-[`../prototype/gelo-llm.md`](../prototype/gelo-llm.md) §08:
+[`../dev/prototype/gelo-llm.md`](../dev/prototype/gelo-llm.md) §08:
 
 - **HKDF-derived mask material for amortised decode-step QR.**
   Lever; lands if M1.7 shows mask-sample > ~10% of TPOT on E4B.
@@ -927,7 +935,7 @@ target without touching `Gemma4Variant`, the hybrid attention
 dispatch in `decoder_block_cached`, PLE infrastructure, p-RoPE
 support, or the cross-layer KV sharing scaffolding. All Phase 1.5
 items in §8 stay valid; the
-[`gemma4-architecture-roadmap.md`](../prototype/gemma4-architecture-roadmap.md)
+[`gemma4-architecture-roadmap.md`](../archive/handoffs/2026-05-18-gemma4-architecture-support.md)
 handoff doc remains the entry point for that workstream. Once
 Phase 1.5 lands, `Gemma4Variant::E2B` becomes a drop-in next-target
 in this same plan structure.
@@ -938,11 +946,11 @@ in this same plan structure.
 
 - [`private-inference-comparison-framework.md`](private-inference-comparison-framework.md)
   (shared)
-- [`path-2-aloepri-gemma.md`](path-2-aloepri-gemma.md) (sibling)
-- [`../prototype/gelo.md`](../prototype/gelo.md) — protocol baseline
-- [`../prototype/gelo-llm.md`](../prototype/gelo-llm.md) — LLM
+- [`aloepri-gemma.md`](aloepri-gemma.md) (sibling)
+- [`../dev/prototype/gelo.md`](../dev/prototype/gelo.md) — protocol baseline
+- [`../dev/prototype/gelo-llm.md`](../dev/prototype/gelo-llm.md) — LLM
   generation forward plan
-- [`../research/private-llm-inference-round-2.md`](../research/private-llm-inference-round-2.md)
+- [`../archive/research/private-llm-inference-R2-2026-05-18.md`](../archive/research/private-llm-inference-R2-2026-05-18.md)
   §D — Gemma 4 architecture analysis
 - [`../research/aloepri-vs-gelo.md`](../research/aloepri-vs-gelo.md)
   — technique comparison

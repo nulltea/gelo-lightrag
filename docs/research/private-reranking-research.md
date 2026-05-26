@@ -1,6 +1,16 @@
+---
+type: research
+status: current
+created: 2026-05-11
+updated: 2026-05-26
+tags: [reranking]
+---
+
 # Private Reranking / Filtering for RAG
 
-> Research date: 2026-04-21 (rev-4). Sources: OpenAlex (primary — 6 targeted searches + citation expansion), SearxNcrawl (web, products, repos), arXiv + USENIX + IEEE + ACM full-PDF fetch for benchmark tables, Edgequake (existing corpus check), local `./docs/`.
+> Research date: 2026-04-21 (rev-4); rev-5 literature update added 2026-05-15 (see §Update — rev-5 below). Sources: OpenAlex (primary — 6 targeted searches + citation expansion), SearxNcrawl (web, products, repos), arXiv + USENIX + IEEE + ACM full-PDF fetch for benchmark tables, Edgequake (existing corpus check), local `./docs/`.
+>
+> **Design counterpart:** [`../dev/prototype/reranking.md`](../dev/prototype/reranking.md) — the implementation-side design + decisions (bge / Qwen3 / jina shortlist, score-export discipline, AES-key path, implementer notes) that follow from this research.
 
 ---
 
@@ -129,7 +139,7 @@ Neither query, document, score, nor ranking order is visible.
 - K visible (already implied by k' retrieval)
 - Most complete privacy: document text never leaves TEE
 
-**Enhancement: TEE+GPU split inference.** Mechanisms, benchmarks, and comparison table are centralized in `private-inference.md` §E "TEE Split-Inference" — covering Delta/AsymML/3LegRace, ObfuscaTune, GELO, Shredder, and Privacy-Aware Split Inference. **Reranker-specific notes:**
+**Enhancement: TEE+GPU split inference.** Mechanisms, benchmarks, and comparison table for Delta/AsymML/3LegRace, ObfuscaTune, GELO, Shredder, and Privacy-Aware Split Inference live in the archived round-1 inference systems survey: [`../archive/research/private-inference-R1-2026-04-21.md`](../archive/research/private-inference-R1-2026-04-21.md) §E "TEE Split-Inference". (The current canonical [`private-llm-inference.md`](private-llm-inference.md) covers later rounds; §E was not re-included.) **Reranker-specific notes:**
 - None of the four is *published* for cross-encoder reranking; all reranker framings are extrapolation.
 - **ObfuscaTune's pattern** maps cleanest — TEE holds the embedding table + scoring head (no lm_head for a reranker); GPU runs the 12 transformer blocks on `Q·H`. Smallest TEE footprint.
 - **Shredder at `[CLS]`** (cut after final encoder block, before scoring head) is the cheapest to deploy — no model retrain, train only the noise distribution.
@@ -412,3 +422,87 @@ Secondary (optional):
 - **Mixed-scope (SPIRAL) private reranking.** Benchmark exists; no reranker matches the threat model.
 
 These are the research wedges for differentiation in an Approach 4–style system.
+
+---
+
+## Update — rev-5 (2026-05-15)
+
+> Literature update absorbed 2026-05-26 from the now-removed round-2 doc.
+> Re-evaluates rev-4's catalog under the GELO+TwinShield+CAPRISE threat
+> model plus two new attack families (ArrowMatch 2602.11088, Hidden No
+> More 2505.18332).
+
+### New TEE+GPU split papers
+
+Three new TEE+GPU split-inference papers appeared between April and December 2025 (indexed in 2026) plus one important MPC+GPU result. None target reranking specifically; all are LLM-inference protocols whose primitives transfer.
+
+**SecureInfer** (arXiv 2510.19979, Oct 2025) — heterogeneous TEE-GPU, XOR-based one-time-pad masks per transfer. Targets **private weights** (opposite of our openweight assumption). Construction operates on both weight and activation axes; the moment weights become public it falls into the ArrowMatch-broken family. Reported 4.7× speedup over TEE-only, 2.06× latency over unprotected GPU, 8.44 tok/s LLaMA-2. **Not a fit** for our threat model; useful only as an end-to-end latency benchmark.
+
+**Privacy-Aware Split Inference with Speculative Decoding** (arXiv 2602.16760, Feb 2026, Cunningham). Naked fp16 activations cross PCIe between trusted local GPU and untrusted remote GPU over WAN. 3-layer MLP inversion decoder recovers 59% top-1 at 2-layer split, 35% at 8-layer split. **Useful as a negative result**: confirms that the activation mask in GELO is doing real work — without it, an attacker with 880 sample pairs cracks the protocol.
+
+**Opal: Private Memory for Personal AI** (arXiv 2604.02522, Kaviani et al., April 2026). Intel TDX + NVIDIA B200 in confidential-compute mode, ORAM-backed encrypted disk for embeddings + chunks, knowledge-graph + semantic retrieval inside the enclave. **Rev-4's claim that "Opal explicitly bakes cross-encoder reranking inside TEE" is not supported by the published abstract** — the data-dependent reasoning step does *not* mention cross-encoder rerank; it uses semantic-search-plus-graph. [UNCLEAR — needs full-paper fetch.] Threat model assumes confidential GPU (B200 CC), which is exactly the assumption GELO deliberately avoids. 29× lower infra cost vs secure baseline.
+
+**SoK: Analysis of Accelerator TEE Designs** (NDSS 2026). PDF text extraction failed; contents [UNCLEAR — manual fetch needed]. Likely relevant for the consumer-GPU-passthrough vs CC-GPU framing.
+
+### New MPC+GPU result
+
+**EncFormer** (arXiv 2604.09975, April 2026). Two-party FHE+MPC with CKKS kernels on A100 GPU. **1.3-9.8× lower latency than prior FHE-MPC on BERT-base.** Targets both BERT and GPT. Strongest 2026 MPC+GPU result on BERT-class — the architecture relevant to bge-reranker-v2-m3.
+
+Even at this improvement, BERT-base inference under FHE-MPC is **seconds**-class, not the ~150 ms/text we hit under GELO at Qwen3-0.6B scale. For 50-candidate reranking that's >5s/query under EncFormer vs <1s under GELO+CAPRISE today. **MPC+GPU remains non-competitive** for the <2× wall-clock target. The conclusion from rev-4 §6 / §Open Research Gaps stands: cross-encoder transformer under MPC/FHE is still seconds-per-query class.
+
+### New non-applicable
+
+**Collaborative Obfuscation** (arXiv 2603.01499, Lin et al., Mar 2026). "Covariant obfuscation" with dynamic (not static) masks; same family as GELO but covariance-structured rather than Haar-orthogonal. Claims resistance to precomputed-basis attack but construction details need full-paper read. [UNCLEAR — flagged for ingestion.] If the security argument holds, this is an alternative to GELO's Haar sampling; if not, GELO remains the only published construction that survives both ArrowMatch (2602.11088) and Hidden No More (2505.18332) attack classes.
+
+### Re-evaluation of rev-4 papers under the reranker lens
+
+Re-evaluated against three axes: (a) composes with GELO fresh-per-batch orthogonal mask, (b) survives precomputed-basis + Hidden No More attacks, (c) applicability to cross-encoder vs causal-LM-discriminator reranker shapes:
+
+| Technique | Mask compose | 2602.11088 safe | 2505.18332 safe | Cross-enc fit | Causal-LM-rerank fit | Notes |
+|---|---|---|---|---|---|---|
+| GELO + TwinShield (ours) | n/a (is the mask) | Yes (full-rank per-batch) | Yes (not a permutation) | Plausible | Plausible | No published reranker eval. |
+| ObfuscaTune | No (mixes mask with W) | No (static W-mix) | No | Possible | Possible | Memory note: ArrowMatch-broken. **Reject.** |
+| STIP / SOTER / TSQP / TLG | No | Broken (6-min recovery) | n/a | — | — | **Reject.** |
+| PermLLM / Centaur | No (fixed permutations) | n/a | Broken (99% recovery) | — | — | **Reject.** |
+| Delta / AsymML / 3LegRace | Yes | Yes (low-rank, not static basis) | Yes (additive Gaussian + DP) | Possible | Possible | DP-formal but requires per-matrix factorization. Heavy lift for cross-encoder. |
+| Shredder (`[CLS]` cut) | Yes (additive noise) | Yes | Yes | **Best near-term cross-encoder option** | n/a | Cheapest to deploy; train noise distribution only. |
+| SCX | Yes (different axis: per-user keys) | Yes (per-session) | Yes (one-time keys per generation) | n/a (no KV cache needed) | **Yes** (designed for decoder) | Already in Edgequake. Useful for LLM serving, not single-pass rerank. |
+| Amulet (softmax-equiv π) | Composes with GELO | Yes (per-batch π) | Yes if combined with σ-noise + shield rows | Yes | Yes | Already implemented in our stack. Off by default at short n. |
+| ARROWCLOAK (per-row scaling) | Defensive add-on | Yes | n/a | Possible | Possible | Defense-in-depth for OutAttnMult; no known attack against scalar version. |
+| p²RAG / PRAG / SANNS / Panther / Tiptoe | n/a (MPC/HE) | n/a | n/a | **No cross-encoder under any** | n/a | All cap at bi-encoder cosine. |
+| HR+QDA (1.77M params) | n/a (small model) | n/a | n/a | Lightweight CE | n/a | Run client-side or in-TEE without offload. |
+| Opal (TDX + B200 CC) | n/a (different threat model) | Yes | Yes | Possibly no CE used | Yes | Confidential GPU assumption we avoid. |
+| Slalom (CNN-era Freivalds) | Yes | Yes | Yes | Yes | Plausible | Integrity primitive only; our U-Verify is its descendant. |
+| EncFormer (MPC+GPU) | n/a (pure crypto) | Yes | Yes | Yes (BERT-base) | Yes | Seconds-class; not competitive. |
+| Fission (IACR 2025/653) | n/a | Yes | Yes | Yes (ModernBERT <5s) | Yes (LLaMA-3-1B <20s) | Order-of-magnitude slower than TEE+GPU. |
+
+**Bottom line:** the GELO+TwinShield+Amulet stack remains the **only published construction** that plausibly covers a cross-encoder or causal-LM-discriminator reranker under the openweight + per-batch-mask + TEE-trusted + GPU-untrusted threat model. Every other extant TEE-based proposal either (a) targets private weights, (b) assumes a confidential GPU, or (c) falls to one of the two attack papers above.
+
+The cross-encoder-under-MPC/FHE gap noted under §Open Research Gaps remains open.
+
+### New papers for Edgequake ingestion (rev-5 additions)
+
+Highest priority (new, post-Apr-2026, not in corpus):
+
+1. **Opal: Private Memory for Personal AI** (arXiv 2604.02522, April 2026). The CC-GPU+TDX+ORAM comparison point.
+2. **SecureInfer** (arXiv 2510.19979). Closest architectural peer, different threat model.
+3. **Privacy-Aware Split Inference with Speculative Decoding** (arXiv 2602.16760). Naked-fp16 negative result.
+4. **EncFormer** (arXiv 2604.09975). Strongest 2026 MPC+GPU on BERT.
+5. **Collaborative Obfuscation** (arXiv 2603.01499). Possible GELO alternative; needs full-paper read to verify attack resistance.
+6. **Privacy-Preserving LLM Inference in Practice — Comparative Survey** (IACR ePrint 2026/105). Field-state survey.
+
+Reranker-specific (referenced in design discussion, not in corpus):
+
+7. **bge-reranker-v2-m3** / FlagEmbedding technical report (Chen et al., 2024).
+8. **Qwen3-Reranker technical card / paper** (Yang et al., 2025).
+9. **Jina-Reranker-v3** (arXiv 2509.25085, Wang et al.).
+10. **HR+QDA** (Maringan & Fitrianah 2026, *Discover Computing*).
+
+Cited in rev-4 but absent from Edgequake:
+
+11. **p²RAG** (arXiv 2603.14778, Ming et al., 2026).
+12. **FlashAttention-2/-3** (Dao 2023/2024) + FLASH-D (arXiv 2505.14201).
+13. **Delta / AsymML / 3LegRace** (Niu et al. 2022/2023).
+14. **Shredder** (Mireshghallah et al.).
+15. **Hidden No More** (arXiv 2505.18332).
+16. **Tiptoe** (Henzinger et al., SOSP 2023).

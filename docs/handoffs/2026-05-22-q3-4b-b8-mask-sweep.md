@@ -1,3 +1,11 @@
+---
+type: handoff
+status: current
+created: 2026-05-22
+updated: 2026-05-22
+tags: [qwen3, mask]
+---
+
 # Handoff — 2026-05-22 — Qwen3-4B batched-decode mask sweep at B=8 n=2040 + bottleneck triage
 
 Focus area for the next session: act on the bottlenecks this bench
@@ -184,7 +192,7 @@ DRAM pool; the wgpu "upload" / "download" calls are just memcpys
 within shared memory at ~80 GB/s DDR5 bandwidth. **This is not
 representative of the production deployment topology.**
 
-Production target (per `docs/plans/path-2-status.md` and related):
+Production target (per `docs/dev/logs/aloepri-status.md` and related):
 SEV-SNP CVM with VFIO-passthrough discrete GPU connected over PCIe.
 The masked-operand round-trip is a genuine PCIe DMA transfer
 (Gen5 x16 ≈ 64 GB/s nominal, ~30-40 GB/s realised on AMD/NVIDIA

@@ -1,3 +1,12 @@
+---
+type: plan
+status: stale
+created: 2026-05-18
+updated: 2026-05-18
+tags: [m1.10]
+archive_reason: "Phase 2 deprecated post-F1+ design decision; cached-generation wiring halted by causal-mask leak"
+---
+
 # M1.10 Phase 4 — Long-context bench findings (2026-05-18)
 
 > **TL;DR.** The Phase 1 permuted_cached dispatch is mathematically
