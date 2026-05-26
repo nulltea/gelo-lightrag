@@ -1,0 +1,84 @@
+warning: use of deprecated struct `sim::RayonCpuEngine`: RayonCpuEngine is the reference CPU impl; use `gelo_gpu_wgpu::WgpuVulkanEngine` for all measurements, benches, and production runtimes — see `feedback_benches_use_gelo_gpu.md` + `feedback_no_rayon_cpu_engine.md`.
+  --> crates/gelo-protocol/src/lib.rs:47:60
+   |
+47 | pub use sim::{InProcessTrustedExecutor, PlaintextExecutor, RayonCpuEngine};
+   |                                                            ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: `gelo-protocol` (lib) generated 1 warning
+warning: function `tensor_to_2d` is never used
+   --> crates/gelo-embedder/src/decoder/weights.rs:305:4
+    |
+305 | fn tensor_to_2d(view: TensorView<'_>) -> Result<Array2<f32>> {
+    |    ^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `gelo-embedder` (lib) generated 1 warning
+warning: unused import: `TrustedExecutor`
+  --> crates/gelo-gpu-wgpu/tests/r4_async_minibench.rs:39:47
+   |
+39 | use gelo_protocol::{InProcessTrustedExecutor, TrustedExecutor};
+   |                                               ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `gelo-gpu-wgpu` (test "r4_async_minibench") generated 1 warning (run `cargo fix --test "r4_async_minibench" -p gelo-gpu-wgpu` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 0.23s
+     Running tests/r4_async_minibench.rs (target/release/deps/r4_async_minibench-8dc5d5f39df342b2)
+
+running 1 test
+R4 async minibench — Qwen3-1.7B B=2 n=256 (warm=1 measure=3)
+Vulkan: AMD Radeon Graphics (RADV GFX1151) (IntegratedGpu)
+
+========================================================================
+condition                    mean (ms)      std (ms)           n
+------------------------------------------------------------------------
+sync (env unset)                1808.7           8.3           3
+async (env=1)                   1802.7          12.5           3
+------------------------------------------------------------------------
+delta async-sync: -6.0 ms (-0.33%)  (negative = async faster)
+
+
+=== sync profile (N_MEASURE runs aggregated) ===
+category                          time (ms)      share      calls
+----------------------------------------------------------------
+engine:matmul_many                  2331.77      43.6%        168
+engine:matmul                       1159.76      21.7%        168
+gelo:mask_unapply:dct4               787.36      14.7%        588
+gelo:mask_apply:dct4                 362.01       6.8%        336
+gelo:shield_stack                    269.19       5.0%        336
+tee:attn_inplace_many                170.34       3.2%         84
+tee:residual                          72.42       1.4%        168
+tee:swiglu_activate                   70.25       1.3%         84
+tee:qk_norm                           64.23       1.2%         84
+tee:rmsnorm                           42.01       0.8%        171
+tee:rope                              18.90       0.4%         84
+tee:embed_lookup                       2.76       0.1%          3
+gelo:mask_sample                       0.12       0.0%          6
+----------------------------------------------------------------
+TOTAL                               5351.13
+
+=== async profile (N_MEASURE runs aggregated) ===
+category                          time (ms)      share      calls
+----------------------------------------------------------------
+engine:matmul_wait                  2815.96      52.8%        588
+gelo:mask_unapply:dct4               768.86      14.4%        588
+engine:matmul_submit                 673.80      12.6%        336
+gelo:mask_apply:dct4                 360.32       6.8%        336
+gelo:shield_stack                    270.36       5.1%        336
+tee:attn_inplace_many                172.57       3.2%         84
+tee:swiglu_activate                   70.96       1.3%         84
+tee:residual                          69.87       1.3%        168
+tee:qk_norm                           64.77       1.2%         84
+tee:rmsnorm                           43.76       0.8%        171
+tee:rope                              19.00       0.4%         84
+tee:embed_lookup                       2.72       0.1%          3
+gelo:mask_sample                       0.12       0.0%          6
+----------------------------------------------------------------
+TOTAL                               5333.07
+test r4_async_minibench ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 35.81s
+
