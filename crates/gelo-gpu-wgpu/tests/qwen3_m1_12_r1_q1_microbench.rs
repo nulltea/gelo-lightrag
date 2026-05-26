@@ -772,8 +772,19 @@ fn dump_sweep_buckets(snap: &profile::Profile, label: &str) {
         "gelo:strip_shield",
         "engine:matmul",
         "engine:matmul_many",
+        // Batched (B≥2) attention buckets — run_prefill_batched /
+        // run_decode_step_batched.
         "tee:attn_inplace_many",
         "tee:attn_cached_inplace_many",
+        // B=1 attention buckets — run_prefill / run_decode_step via
+        // decoder_block_cached. `tee:attn_permuted_cached` fires at
+        // prefill when perm_attention_enabled_for(n_q) is true;
+        // `tee:attn_cached` fires at decode (n_q=1, perm off) and at
+        // prefill when perm is off; `tee:attn_swa_cached` fires for
+        // sliding-window attention layers (Qwen3-4B has none).
+        "tee:attn_permuted_cached",
+        "tee:attn_cached",
+        "tee:attn_swa_cached",
         "tee:compute_logits",
     ];
     eprintln!("--- {label} buckets ---");

@@ -1,0 +1,1 @@
+SWEEP_RESULT variant=Q4B B=1 n=2561 K=32 mask=auto prefill_wall_s=31.450 decode_wall_s=22.277 prefill_tps_agg=81.43 prefill_tps_per_seq=81.43 decode_tps_agg=1.44 decode_tps_per_seq=1.44

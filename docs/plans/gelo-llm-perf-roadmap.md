@@ -34,14 +34,16 @@
    decode shape (§4.C.1). 40+ tok/s decode is dGPU-only and lives
    under §4.B / §4.C dGPU subsections.
 
-3. **Top iGPU lever depends on the workload mix, and that mix
-   is undermeasured.** The sweep covered exactly one shape where
-   Auto resolves to DCT-IV (B=8 n=2048, pad ratio 1.99). Long-n
-   shapes where Auto picks HD₃ (pad ratio < 1.6) were never
-   sampled. DCT-IV column-locality (§4.A.1) targets the
-   measured 38 % bucket but only at DCT-IV shapes; cross-cutting
-   bf16 inner kernels (§4.E.1) help every shape including all
-   decode. The right top lever is gated on §3.1 #1.
+3. **Top iGPU lever depends on the workload mix; mix now measured.**
+   At B=8 chunks of ~1500-2500 tokens (DCT-IV shapes, pad 1.7-1.99)
+   the CPU mask bucket is 38-41 % of prefill — **DCT-IV
+   column-locality (§4.A.1) is the top iGPU lever**, ~10 % prefill
+   wall reduction. At B=8 chunks ≥ 3000 tokens (long-n HD₃ shapes,
+   pad < 1.6) the mask bucket shrinks to ~16 % while GPU matmul
+   (~48 %) and in-TEE attention (~27 % prefill, ~66 % decode) grow
+   — and neither has a direct iGPU lever. At long-n HD₃ shapes the
+   only remaining iGPU work is **§3.2 substrate prereqs** (Arc
+   drop + UMA allocator) to amortise GPU matmul across higher B.
 
 ---
 
@@ -49,78 +51,105 @@
 
 Numbers below are from
 `bench-results/m1-12-hd3-perf-sweep-2026-05-26_07-04-58.{log,tsv}`
-plus the post-tune verify sweep
-`bench-results/m1-12-auto-tune-verify-2026-05-26_08-42-00.{log,tsv}`.
-Both runs: Qwen3-4B, fp16 wgpu Vulkan engine, R3 LM-head GPU
-offload on, K=32 decode tokens per cell.
+(initial 14-cell sweep), the post-tune verify sweep
+`bench-results/m1-12-auto-tune-verify-2026-05-26_08-42-00.{log,tsv}`,
+and the measurement-gap sweep
+`bench-results/measurement-gaps-2026-05-26_10-34-30.{log,tsv}` /
+`bench-results/measurement-gaps-cell4-rerun2-2026-05-26_11-00-58.{log,tsv}`
+(closed §3.1 #1, #3, #4 below). All runs: Qwen3-4B, fp16 wgpu
+Vulkan engine, R3 LM-head GPU offload on, K=32 decode tokens
+per cell.
 
 ### §1.1 Headline throughput (Qwen3-4B, K=32)
 
-Three shapes where Auto's family pick matters; cells where
-Auto resolves to HD₃ at all reasonable threshold values
-(n=1538/1790/192/223) measured but omitted as pair-noise (full
-data in the sweep TSV).
+Five shapes spanning the Auto-family decision space, ordered
+by pad ratio:
 
-| B | n | Auto family | prefill wall (s) | prefill tps agg | decode wall (s) | decode tps agg | decode tps/seq |
-|---:|---:|---|---:|---:|---:|---:|---:|
-| 1 | 2561 | HD₃ | 31.92 | 80.2 | 21.43 | 1.49 | 1.49 |
-| 8 | 320 | HD₃ | 24.22 | 105.7 | 26.82 | 9.55 | 1.19 |
-| 8 | 2048 | DCT-IV | 174.92 | 93.7 | 55.08 | 4.65 | 0.58 |
+| B | n | pad ratio | Auto family | prefill wall (s) | prefill tps agg | decode wall (s) | decode tps agg | decode tps/seq |
+|---:|---:|---:|---|---:|---:|---:|---:|---:|
+| 8 | 3500 | 1.17 | HD₃ | 287.87 | 97.3 | 82.11 | 3.12 | 0.39 |
+| 8 | 320 | 1.56 | HD₃ | 24.22 | 105.7 | 26.82 | 9.55 | 1.19 |
+| 1 | 2561 | 1.59 | HD₃ | 31.45 | 81.4 | 22.28 | 1.44 | 1.44 |
+| 8 | 2400 | 1.70 | DCT-IV | 216.15 | 88.8 | 61.40 | 4.17 | 0.52 |
+| 8 | 2048 | 1.99 | DCT-IV | 174.92 | 93.7 | 55.08 | 4.65 | 0.58 |
 
 Single sample per cell; read against the §1.5 variance floor
 (≥ ~7 % at long-n).
 
-For HD₃-forced (counterfactual at non-HD₃ shapes):
+For HD₃-forced (counterfactual at DCT-IV-picking shapes):
 
-| B | n | mask=hd3 family | prefill wall (s) | decode wall (s) |
-|---:|---:|---|---:|---:|
-| 1 | 2561 | HD₃ (pad 4096) | 32.19 | 21.77 |
-| 8 | 320 | HD₃ (pad 512) | 24.42 | 27.11 |
-| 8 | 2048 | HD₃ (pad 4096) | 222.35 | 55.80 |
+| B | n | pad ratio | mask=hd3 | prefill wall (s) | decode wall (s) | Δ prefill vs Auto |
+|---:|---:|---:|---|---:|---:|---:|
+| 8 | 2400 | 1.70 | HD₃ (pad 4096) | 264.46 | 132.96 | **+22.4 %** |
+| 8 | 2048 | 1.99 | HD₃ (pad 4096) | 222.35 | 55.80 | +27.1 % |
+| 1 | 2561 | 1.59 | HD₃ (pad 4096) | 32.19 | 21.77 | +0.9 % |
+| 8 | 320 | 1.56 | HD₃ (pad 512) | 24.42 | 27.11 | +0.8 % |
 
 ### §1.2 Prefill bucket breakdown (% of wall)
 
-Per-op shares for the three §1.1 cells. `mask_unapply` is ~1.75×
-`mask_apply` by call count (252:144 per prefill — every QKV /
-many-output offload pays one apply + multiple unapplies).
+Per-op shares for the five §1.1 cells, ordered by pad ratio.
+`mask_unapply` is ~1.75× `mask_apply` by call count (252:144 per
+prefill — every QKV / many-output offload pays one apply +
+multiple unapplies).
 
-| B | n | family | wall (s) | mask_apply % | mask_unapply % | engine: matmul % | engine: matmul_many % | tee:attn % ⁽ᵃ⁾ | shield+strip % | other ⁽ᵇ⁾ |
-|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 2561 | HD₃ | 31.92 | 6.5 | 11.3 | 21.0 | 33.5 | – | 7.0 | 20.7 |
-| 8 | 320 | HD₃ | 24.22 | 4.1 | 9.2 | 28.5 | 44.4 | 2.9 | 1.5 | 9.4 |
-| 8 | 2048 | **DCT-IV** | **174.92** | **13.5** | **24.5** | 16.0 | 24.5 | **12.6** | 1.1 | 7.9 |
+| B | n | pad | family | wall (s) | mask_apply % | mask_unapply % | mask total % | engine: matmul % | engine: matmul_many % | matmul total % | tee:attn % | shield+strip % |
+|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 8 | 3500 | 1.17 | HD₃ | 287.87 | 5.2 | 10.7 | **15.9** | 19.1 | 29.1 | **48.2** | **26.5** | 1.2 |
+| 8 | 320 | 1.56 | HD₃ | 24.22 | 4.1 | 9.2 | 13.3 | 28.5 | 44.4 | 72.9 | 2.9 | 1.5 |
+| 1 | 2561 | 1.59 | HD₃ | 31.45 | 6.6 | 11.5 | 18.1 | 21.0 | 33.5 | **54.5** | **12.5** | 7.0 |
+| 8 | 2400 | 1.70 | **DCT-IV** | 216.15 | **14.7** | **26.6** | **41.3** | 15.0 | 22.9 | 37.9 | 12.9 | 1.1 |
+| 8 | 2048 | 1.99 | **DCT-IV** | **174.92** | **13.5** | **24.5** | **38.0** | 16.0 | 24.5 | 40.5 | 12.6 | 1.1 |
 
-Production row (B=8 n=2048, DCT-IV): **mask total 38.0 %**, GPU
-matmul total 40.5 %, in-TEE attention 12.6 %. The mask round-trip
-is the single largest bucket family at this one shape; DCT-IV
-unapply alone is 24.5 % of wall.
+**Two structural pictures emerge with the family split:**
+
+- **DCT-IV shapes (B=8 n=2048-2400, pad 1.7-1.99)**: mask
+  bucket is 38-41 % of prefill, GPU matmul 38-41 %, in-TEE
+  attention ~13 %. **CPU mask is the single biggest lever
+  here.**
+- **HD₃ shapes at long n (B=8 n=3500, pad 1.17)**: mask
+  shrinks to 16 %, GPU matmul rises to 48 %, **in-TEE attention
+  jumps to 27 %.** Mask is no longer dominant — GPU matmul
+  takes over (bandwidth-bound) and attention grows quadratically.
+- **HD₃ shapes at short n / B=1**: mask is 13-18 %, dominated
+  by GPU matmul (54-73 %).
 
 For reference (HD₃-forced at shapes Auto picks DCT-IV — confirms
-why Auto's choice is right at n=2048):
+why Auto's choice is right at pad ratio > 1.6):
 
-| B | n | family | wall (s) | mask_apply % | mask_unapply % | engine: matmul total % |
-|---:|---:|---|---:|---:|---:|---:|
-| 8 | 2048 | HD₃ pad 4096 | 222.35 | 6.6 | 12.5 | **62.8** |
+| B | n | pad | family | wall (s) | mask total % | engine matmul total % |
+|---:|---:|---:|---|---:|---:|---:|
+| 8 | 2048 | 1.99 | HD₃ pad 4096 | 222.35 | 19.1 | **62.8** |
+| 8 | 2400 | 1.70 | HD₃ pad 4096 | 264.46 | 18.9 | **61.2** |
 
-Forcing HD₃ at the production shape shifts wall from mask
-(38.0 → 19.1 %) into GPU matmul (40.5 → 62.8 %) and pays +27 %
-wall — the GPU pad penalty wins at pad 1.99.
+Forcing HD₃ at pad > 1.6 shifts wall from mask into GPU matmul
+(pad penalty) and pays +22-27 % prefill. Cell 3 at pad 1.70
+confirms the 1.6 Auto threshold is well-calibrated — the gap
+between HD₃ and DCT-IV is meaningful 100 bps below pad 1.99.
 
 ### §1.3 Decode bucket breakdown (% of wall)
 
 Decode runs HD₃ at stacked_n=16 in every cell (k=15 overlay
 forces pow2). Mask is small at decode; the differentiator is
-in-TEE attention scaling with context length.
+in-TEE attention scaling with context length. B=1 cells use the
+singular `tee:attn_cached` bucket; B≥2 cells use
+`tee:attn_cached_inplace_many` (§1.5 caveat).
 
-| B | n | wall (s) | mask_apply % | mask_unapply % | engine: matmul % | engine: matmul_many % | tee:attn_cached % | compute_logits % ⁽ᶜ⁾ | shield % | other ⁽ᵇ⁾ |
-|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 2561 | 21.43 | 3.3 | 5.1 | 13.6 | 12.3 | – ⁽ᵃ⁾ | 1.7 | 3.3 | 60.7 |
-| 8 | 320 | 26.82 | 2.7 | 6.4 | 38.1 | 34.6 | 10.2 | 8.4 | 5.9 | (overlaps ⁽ᶜ⁾) |
-| 8 | 2048 | **55.08** | 1.3 | 2.9 | 19.8 | 17.9 | **53.9** | 4.2 | 3.0 | (overlaps ⁽ᶜ⁾) |
+| B | n | wall (s) | mask total % | engine matmul total % | tee:attn (cached / cached_inplace_many) % | compute_logits % ⁽ᶜ⁾ | shield+strip % |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 8 | 320 | 26.82 | 9.1 | 72.7 | 10.2 | 8.4 | 5.9 |
+| 1 | 2561 | 22.28 | 7.9 | 25.3 | **63.0** | 1.5 | 3.3 |
+| 8 | 2400 | 61.40 | 3.7 | 33.9 | **58.7** | 3.8 | 2.7 |
+| 8 | 3500 | 82.11 | 3.0 | 27.5 | **66.4** | 2.8 | 2.2 |
+| 8 | 2048 | 55.08 | 4.2 | 37.7 | **53.9** | 4.2 | 3.0 |
 
-In-TEE attention share at B=8 climbs from ~7 % (small-n) to 10 %
-(n=320) to **53.9 %** (n=2048) — the §2.2 ceiling thesis in
-measurement form.
+In-TEE attention dominates decode at every long-context cell:
+**53.9 % (n=2048) → 58.7 % (n=2400) → 63.0 % (B=1 n=2561) →
+66.4 % (n=3500)**. The §2.2 ceiling thesis confirmed at every
+shape we measured — and B=1 decode (63 %) is **even more
+attention-dominated than B=8** (no batch amortisation of the
+per-step in-TEE GQA kernel). At B=8 short-n (n=320) the
+attention bucket is only 10.2 % because GPU matmul takes over
+(72.7 %).
 
 ### §1.4 Auto family resolution (post-tune 2026-05-26)
 
@@ -130,30 +159,34 @@ measurement form.
 | > 1.6 | DCT-IV | HD₃ pays GPU-pad penalty; at 1.99 the penalty is 19 % |
 | (1.59, 1.99) | crossover region | empirical bound; one-sample cells either side |
 
-Sweep evidence behind the boundary:
+Sweep evidence behind the boundary (post measurement-gap sweep):
 
 | sweep cell | pad ratio | family that wins (lower wall) | margin |
 |---|---:|---|---:|
-| B=1 n=2561, B=8 n=320 | 1.56-1.59 | HD₃ | 1-2 % |
-| B=8 n=2048 | 1.99 | DCT-IV | 19 % over HD₃-pad |
+| B=8 n=3500 | 1.17 | HD₃ (Auto-picked) | n/a (only HD₃ tested) |
+| B=8 n=320 | 1.56 | HD₃ | 0.8 % |
+| B=1 n=2561 | 1.59 | HD₃ | 0.9 % |
+| B=8 n=2400 | 1.70 | **DCT-IV** | **22.4 %** ← §3.1 #4 resolved |
+| B=8 n=2048 | 1.99 | DCT-IV | 27.1 % over HD₃-pad |
 
 Pre-tune Auto threshold was 7/5 = 1.4 — under-picked HD₃ at
-the 1.56-1.59 band. Post-tune (8/5 = 1.6) covers that band; the
-crossover at ~1.7-1.8 is still unprobed (§3.1 #4).
+the 1.56-1.59 band. Post-tune (8/5 = 1.6) covers that band, and
+the n=2400 cell confirms DCT-IV wins decisively at pad 1.70 —
+the threshold is well-calibrated. No remaining crossover gap.
 
 ### §1.5 Measurement caveats
 
-- **⁽ᵃ⁾ B=1 attention bucket missing.** The sweep harness's
-  `dump_sweep_buckets` lists only the batched-path bucket names
-  (`tee:attn_inplace_many`, `tee:attn_cached_inplace_many`).
-  B=1 prefill/decode emit the singular variants
-  (`tee:attn_inplace`, `tee:attn_cached_inplace`) — not captured
-  in the curated list, so the high "other %" on B=1 decode
-  (60.7 % at n=2561) is almost entirely attention. One-line
-  harness fix + re-run; see §3.1 #3.
+- **B=1 attention bucket — resolved.** The B=1 attention path is
+  `decoder_block_cached` (not `decoder_block`), so B=1 emits
+  `tee:attn_cached` / `tee:attn_permuted_cached` /
+  `tee:attn_swa_cached` — **not** `tee:attn_inplace` / `_cached`
+  as the prior caveat claimed. `dump_sweep_buckets` now lists
+  all three B=1 variants alongside the `_many` variants for B≥2.
+  The §1.3 B=1 n=2561 decode share of 63.0 % is the captured
+  `tee:attn_cached` bucket.
 - **⁽ᵇ⁾ Other** = `wall − (sum of listed buckets)`. Captures
   unlabeled time (qk_norm, rmsnorm, swiglu, kv scatter, layer
-  dispatch overhead) and ⁽ᵃ⁾ B=1 attention.
+  dispatch overhead).
 - **⁽ᶜ⁾ `tee:compute_logits` overlaps `engine:matmul`** because
   R3 routes the LM-head through `offload_linear`, whose
   `engine:matmul` span nests inside the `compute_logits` span.
@@ -236,19 +269,18 @@ gate-up / down dispatches.
 ## §3 Measurement & substrate support
 
 These items don't reduce a bucket on their own — they unblock
-or gate the bucket work below. Listed first because every §4
-EV estimate that's single-sample today is gated on the variance
-sweep, and the §4.A top-lever pick is gated on the long-n HD₃
-sweep cells.
+or gate the bucket work below. The 2026-05-26 measurement-gaps
+sweep resolved §3.1 #1, #3, #4 (see below); the variance sweep
+(#2) remains pending and gates the absolute-EV claims in §4.
 
 ### §3.1 Measurement gaps
 
-| # | Item | Why it gates | Engineering |
+| # | Item | Status | Finding |
 |---:|---|---|---|
-| 1 | **Long-n HD₃ sweep cells** | Sweep covered exactly one DCT-IV cell (B=8 n=2048, pad 1.99) and short HD₃ cells. Long-n shapes where Auto picks HD₃ (pad ratio < 1.6 — e.g., B=8 n=5500 → pad 8192 ratio 1.48) were never sampled. Gates whether §4.A.1 DCT-IV or §4.A.2 HD₃ is the top mask-bucket lever at production-relevant long contexts. | 1-2 cells, ~30-60 min |
-| 2 | **Within-day variance sweep** | Establishes the noise floor (~7 % at long-n confirmed §1.5). Every single-cell ms claim — including the §4.A.1 ~10 % refactor target — is read against this band. | ~80 min |
-| 3 | **B=1 attention bucket capture** | One-line harness fix to add singular `tee:attn_inplace` + `tee:attn_cached_inplace` to `dump_sweep_buckets`. Unblocks B=1 attention attribution (currently 60 % "other"). | 1-line + sweep re-run |
-| 4 | **Pad-ratio (1.59, 1.99) probe** | Tightens the Auto crossover empirical bound; ~1.7-1.8 currently unprobed. Maybe 0-2 % wall at uncovered shapes; mostly correctness for Auto. | ~30 min |
+| 1 | **Long-n HD₃ sweep cell** | ✅ **resolved** 2026-05-26 (`measurement-gaps-2026-05-26_10-34-30`) | B=8 n=3500 pad 1.17: mask 16 % / matmul 48 % / attn 27 % prefill, attn 66 % decode. **At long-n HD₃ shapes the mask bucket is less than half the DCT-IV-shape size** — DCT-IV-locality (§4.A.1) is no longer the universal top lever; substrate prereqs become co-dominant. See §4.A reframe. |
+| 2 | **Within-day variance sweep** | pending | Establishes the noise floor (~7 % at long-n confirmed §1.5). Every single-cell ms claim — including the §4.A.1 ~10 % refactor target — is read against this band. ~80 min |
+| 3 | **B=1 attention bucket capture** | ✅ **resolved** 2026-05-26 (`measurement-gaps-cell4-rerun2-2026-05-26_11-00-58`) | Prior caveat had wrong bucket names. B=1 emits `tee:attn_cached` / `tee:attn_permuted_cached` / `tee:attn_swa_cached`. B=1 n=2561 attention is **12.5 % prefill / 63.0 % decode** — even more attention-dominated than B=8 (no batch amortisation of in-TEE GQA). |
+| 4 | **Pad-ratio (1.59, 1.99) probe** | ✅ **resolved** 2026-05-26 (same sweep) | B=8 n=2400 pad 1.70: DCT-IV wins by 22.4 % prefill wall (216 s vs 264 s HD₃-forced). The 1.6 Auto threshold is well-calibrated — no remaining crossover gap. |
 
 ### §3.2 Substrate prereqs
 
@@ -272,15 +304,29 @@ plan.
 Profile shares vary by shape and Auto pick. Post-tune Auto:
 pad ratio ≤ 1.6 → HD₃, > 1.6 → DCT-IV.
 
-| Shape (B=8 K=32 prefill) | Family | Mask % of wall |
-|---|---|---:|
-| n=2048 (pad 1.99) | **DCT-IV** | 38.0 |
-| n=320 (pad 1.56) | HD₃ | 13.3 |
-| n=2561, B=1 (pad 1.59) | HD₃ | 17.8 |
-| long-n shape with pad < 1.6 | **HD₃, untested** | ? — §3.1 #1 |
+| Shape (B=8 K=32 prefill) | pad | Family | Mask % of wall |
+|---|---:|---|---:|
+| n=3500 (long-n HD₃) | 1.17 | HD₃ | **15.9** |
+| n=320 (short-n HD₃) | 1.56 | HD₃ | 13.3 |
+| n=2561, B=1 | 1.59 | HD₃ | 18.1 |
+| n=2400 (crossover) | 1.70 | **DCT-IV** | **41.3** |
+| n=2048 (production) | 1.99 | **DCT-IV** | **38.0** |
 
 Decode mask ≤ 4 % across all shapes (always HD₃ at
 stacked_n=16); decode is not a CPU-mask-driven bucket.
+
+**Two structural pictures (now confirmed by §3.1 #1):**
+
+- **DCT-IV shapes (pad 1.7-1.99, B=8 chunks ~1500-2500
+  tokens)**: mask is 38-41 % of prefill — the dominant bucket.
+  **§4.A.1 DCT-IV column-locality is the top iGPU lever for
+  this workload class** (~10 % prefill wall).
+- **HD₃ shapes at long n (pad < 1.6, B=8 chunks ≥ ~3000
+  tokens)**: mask shrinks to 16 % because the rest of prefill
+  (GPU matmul 48 %, attention 27 %) grows. CPU mask is no
+  longer dominant. **§4.A.1 / §4.A.2 levers move at most
+  ~3-5 % wall at these shapes** — substrate prereqs (§3.2)
+  and dGPU work matter more here.
 
 Cross-cutting bf16 inner-kernel levers (which compose with
 both families) live in §4.E.
@@ -308,28 +354,41 @@ Two designs to evaluate in a 3-day spike:
    custom inner kernel.
 
 **Scope**: only helps shapes where Auto picks DCT-IV (pad ratio
-> 1.6). Doesn't help decode (HD₃ only) or short-n prefill (HD₃).
+> 1.6). Doesn't help decode (HD₃ only), short-n prefill (HD₃),
+or long-n HD₃ prefill (pad < 1.6, n ≥ ~3000 at B=8).
 
-**Estimated impact**: ~10 % prefill wall at the production B=8
-n=2048 shape (gate: ≥ 20 % DCT-IV-bucket reduction in spike).
+**Estimated impact**: ~10 % prefill wall at DCT-IV-dominant
+shapes — confirmed at both pad 1.70 (n=2400, mask 41.3 %) and
+pad 1.99 (n=2048, mask 38.0 %). Gate: ≥ 20 % DCT-IV-bucket
+reduction in spike.
 
-**Open**: pending §3.1 #1, the production-long-n workload mix
-may resolve to HD₃ shapes too — in which case the absolute size
-of this lever shrinks proportionally.
+**Workload-mix sensitivity** (§3.1 #1 resolved): at B=8 long-n
+HD₃ shapes the mask bucket is only 16 % of prefill, so this
+lever delivers 0 % wall there. Lever EV is workload-weighted:
+strong if extraction stays in 1500-2500 chunks, weak if it
+extends to 3000+ chunks.
 
-#### §4.A.2 HD₃ (iGPU lever, gated on §3.1 #1)
+#### §4.A.2 HD₃ (iGPU lever)
 
 HD₃ FWHT runs at every prefill shape with pad ratio < 1.6 and
 at every decode step (stacked_n=16 overlay).
 
-Levers in scope (deferred until §3.1 #1 measures whether long-n
-HD₃ is a real production bucket):
+**Long-n HD₃ measurement (§3.1 #1 resolved)**: at B=8 n=3500
+(pad 1.17) the HD₃ mask bucket is 15.9 % of prefill — about
+**40 % the size of DCT-IV's bucket at production shapes**. HD₃
+prefill apply+unapply combined is 45.8 s out of 287.9 s wall.
+Even a 50 % bucket reduction would yield only ~8 % wall at this
+shape. So HD₃-prefill is a real bucket but not large enough to
+warrant a dedicated optimization on its own.
 
-- **Column-axis FWHT parallelism**. Targets the stacked_n=16
-  decode HD₃ bucket which is 3.9 % of decode wall today — even
-  50 % speedup = < 2 % decode. Not worth pursuing on the decode
-  bucket alone. If §3.1 #1 finds HD₃ at long-n prefill, this
-  lever becomes the equivalent of §4.A.1 for HD₃ shapes.
+Levers in scope:
+
+- **Column-axis FWHT parallelism**. At decode (stacked_n=16,
+  3 % wall) the absolute gain is < 2 % decode. At prefill
+  long-n HD₃ (15.9 % wall) a 50 % bucket reduction gives ~8 %
+  wall — below the §1.5 7 % variance floor without compounding.
+  Not worth a dedicated effort; subsumed by §4.E.1 bf16 inner
+  kernel which covers the same arithmetic-bandwidth budget.
 - **Radix-8 FWHT scratch reuse** is already shipped
   ([[hd3_radix8_and_scratch_reuse]]); no further parallelism
   work landed inside the FWHT kernel since.
