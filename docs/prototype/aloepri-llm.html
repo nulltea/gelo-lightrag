@@ -3288,29 +3288,84 @@
               </td>
             </tr>
             <tr>
-              <td><b>Obfuscated (4B)</b></td>
+              <td><b>Obfuscated (4B) — current best-defense</b></td>
               <td>
                 <code
-                  >untied-keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-bf16-native.gguf</code
+                  >untied-keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-uvo-bf16-native.gguf</code
                 >
-                (9.1 GB bf16; d=2560, h=128, λ=0.3, α<sub>e</sub>=1.0,
-                α<sub>h</sub>=0.2; same matrix-Γ kernel). Built from
-                <code>Qwen3-4B-Q8_0-untied.gguf</code> after Path-B untying —
-                Qwen3-4B ships with <code>tie_word_embeddings: true</code> and
-                the obfuscator's separate P̂<sub>R</sub> / Q̂<sub>R</sub
-                ><sup>T</sup> transforms are mathematically invalid on a shared
-                <code>token_embd</code> tensor. <code>untie_qwen3_gguf.py</code>
-                duplicates the shared tensor into a fresh
-                <code>output.weight</code> slot first.
+                (9.7 GB bf16; d=2560, h=128, λ=0.3). Built from
+                <code>Qwen3-4B-Q8_0-untied.gguf</code> via
+                <code>untie_qwen3_gguf.py</code> (Qwen3-4B ships with
+                <code>tie_word_embeddings: true</code>; obfuscator's P̂<sub
+                  >R</sub
+                >
+                / Q̂<sub>R</sub><sup>T</sup> transforms require a separate
+                <code>output.weight</code>). <br /><br />
+                <b
+                  >Full config (per-component attribution from 2026-05-26
+                  bisection — see
+                  <code>docs/handoffs/2026-05-25-alg2-attack-crossmap.md</code
+                  >):</b
+                >
+                <ul style="margin: 4px 0 0 0; padding-left: 20px">
+                  <li>
+                    <b>Algorithm 1 keymat</b>:
+                    <code>--mode keymat --expansion-size 128</code>
+                    (d→d<sub>obs</sub>=2816, λ=0.3, paper §5.2.1)
+                  </li>
+                  <li>
+                    <b>§5.2.2 noise + Π</b>:
+                    <code>--pi --noise-alpha-e 1.0 --noise-alpha-h 0.2</code>
+                    (load-bearing for VMA / IMA-EmbedRow / TFMA / SDA)
+                  </li>
+                  <li>
+                    <b>Algorithm 2 — matrix-Γ kernel</b>:
+                    <code
+                      >--alg2 --alg2-qk-norm-matrix
+                      --alg2-h-hadamard-signs</code
+                    >
+                    (R̂<sub>qk</sub> per-pair rotation + Ĥ<sub>qk</sub>±1
+                    Walsh-Hadamard on Q/K head_dim axis — contributes −17.8 pp
+                    on VMA via §5.2.2 × Alg2 superadditive interaction)
+                  </li>
+                  <li>
+                    <b>Algorithm 2 — Û<sub>vo</sub></b
+                    >: <code>--alg2-u-vo</code> (per-head V↔O random projection
+                    — contributes −12.9 pp on VMA)
+                  </li>
+                  <li><b>Storage</b>: <code>--output-dtype bf16</code></li>
+                  <li>
+                    <b>Ẑ<sub>block</sub> β=8 (default) is dead-weight</b>:
+                    confirmed by Cell F vs Cell C bisection (β=1 ≡ β=8 on VMA,
+                    identical 17.58 % top-1). Drops to β=1 give same security on
+                    the current ledger plus zero RoPE attention-score
+                    perturbation (β=8 introduces 35 % rel score Δ vs plain —
+                    accuracy cost). Deployed file still has β=8; broadly-optimal
+                    config would set β=1.
+                  </li>
+                  <li>
+                    <b
+                      >Π<sub>head</sub> (τ<sub>kv</sub> + τ<sub>group</sub>) is
+                      dead-weight</b
+                    >: per-head fingerprint + V/O channel-pair attacks land at
+                    random chance regardless (Alg1's rectangular keymat
+                    collapses per-head SVD spectrum before Π<sub>head</sub>
+                    kicks in). Comes free with <code>--alg2</code>; no separate
+                    flag to disable.
+                  </li>
+                </ul>
               </td>
               <td>
-                Larger-d sibling deployment (+25 % dimensional headroom). Same
+                Larger-d sibling deployment (+25 % dim headroom vs 1.7B). Same
                 paper-default
                 <code
                   >(α<sub>e</sub>=1.0, α<sub>h</sub>=0.2, h=128, λ=0.3)</code
                 >
-                config; same matrix-Γ kernel; bf16 weights (default since
-                2026-05-20 — fp16 collapses, see §07).
+                + full Algorithm 2.
+                <b>Best defense on current attack ledger.</b> Per-component
+                bisection on VMA: §5.2.2 −63 pp + R̂<sub>qk</sub>+Ĥ±1 −17.8 pp +
+                Û<sub>vo</sub> −12.9 pp + sub-additive overlap +4.8 pp =
+                combined −89 pp (98.4 % → 9.5 % 3-seed mean).
               </td>
             </tr>
             <tr>
@@ -3530,16 +3585,18 @@
                 >
               </td>
               <td class="num accent">
-                10.18 % top-1, 19.03 % top-10<br /><span
+                15.04 % top-1 (identity-τ, K=64 single seed)<br /><span
                   style="font-size: 11px; color: #888"
-                  >(identity-τ calibration ceiling — attacker's no-defense ridge
-                  limit on this dataset)</span
+                  >paper-faithful plain ceiling; per
+                  <code>aloepri-keymat-variance.md</code> single-seed K=64 has σ
+                  ≈ 5 pp pool noise</span
                 >
               </td>
               <td class="num accent">
-                <b>5.11 % top-1, 21.17 % top-10</b><br /><span
+                <b>8.54 % top-1</b> ± 4.74 (3-seed mean)<br /><span
                   style="font-size: 11px; color: #888"
-                  >defence attenuates top-1 by ≈ 50 % vs plain ceiling</span
+                  >seeds: 11.08 / 12.56 / 1.97 %; updated 2026-05-26 on
+                  current-best-defense cell (Û<sub>vo</sub> on)</span
                 >
               </td>
               <td class="num" style="color: #a66; font-weight: bold">
@@ -3573,29 +3630,89 @@
             <tr>
               <td>
                 <b>ISA AttnScore</b>
-                <div class="alias">multi-α ridge at <code>kq-23</code></div>
+                <div class="alias">multi-α ridge at <code>kq-0</code></div>
               </td>
               <td>
-                Recovers τ. Ridge inversion from pre-softmax Q·K<sup>T</sup>
-                tensor at layer 23 (captured via <code>--flash-attn off</code>).
-                Algorithm 2 designed to preserve this surface
-                (M<sub>q</sub>·M<sub>k</sub><sup>T</sup> = I cancels).
-                Internal-state-attack family, AttnScore variant.
+                Recovers token identity per row. Ridge inversion from
+                pre-softmax Q·K<sup>T</sup> tensor at layer 0 (captured via
+                <code>--flash-attn off</code>). Surface is structurally
+                K<sub>a</sub>-invariant — Algorithm 1 keymat designed so
+                W̃<sub>q</sub>'s input axis cancels K<sub>a</sub> (<code
+                  >X̃·W̃<sub>q</sub> = X·W<sub>q</sub></code
+                >), and Algorithm 2 designed to preserve attention scores on top
+                (<code>M<sub>q</sub>·M<sub>k</sub><sup>T</sup> = I</code>
+                cancels). Internal-state-attack family, AttnScore variant.
               </td>
               <td class="num">0.0 % (Q2.5-14B, T1; T3 full)</td>
-              <td class="num accent">0.0 % @kq-30</td>
               <td class="num accent">
-                1.9 % @kq-21<br />
-                0.0 % @kq-30
+                48.63 % ± 0.80 (pre-softmax kq-0, 10-seed row-split, 512
+                prompts)<br />
+                32.09 % ± 0.90 (post-softmax @ L=0, paper's surface)<br /><span
+                  style="font-size: 11px; color: #888"
+                  >prior 64-prompt reading at kq-17 was 11.87 % ± 3.44 — small-n
+                  sample artefact (only 34 % test/train vocab overlap capped
+                  memorisation). 512-prompt corpus (75 % overlap) reveals true
+                  surface signal: pre-softmax ~48 % at L=0, ~22 % at L=17, ~30 %
+                  at L=23. Post-softmax compresses signal by ~16 pp (softmax +
+                  causal mask flatten magnitude info ridge uses). See
+                  <code>evals/aloepri-attacks/m2_7/diagnose_isa/</code>.</span
+                >
               </td>
               <td class="num accent">
-                0.0 % @kq-21<br />
-                1.0 % @kq-30
+                <b>47.22 % ± 0.84</b> (pre-softmax kq-0)<br />
+                <b>30.60 % ± 0.64</b> (post-softmax @ L=0)<br /><span
+                  style="font-size: 11px; color: #888"
+                  >Δ_pre = 1.41 pp ≈ 1.2 σ; Δ_post = 1.49 pp ≈ similar — not
+                  significant on EITHER surface. K<sub>a</sub>-invariance
+                  survives the softmax non-linearity (softmax is deterministic +
+                  equivariant; plain≈obf at pre → plain≈obf at post). At
+                  L={5,11,17,23} pre-softmax obf is similarly within 0.2-1.4 pp
+                  of plain.</span
+                >
               </td>
+              <td class="num">pending</td>
               <td>
-                <b>Pass at both sizes, both depths.</b>
-                M<sub>q</sub>·M<sub>k</sub><sup>T</sup> = I cancellation holds —
-                every kq surface sits at or near the plain floor.
+                <b
+                  >Score surface out of §5.4 scope; output surface measured at
+                  L=0 97.46 % → 83.77 % obf (Δ 13.7 pp, ~21σ), L≥5 within ±1.5
+                  pp (revised framing 2026-05-26 + 2B.1 measurement).</b
+                >
+                Paper §5.4's `e_C^attn` bound enters the global accuracy
+                composition only at the <i>attention output</i> level (post-V
+                per-head, before W<sub>o</sub> — llama.cpp `kqv_out` tensor);
+                the score-level perturbation `Q·K<sup>T</sup>` is qualified
+                `≈_{e_C^attn}` but never bounded quantitatively.
+                <b
+                  >2B.1 measurement (`gpu_sweep.py --kind kqv_out` on
+                  cell-qwen3-4b-{plain,uvo}-attnoutput-512-20260526):</b
+                >
+                at L=0 ridge recovers 97.46 % plain → 83.77 % obf (Δ 13.7 pp);
+                at L=5 50.8 % → 50.2 % (Δ 0.5 pp); L=17 16.7 % → 17.8 % (within
+                noise); L=23 25.3 % → 26.0 % (within noise). The tightened
+                theorem (`docs/research/aloepri-attacks.md` §"Attention-output
+                covariance") empirically holds at L≥5; L=0 surplus delta is most
+                plausibly the direct shadow of α<sub>e</sub>=1.0 embedding noise
+                hitting the first decoder layer. Element-wise plain–obf
+                correlation on `kqv_out` is ~0.01–0.03 (vs ~0.6–0.9 on `kq`) —
+                obfuscation rotates the feature space substantially but ridge
+                still recovers most of the token signal (K<sub>a</sub>-covariant
+                defense signature).
+                <b
+                  >Paper Table 4's 87 → 0 pp transition is NOT reproduced on
+                  either surface</b
+                >
+                (score: 49 % → 47 %; output: 97 % → 84 %). Three open hypotheses
+                remain: (1) paper measures a third surface (post-W<sub>o</sub>
+                residual contribution or post-softmax `outputs.attentions[L]` —
+                the latter we already tested via offline reconstruction, 30.6 %
+                obf, also nowhere near 0); (2) paper's ISA is gradient-opt with
+                different L<sub>A</sub> than ridge (pending Step 3 of
+                post-grilling plan); (3) paper's TTRSR metric doesn't invert Π
+                before comparison (not testable without paper code). Full
+                report:
+                <code
+                  >evals/aloepri-attacks/results/sweep/2B1-attn-output-vs-kq-comparison.md</code
+                >.
               </td>
             </tr>
             <tr>
@@ -3622,16 +3739,26 @@
                 25.05 % (Q3 14B, T2)<br />
                 19.64 % (Q3 32B, T2)
               </td>
-              <td class="num accent">98.8 % (identity-τ)</td>
-              <td class="num" style="color: #a66; font-weight: bold">18.4 %</td>
+              <td class="num accent">98.44 % (identity-τ, 3-seed)</td>
+              <td class="num accent">
+                <b>9.51 % ± 2.50</b> (3-seed mean)<br /><span
+                  style="font-size: 11px; color: #888"
+                  >updated 2026-05-26; supersedes prior single-seed 18.4 %
+                  (likely outlier-high within VMA's seed-noise distribution).
+                  Attribution: §5.2.2 −63 pp + R̂<sub>qk</sub>+Ĥ±1 −17.8 pp +
+                  Û<sub>vo</sub> −12.9 pp + sub-add +4.8 pp = −89 pp</span
+                >
+              </td>
               <td class="num accent">5.1 %</td>
               <td>
-                <b>4B marginal (above 15 % gate); 8B passes.</b> Comparable to
-                paper's 25.05 % on Q3-14B. α<sub>e</sub>=1.0 attenuates the
-                row-sort signature; Alg 1 P̂ erases column structure; head/block
-                perms scramble attention-side products. 8B's extra dimensional
-                headroom (d_obs=4352 vs 4B's 2816) drops the residual signal
-                cleanly under the gate.
+                <b>Pass at both sizes.</b> α<sub>e</sub>=1.0 + Π scramble W<sub
+                  >e</sub
+                >
+                rows (load-bearing: −63 pp). R̂<sub>qk</sub> + Hadamard ±1 in
+                matrix-Γ kernel scramble Q/K columns superadditively with §5.2.2
+                (−17.8 pp). Û<sub>vo</sub> scrambles V/O column magnitudes per
+                head (−12.9 pp). Ẑ<sub>block</sub> + Π<sub>head</sub>
+                contribute 0 (sort-invariant under column permutation).
               </td>
             </tr>
             <tr>
@@ -3653,13 +3780,105 @@
               </td>
               <td class="num">5.95 % (Q2.5-14B, T1)</td>
               <td class="num accent">98.5 % (identity-τ)</td>
-              <td class="num accent">0.05 %</td>
+              <td class="num accent">0.05 % (gate) / 0.00 % (attn)</td>
               <td class="num accent">0.07 %</td>
               <td>
-                <b>Pass.</b> α<sub>e</sub>&gt;0 breaks Gate-IA's no-noise
-                precondition; Alg 2 head/block perms break Attn-IA's per-block
-                consistency. Both sub-attacks need orthogonal defences — both
-                land.
+                <b>Pass — but Alg 1 alone is enough.</b> 2026-05-25 Alg1-only
+                bisection shows IA Gate-IA = 0.00 %, IA Attn-IA = 0.02 % without
+                any §5.2.2 or Alg 2. The rectangular keymat d→d<sub>obs</sub>
+                breaks both invariants on its own; §5.2.2 + Alg 2 add no
+                measurable defense (already at floor).
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <b>Per-head fingerprint Q/K/V/O</b>
+                <div class="alias">
+                  per-attention-head top-16 SVD spectrum signature; static
+                  weight attack (new 2026-05-25)
+                </div>
+              </td>
+              <td>
+                Recovers <code>τ<sub>kv</sub> ∈ S<sub>8</sub></code> and
+                <code>τ<sub>q</sub> ∈ S<sub>32</sub></code> per layer — the
+                inter-head shuffle from Algorithm 2 (paper §5.2.3 step 5). For
+                each plain attention head <code>i ∈ {Q, K, V, O}</code>, compute
+                the top-16 singular values of <code>W[head_i]</code> reshaped to
+                <code>(head_dim, d_residual)</code>. NN match obfuscated → plain
+                heads by L2 distance on the SV vector. SVs are
+                right-mult-invariant under R̂<sub>qk</sub> + Ĥ<sub>qk</sub>±1 +
+                Û<sub>vo</sub>, so the signature targets Π<sub>head</sub>
+                specifically. Path-2 attack driver:
+                <code>run_per_head_fingerprint.py</code>.
+              </td>
+              <td class="num">
+                <span style="font-size: 12px; color: #888"
+                  >novel (path-2 only)</span
+                >
+              </td>
+              <td class="num accent">100.0 % (identity perm — trivial)</td>
+              <td class="num accent">
+                Q: 4.25 % (≈ random 1/32 = 3.13 %)<br />
+                K: 13.54 % (≈ random 1/8 = 12.5 %)<br />
+                V: 12.50 % (= random 1/8)<br />
+                O: 3.21 % (≈ random 1/32)
+              </td>
+              <td class="num">pending</td>
+              <td>
+                <b>Pass at random chance — but Alg 1 alone defeats.</b> All four
+                surfaces land within 1 σ of uniform-random guessing, which means
+                zero detectable information leak about τ<sub>kv</sub> or
+                τ<sub>q</sub>. <b>Designed</b> to target Π<sub>head</sub>, but
+                Alg 1's rectangular keymat (d=2560 → d<sub>obs</sub>=2816)
+                already collapses per-head SVD spectra before Π<sub>head</sub>
+                kicks in. Confirmed by Alg 1-only cell (no Π<sub>head</sub>):
+                same random-chance numbers. Key-space `(8! · 4!)<sup>36</sup> ≈
+                10<sup>214</sup>` — intractable to brute-force. K/V at 1/8
+                because Qwen3 uses GQA (32 Q-heads share 8 K/V-heads).
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <b>V/O channel-pair V/O</b>
+                <div class="alias">
+                  per-head V row + O column L2 magnitudes; static weight attack
+                  (new 2026-05-25)
+                </div>
+              </td>
+              <td>
+                Recovers τ<sub>kv</sub> + τ<sub>q</sub> AND probes Û<sub
+                  >vo</sub
+                >
+                detectability. For each plain V-head: L2 row norms across
+                head_dim. For each plain O-head: L2 column norms within the
+                O-head's column range. NN match plain → obfuscated by L2
+                distance on magnitude vectors. Three sub-attacks: V-match,
+                O-match, and (V, O) joint under GQA grouping. Magnitudes are
+                preserved by all Alg 2 components EXCEPT Û<sub>vo</sub>
+                (QR+0.05 σ Gaussian perturb shifts per-head channel L2) →
+                signature designed to expose Û<sub>vo</sub>. Path-2 driver:
+                <code>run_vo_channel_pair.py</code>.
+              </td>
+              <td class="num">
+                <span style="font-size: 12px; color: #888"
+                  >novel (path-2 only)</span
+                >
+              </td>
+              <td class="num accent">100.0 % (identity perm — trivial)</td>
+              <td class="num accent">
+                V: 12.50 % (= random 1/8)<br />
+                O: 3.12 % (= random 1/32)<br />
+                (V, O) pair: 3.12 % (≈ random — Q-side is the bottleneck)
+              </td>
+              <td class="num">pending</td>
+              <td>
+                <b>Pass at random chance — but Alg 1 alone defeats.</b> Same Alg
+                1-collapsing mechanism as per-head fingerprint. Û<sub>vo</sub>'s
+                per-head magnitude perturb is shadowed by Alg 1's uniform
+                d→d<sub>obs</sub> shift across all heads — attacker can't
+                distinguish Û<sub>vo</sub>'s perturb from the keymat's uniform
+                widening. (Û<sub>vo</sub> still contributes to VMA via
+                column-mixing — different mechanism, different attack.)
               </td>
             </tr>
             <!--

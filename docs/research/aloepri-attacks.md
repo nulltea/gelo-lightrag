@@ -194,3 +194,217 @@ Combining the above:
 - **Vocab-disjoint with τ-leak attacker**: paper-aligned methodology + over-powered attacker — confounds two effects in opposite directions, so we don't use it.
 
 §08 will measure ISA HiddenState under row-split paper-faithful as the headline, vocab-disjoint as a secondary stress reading.
+
+## VMA — Vocabulary-Matching Attack (sorted-quantile RowSort)
+
+**Setup.** Static-weight attack. Attacker has plaintext GGUF `θ` and obfuscated GGUF `θ̃`. No runtime captures, no forward inference. The obfuscator has applied Algorithm 1 keymat (`W̃ = Q̂ · W · P̂`), §5.2.2 noise + Π token-perm (`W̃_e[τ(i)] = W_e[i] + α_e σ ε_i`, mapped through Π), and Algorithm 2 attention transforms (R̂_qk, Ĥ_qk±1, Ẑ_block, Π_head, Û_vo).
+
+**Attacker's goal.** Recover τ (the token permutation). Knowing τ lets the attacker decode every wire-side obfuscated prompt to plain token ids.
+
+**The trick: RowSort + sorted-quantile features + multi-source voting.** Paper §F.1 + Table 8 + reference `vendor/aloepri-py/src/security_qwen/vma.py`. Implementation in `evals/aloepri-attacks/m2_7/run_static_attacks.py::run_vma`.
+
+Per row (one plain id):
+
+1. **Compute a row-level "feature" from multiple weight tensors.** Each weight `W_proj` (attn_q, attn_k, attn_v, attn_output, ffn_gate, ffn_up, ffn_down × 36 layers) is projected against W_e: `feature_source = W_e @ W_proj` or `W_e @ W_proj.T`. This gives ~252 "source matrices" for Q3-4B, each shape `(vocab, projected_dim)`.
+2. **For each source matrix, take SORTED-QUANTILE features per row.** Sort each row's values, take 64 evenly-spaced quantile points, mean-centre and L2-normalize. This kills the column order — features are invariant under column permutation of W_proj.
+3. **Match plain features to obs features.** For each plain row `i` and each obs row `k`: cosine similarity per source. Z-score the rows. Sum across all 252 sources.
+4. **Top-K argmax** picks the obs row most-correlated to plain row `i`. If it's `τ(i)`, attack succeeds.
+
+**Why sort?** It's the crux. Sorted-quantile features defeat Alg2's column-shuffling defences:
+- Π_head permutes head-index — columns within a source matrix get reshuffled. After sort: identical features. **Π_head = 0 pp on VMA.**
+- Ẑ_block permutes RoPE-pair index — same column-permutation argument. **Ẑ_block = 0 pp on VMA.**
+
+But sort doesn't defeat:
+- Per-pair 2D rotation (R̂_qk): each value gets mixed with its pair-partner (NEOX `i ↔ i+half_d`). Sorted-quantile features SHIFT because rotation changes the values, not just their order.
+- Per-pair sign flip (Ĥ_qk ±1): `[a, b] → [-a, b]`. Sort of `[-a, b]` differs from sort of `[a, b]` when `|a| < |b|`. Subtle effect on trained weights — but real (−17.8 pp).
+- V/O channel perturbation (Û_vo): per-head column mixing with a QR-orthogonal + 0.05 Gaussian. Per-row L2 stats shift.
+
+**§5.2.2 alone (no Alg2) defends.** α_e noise scrambles W_e values per id; Π re-shuffles indices. Sorted-quantile features per row become noisy → cross-source voting can't reinforce a stable per-row signature. Drops VMA from 98 % to 35 % on Q3-4B.
+
+**§5.2.2 × Alg2 superadditivity.** This is the key empirical finding (2026-05-26 bisection, see `docs/handoffs/2026-05-25-alg2-attack-crossmap.md`). R̂_qk + Ĥ_qk±1 on top of §5.2.2 give a **9× larger marginal contribution** than on Alg1 alone:
+
+- Alg1 → Alg1+R̂+H (no §5.2.2): −1.96 pp
+- Alg1+§5.2.2 → Alg1+§5.2.2+R̂+H: **−17.84 pp**
+
+Mechanism (conjectured): §5.2.2 scrambles W_e per-row; Alg2's matrix-Γ scrambles W_q/W_k per-source. Each alone leaves enough residual structure for VMA's multi-source voting to recover. Stacked, both axes are perturbed independently and the cross-source vote can't reinforce.
+
+**Path-2 attribution (Q3-4B, 3-seed mean).** Total deployment drop: 98.4 % → 9.5 % = −89 pp.
+
+| Component | Contribution |
+|---|---:|
+| §5.2.2 (α_e + α_h + Π token-perm) | −63 pp (primary) |
+| R̂_qk + Ĥ_qk±1 (matrix-Γ kernel) | −17.8 pp (only after §5.2.2 active) |
+| Û_vo | −12.9 pp |
+| Sub-additive overlap (R̂+H × Û_vo) | +4.8 pp |
+| Π_head, Ẑ_block β=8 | 0 each |
+
+§08 row-table reports 18.4 % single-seed; my 3-seed mean is 9.5 % ± 2.5. The §08 number is plausibly an outlier-high sample within VMA's seed-noise distribution.
+
+## Per-head fingerprint Q/K/V/O — recovers `Π_head` via SVD spectra
+
+**Setup.** Static-weight. Attacker has plain GGUF θ and obfuscated GGUF θ̃. Driver: `evals/aloepri-attacks/m2_7/run_per_head_fingerprint.py` (new 2026-05-25). Targets Algorithm 2's inter-head shuffle (paper §5.2.3 step 5).
+
+**Attacker's goal.** Recover the per-layer head permutations `τ_kv ∈ S_8` (KV-head order) and `τ_q ∈ S_32` (Q-head order, built from `τ_kv × τ_group`). Recovery wouldn't directly give `τ` (the token permutation) but would unlock downstream attacks by de-shuffling the heads, making per-head function fingerprinting + attention-pattern analysis tractable on the obfuscated weights.
+
+**The trick: per-head SVD spectrum as a permutation-invariant signature.** For each plain head `i` (Q, K, V, or O), reshape `W[head_i]` to `(head_dim, d_residual)` and take the top-16 singular values. The SV vector is invariant under right-multiplication by orthogonal matrices on the head_dim axis — so R̂_qk, Ĥ_qk±1, Ẑ_block, and Û_vo (the four Alg2 head_dim-axis transforms) all preserve it. Π_head, however, *permutes which head index holds which signature*, so a successful match recovers `τ`. NN match by L2 distance on the 16-d SV vector; ground truth `τ` loaded from `.key.npz`.
+
+**Why it lands at random chance on the deployed cell.** Algorithm 1's keymat `K_d` is rectangular `(d, d_obs) = (2560, 2816)`. Each obfuscated head's weight matrix is `(head_dim, d_obs)` — 256 dims wider than plain. SVD spectra of `(128, 2816)` matrices differ systematically from `(128, 2560)` for the same head content because the extra columns add noise components to the singular values. Combined with Π_head's shuffle, every obfuscated head's signature looks the same to the attacker. **Alg1 incidentally protects the head-permutation secret that Alg2 was designed to protect.**
+
+**Q3-4B measured (2026-05-25, deployed Û_vo cell):**
+
+| Surface | Top-1 | Random chance | Note |
+|---|---:|---:|---|
+| attn_q | 4.25 % | 3.13 % (1/32, n_q=32) | within 1 σ of random |
+| attn_k | 13.54 % | 12.5 % (1/8, n_kv=8 via GQA) | within 1 σ |
+| attn_v | 12.50 % | 12.5 % | exactly random |
+| attn_output | 3.21 % | 3.13 % | exactly random |
+
+Key-recovery information bound: attacker gets ≤ guessing entropy. `τ_kv × τ_group` key space is `(8! · 4!)^36 ≈ 10^214` — intractable to brute-force.
+
+## V/O channel-pair V/O — recovers `Π_head` + probes `Û_vo`
+
+**Setup.** Static-weight. Driver: `evals/aloepri-attacks/m2_7/run_vo_channel_pair.py` (new 2026-05-25). Targets Algorithm 2's V↔O random projection (paper §5.2.3 step 4 `Û_vo`) in addition to `Π_head`.
+
+**Attacker's goal.** Same as per-head fingerprint but with a signature designed to be *sensitive* to `Û_vo`'s per-head perturbation, not just `Π_head`'s shuffle.
+
+**The trick: per-channel L2 magnitudes (not SV spectra).** For each plain V-head: take row L2 norms across `head_dim` rows of `W_v[head]` → length-128 magnitude vector. For each plain O-head: take column L2 norms within the O-head's column range. Optional auxiliary top-K SV signature.
+
+Why magnitudes specifically: `Û_vo` is QR-orthogonal + 0.05 Gaussian perturbation — it's the *only* Alg2 component that shifts per-head V/O column magnitudes (R̂_qk + Hadamard are pure orthogonal → preserve magnitudes; Π_head permutes whole heads → preserves within-head magnitudes; Ẑ_block permutes RoPE-pair indices → also preserves magnitudes). So this attack is specifically designed to detect `Û_vo`.
+
+Three sub-attacks:
+- `vo_v_match`: NN match plain V-heads to obfuscated V-heads (recovers `τ_kv` if successful).
+- `vo_o_match`: same for O-heads (recovers `τ_q`).
+- `vo_pair_match`: joint match — for each Q-head, both V and O must match correctly under GQA grouping. Recovers `(τ_kv, τ_q)` jointly + the V→O group structure.
+
+**Why it lands at random chance on the deployed cell.** Same reason as per-head fingerprint: Algorithm 1's `d → d_obs` keymat changes input-axis dimension uniformly across all heads, shifting all per-head magnitudes by an identical factor (preserving relative ordering within a layer but losing the per-head distinguishing signal vs plain). **Û_vo's perturbation is shadowed by Alg1's rectangular projection** — the attacker can't distinguish Û_vo's per-head magnitude drift from the keymat's uniform shift.
+
+**Q3-4B measured (2026-05-25, deployed Û_vo cell):**
+
+| Sub-attack | Top-1 | Random chance | Note |
+|---|---:|---:|---|
+| `vo_v_match` | 12.50 % | 12.5 % (1/8) | exactly random |
+| `vo_o_match` | 3.12 % | 3.13 % (1/32) | exactly random |
+| `vo_pair_match` | 3.12 % | random² ≈ 0.4 % | individually random but joint requires both — see below |
+
+The `vo_pair_match` deserves a note: it's not random² because the V and O signatures aren't truly independent given GQA structure. Empirically lands at the random-Q rate (3.12 %) because the O match is the harder bottleneck (32 candidates vs 8 for V).
+
+**Common pattern with per-head fingerprint.** Both attacks land at random chance on the deployed cell because **Algorithm 1's rectangular keymat already collapses the per-head signal** before Alg2's defenses (Π_head, Û_vo) need to kick in. The Alg2 components were designed for these threat models; in practice Alg1 shadows them.
+
+## Attention-output covariance: where §5.4's bound applies, and the score-surface gap
+
+**Claim (informal).** AloePri paper §5.4 proves that Algorithm 2's intra- and inter-head transforms preserve the attention layer's **output** vector (`f_attn(x, ω_attn) P̂_o`) up to an error `e_C^attn` that composes into the global accuracy bound `e_C^AloePri`. The Lipschitz consequence below shows that any head-permutation-invariant attack on the *output* surface therefore has defense delta `O(L_A · e_C^attn_output)`. The paper does **not** quantitatively bound the perturbation on the *pre-softmax score* `Q·K^T` or the *post-softmax probability* surface — only the qualitative symbol `≈_{e_C^attn}` appears there, and the global composition into `e_C^AloePri` only uses the output-level bound. The 47 % pre-softmax score-surface ridge recovery we measure on the deployed cell is therefore *out of scope* of paper §5.4, neither contradicting nor confirming Table 4's `AttnScore TTRSR = 0.0%` claim until the measurement surface paper used is identified (paper §7.5 / Table 4 / Appendix D.1 are ambiguous on this).
+
+### Notation (paper §3.3, §3.4, §5.2)
+
+- `x ∈ ℝ^d` — plaintext residual at the input of an attention layer.
+- `x̃ = x P̂` — obfuscated residual, where `P̂ ∈ ℝ^{d×(d+2h)}` is the keymat (paper Algorithm 1, page 8).
+- `W_q^(i), W_k^{η(i)}, W_v^{η(i)}, W_o^(i)` — plaintext attention weights for head `i` (paper §3.4.1 eq. 2).
+- `W̃_q^(i), W̃_k^{η(i)}, W̃_v^{η(i)}, W̃_o^(i)` — obfuscated attention weights per paper Algorithm 2 lines 6-7 (page 9):
+  - `W̃_k^{η(i)} = Q̂_k W_k^{η(i)} Ĥ_qk^{-1} Ẑ_block^T`  *(paper as written)*
+  - `W̃_q^(i)   = Q̂_q W_q^(i) R̂_qk Ĥ_qk Ẑ_block`
+  - `W̃_v^{η(i)} = Q̂_v W_v^{η(i)} Û_vo`
+  - `W̃_o^(i)   = Û_vo^{-1} W_o^(i) P̂_o`
+- `R̂_qk, Ĥ_qk, Ẑ_block, Û_vo, η(·)` — Algorithm 2 parameters (rotary, scaling, block-perm, V↔O random projection, inter-head permutation).
+- `G(·)` — RoPE.
+- `s_i(x) = G(x W_q^(i)) G(x W_k^{η(i)})^T / √d_head` — plaintext **pre-softmax score** for head `i`.
+- `a_i(x) = softmax(s_i(x) + mask)` — plaintext **post-softmax probability**.
+- `o_i(x) = a_i(x) · (x W_v^{η(i)})` — plaintext **per-head attention output** before W_o aggregation.
+- `y(x) = Σ_i o_i(x) · W_o^(i)` — plaintext **attention layer output** (the §5.4 bounded quantity).
+- Tildes denote obfuscated counterparts.
+
+### Paper §5.4's two equations and their scope
+
+Paper §5.4 page 10, "Attention" paragraph contains two distinct statements:
+
+**Score-level (qualitative).** *"The attention score for the i-th head is computed as: `G(x̃W̃_q^(i))G(x̃W̃_k^η(i))^T ≈_{e_C^attn} G(xW_q^(i'))G(xW_k^η(i'))^T`, where i' denotes the permuted index corresponding to the i-th head, and e_C^attn is the obfuscation error induced by block permutation (parameterized by β, γ)."*
+
+**Output-level (composes into accuracy bound).** *"f̃_attn(φ_X^attn(x), φ_Θ^attn(ω_attn)) ≈_{e_C^attn} φ_Y^attn ∘ f_attn(x, ω_attn) P̂_o"*
+
+Paper §5.4 page 11 "Putting Together" composes these into `e_C^AloePri ≤ M_0 e_C^embed + Σ M_i e_C^decoder_i + e_C^head` where `e_C^decoder_i ≤ (M_i^norm)(M_i^attn e_C_i^attn + e_C_i^norm) + e_C_i^FFN`. **Only the output-level `e_C^attn` enters this composition** — score-level perturbation is absorbed into `softmax + V·` aggregation before it crosses the output bound. Paper Table 2's `< 3 %` accuracy-loss therefore constrains the output-level `e_C^attn`, not the score-level one.
+
+**Implication.** "Small `e_C^attn`" means small output-level error. The score-level perturbation can be arbitrarily larger and still be consistent with §5.4 — softmax + V-aggregation can absorb a large `Q·K^T` perturbation while keeping `softmax(Q·K^T)·V` bounded.
+
+### Theorem (attention-output covariance)
+
+**Theorem.** Let `A: ℝ^{m × n_q × d_head} → [0,1]` be a recovery-rate attack on the **per-head attention output** `(o_1(x), ..., o_m(x))` (or equivalently on `y(x)` post W_o, since W_o is invertible up to keymat composition). Assume `A` is L-Lipschitz in its input with respect to the operator norm:
+
+> `|A(o_1, ..., o_m) − A(o'_1, ..., o'_m)| ≤ L_A · max_i ‖o_i − o'_i‖`.
+
+Then under paper §5.4's output-level attention bound,
+
+> `|A(õ_{η(1)}(x̃), ..., õ_{η(m)}(x̃)) − A(o_1(x), ..., o_m(x))| ≤ L_A · e_C^attn_output(β, γ, Û_vo)`.
+
+For attacks `A` that are invariant under the head-axis permutation `η` (which the attacker doesn't know), the permuted index drops out and the bound holds on the unpermuted output tensor.
+
+### Proof sketch
+
+By paper §5.4's output-level equation, `õ(x̃) = o(x) + ε` with `‖ε‖_op ≤ e_C^attn_output`. Apply the Lipschitz hypothesis on A. The head permutation `η` is a relabeling of A's input axis; permutation-invariance of A absorbs it. The same argument extends to `y(x)` post W_o because the W_o block-diagonal head aggregation is itself a Lipschitz map. □
+
+### What the theorem does NOT say
+
+The theorem does **not** claim anything about the pre-softmax `Q·K^T` or post-softmax probability surfaces. In particular it does not force `TTRSR_obf` to track `TTRSR_plain` on those surfaces. Paper §5.4 leaves the score-level perturbation unbounded; our empirical observation (table below) of a 47 % score-surface recovery on the deployed cell is consistent with that.
+
+### Known limitations and caveats
+
+- **L1 (Lipschitz of ridge).** Ridge `(X^T X + αI)^{-1} X^T Y` has operator norm ≤ `1/(λ_min(X^T X) + α)`. For small α relative to `λ_min`, `L_A` can be large; combined with even a moderate `e_C^attn_output`, the bound is loose. The α grid {1e-4, 1e-2, 1.0} in `gpu_sweep.py` picks best-on-val, but worst-case `L_A` is not uniformly bounded.
+- **L2 (TTRSR is not Lipschitz).** TTRSR top-1 is a sum of `argmax` indicators, discontinuous at decision boundaries. The Lipschitz hypothesis on `A` should be read as "Lipschitz under expectation over the score distribution" or "Lipschitz almost-everywhere away from margins." A fully rigorous bound would substitute a total-variation argument; we leave that to future work.
+- **L3 (permutation-invariance restriction).** The theorem covers head-permutation-invariant attacks. Fixed-architecture trained inverters (like the Qwen2 2-layer 8-head inverter referenced in paper Appendix D.1 for IMA, possibly used for ISA too) are *not* permutation-invariant — their token-mixing layer assumes a fixed head ordering. Head shuffles can break such inverters without changing information content. This is an artifact of attack architecture, not a defense property.
+- **L4 (η dropout is over-expectation).** η is a secret. For a single deployed cell, η is fixed, and "η drops out" averages over realizations of the secret keys. The theorem holds in expectation; per-cell variance is `O(1/m^{1/2})` from sampling.
+
+### Implementation deviations relevant to the theorem
+
+- **A1 — k_matrix construction.** `python/aloepri-llm/lib/alg2.py:263` uses `k_matrix = R̂_qk · Ĥ_qk^{-1} · Ẑ_block` instead of paper Algorithm 2 line 6's literal `Ĥ_qk^{-1} · Ẑ_block^T`. Documented in the CAVEAT at `alg2.py:244-262` as a deliberate fix: paper-literal gives `M_q · M_k^T = R̂_qk · Ĥ · Ẑ² · Ĥ^{-1}` which only equals R̂_qk (absorbed by RoPE) when `Ẑ² = I`; paper's BlockPerm function does not enforce involutivity. Our impl achieves `M_q · M_k^T = I` exactly via the `Ẑ · Ẑ^T = I` identity. Both impls satisfy paper §5.4's output-level bound (accuracy preserved); both differ in their score-level error profile.
+- **P1 — paper Algorithm 2 line 6 is under-specified.** Paper as written produces a `‖Ẑ² − I‖` residual at the score level; this residual is consistent with paper's qualitative `≈_{e_C^attn}` but never bounded quantitatively. Either a typo (`Z^T` → `Z`), an implicit assumption (`Ẑ ∈` involutions), or absorption into the unquantified `e_C^attn`.
+- **A2/A3 (minor).** Our `Û_vo` adds a small QR-stabilization perturbation not in paper. Our `R̂_qk` uses Qwen-half-rotated layout `(i, i+half)` instead of paper's `(2i, 2i+1)`; pair-index correctness with the runtime RoPE kernel is asserted but not formally verified (see Step 2A.1 of the 2026-05-26 plan).
+
+### Empirical: pre-softmax score surface (out-of-scope of §5.4)
+
+`evals/aloepri-attacks/m2_7/diagnose_isa/gpu_sweep.py` (2026-05-26), Qwen3-4B, 512 natural-language prompts (`evals/aloepri-attacks/corpora/release-gate-512.txt`), 10-seed row-split mean, deployed cell `untied-keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-uvo-bf16-native.gguf` (paper §7.1: α_e=1.0, α_h=0.2, h=128, β=8, γ=10³):
+
+| Surface @ L=0 | Plain TTRSR top-1 | Obf TTRSR top-1 | Δ | Surface in §5.4 scope? |
+|---|---:|---:|---:|:---:|
+| Pre-softmax `Q·K^T` | 48.63 % ± 0.80 | 47.22 % ± 0.84 | +1.41 pp (~1.2σ) | **No** |
+| Post-softmax (mask + softmax(·/√d_head), reconstructed) | 32.09 % ± 0.90 | 30.60 % ± 0.64 | +1.49 pp (~1.4σ) | **No** |
+| Attention output `softmax(Q·K^T)·V` (per-head, pre W_o, llama.cpp `kqv_out`) | 97.46 % ± 0.40 | **83.77 % ± 0.64** | +13.69 pp (~21σ) | **Yes** |
+
+Per-layer attention-output (2B.1, 2026-05-26, captures `cell-qwen3-4b-{plain,uvo}-attnoutput-512-20260526/`):
+
+| Layer | Plain | Obf | Δ |
+|---:|---:|---:|---:|
+| 0  | 97.46 % | 83.77 % | **+13.69 pp** |
+| 5  | 50.77 % | 50.22 % | +0.55 pp |
+| 11 | 18.50 % | 19.83 % | −1.33 pp |
+| 17 | 16.67 % | 17.75 % | −1.08 pp |
+| 23 | 25.27 % | 25.99 % | −0.72 pp |
+
+**Reading.** At L ≥ 5 the output-surface delta is within ±1.5 pp (≤ 1.7σ) — empirically consistent with the tightened theorem. At L=0 the 13.69 pp gap exceeds noise by ~21σ but is *far* from paper Table 4's 87 → 0 pp transition; the L=0 surplus is most plausibly the direct shadow of the Algorithm 1 embedding noise (α_e = 1.0) injected into the first decoder layer's input. A noise-isolated cell (α_e = 0 obf, full Alg2) at L=0 would test this hypothesis; deferred. Signal-correlation diagnostic: element-wise plain–obf correlation on `kqv_out` is ~0.01–0.03 at both L=0 and L=17 (vs ~0.6 / 0.9 for `kq`), so the obfuscation rotates the feature space substantially but ridge still recovers most of the token signal — the signature of K_a-covariant defense.
+
+Full report: `evals/aloepri-attacks/results/sweep/2B1-attn-output-vs-kq-comparison.md`.
+
+Capture sanity (2026-05-26 Step 0, `compare_plain_obf.py` against the 20260526 captures): plain–obf correlation 0.58-0.66 at L=0, 0.89-0.91 at L=17; not byte-identical, not near-identical → captures are genuinely obfuscated, ruling out a capture-path artifact.
+
+The pre-softmax 47 % obf TTRSR is **not bounded** by paper §5.4. It is a real path-2 finding: a ridge attacker who can capture the pre-softmax `Q·K^T` tensor recovers ~half the tokens on a full-Alg2 deployment. The 1.5 pp defense delta says Alg2 doesn't meaningfully obstruct this particular attack on this particular surface.
+
+The attention-output measurement (pending) tests the theorem's prediction. If output-surface Δ is small (single-digit pp), the theorem is empirically validated and the score-surface 47 % stands as a *complementary* finding on an out-of-scope surface. If output-surface Δ is also large, the theorem fails — the Lipschitz framework would need to be re-examined or the §5.4 output bound would need to be empirically violated.
+
+### Relation to paper Table 4
+
+Paper Table 4 (page 15) reports `AttnScore TTRSR = 0.0 %` for Noise+KeyMat+Head&BlockPerm. We previously read this as a contradiction with §5.4. We now retract that reading: paper §5.4's bound is on the output surface; "AttnScore" in Table 4 / §7.5 is ambiguous between score, post-softmax probability, and per-head output, and the paper does not specify which. Three reconciling hypotheses, all consistent with §5.4:
+
+1. **Surface mismatch.** Paper measures attention OUTPUT and our score-surface 47 % is on a different surface. Plausible; awaits 2B.1.
+2. **Attack-class mismatch.** Paper's ISA (Appendix D.1) is gradient-optimization-based, ours is ridge. Different `L_A`; the bound's coefficient differs. Plausible; awaits Step 3 (paper-faithful gradient-opt ISA reimplementation).
+3. **Metric / Π handling.** If paper's TTRSR comparison doesn't invert Π before scoring, automatic 0 % from label mismatch. Plausible but not testable without paper code.
+
+None of these requires §5.4 to be wrong. The 47 % score-surface finding becomes a *new* result orthogonal to paper §5.4, not a refutation.
+
+### Implications for path-2
+
+1. **AloePri §5.4 protects the attention output surface.** Subject to the L1-L4 caveats and confirmation by 2B.1, the theorem says a path-2 deployment of full Alg2 obfuscation bounds output-surface attack delta by `L_A · e_C^attn_output`. This is the threat model the paper's accuracy-vs-privacy story is designed for.
+2. **AloePri does NOT protect the pre-softmax score surface.** Operators or side-channel attackers who can capture `Q·K^T` recover ~47 % of tokens on Qwen3-4B with paper-default hyperparameters. Path-2 deployments that expose this surface (debug builds, GPU operator with kernel access, certain side channels) need additional protection. Options:
+   - **TEE-protected attention** (path-1 / round-3 M1.3 cached-attention design lock): score tensor never crosses PCIe.
+   - **A non-covariant score-surface perturbation** that increases `e_C^attn_score` deliberately. This trades accuracy and is not in paper Alg 2.
+3. **Score-surface defense is an open question.** The paper does not provide one; the literature surveyed in `private_llm_inference_round_3` doesn't either. Designing one is a separate research thread.
+
+### Open question — score-surface `e_C^attn` bound
+
+Paper qualitatively asserts `≈_{e_C^attn}` at the score level but never bounds it. Our deployed-cell measurement at β=8 shows ~35 % relative score perturbation (per the `alg2.py:251-262` CAVEAT β-sweep). Whether the bound *can* be small at the score level under paper's exact Algorithm 2 line 6 (with `Z²≠I` residual) is unknown; whether the bound matters for ridge-class attacks (which are data-driven and learn whatever perturbation pattern exists) is also unknown.
