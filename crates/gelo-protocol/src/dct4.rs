@@ -195,15 +195,20 @@ impl Dct4Mask {
             buf.nrows(),
             self.n
         );
-        // Apply right-to-left: C, D₁, C, D₂, C, D₃.
-        // `inv_norm` is fused into the final D₃ pass to save one
-        // full-tensor read-write — same trick as `Hd3Mask::apply_in_place`.
-        dct4_cols_inplace(buf, self.dct4.as_ref());
-        apply_diag_inplace(buf, &self.d1);
-        dct4_cols_inplace(buf, self.dct4.as_ref());
-        apply_diag_inplace(buf, &self.d2);
-        dct4_cols_inplace(buf, self.dct4.as_ref());
-        apply_diag_scaled_inplace(buf, &self.d3, self.inv_norm);
+        let d = buf.ncols();
+        let slice = buf
+            .as_slice_mut()
+            .expect("Dct4Mask::apply_in_place: buffer must be standard layout");
+        dct4_cascade_apply_inplace_slice(
+            slice,
+            self.n,
+            d,
+            &self.d1,
+            &self.d2,
+            &self.d3,
+            self.inv_norm,
+            self.dct4.as_ref(),
+        );
     }
 
     /// Remove the mask: `H·W = Aᵀ · (U·W)`. `masked_output` must have
@@ -241,12 +246,16 @@ impl Dct4Mask {
             "Dct4Mask::apply_in_place_slice: buf has {} f32s, expected n={} * cols={}",
             buf.len(), self.n, cols,
         );
-        dct4_cols_inplace_slice(buf, self.n, cols, self.dct4.as_ref());
-        apply_diag_inplace_slice(buf, &self.d1, cols);
-        dct4_cols_inplace_slice(buf, self.n, cols, self.dct4.as_ref());
-        apply_diag_inplace_slice(buf, &self.d2, cols);
-        dct4_cols_inplace_slice(buf, self.n, cols, self.dct4.as_ref());
-        apply_diag_scaled_inplace_slice(buf, &self.d3, cols, self.inv_norm);
+        dct4_cascade_apply_inplace_slice(
+            buf,
+            self.n,
+            cols,
+            &self.d1,
+            &self.d2,
+            &self.d3,
+            self.inv_norm,
+            self.dct4.as_ref(),
+        );
     }
 
     pub fn unapply_in_place(&self, buf: &mut Array2<f32>) {
@@ -257,14 +266,20 @@ impl Dct4Mask {
             buf.nrows(),
             self.n
         );
-        // Trailing `inv_norm` fused into the leading D₃ — same
-        // commutativity argument as `Hd3Mask::unapply_in_place`.
-        apply_diag_scaled_inplace(buf, &self.d3, self.inv_norm);
-        dct4_cols_inplace(buf, self.dct4.as_ref());
-        apply_diag_inplace(buf, &self.d2);
-        dct4_cols_inplace(buf, self.dct4.as_ref());
-        apply_diag_inplace(buf, &self.d1);
-        dct4_cols_inplace(buf, self.dct4.as_ref());
+        let d = buf.ncols();
+        let slice = buf
+            .as_slice_mut()
+            .expect("Dct4Mask::unapply_in_place: buffer must be standard layout");
+        dct4_cascade_unapply_inplace_slice(
+            slice,
+            self.n,
+            d,
+            &self.d1,
+            &self.d2,
+            &self.d3,
+            self.inv_norm,
+            self.dct4.as_ref(),
+        );
     }
 
     /// Slice-flavored variant of [`Self::unapply_in_place`].
@@ -275,12 +290,16 @@ impl Dct4Mask {
             "Dct4Mask::unapply_in_place_slice: buf has {} f32s, expected n={} * cols={}",
             buf.len(), self.n, cols,
         );
-        apply_diag_scaled_inplace_slice(buf, &self.d3, cols, self.inv_norm);
-        dct4_cols_inplace_slice(buf, self.n, cols, self.dct4.as_ref());
-        apply_diag_inplace_slice(buf, &self.d2, cols);
-        dct4_cols_inplace_slice(buf, self.n, cols, self.dct4.as_ref());
-        apply_diag_inplace_slice(buf, &self.d1, cols);
-        dct4_cols_inplace_slice(buf, self.n, cols, self.dct4.as_ref());
+        dct4_cascade_unapply_inplace_slice(
+            buf,
+            self.n,
+            cols,
+            &self.d1,
+            &self.d2,
+            &self.d3,
+            self.inv_norm,
+            self.dct4.as_ref(),
+        );
     }
 }
 
@@ -291,6 +310,12 @@ impl Dct4Mask {
 /// Implementation: copy each column into a contiguous length-n scratch,
 /// run `rustdct::Dct4::process_dct4` (with its internal scratch), copy
 /// back. Rayon-parallel over columns when `d ≥ DCT4_RAYON_COL_THRESHOLD`.
+///
+/// **Superseded** by the tile-fused cascade
+/// `dct4_cascade_apply_inplace_slice` — kept here as a parity-test
+/// fallback. Will be removed after the cascade ships measurement
+/// validation.
+#[allow(dead_code)]
 fn dct4_cols_inplace(buf: &mut Array2<f32>, dct4: &(dyn Dct4<f32> + Send + Sync)) {
     let n = buf.nrows();
     let d = buf.ncols();
@@ -303,6 +328,7 @@ fn dct4_cols_inplace(buf: &mut Array2<f32>, dct4: &(dyn Dct4<f32> + Send + Sync)
 /// Slice-flavored body of [`dct4_cols_inplace`]. Operates on a row-major
 /// `(n, d)` `&mut [f32]` directly so the batched per-block dispatch in
 /// `crate::sim` can avoid materialising a per-block `Array2`.
+#[allow(dead_code)]
 fn dct4_cols_inplace_slice(
     slice: &mut [f32],
     n: usize,
@@ -388,9 +414,308 @@ struct ColScratch {
     scratch: Vec<f32>,
 }
 
+/// Tile width for the fused DCT-IV cascade. Picked so:
+///  - 16 f32 = 64 B = one cache line: a tile row of the `(n, d)` input
+///    is read/written as exactly one cache line per slice row (no
+///    stride-`d` cache waste on copy-in / copy-out).
+///  - The full tile working set `tile_d × n × 4 B` fits in L2 at the
+///    production shape (16 × 4096 × 4 B = 256 KiB; Strix Halo L2 = 1 MiB
+///    per core).
+const DCT4_CASCADE_TILE: usize = 16;
+
+thread_local! {
+    /// Per-thread reusable scratch for the tile-fused cascade. Layout
+    /// is `(tile_d, n)` row-major: each tile row is a contiguous
+    /// length-`n` vector ready for DCT-IV. Reused across calls so the
+    /// 256 KiB allocation amortises across the whole forward pass.
+    static TILE_SCRATCH: std::cell::RefCell<TileScratch> =
+        std::cell::RefCell::new(TileScratch::default());
+}
+
+#[derive(Default)]
+struct TileScratch {
+    /// `(tile_d, n)` row-major: `tile[j * n + i] = buf[i * d + tile_start + j]`.
+    tile: Vec<f32>,
+    /// Internal DCT scratch from `rustdct::Dct4::get_scratch_len`.
+    dct_scratch: Vec<f32>,
+}
+
+/// Apply the DCT-IV cascade `A = D₃·C·D₂·C·D₁·C` in place, fused over
+/// `DCT4_CASCADE_TILE`-column tiles. Equivalent to:
+///   dct → ×D₁ → dct → ×D₂ → dct → ×D₃·inv_norm
+/// run separately, but all six stages happen on each tile while it's
+/// resident in L2 — slashing per-stage RAM round-trips from 6× the
+/// buffer to one copy-in + one copy-out per tile (≈ 4× less RAM
+/// traffic at the production shape).
+///
+/// Disjoint column tiles let us write through raw pointers under
+/// rayon without data races.
+fn dct4_cascade_apply_inplace_slice(
+    slice: &mut [f32],
+    n: usize,
+    d: usize,
+    d1: &[f32],
+    d2: &[f32],
+    d3: &[f32],
+    inv_norm: f32,
+    dct4: &(dyn Dct4<f32> + Send + Sync),
+) {
+    debug_assert_eq!(slice.len(), n.saturating_mul(d));
+    debug_assert_eq!(d1.len(), n);
+    debug_assert_eq!(d2.len(), n);
+    debug_assert_eq!(d3.len(), n);
+    if n < 2 || d == 0 {
+        return;
+    }
+    let tile = DCT4_CASCADE_TILE;
+    let n_tiles = d.div_ceil(tile);
+    let slice_addr = slice.as_mut_ptr() as usize;
+    let process = |t_idx: usize| {
+        let tile_start = t_idx * tile;
+        let tile_d = (tile_start + tile).min(d) - tile_start;
+        TILE_SCRATCH.with(|cell| {
+            let mut state = cell.borrow_mut();
+            let dct_scratch_len = dct4.get_scratch_len();
+            if state.tile.len() < tile * n {
+                state.tile.resize(tile * n, 0.0);
+            }
+            if state.dct_scratch.len() < dct_scratch_len {
+                state.dct_scratch.resize(dct_scratch_len, 0.0);
+            }
+            let TileScratch { tile: tile_buf, dct_scratch } = &mut *state;
+            let tile_buf = &mut tile_buf[..tile_d * n];
+            let dct_scratch = &mut dct_scratch[..dct_scratch_len];
+
+            // SAFETY: tiles touch disjoint column ranges of `slice`.
+            // Each iteration of `i` reads `tile_d` contiguous f32s
+            // (one cache line at tile_d=16) from row `i` of slice.
+            let slice_ptr = slice_addr as *mut f32;
+            unsafe {
+                copy_tile_in(slice_ptr, n, d, tile_start, tile_d, tile_buf);
+            }
+
+            // Cascade — 3 × (DCT + diag), all in-tile.
+            cascade_apply_in_tile(
+                tile_buf, tile_d, n, d1, d2, d3, inv_norm, dct4, dct_scratch,
+            );
+
+            unsafe {
+                copy_tile_out(tile_buf, tile_d, n, slice_ptr, d, tile_start);
+            }
+        });
+    };
+
+    if d >= DCT4_RAYON_COL_THRESHOLD {
+        (0..n_tiles).into_par_iter().for_each(process);
+    } else {
+        (0..n_tiles).for_each(process);
+    }
+}
+
+/// Inverse cascade: `Aᵀ = C·D₁·C·D₂·C·D₃·inv_norm`. Same tile-fused
+/// structure as `dct4_cascade_apply_inplace_slice`.
+fn dct4_cascade_unapply_inplace_slice(
+    slice: &mut [f32],
+    n: usize,
+    d: usize,
+    d1: &[f32],
+    d2: &[f32],
+    d3: &[f32],
+    inv_norm: f32,
+    dct4: &(dyn Dct4<f32> + Send + Sync),
+) {
+    debug_assert_eq!(slice.len(), n.saturating_mul(d));
+    debug_assert_eq!(d1.len(), n);
+    debug_assert_eq!(d2.len(), n);
+    debug_assert_eq!(d3.len(), n);
+    if n < 2 || d == 0 {
+        return;
+    }
+    let tile = DCT4_CASCADE_TILE;
+    let n_tiles = d.div_ceil(tile);
+    let slice_addr = slice.as_mut_ptr() as usize;
+    let process = |t_idx: usize| {
+        let tile_start = t_idx * tile;
+        let tile_d = (tile_start + tile).min(d) - tile_start;
+        TILE_SCRATCH.with(|cell| {
+            let mut state = cell.borrow_mut();
+            let dct_scratch_len = dct4.get_scratch_len();
+            if state.tile.len() < tile * n {
+                state.tile.resize(tile * n, 0.0);
+            }
+            if state.dct_scratch.len() < dct_scratch_len {
+                state.dct_scratch.resize(dct_scratch_len, 0.0);
+            }
+            let TileScratch { tile: tile_buf, dct_scratch } = &mut *state;
+            let tile_buf = &mut tile_buf[..tile_d * n];
+            let dct_scratch = &mut dct_scratch[..dct_scratch_len];
+
+            let slice_ptr = slice_addr as *mut f32;
+            unsafe {
+                copy_tile_in(slice_ptr, n, d, tile_start, tile_d, tile_buf);
+            }
+
+            cascade_unapply_in_tile(
+                tile_buf, tile_d, n, d1, d2, d3, inv_norm, dct4, dct_scratch,
+            );
+
+            unsafe {
+                copy_tile_out(tile_buf, tile_d, n, slice_ptr, d, tile_start);
+            }
+        });
+    };
+
+    if d >= DCT4_RAYON_COL_THRESHOLD {
+        (0..n_tiles).into_par_iter().for_each(process);
+    } else {
+        (0..n_tiles).for_each(process);
+    }
+}
+
+/// SAFETY: caller must ensure
+///   - `slice_ptr` points to at least `n * d` f32s,
+///   - `tile_start + tile_d ≤ d`,
+///   - `tile_buf.len() ≥ tile_d * n`,
+///   - this thread is the only one writing to `slice[*, tile_start..tile_start+tile_d]`.
+#[inline]
+unsafe fn copy_tile_in(
+    slice_ptr: *const f32,
+    n: usize,
+    d: usize,
+    tile_start: usize,
+    tile_d: usize,
+    tile_buf: &mut [f32],
+) {
+    for i in 0..n {
+        // SAFETY: `i * d + tile_start + tile_d ≤ n * d`.
+        let src = unsafe { slice_ptr.add(i * d + tile_start) };
+        for j in 0..tile_d {
+            // SAFETY: `j < tile_d`, src slice valid for `tile_d` reads.
+            tile_buf[j * n + i] = unsafe { *src.add(j) };
+        }
+    }
+}
+
+/// SAFETY: same preconditions as `copy_tile_in`; this thread is the only
+/// one writing to `slice[*, tile_start..tile_start+tile_d]`.
+#[inline]
+unsafe fn copy_tile_out(
+    tile_buf: &[f32],
+    tile_d: usize,
+    n: usize,
+    slice_ptr: *mut f32,
+    d: usize,
+    tile_start: usize,
+) {
+    for i in 0..n {
+        // SAFETY: `i * d + tile_start + tile_d ≤ n * d`.
+        let dst = unsafe { slice_ptr.add(i * d + tile_start) };
+        for j in 0..tile_d {
+            // SAFETY: `j < tile_d`, dst valid for `tile_d` writes.
+            unsafe { *dst.add(j) = tile_buf[j * n + i] };
+        }
+    }
+}
+
+/// Apply cascade: 3× DCT + 3× diag on the tile's `(tile_d, n)` row-major
+/// buffer.
+#[inline]
+fn cascade_apply_in_tile(
+    tile_buf: &mut [f32],
+    tile_d: usize,
+    n: usize,
+    d1: &[f32],
+    d2: &[f32],
+    d3: &[f32],
+    inv_norm: f32,
+    dct4: &(dyn Dct4<f32> + Send + Sync),
+    dct_scratch: &mut [f32],
+) {
+    // C
+    for j in 0..tile_d {
+        dct4.process_dct4_with_scratch(&mut tile_buf[j * n..j * n + n], dct_scratch);
+    }
+    // ×D₁ (±1 sign flip)
+    apply_sign_diag_in_tile(tile_buf, tile_d, n, d1);
+    // C
+    for j in 0..tile_d {
+        dct4.process_dct4_with_scratch(&mut tile_buf[j * n..j * n + n], dct_scratch);
+    }
+    // ×D₂
+    apply_sign_diag_in_tile(tile_buf, tile_d, n, d2);
+    // C
+    for j in 0..tile_d {
+        dct4.process_dct4_with_scratch(&mut tile_buf[j * n..j * n + n], dct_scratch);
+    }
+    // ×D₃ · inv_norm
+    apply_scaled_diag_in_tile(tile_buf, tile_d, n, d3, inv_norm);
+}
+
+/// Inverse cascade: `inv_norm·D₃ → C → D₂ → C → D₁ → C`.
+#[inline]
+fn cascade_unapply_in_tile(
+    tile_buf: &mut [f32],
+    tile_d: usize,
+    n: usize,
+    d1: &[f32],
+    d2: &[f32],
+    d3: &[f32],
+    inv_norm: f32,
+    dct4: &(dyn Dct4<f32> + Send + Sync),
+    dct_scratch: &mut [f32],
+) {
+    apply_scaled_diag_in_tile(tile_buf, tile_d, n, d3, inv_norm);
+    for j in 0..tile_d {
+        dct4.process_dct4_with_scratch(&mut tile_buf[j * n..j * n + n], dct_scratch);
+    }
+    apply_sign_diag_in_tile(tile_buf, tile_d, n, d2);
+    for j in 0..tile_d {
+        dct4.process_dct4_with_scratch(&mut tile_buf[j * n..j * n + n], dct_scratch);
+    }
+    apply_sign_diag_in_tile(tile_buf, tile_d, n, d1);
+    for j in 0..tile_d {
+        dct4.process_dct4_with_scratch(&mut tile_buf[j * n..j * n + n], dct_scratch);
+    }
+}
+
+/// In-tile diag with ±1 entries: per `(tile_d, n)` row, flip the sign
+/// of `tile[j, i]` when `diag[i] < 0`. No multiply when `diag[i] = +1`.
+/// Mirrors `apply_diag_inplace_slice`'s sign-skip optimisation but in
+/// the transposed layout (inner loop iterates `i`, contiguous in row j).
+#[inline]
+fn apply_sign_diag_in_tile(tile_buf: &mut [f32], tile_d: usize, n: usize, diag: &[f32]) {
+    for j in 0..tile_d {
+        let row = &mut tile_buf[j * n..j * n + n];
+        for i in 0..n {
+            if diag[i] < 0.0 {
+                row[i] = -row[i];
+            }
+        }
+    }
+}
+
+/// In-tile scaled diag: `tile[j, i] *= diag[i] * factor`. Always
+/// multiplies (factor may be non-trivial — `inv_norm = (2/n)^{3/2}`).
+#[inline]
+fn apply_scaled_diag_in_tile(
+    tile_buf: &mut [f32],
+    tile_d: usize,
+    n: usize,
+    diag: &[f32],
+    factor: f32,
+) {
+    for j in 0..tile_d {
+        let row = &mut tile_buf[j * n..j * n + n];
+        for i in 0..n {
+            row[i] *= diag[i] * factor;
+        }
+    }
+}
+
 /// In-place row-wise sign flip: `m[i, *] *= d[i]`. Identical contract
 /// to [`crate::hd3::apply_diag_inplace`]; copied here to avoid a
-/// cross-module re-export.
+/// cross-module re-export. Superseded by `apply_sign_diag_in_tile`.
+#[allow(dead_code)]
 fn apply_diag_inplace(m: &mut Array2<f32>, d: &[f32]) {
     let cols = m.ncols();
     let slice = m
@@ -399,6 +724,7 @@ fn apply_diag_inplace(m: &mut Array2<f32>, d: &[f32]) {
     apply_diag_inplace_slice(slice, d, cols);
 }
 
+#[allow(dead_code)]
 fn apply_diag_inplace_slice(slice: &mut [f32], d: &[f32], cols: usize) {
     let n_rows = d.len();
     debug_assert_eq!(
@@ -437,7 +763,9 @@ fn apply_diag_inplace_slice(slice: &mut [f32], d: &[f32], cols: usize) {
 /// Fused diagonal + scalar pass — mirror of `crate::hd3::apply_diag_scaled_inplace`.
 /// Multiplies row `i` by `d[i] * factor` in one full-tensor pass,
 /// replacing the `apply_diag_inplace + scale_inplace` pair at the
-/// D₃ boundary of `apply` / `unapply`.
+/// D₃ boundary of `apply` / `unapply`. Superseded by
+/// `apply_scaled_diag_in_tile`.
+#[allow(dead_code)]
 fn apply_diag_scaled_inplace(m: &mut Array2<f32>, d: &[f32], factor: f32) {
     let cols = m.ncols();
     let slice = m
@@ -446,6 +774,7 @@ fn apply_diag_scaled_inplace(m: &mut Array2<f32>, d: &[f32], factor: f32) {
     apply_diag_scaled_inplace_slice(slice, d, cols, factor);
 }
 
+#[allow(dead_code)]
 fn apply_diag_scaled_inplace_slice(slice: &mut [f32], d: &[f32], cols: usize, factor: f32) {
     let n_rows = d.len();
     debug_assert_eq!(

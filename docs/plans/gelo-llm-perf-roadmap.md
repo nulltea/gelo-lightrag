@@ -22,11 +22,13 @@
 ## TL;DR
 
 1. **Current state at Qwen3-4B B=8 n=2048 K=32** (production
-   long-n extraction shape): 93.7 tok/s prefill aggregate, 4.65
-   tok/s decode aggregate (0.58 per-seq). Prefill wall splits
-   CPU mask 38.0 % (DCT-IV at this shape — see §3.1 sweep gap)
-   / GPU matmul 40.5 % / in-TEE attention 12.6 %. Decode wall is
-   in-TEE attention 53.9 % / GPU matmul ~38 % / CPU mask ~4 %.
+   long-n extraction shape, post-DCT-IV-cascade 2026-05-26):
+   **121.3 tok/s prefill aggregate** (was 93.7 pre-cascade,
+   **+29 %**), 4.62 tok/s decode aggregate (0.58 per-seq).
+   Post-cascade prefill wall is CPU mask 20.4 % (down from
+   38.0 %) / GPU matmul ~52 % / in-TEE attention ~16 %. Decode
+   wall is unchanged: in-TEE attention 53.9 % / GPU matmul
+   ~38 % / CPU mask ~4 %.
 
 2. **iGPU ceiling is ~5-7 tok/s decode (B=1).** In-TEE attention
    is DDR5-bandwidth-bound and structurally untouchable on iGPU
@@ -34,16 +36,16 @@
    decode shape (§4.C.1). 40+ tok/s decode is dGPU-only and lives
    under §4.B / §4.C dGPU subsections.
 
-3. **Top iGPU lever depends on the workload mix; mix now measured.**
-   At B=8 chunks of ~1500-2500 tokens (DCT-IV shapes, pad 1.7-1.99)
-   the CPU mask bucket is 38-41 % of prefill — **DCT-IV
-   column-locality (§4.A.1) is the top iGPU lever**, ~10 % prefill
-   wall reduction. At B=8 chunks ≥ 3000 tokens (long-n HD₃ shapes,
-   pad < 1.6) the mask bucket shrinks to ~16 % while GPU matmul
-   (~48 %) and in-TEE attention (~27 % prefill, ~66 % decode) grow
-   — and neither has a direct iGPU lever. At long-n HD₃ shapes the
-   only remaining iGPU work is **§3.2 substrate prereqs** (Arc
-   drop + UMA allocator) to amortise GPU matmul across higher B.
+3. **Top-lever priorities updated 2026-05-26.** §4.A.1 DCT-IV
+   column-locality cascade ✅ **shipped** — measured **−22 %
+   prefill wall** at production shape (2.3× the original
+   estimate). §3.2 #1 R1 weight Arc drop ✅ **shipped** (5.28 GiB
+   measured RSS reclaim). Remaining iGPU work in EV order:
+   §3.2 #2 UMA allocator unblock (gates B≥16 amortisation —
+   biggest at long-n HD₃ shapes where matmul dominates),
+   §4.E.1 bf16 inner kernels (cross-cuts both families),
+   §4.D R4 async overlap (gated on Q#2 spike), §4.E.3 end-to-end
+   bf16 activations (multi-week; unblocks dGPU bucket-2).
 
 ---
 
@@ -284,10 +286,10 @@ sweep resolved §3.1 #1, #3, #4 (see below); the variance sweep
 
 ### §3.2 Substrate prereqs
 
-| # | Item | Impact | Engineering |
-|---:|---|---|---|
-| 1 | **R1 weight Arc drop** | ~7 GiB host RSS reclaim post-VRAM upload. Unblocks B=16 long-context cells that today RSS-saturate. 0 % wall directly; aggregate-tok/s lift via larger B. | 2-3 days |
-| 2 | **UMA allocator unblock** | Removes wgpu/Vulkan ~8 GiB per-submission command-buffer cap. Unblocks B=16/32 long-n cells that today command-submission-OOM (per the 2026-05-22 B=2 n=4096 + B=8 n=2048 abort retro). | 1-2 days spike |
+| # | Item | Status | Impact | Engineering |
+|---:|---|---|---|---|
+| 1 | **R1 weight Arc drop** | ✅ **shipped** 2026-05-22 (commit 4686b8f) | **5.28 GiB measured host RSS reclaim** post-VRAM upload (7.67 → 2.39 GiB at Qwen3-4B, confirmed by `dct4-cascade-microbench-2026-05-26`). `provision_into` `.take()`s per-layer Arcs; default `register_weight_bf16_shared` consumes the Arc after VRAM upload. Residual 2.39 GiB ≈ `token_embedding` (778 MB, still needed for `embedding_lookup`) + layer norms + config + allocator slack. | — |
+| 2 | **UMA allocator unblock** | pending | Removes wgpu/Vulkan ~8 GiB per-submission command-buffer cap. Unblocks B=16/32 long-n cells that today command-submission-OOM (per the 2026-05-22 B=2 n=4096 + B=8 n=2048 abort retro). | 1-2 days spike |
 
 ---
 
@@ -357,16 +359,29 @@ Two designs to evaluate in a 3-day spike:
 > 1.6). Doesn't help decode (HD₃ only), short-n prefill (HD₃),
 or long-n HD₃ prefill (pad < 1.6, n ≥ ~3000 at B=8).
 
-**Estimated impact**: ~10 % prefill wall at DCT-IV-dominant
-shapes — confirmed at both pad 1.70 (n=2400, mask 41.3 %) and
-pad 1.99 (n=2048, mask 38.0 %). Gate: ≥ 20 % DCT-IV-bucket
-reduction in spike.
+**Status — SHIPPED 2026-05-26.** Measured impact via
+`bench-results/dct4-cascade-microbench-2026-05-26_*.{log,tsv}`:
 
-**Workload-mix sensitivity** (§3.1 #1 resolved): at B=8 long-n
-HD₃ shapes the mask bucket is only 16 % of prefill, so this
-lever delivers 0 % wall there. Lever EV is workload-weighted:
-strong if extraction stays in 1500-2500 chunks, weak if it
-extends to 3000+ chunks.
+| Shape (B=8 K=32) | pad | Prefill wall before | Prefill wall after | Δ wall | Mask bucket Δ |
+|---|---:|---:|---:|---:|---:|
+| n=2048 (production) | 1.99 | 174.92 s | **135.13 s** | **−22.7 %** | **−58.5 %** |
+| n=2400 (crossover) | 1.70 | 216.15 s | **169.76 s** | **−21.5 %** | **−53.1 %** |
+
+Both data points clear the ≥ 20 % bucket-reduction gate by ~2.9×
+(measured ~55 %). The win is **larger than the original ~10 %
+prefill-wall estimate** because the tile-fused cascade
+eliminates **inter-stage RAM round-trips** entirely — prior
+3-stage code paid full-buffer DDR5 traffic between every DCT
+and every diag (~6× buffer traffic); the cascade pays one
+copy-in + one copy-out per `T=16`-column tile with all six
+stages resident in L2.
+
+**Workload-mix sensitivity** (§3.1 #1 resolved): at long-n HD₃
+shapes (B=8 n=3500, pad 1.17) the cascade is no-op — prefill
+wall 287.87 s → 289.09 s within variance. So the lever still
+delivers 0 % wall at long-n HD₃ shapes, but at DCT-IV-dominant
+shapes (the production extraction shape mix) the win is 2× the
+estimate. EV stays workload-weighted.
 
 #### §4.A.2 HD₃ (iGPU lever)
 
@@ -609,17 +624,18 @@ floor (~7 % at long-n); single-cell estimates are gated on
 
 | Bucket | Top iGPU lever | iGPU EV | Top dGPU lever | dGPU EV |
 |---|---|---|---|---|
-| **§4.A.1 DCT-IV mask** | column-locality refactor | ~10 % prefill at prod shape | (inherited from iGPU) | (no separate dGPU lever) |
-| **§4.A.2 HD₃ mask** | column-axis FWHT (gated §3.1 #1) | < 2 % decode; ? long-n prefill | (inherited from iGPU) | (no separate dGPU lever) |
+| **§4.A.1 DCT-IV mask** | column-locality cascade ✅ | **~22 % prefill at DCT-IV shapes (measured)** | (inherited from iGPU) | (no separate dGPU lever) |
+| **§4.A.2 HD₃ mask** | column-axis FWHT | < 2 % decode; < 8 % long-n prefill (subsumed by §4.E.1) | (inherited from iGPU) | (no separate dGPU lever) |
 | **§4.B GPU matmul** | substrate prereqs (B≥16) | aggregate-tok/s only | persistent K/V upload elision; Q4 weights | ~40× ceiling |
 | **§4.C In-TEE attention** | none — aborted | 0 % | bucket-2 revival + GQA WGSL + persistent K/V | 53.9 % → ~10-20 % decode |
 | **§4.D Compute pipelining (R4)** | async overlap (gated Q#2) | ~15 % wall iGPU best | async overlap | ~25-30 % wall |
 | **§4.E bf16 / activation precision** | E.1 inner kernel → E.3 end-to-end | 3-10 % direct + structural | prerequisite for §4.C.2 | unblocks dGPU C |
 | **§4.F Misc TEE ops** | parked | < 2 % | parked | < 2 % |
 
-iGPU cumulative ceiling (best case, all levers landing,
-single-cell variance acknowledged): ~5-7 tok/s B=1 decode,
-~10-15 tok/s B=8 aggregate, ~140 tok/s B=8 prefill aggregate.
+iGPU cumulative ceiling (post-cascade baseline, with remaining
+levers landing): ~5-7 tok/s B=1 decode, ~10-15 tok/s B=8
+aggregate, ~150-180 tok/s B=8 prefill aggregate (production
+shape now at **121 tok/s** post-cascade, was 94 tok/s pre).
 dGPU cumulative target: 40-60+ tok/s B=1 decode once §4.C.2
 levers compound with §4.B.2 and §4.E.3.
 
