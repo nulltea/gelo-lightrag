@@ -18,7 +18,7 @@ tags: [hd3, gpu, mask]
 > **Reference artifacts:**
 > - `crates/gelo-protocol/src/hd3.rs` — current HD₃ implementation
 > - `crates/gelo-protocol/src/sim.rs` `build_shielded_and_apply` — caller-side pow2 pad
-> - `docs/research/private-llm-inference-round-3.md` §2.1 — HD₃ adoption rationale
+> - `docs/research/private-llm-inference.md` §2.1 — HD₃ adoption rationale
 > - `memory/qwen3_4b_perf_2026_05_20.md` — measured 4B numbers
 > - `memory/hd3_mask_landed.md`, `memory/hd3_radix8_and_scratch_reuse.md` — prior HD₃ work
 

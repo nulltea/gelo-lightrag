@@ -14,6 +14,10 @@ tags: [aloepri, gelo]
 > Reference code at github.com/sheng1feng/Aloepri (community
 > reproduction; not the official ByteDance fork).
 >
+> **See also:**
+> - [`aloepri-attacks.md`](aloepri-attacks.md) — empirical attack measurements (the benchmark referenced in §4 below).
+> - [`aloepri-keymat-variance.md`](aloepri-keymat-variance.md) — Algorithm 1 keymat numerical variance investigation.
+>
 > **Scope constraint:** This analysis assumes the user's explicit
 > position that **model-weight privacy is NOT a goal at this stage of
 > the project**. Our deployment continues to target openweight Qwen3 /
@@ -23,7 +27,7 @@ tags: [aloepri, gelo]
 > by construction.
 >
 > **Companion docs:**
-> [`private-llm-inference-round-2.md`](private-llm-inference-round-2.md)
+> [`../archive/research/private-llm-inference-R2-2026-05-18.md`](../archive/research/private-llm-inference-R2-2026-05-18.md)
 > §A.2 (where AloePri was first noted as needing a full read).
 
 ---
@@ -517,7 +521,7 @@ to validate our defense.**
 | P1 | Add a `--snapshot-activations` feature flag to `InProcessTrustedExecutor` to capture per-forward-pass tensors at the PCIe boundary. | 3–5 days |
 | P2 | Wire the attack suite into a release-gate bench, gated by TTRSR < 10% for ISA/IMA on Qwen3 + GELO + shield rows. | 1 week |
 | P2 | Cite AloePri (with the §2.2 caveat about open-weight applicability) in `gelo.md` §6 "What attack classes don't apply" as additional evidence that our protocol family is well-characterized. | 1 hour |
-| P3 | Update [[private-llm-inference-round-2]] memory and [`private-llm-inference-round-2.md`](private-llm-inference-round-2.md) §A.2 to mark the AloePri-rotation-cadence question as resolved (it's static, not per-prompt). | 1 hour |
+| P3 | Update [[private-llm-inference-round-2]] memory and [`../archive/research/private-llm-inference-R2-2026-05-18.md`](../archive/research/private-llm-inference-R2-2026-05-18.md) §A.2 to mark the AloePri-rotation-cadence question as resolved (it's static, not per-prompt). | 1 hour |
 
 **Do not** port any of techniques #1–9 from §3. They optimize for
 a threat model we explicitly don't operate in.
@@ -526,7 +530,7 @@ a threat model we explicitly don't operate in.
 
 ## 8. Updating Round-2's AloePri Section
 
-Replace [`private-llm-inference-round-2.md`](private-llm-inference-round-2.md)
+Replace [`../archive/research/private-llm-inference-R2-2026-05-18.md`](../archive/research/private-llm-inference-R2-2026-05-18.md)
 §A.2's open question — *"per-prompt vs per-session rotation?"* — with
 the resolved answer:
 
@@ -550,7 +554,7 @@ the resolved answer:
 - Community reproduction repository:
   `github.com/sheng1feng/Aloepri` (commit 60e8ea3).
 - Companion analysis:
-  [`private-llm-inference-round-2.md`](private-llm-inference-round-2.md)
+  [`../archive/research/private-llm-inference-R2-2026-05-18.md`](../archive/research/private-llm-inference-R2-2026-05-18.md)
   §A.2 (initial classification).
 - Threat-model baseline:
   [`../dev/prototype/gelo.md`](../dev/prototype/gelo.md) §2, §6.

@@ -950,7 +950,7 @@ in this same plan structure.
 - [`../dev/prototype/gelo.md`](../dev/prototype/gelo.md) — protocol baseline
 - [`../dev/prototype/gelo-llm.md`](../dev/prototype/gelo-llm.md) — LLM
   generation forward plan
-- [`../research/private-llm-inference-round-2.md`](../research/private-llm-inference-round-2.md)
+- [`../archive/research/private-llm-inference-R2-2026-05-18.md`](../archive/research/private-llm-inference-R2-2026-05-18.md)
   §D — Gemma 4 architecture analysis
 - [`../research/aloepri-vs-gelo.md`](../research/aloepri-vs-gelo.md)
   — technique comparison

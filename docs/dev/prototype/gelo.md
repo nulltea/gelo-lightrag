@@ -903,7 +903,7 @@ running FFN in TEE at ~3× the wall-clock.
 
 - **Private model weights** — different threat model; would require an
   STIP-style mask. The whole stack is built around the openweight assumption.
-- **MPC / FHE inference** — addressed in `docs/research/private-inference.md`.
+- **MPC / FHE inference** — addressed in `docs/archive/research/private-inference-R1-2026-04-21.md`.
   Orders of magnitude slower than this for the embedding workload we target.
 - **DP-perturbed embeddings** — a complementary mechanism for the output
   side; not needed when the embedding ciphertext itself is encrypted at rest

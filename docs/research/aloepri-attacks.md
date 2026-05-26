@@ -10,6 +10,11 @@ tags: [aloepri, attacks]
 
 Conceptual descriptions of the attacks in §08 of `docs/prototype/aloepri-llm.html`. Threat-model conclusions live here; harness/driver-fix progress lives in `docs/handoffs/`.
 
+> **See also:**
+> - [`aloepri-keymat-variance.md`](aloepri-keymat-variance.md) — statistical-context note: K=64 keymat-pool sample variance is ~5 pp at d=2560. Any single-seed TTRSR reading here carries ~5 pp noise; comparisons within that band are not significant.
+> - [`aloepri-vs-gelo.md`](aloepri-vs-gelo.md) — threat-model comparison and deployment positioning. The empirical attack suite below is the benchmark referenced from that doc §4.
+> - [`../archive/handoffs/2026-05-26-aloepri-path-2-recommendations.md`](../archive/handoffs/2026-05-26-aloepri-path-2-recommendations.md) — deployment recommendations extracted from these measurements.
+
 ## IMA-EmbedRow-ridge
 
 **Setup.** The obfuscator publishes a transformed embedding table `W̃`. For each plain token id `i`, the obfuscator places its transformed row at obfuscated index `τ[i]`, where
@@ -456,13 +461,8 @@ Paper Table 4 (page 15) reports `AttnScore TTRSR = 0.0 %` for Noise+KeyMat+Head&
 
 §5.4's bound is consistent with everything we measure. The tightened theorem holds.
 
-### Implications for path-2
-
-1. **The recommended deployment construction is paper-literal Alg2, not our prior default.** Our deployed cell was understating AloePri's actual defense by 7–40 pp on both surfaces. Migration to `--alg2-paper-literal` is the path-2 recommendation, contingent on accuracy preservation under bf16 (paper-literal Û_vo has 500× higher condition number; bf16 inverse loss is a new precision risk to verify — see next-steps memo).
-2. **AloePri §5.4 protects the attention output surface, more than we previously measured.** Subject to confirming accuracy under paper-literal, the §5.4-bounded surface defense delta at L=0 is **50 pp** under paper-literal (vs 14 pp under our default). At L≥5 the delta is **40 pp** under paper-literal (vs 0.5 pp under default). This is a substantive deployment protection, not the 1.4 pp we previously reported.
-3. **AloePri's score-surface defense, under paper-literal, is also non-trivial at L≥5.** Even outside §5.4's quantitative bound, the paper-literal `kq` defense delta at L=5+ is 16–31 pp, dropping obf to single digits. The L=0 surplus (~5 pp) is still small but no longer "no defense."
-4. **A different threat-model reading.** The path-2 score-surface attack we previously characterised as "AloePri provides ~0 pp defense" was a measurement of the *anti-defense version* of Alg2 we'd deployed. Real AloePri Alg2 (paper-literal) defends meaningfully on this surface too. The remaining 6-7 % obf TTRSR at L≥5 is the operational leak budget, not 47 %.
-5. **TEE-protected attention (path-1) remains the gold standard for adversaries who can capture either surface at L=0** — even paper-literal Alg2 leaks 43 % on `kq` at L=0 and 47 % on `kqv_out` at L=0. The L=0 surplus is α_e=1.0 embedding-noise shadow; only an in-TEE first decoder layer eliminates it.
+> Deployment recommendations that flowed from these measurements live in
+> [`docs/archive/handoffs/2026-05-26-aloepri-path-2-recommendations.md`](../archive/handoffs/2026-05-26-aloepri-path-2-recommendations.md).
 
 ### Open question — score-surface `e_C^attn` bound
 

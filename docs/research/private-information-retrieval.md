@@ -11,6 +11,10 @@ tags: [pir]
 > Research date: April 2026. Covers systems that make the *retrieval step* of RAG private — hiding query content, access patterns, or both from an untrusted retrieval server.
 >
 > **Scope:** Private Information Retrieval (PIR), Oblivious RAM (ORAM), encrypted/functional-encryption vector search, secret sharing, DP perturbation, and ZK verifiability — for sparse (keyword/BM25), dense (embedding/ANN), and hybrid retrieval.
+>
+> **Related research:**
+> - At-rest storage encryption (Tiptoe / Panther / RAGtime-PIANO / p²RAG also appear in their FHE-native form): [`fhe-encrypted-vector-db.md`](fhe-encrypted-vector-db.md).
+> - Graph-RAG-specific retrieval primitives (GORAM, Graphiti, OblivGNN): [`private-graph-search.md`](private-graph-search.md) §B.
 
 ---
 

@@ -383,7 +383,7 @@ includes:
 - [ ] Recommendation paragraph: under which deployment scenarios
       should the project use Path 1 vs Path 2.
 
-This output feeds back into [`../research/private-llm-inference-round-2.md`](../research/private-llm-inference-round-2.md)
+This output feeds back into [`../archive/research/private-llm-inference-R2-2026-05-18.md`](../archive/research/private-llm-inference-R2-2026-05-18.md)
 as round-3.
 
 ---
@@ -392,7 +392,7 @@ as round-3.
 
 - [`../research/aloepri-vs-gelo.md`](../research/aloepri-vs-gelo.md)
   — technique-level comparison rationale.
-- [`../research/private-llm-inference-round-2.md`](../research/private-llm-inference-round-2.md)
+- [`../archive/research/private-llm-inference-R2-2026-05-18.md`](../archive/research/private-llm-inference-R2-2026-05-18.md)
   — Gemma 4 architectural analysis (round 2 §D).
 - [`../dev/prototype/gelo.md`](../dev/prototype/gelo.md) — GELO protocol
   reference.

@@ -10,6 +10,11 @@ tags: [aloepri, alg1]
 
 **Status:** investigation closed 2026-05-21. Theory 2 (K=64 sample variance) confirmed; Theory 1 (rocSOLVER basis orientation) refuted; the original "Philox + rocSOLVER GPU port bug" diagnosis is **retracted**.
 
+> **Implication for [`aloepri-attacks.md`](aloepri-attacks.md):** the finding
+> below (single-seed TTRSR readings carry ~5 pp noise at d=2560) applies to
+> all ISA TTRSR measurements in the attacks doc — comparisons within that
+> band are not significant.
+
 A 2×2 PRNG×LinAlg factorial on the attacker's Algorithm 1 keymat builder
 appeared to expose wildly divergent TTRSR readings depending on whether the
 generator was CPU MT19937 or CUDA Philox and whether QR/SVD ran on CPU

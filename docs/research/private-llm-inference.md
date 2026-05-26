@@ -2,15 +2,41 @@
 type: research
 status: current
 created: 2026-05-19
-updated: 2026-05-19
+updated: 2026-05-26
 tags: [inference, llm, perf]
-supersedes: [private-llm-inference-round-2]
+supersedes: [private-llm-inference-R2-2026-05-18, private-inference-R1-2026-04-21]
 ---
 
-# Private LLM Inference — Research Round 3
+# Private LLM Inference
+
+> Canonical research doc for private LLM inference in this project.
+> Originated as "Research Round 3" (2026-05-19); promoted to canonical
+> 2026-05-26 and absorbs the R1 systems survey + R2 deltas. The two
+> predecessors live in `docs/archive/research/` as historical baselines.
+> Future rounds should append to this file rather than spawn a new
+> round-N doc.
+
+## R2 research-spike status (G.1–G.8)
+
+The 2026-05-18 R2 doc proposed eight research spikes. Their status as
+of 2026-05-26:
+
+| Item | Status | Resolution / pointer |
+|---|---|---|
+| G.1 — PLE table in TEE DRAM (Gemma 3n) | pending | Awaiting Gemma 3n model decision (see `../plans/path-1-gelo-gemma.md`). |
+| G.2 — All-CPU-TEE benchmark | pending | Same gate as G.1. |
+| G.3 — MoEcho replay | not started | No active owner. |
+| G.4 — CryptoMoE port | blocked | Depends on G.3. |
+| G.5 — TwinShield-Xue security analysis | not started | Independent; ~1–2 weeks effort. |
+| G.6 — AloePri rotation cadence | **done 2026-05-18** | Verdict: static per-deployment; does not apply under openweight. |
+| G.6b — Port AloePri attack suite | partially done | See `aloepri-attacks.md` + `aloepri-vs-gelo.md`. |
+| G.7 — BLIS multithreading | **done 2026-05-19** | +5.04× wall on mask GEMM. See R3 §3.1 below. |
+| G.8 — bf16 mask GEMM | blocked | AOCL bf16 kernel absent on Strix Halo; R4 path forward documented in `../plans/m1-12-bf16-activation-pipeline.md`. |
+
+## R3 measured outcomes — section preserved from 2026-05-19 onward
 
 > **Research date:** 2026-05-19. Follow-up to
-> [`private-llm-inference-round-2.md`](private-llm-inference-round-2.md)
+> [`../archive/research/private-llm-inference-R2-2026-05-18.md`](../archive/research/private-llm-inference-R2-2026-05-18.md)
 > (2026-05-18). Round 2 covered the *what to support* axis
 > (MoE / hybrid-attention / PLE). This round covers the *make it fast*
 > axis: candidate primitives, threat-model relaxations, and code-side
@@ -29,7 +55,7 @@ supersedes: [private-llm-inference-round-2]
 > — the bottleneck breakdown driving this round;
 > [`../dev/prototype/gelo.md`](../dev/prototype/gelo.md),
 > [`../dev/prototype/gelo-llm.md`](../dev/prototype/gelo-llm.md),
-> [`private-llm-inference-round-2.md`](private-llm-inference-round-2.md).
+> [`../archive/research/private-llm-inference-R2-2026-05-18.md`](../archive/research/private-llm-inference-R2-2026-05-18.md).
 
 ---
 
@@ -823,7 +849,7 @@ internal to this session; sources cited are public artefacts.
 ### Primary GELO paper and threat-model background
 - [Belikov & Fedotov, *Good-Enough LLM Obfuscation*, arXiv:2603.05035](https://arxiv.org/abs/2603.05035)
 - [`../dev/prototype/gelo-complexity-analysis.md`](../dev/prototype/gelo-complexity-analysis.md) — bottleneck numbers driving this round
-- [`private-llm-inference-round-2.md`](private-llm-inference-round-2.md) — predecessor
+- [`../archive/research/private-llm-inference-R2-2026-05-18.md`](../archive/research/private-llm-inference-R2-2026-05-18.md) — predecessor
 
 ### Hadamard / structured orthogonal family (§2)
 - [Ailon & Chazelle, *Fast Johnson-Lindenstrauss Transform*, STOC'06](https://www.cs.princeton.edu/~chazelle/pubs/FJLT-sicomp09.pdf)

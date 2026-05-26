@@ -17,10 +17,11 @@ tags: [reranking, gelo]
 > privacy story, `caprise-two-party-kdf.md` for the embedder's
 > session-key derivation pattern this design extends.
 >
-> Research context: `docs/research/private-reranking-research.md`
-> (rev-4) and `docs/research/private-reranking-research-round-2.md`
-> (rev-5, the round that picked Qwen3-Reranker-0.6B as primary and
-> bge-reranker-v2-m3 as fallback).
+> Research context: [`../../research/private-reranking-research.md`](../../research/private-reranking-research.md)
+> (rev-4 + rev-5 update — literature survey + GELO-compatibility re-evaluation).
+> Design counterpart with the Qwen3-Reranker-0.6B primary /
+> bge-reranker-v2-m3 fallback decisions:
+> [`private-reranking-design.md`](private-reranking-design.md).
 
 ---
 
@@ -676,9 +677,9 @@ ignored release-gate tests run on demand.
 ## References
 
 - `docs/research/private-reranking-research.md` — rev-4 survey of
-  the field.
-- `docs/research/private-reranking-research-round-2.md` — round-2
-  pass that picked the two architectures shipped here.
+  the field, with rev-5 GELO-compatibility re-evaluation appended.
+- `docs/dev/prototype/private-reranking-design.md` — the design pass
+  that picked the two architectures shipped here.
 - `gelo.md` — the protocol substrate the reranker reuses unchanged.
 - `gelo-llm.md` — the long-context fused-attention work that
   unblocks listwise rerankers like jina-v3.

@@ -700,7 +700,7 @@ Path 1 reviews and merges before Path 2 consumes.
   (λ, h, α_e, α_h, β, γ) as a follow-on between M2.7 and M2.8.
 - **Multimodal encoders** (audio / vision, ~150 M params each on
   E-series). Out of scope for v1. Open research questions in
-  [`../research/private-llm-inference-round-2.md`](../research/private-llm-inference-round-2.md) §D.9.
+  [`../archive/research/private-llm-inference-R2-2026-05-18.md`](../archive/research/private-llm-inference-R2-2026-05-18.md) §D.9.
 - **Gemma 4 26B A4B (MoE)**. Out of scope; requires composing AloePri
   with CryptoMoE balanced-dispatch (round-2 §C). Separate research
   stream.
@@ -721,7 +721,7 @@ less docs/plans/path-2-aloepri-gemma.md             # this file
 less docs/prototype/aloepri-llm.html                # protocol reference
 less docs/plans/private-inference-comparison-framework.md
 less docs/research/aloepri-vs-gelo.md
-less docs/research/private-llm-inference-round-2.md
+less docs/archive/research/private-llm-inference-R2-2026-05-18.md
 
 # 3. Vendor AloePri reference (M2.1 prep)
 mkdir -p vendor
@@ -759,7 +759,7 @@ grep -n "hidden_size\|n_embd\|hparams.n_embd" src/llama-model.cpp | head -40
 - [`path-1-gelo-gemma.md`](path-1-gelo-gemma.md) — sibling plan
 - [`../dev/prototype/gelo.md`](../dev/prototype/gelo.md) — GELO protocol
   reference (background context)
-- [`../research/private-llm-inference-round-2.md`](../research/private-llm-inference-round-2.md)
+- [`../archive/research/private-llm-inference-R2-2026-05-18.md`](../archive/research/private-llm-inference-R2-2026-05-18.md)
   §D — Gemma 4 architecture analysis (PLE, hybrid attention, K=V,
   p-RoPE)
 - [`../research/aloepri-vs-gelo.md`](../research/aloepri-vs-gelo.md)

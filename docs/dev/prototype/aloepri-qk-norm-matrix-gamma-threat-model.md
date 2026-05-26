@@ -216,7 +216,7 @@ obfuscation does not provide weight privacy on any backbone —
 weight privacy requires either:
 
 - **Per-prompt fresh masking** (GELO, ObfuscaTune-on-activations,
-  CAPRISE) — see `docs/research/private-llm-inference-round-2.md`
+  CAPRISE) — see `docs/archive/research/private-llm-inference-R2-2026-05-18.md`
   and `docs/dev/prototype/gelo-llm.md` for the path-1 instantiation.
 - **HE / MPC primitives** with formal indistinguishability bounds.
 
@@ -346,5 +346,5 @@ models.**
   results that motivated this work.
 - `docs/research/aloepri-vs-gelo.md` — broader threat-model
   comparison between AloePri and GELO.
-- `docs/research/private-llm-inference-round-2.md` — round-2 survey
+- `docs/archive/research/private-llm-inference-R2-2026-05-18.md` — round-2 survey
   of weight-analysis defences in the wider literature.

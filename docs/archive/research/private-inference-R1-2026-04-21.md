@@ -1,9 +1,11 @@
 ---
 type: research
-status: current
+status: stale
 created: 2026-05-11
 updated: 2026-05-11
 tags: [inference]
+superseded_by: private-llm-inference
+archive_reason: "Comprehensive systems survey (MPC, FHE, TEE, obfuscation). Retained as historical baseline; superseded by the R2 deltas and the R3 measured outcomes, now consolidated in docs/research/private-llm-inference.md."
 ---
 
 # Private Transformer Inference (Embedding, Reranking, Generation)

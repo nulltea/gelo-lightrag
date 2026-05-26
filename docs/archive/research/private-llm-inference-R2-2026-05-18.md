@@ -1,10 +1,12 @@
 ---
 type: research
-status: current
+status: stale
 created: 2026-05-18
 updated: 2026-05-18
 tags: [inference, llm]
-supersedes: [private-inference]
+supersedes: [private-inference-R1-2026-04-21]
+superseded_by: private-llm-inference
+archive_reason: "Delta + roadmap (G.1–G.8 research spikes). R3 measured 3 of those spikes (BLIS-mt 5.04×, bf16 blocked, layer-skip regressed) — outcomes live in docs/research/private-llm-inference.md. The roadmap-status table in that doc tracks which G.* items remain."
 ---
 
 # Private LLM Inference — Research Round 2
