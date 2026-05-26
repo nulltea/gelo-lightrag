@@ -114,6 +114,30 @@ pub trait GpuOffloadEngine: Send {
     /// masking is applied by the trusted side before the call.
     fn matmul(&self, handle: WeightHandle, input: ArrayView2<f32>) -> Result<Array2<f32>>;
 
+    /// **bf16-input** variant of [`Self::matmul`] — Path β of the
+    /// bf16 activation pipeline (plan
+    /// `m1-12-bf16-activation-pipeline.md` §4.2). Engines that can
+    /// convert bf16 → device precision directly (the wgpu engine in
+    /// F16 mode via `array2_bf16_to_tensor_f16`) override this to
+    /// avoid the substrate-side bf16 → f32 widen that the default
+    /// path forces.
+    ///
+    /// Output stays `Array2<f32>` because the engine's natural output
+    /// precision is unchanged (f16 internal, f32 download); narrowing
+    /// to bf16 is a separate substrate-side concern.
+    ///
+    /// Default impl widens to f32 in a transient buffer and forwards
+    /// to [`Self::matmul`]. Engines that haven't been updated still
+    /// produce correct output (just with the widening cost).
+    fn matmul_bf16_input(
+        &self,
+        handle: WeightHandle,
+        input: ArrayView2<bf16>,
+    ) -> Result<Array2<f32>> {
+        let f32_owned: Array2<f32> = input.mapv(|v| v.to_f32());
+        self.matmul(handle, f32_owned.view())
+    }
+
     /// Compute `input · W[h]` for each `h` in `handles`, sharing **one
     /// upload of `input` and one device sync** across all N matmuls.
     /// Returns the results in the same order as `handles`.
@@ -139,6 +163,23 @@ pub trait GpuOffloadEngine: Send {
             .iter()
             .map(|h| self.matmul(*h, input))
             .collect()
+    }
+
+    /// bf16-input variant of [`Self::matmul_many`]. Default impl
+    /// widens once into an `Array2<f32>` and forwards to
+    /// [`Self::matmul_many`] — the widening happens exactly once and
+    /// is amortised across the N handles, so even default engines
+    /// pay a single conversion. Overriders that can keep bf16 across
+    /// the multi-matmul (the wgpu engine in F16 mode) should upload
+    /// the bf16 input once and re-use the device tensor across the
+    /// N kernel launches.
+    fn matmul_many_bf16_input(
+        &self,
+        handles: &[WeightHandle],
+        input: ArrayView2<bf16>,
+    ) -> Result<Vec<Array2<f32>>> {
+        let f32_owned: Array2<f32> = input.mapv(|v| v.to_f32());
+        self.matmul_many(handles, f32_owned.view())
     }
 
     /// Two-operand dynamic matmul where neither operand is a pre-registered
