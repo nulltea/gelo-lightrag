@@ -260,14 +260,14 @@ verify llama.cpp Gemma 3n / Gemma 4 support; confirm where the E2B
 GGUF weights live.
 
 **Files to add:**
-- `python/path-2/pyproject.toml` · `requirements.txt` · `.python-version`
+- `python/aloepri-llm/pyproject.toml` · `requirements.txt` · `.python-version`
 - `docs/plans/path-2-status.md` — running notes log
 
 **Concrete checks:**
 
 ```bash
 # (a) Python env
-mkdir -p python/path-2 && cd python/path-2
+mkdir -p python/aloepri-llm && cd python/aloepri-llm
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install gguf safetensors torch numpy
 
@@ -315,7 +315,7 @@ code.
 - `vendor/aloepri-py/` (git submodule or copy with LICENSE)
 - `evals/aloepri-attacks/{vma,ia,isa,ima,nn,tfma,sda}.py` — thin
   wrappers around the vendored attack code
-- `python/path-2/lib/keymat.py` — Python port of Algorithm 1
+- `python/aloepri-llm/lib/keymat.py` — Python port of Algorithm 1
   (KeyMatGen / InvKeyMatGen) since the reference is Qwen-architected
   but the math is model-agnostic; the reference's `src/keymat.py`
   may be imported as-is
@@ -386,9 +386,9 @@ Bump artifact version; embed AloePri version + seed-hash in
 metadata so the artifact is reproducible.
 
 **Files to add:**
-- `python/path-2/obfuscate_gemma4_gguf.py` — top-level CLI
-- `python/path-2/lib/{attention,ffn,rmsnorm,embed,ple,p_rope}.py`
-- `python/path-2/lib/key_material.py` — generate + persist
+- `python/aloepri-llm/obfuscate_gemma4_gguf.py` — top-level CLI
+- `python/aloepri-llm/lib/{attention,ffn,rmsnorm,embed,ple,p_rope}.py`
+- `python/aloepri-llm/lib/key_material.py` — generate + persist
   `aloepri.key` (POSIX 0600)
 
 **Acceptance:**
@@ -457,8 +457,8 @@ through Z, detokenise to obfuscated string, POST to `llama-server`'s
 `/v1/completions` endpoint, decode response.
 
 **Files to add:**
-- `python/path-2/aloepri_client.py` — async + sync HTTP wrapper
-- `python/path-2/lib/tokenizer_roundtrip.py` — fuzz harness
+- `python/aloepri-llm/aloepri_client.py` — async + sync HTTP wrapper
+- `python/aloepri-llm/lib/tokenizer_roundtrip.py` — fuzz harness
   asserting `tokenizer.encode(tokenizer.decode(ids)) == ids` for
   representative ID lists including edge cases (special tokens,
   byte-fallback, leading whitespace)
@@ -644,7 +644,7 @@ To minimise merge pain, Path 2 only writes to:
 - `vendor/aloepri-py/**` (vendored AloePri reference)
 - `vendor/llama.cpp/**` (vendored llama.cpp; only modified if M2.3
   outcome 2 or 3)
-- `python/path-2/**` (offline rewriter, client wrapper, lib)
+- `python/aloepri-llm/**` (offline rewriter, client wrapper, lib)
 - `crates/aloepri-client/**` (optional Rust client)
 - `scripts/path-2/**`
 - `docs/plans/path-2-*.md`
@@ -720,7 +720,7 @@ git clone https://github.com/sheng1feng/Aloepri vendor/aloepri-py
 ( cd vendor/aloepri-py && git checkout 60e8ea3 )
 
 # 4. Set up Python env (M2.0)
-mkdir -p python/path-2 && cd python/path-2
+mkdir -p python/aloepri-llm && cd python/aloepri-llm
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install gguf safetensors torch numpy requests pytest
 

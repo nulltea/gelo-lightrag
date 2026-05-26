@@ -33,7 +33,7 @@ TTRSR numbers that the existing path-1 measurements can't supply.
   separate from the persistent `llama-swap` container.
 * `capture_token_streams.py` — drives the spawned server with the
   64-prompt corpus via the existing
-  `python/path-2/aloepri_client.py::AloePriClient`, captures
+  `python/aloepri-llm/aloepri_client.py::AloePriClient`, captures
   `(plain_prompt_ids, obf_prompt_ids, obf_response_ids)` per
   prompt to JSONL.
 * `run_token_attacks.py` — feeds the captured JSONL to AloePri's
@@ -139,7 +139,7 @@ git add vendor/llama.cpp && git commit -m "bump llama.cpp pin"
 * The Python harness pulls `tokenizers` via the path-2 `AloePriClient`.
   System Python on Ubuntu 24+ refuses pip installs (PEP 668), so run
   the harness through the path-2 venv:
-  `/home/timo/repos/private-rag-path-2/python/path-2/.venv/bin/python`.
+  `/home/timo/repos/private-rag-path-2/python/aloepri-llm/.venv/bin/python`.
 
 **HiddenState pass** (NN / IMA basic / IMA paper-like / ISA
 HiddenState — flash-attn on is fine):
@@ -160,7 +160,7 @@ docker run --rm -d --name aloepri-m2_7-server \
 
 curl --retry 30 --retry-delay 1 -s http://127.0.0.1:8061/health
 
-VENV=/home/timo/repos/private-rag-path-2/python/path-2/.venv/bin/python
+VENV=/home/timo/repos/private-rag-path-2/python/aloepri-llm/.venv/bin/python
 $VENV evals/aloepri-attacks/m2_7/capture_hidden_states.py \
     --endpoint http://127.0.0.1:8061 \
     --key-path /home/timo/.cache/huggingface/path-2-aloepri/qwen3-1.7b/keymat-h128-pi-noise-alg2-fp32.gguf.key.npz \

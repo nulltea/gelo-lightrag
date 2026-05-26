@@ -1,0 +1,52 @@
+# IMA-EmbedRow-transformer GPU training image for AMD Strix Halo (gfx1151).
+#
+# Layered on top of AMD's official `rocm/pytorch:rocm7.2.3_*` image —
+# the only pre-built image whose PyTorch HIP layer was compiled with
+# gfx1151 in the target list (verified: `import torch` + matmul works
+# without any HSA_OVERRIDE_GFX_VERSION fiddling).
+#
+# Storage cost:
+#   Base image:   40 GB disk / 10 GB content (already pulled)
+#   This layer:   ~500 MB (transformers, safetensors, gguf, accelerate)
+#
+# We deliberately do NOT layer on top of the kyuz0 toolbox: AMD's
+# `rocm/pytorch:*` image has both ROCm runtime AND PyTorch tested as one
+# unit. The kyuz0 toolbox only ships ROCm runtime; a separately-installed
+# torch wheel (ROCm 6.4) didn't include gfx1151 kernels and failed with
+# hipErrorInvalidDeviceFunction at the first tensor op — see
+# docs/handoffs/2026-05-21-strong-pi-server-patch.md for the
+# investigation log.
+#
+# Usage (mount host repo + HF cache):
+#
+#   docker build -f evals/aloepri-attacks/m2_7/Dockerfile.ima-trainer \
+#       -t aloepri-ima-trainer:latest .
+#
+#   docker run --rm \
+#       --device /dev/dri --device /dev/kfd \
+#       --group-add "$(getent group video | cut -d: -f3)" \
+#       --group-add "$(getent group render | cut -d: -f3)" \
+#       --user "$(id -u):$(id -g)" \
+#       --shm-size 16G \
+#       -v "$PWD:/work" \
+#       -v "$HOME/.cache/huggingface:/cache/huggingface" \
+#       -e HF_HOME=/cache/huggingface \
+#       -w /work \
+#       aloepri-ima-trainer:latest \
+#       python3 evals/aloepri-attacks/m2_7/run_ima_embedrow_attacks.py [args]
+
+FROM rocm/pytorch:rocm7.2.3_ubuntu24.04_py3.12_pytorch_release_2.10.0
+
+# Harness deps. `transformers` for AutoConfig / AutoModel / AutoTokenizer
+# (Qwen2.5 / Qwen3 support); `safetensors` for snapshot I/O;
+# `gguf` for reading our obfuscated GGUF artifacts (token_embd / output);
+# `accelerate` because transformers expects it for some auto-device paths.
+RUN pip install --no-cache-dir \
+        transformers \
+        safetensors \
+        numpy \
+        gguf \
+        accelerate \
+        ml_dtypes
+
+WORKDIR /work

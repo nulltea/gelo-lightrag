@@ -161,7 +161,7 @@ def run(
     strip_shield: bool = True,
     candidate_pool_size: int = 2048,
     seed: int = 20260518,
-    split_mode: str = "row",
+    split_mode: str = "vocab",
 ) -> AttackResult:
     """Run IMA against a single condition's snapshots. Returns one
     :class:`AttackResult` ready for the per-condition results JSON.

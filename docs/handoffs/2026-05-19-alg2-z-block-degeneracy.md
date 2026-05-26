@@ -9,7 +9,7 @@ for the deployment narrative.
 
 ## What the bug is
 
-`python/path-2/lib/alg2.py:generate_block_perm` and the equivalent in
+`python/aloepri-llm/lib/alg2.py:generate_block_perm` and the equivalent in
 `vendor/aloepri-py/src/attention_keys.py` produce the **identity
 permutation matrix** for every seed across head_dim ∈ {8, 16, 32, 64,
 128} under the **default parameters** (`beta=8`, `gamma=1e3`,
@@ -94,7 +94,7 @@ tells us whether `Ẑ_block` is load-bearing.
 ## Verification recipe
 
 ```bash
-cd python/path-2
+cd python/aloepri-llm
 .venv/bin/python -c "
 from lib import alg2
 import numpy as np

@@ -317,7 +317,7 @@ design.
   current cells. The ablation GGUFs (gamma-only, keymat-only, etc.)
   were cleaned up during the disk-recovery pass earlier today; they
   rebuild in ~40 s from
-  `python/path-2/obfuscate_qwen3_gguf.py` if needed.
+  `python/aloepri-llm/obfuscate_qwen3_gguf.py` if needed.
 - **Disk**: 1.3 TB free post-cleanup. Room for both Qwen3-4B and
   Qwen3-8B obfuscated variants.
 - **Docker image**: `aloepri-llama-server:option-c` (~710 MB). The
@@ -431,7 +431,7 @@ Empirical proof: noise-free keymat-only obfuscation on tied 4B → multi-
 language repetition output ("出现出现…"). The first 4B sweep at α_e=1.0
 collapsed to 0/20 HumanEval for this reason, not because of noise.
 
-Fix: `python/path-2/untie_qwen3_gguf.py` (new utility). Reads a tied
+Fix: `python/aloepri-llm/untie_qwen3_gguf.py` (new utility). Reads a tied
 GGUF, duplicates `token_embd.weight` byte-for-byte into a fresh
 `output.weight` slot, writes a new GGUF that llama.cpp treats as
 untied. Plain inference on the untied copy is byte-equivalent to the
@@ -587,8 +587,8 @@ trained-inverter attacks deferred this session:
 Modified:
 - `docs/prototype/aloepri-llm.html`
 - `docs/prototype/css/site.css`
-- `python/path-2/obfuscate_qwen3_gguf.py`
-- `python/path-2/untie_qwen3_gguf.py` (new file)
+- `python/aloepri-llm/obfuscate_qwen3_gguf.py`
+- `python/aloepri-llm/untie_qwen3_gguf.py` (new file)
 - `evals/aloepri-attacks/m2_7/extract_gguf_weights.py`
 - `evals/aloepri-attacks/m2_7/run_ima_embedrow_attacks.py`
 - `evals/aloepri-attacks/m2_7/spawn_obfuscated_server.sh`

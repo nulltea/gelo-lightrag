@@ -2,7 +2,7 @@
 record the resulting obfuscated-token-id streams.
 
 TFMA + SDA both consume the wire-side `τ(token_id)` stream. The
-existing `AloePriClient` (`python/path-2/aloepri_client.py`) already
+existing `AloePriClient` (`python/aloepri-llm/aloepri_client.py`) already
 implements the tokenise → τ-map → /completion → response protocol;
 we wrap it here to:
 
@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 
 # Import AloePriClient from the path-2 codebase.
-PATH2 = Path("/home/timo/repos/private-rag-path-2/python/path-2")
+PATH2 = Path("/home/timo/repos/private-rag-path-2/python/aloepri-llm")
 sys.path.insert(0, str(PATH2))
 from aloepri_client import AloePriClient, KeyMaterial  # type: ignore
 
@@ -47,6 +47,9 @@ def main() -> int:
                    help="JSONL output: one record per prompt")
     p.add_argument("--smoke", action="store_true",
                    help="Capture only the first prompt and print the record")
+    p.add_argument("--no-tau-map", action="store_true",
+                   help="Send plain token ids directly (skip τ-map). Use when "
+                        "targeting a plaintext GGUF for the Plain control column.")
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from m2_7_common import add_min_mem_args, check_phase_memory  # type: ignore
     add_min_mem_args(p, phase="token_capture")
@@ -72,9 +75,12 @@ def main() -> int:
     with args.output.open("w") as out_fh:
         for prompt_idx, prompt_text in enumerate(prompts):
             t_prompt = time.perf_counter()
-            # Tokenise + τ-map locally.
+            # Tokenise + (optionally) τ-map locally.
             plain_prompt_ids = client._encode(prompt_text)  # type: ignore[attr-defined]
-            obf_prompt_ids = client._to_obf(plain_prompt_ids)  # type: ignore[attr-defined]
+            if args.no_tau_map:
+                obf_prompt_ids = plain_prompt_ids                  # Plain control: send plain ids
+            else:
+                obf_prompt_ids = client._to_obf(plain_prompt_ids)  # type: ignore[attr-defined]
 
             # POST to llama-server with the τ-mapped prompt.
             import requests
@@ -87,6 +93,9 @@ def main() -> int:
                 "return_tokens": True,
                 "stream": False,
                 "cache_prompt": False,
+                # See python/aloepri-llm/aloepri_client.py: epsilon parser
+                # silences common_chat_parse under strong-Π gibberish.
+                "chat_parser": '{"parsers":[{"type":"epsilon"}],"rules":{},"root":0}',
             }
             try:
                 resp = requests.post(

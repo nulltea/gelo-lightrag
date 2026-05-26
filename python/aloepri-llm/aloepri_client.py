@@ -38,6 +38,18 @@ import requests
 from tokenizers import Tokenizer
 
 
+# Pre-serialised PEG arena: a single `epsilon` parser at the root.
+# Passed as the `chat_parser` request field on every llama-server call to
+# override the default `content(rest()) + end()` grammar that would
+# otherwise throw on strong-Π's de-tokenised multi-language gibberish.
+# Epsilon always matches the empty prefix and never fails → the server's
+# `task_result_state::update_chat_msg` becomes a no-op, the streamed
+# `tokens` field is unaffected, and 100 % of corpus prompts complete.
+_EPSILON_CHAT_PARSER: str = json.dumps(
+    {"parsers": [{"type": "epsilon"}], "rules": {}, "root": 0}
+)
+
+
 @dataclass
 class KeyMaterial:
     tau: np.ndarray         # shape (vocab_size,), int64; plain_id → obf_id
@@ -144,6 +156,20 @@ class AloePriClient:
             # EOS termination should flip this back to false at the call
             # site after the obfuscation is fully calibrated.
             "ignore_eos": True,
+            # Why chat_parser=epsilon: llama-server runs `common_chat_parse`
+            # on every generated chunk via
+            # `task_result_state::update_chat_msg`, even for /completion.
+            # Under strong-Π obfuscation the cumulative de-tokenised text
+            # is multi-language gibberish that fails the default PEG
+            # `content(rest()) + end()` grammar on ~5–9 % of token
+            # sequences, returning 500. Providing a custom epsilon parser
+            # via the `chat_parser` request field overrides the default —
+            # epsilon always matches the empty prefix and never throws, so
+            # `update_chat_msg` becomes a no-op while the streamed
+            # `tokens` field is unaffected. Verified 65/65 corpus pass.
+            # Path: vendor/llama.cpp/tools/server/server-task.cpp:432;
+            # arena format: vendor/llama.cpp/common/peg-parser.cpp:2120.
+            "chat_parser": _EPSILON_CHAT_PARSER,
         }
         obf_resp_ids: list[int] = []
         final_meta: dict = {}

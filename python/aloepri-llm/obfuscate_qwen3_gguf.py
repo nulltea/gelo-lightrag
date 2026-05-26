@@ -37,7 +37,21 @@ Usage:
     --in /path/to/plaintext-qwen3.gguf \\
     --out /path/to/obfuscated.gguf \\
     --mode {identity-pad|gamma-only|keymat} \\
-    --expansion-size 128 --seed 42
+    --expansion-size 256 --seed 42
+
+Deployment defaults (2026-05-22):
+  --expansion-size 256
+    Up from paper default 128. c1 luckiness-signature probe (N=10 pool
+    seeds × K=64 K_a^k matrices) at d=2560 measured σ_pool 2.12 pp
+    @ h=128 → 1.37 pp @ h=256 (−35 %) and mean TTRSR 3.19 % → 2.30 %
+    (−28 %), at +9 % inference-time d_obs cost. Paper-faithful: yes.
+    See docs/research/aloepri-keymat-variance.md § "Defender plan".
+
+  --seed 42 (default; for adversarial selection use the output of
+    python/aloepri-llm/select_adversarial_kd.py to pick a K_d seed
+    that maximises top_sv_overlap_r{H}.mean against a reference K_a
+    pool — c1 Spearman ρ = −0.78 between this score and attacker
+    TTRSR, so high score ⇒ low expected attacker TTRSR).
 """
 from __future__ import annotations
 
@@ -246,6 +260,7 @@ def rewrite_gguf(
     lam: float = 0.3,
     apply_pi: bool = False,
     pi_seed: int = 0,
+    pi_include_specials: bool = False,
     key_out: Path | None = None,
     noise_alpha_e: float = 0.0,
     noise_alpha_h: float = 0.0,
@@ -267,6 +282,24 @@ def rewrite_gguf(
     # flips to the obfuscation; M_q stays equal to M_k (because
     # H = H⁻¹ for ±1 diag), so Q/K cancel cleanly in attention.
     alg2_h_hadamard_signs: bool = False,
+    # When True: enable paper §5.2.3 Û_vo random projection on the V↔O
+    # composition. V output is right-multiplied by Û_vo per head; W_o
+    # input axis is right-multiplied by Û_vo⁻¹ block-diag per head.
+    # The two cancel through attention (V̄ · W̃_o^T = V · W_o^T) so
+    # residual covariance is preserved, but per-head V outputs and
+    # W_o cols carry deployment-specific randomness that ISA
+    # HiddenState ridge cannot extract. Closes paper Table 4's
+    # 0.82 %→0.0 % gap (Noise+KeyMat vs Noise+KeyMat+Head&BlockPerm).
+    # Default off for backward-compat with prior deployments.
+    alg2_enable_u_vo: bool = False,
+    # When True: switch Alg2 to paper-literal construction (A1+A2):
+    #   - k_matrix = Ĥ⁻¹ · Ẑᵀ (paper Algorithm 2 line 6 literal, NO R̂_qk;
+    #     leaves a ‖Ẑ² − I‖ score residual when Ẑ is non-involutive)
+    #   - Û_vo = raw N(0, 1/d_head) (no QR-stabilize, no perturbation);
+    #     wider spectrum → more kqv_out distortion at the cost of
+    #     condition number on Û_vo⁻¹
+    # Default False keeps the deployed cell's construction unchanged.
+    alg2_paper_literal: bool = False,
     # Output precision for the large matmul tensors (token_embd,
     # output, attn_*, ffn_*). Norm tensors and the matrix-Γ Γ_q/Γ_k
     # tensors always stay F32 regardless of this setting. Default
@@ -387,17 +420,36 @@ def rewrite_gguf(
             )
         token_types = np.asarray(token_type_field.contents(), dtype=np.int32)
         # llama.cpp token type codes: 1=NORMAL, 2=UNKNOWN, 3=CONTROL,
-        # 4=USER_DEFINED, 5=UNUSED, 6=BYTE. Keep only NORMAL (1) and
-        # BYTE (6) in the permutable set — all others must stay
-        # identity so generation control flow works.
-        permutable_mask = np.isin(token_types[:pi_active_size], [1, 6])
-        permutable_ids = np.where(permutable_mask)[0].astype(np.int32)
-        pi_special_ids = sorted(set(range(pi_active_size)) - set(permutable_ids.tolist()))
-        log.info(
-            "Π special-token exclusion: %d permutable, %d kept identity "
-            "(non-NORMAL/BYTE token-type) within active range %d",
-            len(permutable_ids), len(pi_special_ids), pi_active_size,
-        )
+        # 4=USER_DEFINED, 5=UNUSED, 6=BYTE.
+        #
+        # Default mode (pi_include_specials=False): permute only NORMAL +
+        # BYTE so the server's stop-on-EOS / chat-template plumbing keeps
+        # working without client-side `ignore_eos`. Leaks ~293 identity-
+        # fixed pairs to a passive attacker who reads this source file.
+        #
+        # Strong mode (pi_include_specials=True): permute everything in
+        # `[0, pi_active_size)`. Closes the structural leak. Requires
+        # the client to set `ignore_eos: True` and bytes-stream the
+        # response — otherwise the server's EOS detection fires on the
+        # wrong (permuted) id and generation runs to max_tokens with
+        # multi-language drift output that may crash the chat-parser
+        # PEG.
+        if pi_include_specials:
+            permutable_ids = np.arange(pi_active_size, dtype=np.int32)
+            pi_special_ids = []
+            log.info(
+                "Π strong mode: permuting all %d ids in active range; "
+                "no identity-fixed specials", pi_active_size,
+            )
+        else:
+            permutable_mask = np.isin(token_types[:pi_active_size], [1, 6])
+            permutable_ids = np.where(permutable_mask)[0].astype(np.int32)
+            pi_special_ids = sorted(set(range(pi_active_size)) - set(permutable_ids.tolist()))
+            log.info(
+                "Π special-token exclusion: %d permutable, %d kept identity "
+                "(non-NORMAL/BYTE token-type) within active range %d",
+                len(permutable_ids), len(pi_special_ids), pi_active_size,
+            )
 
         pi_rng = np.random.default_rng(pi_seed)
         # Permute only `permutable_ids` among themselves. tau starts at
@@ -478,14 +530,22 @@ def rewrite_gguf(
                 gamma=alg2_gamma,
                 rope_base=rope_base,
                 h_hadamard_signs=alg2_h_hadamard_signs,
+                enable_u_vo=alg2_enable_u_vo,
+                paper_literal=alg2_paper_literal,
             )
             if alg2_qk_norm_matrix:
                 keys = full_keys
             else:
                 # Legacy: head-shuffle only; intra-head q/k_matrix → I.
+                # Pass Û_vo through from full_keys so `--alg2 --alg2-u-vo`
+                # without `--alg2-qk-norm-matrix` still gets V↔O obfuscation.
+                # Without this both u_vo fields were missing → TypeError on
+                # construction (dataclass has no defaults).
                 keys = alg2.LayerAlg2Keys(
                     q_matrix=np.eye(head_dim_a, dtype=np.float32),
                     k_matrix=np.eye(head_dim_a, dtype=np.float32),
+                    u_vo=full_keys.u_vo,
+                    u_vo_inv=full_keys.u_vo_inv,
                     tau_kv=full_keys.tau_kv,
                     inv_tau_kv=full_keys.inv_tau_kv,
                     tau_group=full_keys.tau_group,
@@ -550,6 +610,7 @@ def rewrite_gguf(
         writer.add_uint32("aloepri.alg2_beta", int(alg2_beta))
         writer.add_float32("aloepri.alg2_gamma", float(alg2_gamma))
         writer.add_bool("aloepri.qk_norm_matrix", bool(alg2_qk_norm_matrix))
+        writer.add_bool("aloepri.alg2_u_vo_applied", bool(alg2_enable_u_vo))
     if mode == "keymat":
         writer.add_float32("aloepri.kappa_e", float(kappa_e))
         writer.add_float32("aloepri.kappa", float(kappa))
@@ -656,17 +717,23 @@ def rewrite_gguf(
                         if alg2_qk_norm_matrix else None
                     k_dense = alg2._block_diag_repeat(keys.k_matrix, n_kv_heads) \
                         if alg2_qk_norm_matrix else None
-                    # V doesn't get an intra-head transform under matrix-Γ
-                    # either: that's a paper-distinct M_v and we don't deploy
-                    # it. Keep V's dense_transform None.
+                    # V dense transform: Û_vo block-diag per KV head when
+                    # enable_u_vo. Without it V is unobfuscated on head_dim.
+                    v_dense = alg2._block_diag_repeat(keys.u_vo, n_kv_heads) \
+                        if (alg2_enable_u_vo and keys.u_vo is not None) else None
+                    # O input-axis transform: Û_vo⁻¹ block-diag per Q head.
+                    o_input_dense = alg2._block_diag_repeat(keys.u_vo_inv, n_q_heads) \
+                        if (alg2_enable_u_vo and keys.u_vo_inv is not None) else None
                     if stripped == "attn_q.weight":
                         out_arr = alg2.apply_qkv_output_transform(out_arr, q_dense, q_feat)
                     elif stripped == "attn_k.weight":
                         out_arr = alg2.apply_qkv_output_transform(out_arr, k_dense, kv_feat)
                     elif stripped == "attn_v.weight":
-                        out_arr = alg2.apply_qkv_output_transform(out_arr, None, kv_feat)
+                        out_arr = alg2.apply_qkv_output_transform(out_arr, v_dense, kv_feat)
                     elif stripped == "attn_output.weight":
-                        out_arr = alg2.apply_o_output_transform(out_arr, q_feat)
+                        out_arr = alg2.apply_o_output_transform(
+                            out_arr, q_feat, dense_input_transform=o_input_dense,
+                        )
 
         # Large matmul tensors: honour output_dtype. bf16 is the default
         # because the AloePri keymat construction creates ~1e-9 tail
@@ -746,13 +813,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--in", dest="in_path", type=Path, required=True)
     parser.add_argument("--out", dest="out_path", type=Path, required=True)
     parser.add_argument("--mode", choices=["identity-pad", "keymat", "gamma-only"], default="keymat")
-    parser.add_argument("--expansion-size", type=int, default=128)
+    parser.add_argument("--expansion-size", type=int, default=256,
+                        help="h: half of the dim expansion, so d_obs = d + 2h. "
+                             "Default raised from paper's 128 to 256 (2026-05-22) "
+                             "per c1 N=10 measurement: −35 %% σ_pool, −28 %% mean "
+                             "TTRSR at +9 %% inference latency. Paper-faithful.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--lam", type=float, default=0.3)
     parser.add_argument("--pi", action="store_true",
                         help="apply Π token-permutation to token_embd + output (item 6).")
     parser.add_argument("--pi-seed", type=int, default=42424242,
                         help="seed for τ generation (kept out of GGUF metadata).")
+    parser.add_argument("--pi-include-specials", action="store_true",
+                        help="Include CONTROL/USER_DEFINED/UNKNOWN/UNUSED token types "
+                             "in the Π permutation (default: keep them at identity for "
+                             "server stop-on-EOS compatibility). Closes the ~293-pair "
+                             "structural leak that lets an attacker fit a partial-τ "
+                             "ridge inverter from publicly-known identity-fixed ids. "
+                             "Requires the client to pass `ignore_eos: True` and "
+                             "stream-decode the response — without that, the server "
+                             "won't stop on EOS and may emit chat-template gibberish "
+                             "that crashes the PEG chat-parser.")
     parser.add_argument("--key-out", type=Path, default=None,
                         help="path for τ key file (defaults to <out>.key.npz).")
     parser.add_argument("--noise-alpha-e", type=float, default=0.0,
@@ -783,6 +864,30 @@ def main(argv: list[str] | None = None) -> int:
                         help="Use ±1 Walsh-Hadamard Ĥ_qk instead of identity. Combine "
                              "with --alg2-qk-norm-matrix: keeps M_q orthogonal (H is "
                              "involutive), adds per-pair sign flips to the obfuscation.")
+    parser.add_argument("--alg2-u-vo", action="store_true",
+                        help="Enable U_vo random projection on the V-O composition "
+                             "(paper sec 5.2.3 step 4 + steps 6 alt / 7). V output is "
+                             "right-multiplied by U_vo (sampled per layer, paper "
+                             "default variance 1/d_head with QR-stabilisation); W_o "
+                             "input axis gets U_vo inverse block-diag per head. The "
+                             "two cancel through attention to preserve residual "
+                             "covariance, while adding per-deployment randomness on "
+                             "the V-O head_dim axis. Closes paper Table 4's "
+                             "0.82 to 0.0 percent HiddenState gap. Default off for "
+                             "backward compatibility with prior deployments; tag "
+                             "obfuscated GGUFs under a distinct name when enabling.")
+    parser.add_argument("--alg2-paper-literal", action="store_true",
+                        help="Switch Alg2 to paper-literal construction (A1+A2 paper "
+                             "fidelity sanity check, 2026-05-26). Two changes vs "
+                             "default: (1) k_matrix = H^-1 * Z^T (no R), per paper "
+                             "Algorithm 2 line 6 literally; leaves a ||Z^2 - I|| score "
+                             "residual when Z is non-involutive. (2) U_vo is the raw "
+                             "Gaussian N(0, 1/d_head) without QR-stabilise + 0.05 "
+                             "perturbation; wider spectrum increases kqv_out "
+                             "distortion. Tag GGUFs distinctly when on. Expected to "
+                             "lower ridge recovery vs default but NOT to reach paper "
+                             "Table 4's 0%% (those gaps are attack-class or "
+                             "methodology, not construction).")
     parser.add_argument("--output-dtype", choices=("fp32", "bf16"), default="bf16",
                         help="Precision for the large matmul tensors. Default bf16: "
                              "half the file size and 2× decode throughput vs fp32, "
@@ -799,7 +904,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     info = rewrite_gguf(args.in_path, args.out_path, mode=args.mode,
                        expansion=args.expansion_size, seed=args.seed, lam=args.lam,
-                       apply_pi=args.pi, pi_seed=args.pi_seed, key_out=args.key_out,
+                       apply_pi=args.pi, pi_seed=args.pi_seed,
+                       pi_include_specials=args.pi_include_specials,
+                       key_out=args.key_out,
                        noise_alpha_e=args.noise_alpha_e, noise_alpha_h=args.noise_alpha_h,
                        noise_seed=args.noise_seed,
                        apply_alg2=args.alg2, alg2_seed=args.alg2_seed,
@@ -807,6 +914,8 @@ def main(argv: list[str] | None = None) -> int:
                        alg2_qk_scale_range=(args.alg2_qk_scale_min, args.alg2_qk_scale_max),
                        alg2_qk_norm_matrix=args.alg2_qk_norm_matrix,
                        alg2_h_hadamard_signs=args.alg2_h_hadamard_signs,
+                       alg2_enable_u_vo=args.alg2_u_vo,
+                       alg2_paper_literal=args.alg2_paper_literal,
                        output_dtype=args.output_dtype)
     log.info("done: %s", info)
     return 0

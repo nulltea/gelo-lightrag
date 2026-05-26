@@ -13,7 +13,7 @@ The committed state is correct. Reference for the wider context:
 
 - Plan: [`docs/plans/path-2-aloepri-gemma.md`](docs/plans/path-2-aloepri-gemma.md) · running status [`docs/plans/path-2-status.md`](docs/plans/path-2-status.md) · next-steps handoff [`docs/plans/path-2-aloepri-next-steps.md`](docs/plans/path-2-aloepri-next-steps.md)
 - Protocol doc: [`docs/prototype/aloepri-llm.html`](docs/prototype/aloepri-llm.html) — §07 perf, §08 gaps
-- Implementation: `python/path-2/{obfuscate_qwen3_gguf.py, aloepri_client.py, lib/alg2.py, evals/}`
+- Implementation: `python/aloepri-llm/{obfuscate_qwen3_gguf.py, aloepri_client.py, lib/alg2.py, evals/}`
 
 This handoff covers **only the two open research questions** the user
 flagged. The independent Phase-2/3 attack-harness work is tracked in
@@ -57,7 +57,7 @@ decode-bandwidth penalty disappears.
    tightens dramatically. Cost: smaller obfuscation group at the
    keymat layer, which weakens IA defense; cleanest path is to measure
    the new per-row variance distribution before fully committing.
-   Implementation hook: `python/path-2/obfuscate_qwen3_gguf.py:233-244`
+   Implementation hook: `python/aloepri-llm/obfuscate_qwen3_gguf.py:233-244`
    already loads keymat from `vendor/aloepri-py`; either add a
    `--qr-project` flag or fork the reference's `keymat.py` locally.
 2. **Smaller h.** Default h=128 gives `d → d+2h = 2048 → 2304`. Trying
@@ -156,7 +156,7 @@ HTML.)
 
 ### Current deployment
 
-`python/path-2/lib/alg2.py:147-189` generates the full per-layer key
+`python/aloepri-llm/lib/alg2.py:147-189` generates the full per-layer key
 set (R̂_qk, Ĥ_qk, Ẑ_block, τ_kv, τ_group) — the math is there. The
 rewriter (`obfuscate_qwen3_gguf.py:333-388`) only emits **identity**
 q_matrix / k_matrix and applies the head-shuffle via
@@ -241,10 +241,10 @@ work the list. **Empirical check first, math second.**
    (the doc is served at `http://127.0.0.1:8000/aloepri-llm.html`
    if the python http server is still running; otherwise re-spawn
    per the existing pattern).
-3. If pursuing (a) first: read `python/path-2/obfuscate_qwen3_gguf.py`
+3. If pursuing (a) first: read `python/aloepri-llm/obfuscate_qwen3_gguf.py`
    focus on the `keymat` mode + the existing identity-pad / gamma-only
    modes which act as regression fixtures.
-4. If pursuing (b) first: read `python/path-2/lib/alg2.py` end to
+4. If pursuing (b) first: read `python/aloepri-llm/lib/alg2.py` end to
    end — the math is annotated and the QK-norm fold removal is
    commented in `obfuscate_qwen3_gguf.py:333-388`.
 5. Either path: do NOT touch `gelo-protocol` API (frozen per Phase 1

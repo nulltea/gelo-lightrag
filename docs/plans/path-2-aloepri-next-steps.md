@@ -28,7 +28,7 @@
 | Source GGUF | `/home/timo/.cache/huggingface/.../Qwen_Qwen3-1.7B-Q8_0.gguf` (2.1 GB Q8_0) |
 | Obfuscation level | Algorithm 1 key matrices + §5.2.5 fusion only. **No Π / Algorithm 2 / noise yet.** |
 | Obfuscated artifact | `keymat-h128-fp32.gguf` (9.1 GB, **fp32-stored** because fp16 collapses chain) |
-| Rewriter | `python/path-2/obfuscate_qwen3_gguf.py` — three modes: `identity-pad`, `gamma-only`, `keymat` |
+| Rewriter | `python/aloepri-llm/obfuscate_qwen3_gguf.py` — three modes: `identity-pad`, `gamma-only`, `keymat` |
 | Verification | `gamma-only` mode produces **bit-identical** output to plaintext (fusion verified); `keymat h=128 fp32` produces coherent on-topic continuations (different tokens from plaintext) |
 
 ### Running containers (current, on Strix Halo Vulkan iGPU)
@@ -172,7 +172,7 @@ publishable numbers. 30-45 min runtime per gate-C run.
 
 - Re-use existing eval harnesses (`lm-evaluation-harness` if installed
   locally; otherwise hand-roll minimal versions in
-  `python/path-2/evals/`). Don't yet wire this into the full M0.2
+  `python/aloepri-llm/evals/`). Don't yet wire this into the full M0.2
   shared harness — that's framework-level and blocked behind Path 1.
 - Run twice: once on plaintext (`:11441` or Q8_0 if Gate A succeeded),
   once on keymat (`:11446` or Q8_0). Same sampling config (greedy,
@@ -209,7 +209,7 @@ the full AloePri privacy claim:
 - Apply Π row-permutation to embedding (`token_embd`) and column-
   permutation (Π^T) to LM head (`output`). Same global pair of
   matrices; already untied in Qwen3 GGUF so no extra work there.
-- Client wrapper: `python/path-2/aloepri_client.py` — tokenise →
+- Client wrapper: `python/aloepri-llm/aloepri_client.py` — tokenise →
   Z = {V[i] ↦ V[τ(i)]} mapping → detokenise → POST → decode → Z⁻¹.
   Per [`../prototype/aloepri-llm.html`](../prototype/aloepri-llm.html)
   §06 FIG. 03a.
@@ -285,7 +285,7 @@ smaller — TTRSR may differ).
 
 ## Pointers
 
-- Rewriter: [`../../python/path-2/obfuscate_qwen3_gguf.py`](../../python/path-2/obfuscate_qwen3_gguf.py)
+- Rewriter: [`../../python/aloepri-llm/obfuscate_qwen3_gguf.py`](../../python/aloepri-llm/obfuscate_qwen3_gguf.py)
 - Vendored AloePri: `vendor/aloepri-py/` (gitignored,
   `sheng1feng/Aloepri @ 60e8ea3`)
 - Vendored llama.cpp: `vendor/llama.cpp/` (gitignored, mainline);

@@ -13,7 +13,7 @@ Tests, smallest-to-broadest:
      to isolate the R̂_qk · RoPE commutation property.
   4. With h=I, varying z to identity vs non-trivial.
 
-Run from python/path-2/ with: .venv/bin/python scripts/check_alg2_invariance.py
+Run from python/aloepri-llm/ with: .venv/bin/python scripts/check_alg2_invariance.py
 """
 from __future__ import annotations
 

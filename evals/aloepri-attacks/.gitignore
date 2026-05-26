@@ -22,3 +22,4 @@ results/sweep/**/*.bin
 results/sweep/**/*.safetensors
 results/sweep/**/*.safetensors.meta.json
 captures-*/
+captures/

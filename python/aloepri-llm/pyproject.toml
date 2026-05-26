@@ -1,5 +1,5 @@
 [project]
-name = "aloepri-path-2"
+name = "aloepri-llm"
 version = "0.0.1"
 description = "AloePri offline weight rewriter + client wrapper for private LLM inference on llama.cpp"
 requires-python = ">=3.11"

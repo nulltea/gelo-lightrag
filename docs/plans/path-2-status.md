@@ -7,7 +7,7 @@ a plan assumption. Most recent entry on top.
 
 ## 2026-05-18 · Item 7 done **partial** — head-shuffle works, intra-head blocked by Qwen3 QK-norm
 
-Ported paper §5.2.3 Algorithm 2 to numpy in `python/path-2/lib/alg2.py`
+Ported paper §5.2.3 Algorithm 2 to numpy in `python/aloepri-llm/lib/alg2.py`
 (key generation: R̂_qk, Ĥ_qk, Ẑ_block, τ_kv, τ_group; static weight
 rewrite via `_apply_output_transform`-equivalent + GQA-aware feature
 ordering). Added `--alg2` flag to the rewriter.
@@ -151,7 +151,7 @@ deferred to next Gate-C run.
 
 ## 2026-05-18 · Item 6 done — Π token-permutation + AloePri client landed
 
-Added `--pi` mode to the rewriter and built `python/path-2/aloepri_client.py`.
+Added `--pi` mode to the rewriter and built `python/aloepri-llm/aloepri_client.py`.
 Wire-payload privacy now closed (was: plaintext over the network).
 
 **Offline rewrite changes** (`obfuscate_qwen3_gguf.py`):
@@ -250,7 +250,7 @@ The 4th-task IFEval and a larger-n re-run (1000+ prompts each) are
 deferred to a later session when (a) a sweep-of-hyperparameters is
 also under consideration, or (b) M0.2 full framework lands.
 
-**Harness scaffold landed** in `python/path-2/evals/` — reusable for
+**Harness scaffold landed** in `python/aloepri-llm/evals/` — reusable for
 later sweeps. Results in `results/path-2-gate-c-{mmlu,piqa,humaneval}.json`.
 
 **Container hygiene fix** (after user feedback): future benchmarks
@@ -261,7 +261,7 @@ as `feedback_llama_containers_ephemeral` memory.
 
 ## 2026-05-18 · Gate B — both endpoints fully deterministic on Vulkan + flash-attn
 
-Ran `python/path-2/gate_b_determinism.py`: 5 prompts × 3 replicates ×
+Ran `python/aloepri-llm/gate_b_determinism.py`: 5 prompts × 3 replicates ×
 2 endpoints (`:11441` plaintext, `:11446` keymat h128 fp32),
 `temperature=0.0`, `seed=0`, `max_tokens=32`.
 
@@ -550,7 +550,7 @@ Out of scope for v1 unless M2.6 surfaces a question that requires it.
   -DLLAMA_CURL=OFF`; CPU-only — kept for the offline rewriter
   pipeline and `llama-quantize`-based re-quant work, not for
   serving)
-- Python env: `python/path-2/.venv` (Python 3.12.3) — `gguf`,
+- Python env: `python/aloepri-llm/.venv` (Python 3.12.3) — `gguf`,
   `safetensors`, `numpy`, `torch`, `requests`, `pytest` installed
 - Vulkan baseline server: container
   `llama-gemma4-e2b-aloepri-baseline` on `:11437`

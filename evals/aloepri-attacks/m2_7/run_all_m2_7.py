@@ -133,20 +133,23 @@ def main() -> int:
     # ── Step 1: static-weight attacks ──────────────────────────────
     static_out = args.output_dir / "m2_7-static.json"
     print(f"\n[M2.7 orchestrator] step 1/2: static-weight attacks → {static_out}")
-    rc = subprocess.run(
-        [
-            sys.executable,
-            str(Path(__file__).parent / "run_static_attacks.py"),
-            "--plain", str(args.plain),
-            "--obfuscated", str(args.obfuscated),
-            "--output", str(static_out),
-            "--vma-eval-size", str(args.vma_eval_size),
-            "--vma-pool-size", str(args.vma_pool_size),
-            "--ia-eval-size", str(args.ia_eval_size),
-            "--ia-pool-size", str(args.ia_pool_size),
-        ],
-        check=False,
-    ).returncode
+    static_cmd = [
+        sys.executable,
+        str(Path(__file__).parent / "run_static_attacks.py"),
+        "--plain", str(args.plain),
+        "--obfuscated", str(args.obfuscated),
+        "--output", str(static_out),
+        "--vma-eval-size", str(args.vma_eval_size),
+        "--vma-pool-size", str(args.vma_pool_size),
+        "--ia-eval-size", str(args.ia_eval_size),
+        "--ia-pool-size", str(args.ia_pool_size),
+    ]
+    if args.key is not None:
+        static_cmd += ["--key", str(args.key)]
+    else:
+        # Plain-side control cell: --plain == --obfuscated and no τ.
+        static_cmd += ["--identity-tau"]
+    rc = subprocess.run(static_cmd, check=False).returncode
     if rc != 0:
         print(f"[M2.7 orchestrator] static-weight step failed (rc={rc})")
         return rc

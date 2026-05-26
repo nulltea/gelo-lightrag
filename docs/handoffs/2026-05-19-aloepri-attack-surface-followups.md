@@ -11,7 +11,7 @@ Five follow-up threads queued for the next session.
 
 The 2026-05-19 ramp deployed full Algorithm 2 on Qwen3 1.7B via a
 **matrix-Γ kernel extension** in the patched `llama.cpp`, plus
-repairs in `python/path-2/lib/alg2.py` (Ẑ_block + M_k construction)
+repairs in `python/aloepri-llm/lib/alg2.py` (Ẑ_block + M_k construction)
 and the obfuscator (`--alg2-qk-norm-matrix`, `--alg2-h-hadamard-signs`).
 The current GGUF is
 `~/.cache/huggingface/path-2-aloepri/qwen3-1.7b/keymat-h128-pi-noise-alg2-FULL-zfix-hadamard-fp32.gguf`.
@@ -247,7 +247,7 @@ doc-correction pass.
   before porting them as "prompt inversion via weights".
 - **Is M_q · M_k<sup>T</sup> = I really invariant under non-trivial
   Ẑ_block?** The numerical test at
-  `python/path-2/scripts/check_alg2_invariance.py` shows fp32 noise
+  `python/aloepri-llm/scripts/check_alg2_invariance.py` shows fp32 noise
   for M_q · M_k<sup>T</sup> = I but ~32 % attention-score drift after
   RoPE — generation tolerates it but it's a known quality cost. Worth
   documenting the perplexity hit before scaling β beyond 8.
@@ -260,15 +260,15 @@ doc-correction pass.
 ## Artifacts produced in this session (uncommitted, ready to commit)
 
 **Code (path-2 Python + attack harness):**
-- `python/path-2/obfuscate_qwen3_gguf.py` — `--alg2-qk-norm-matrix`,
+- `python/aloepri-llm/obfuscate_qwen3_gguf.py` — `--alg2-qk-norm-matrix`,
   `--alg2-h-hadamard-signs`.
-- `python/path-2/lib/alg2.py` — `generate_block_perm` rewrite,
+- `python/aloepri-llm/lib/alg2.py` — `generate_block_perm` rewrite,
   `generate_h_qk` Hadamard mode, M_k construction repair.
-- `python/path-2/scripts/measure_gamma_qk_clusters.py` — Option B
+- `python/aloepri-llm/scripts/measure_gamma_qk_clusters.py` — Option B
   pre-flight (used + done).
-- `python/path-2/scripts/check_alg2_invariance.py` — algebraic
+- `python/aloepri-llm/scripts/check_alg2_invariance.py` — algebraic
   validation script (now at realistic params).
-- `python/path-2/scripts/build_matrix_gamma_identity_gguf.py` —
+- `python/aloepri-llm/scripts/build_matrix_gamma_identity_gguf.py` —
   identity-Γ smoke pair builder.
 - `evals/aloepri-attacks/attack_drivers/common.py` — 3-D snapshot
   flattening in `stack_prompt_observations`.
