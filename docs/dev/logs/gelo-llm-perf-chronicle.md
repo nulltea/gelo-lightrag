@@ -636,52 +636,6 @@ Auto resolved correctly in all three. No regression at DCT-IV shape.
 
 ---
 
-### 2026-05-26 — AloePri pow2-UVO attack/accuracy gate recorded (security companion)
-
-**Source:** `docs/prototype/aloepri-pow2-uvo-findings-2026-05-26.md`, `docs/prototype/aloepri-llm.html`, `evals/aloepri-attacks/results/sweep/cell-qwen3-4b-uvo-pow2e1-*`.
-
-**Scope note:** not a GELO throughput optimization. This result belongs in the chronicle because the GELO performance roadmap keeps an AloePri attack-suite gate as a default-flip/security companion: perf wins are not deployable if the observable surfaces regress.
-
-**Current best 4B obfuscation cell:**
-
-```text
-untied-keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-uvo-pow2e1-bf16-native.gguf
-```
-
-Config: Qwen3-4B Q8_0 untied base, h=128, β=8, α_e=1.0, α_h=0.2, Alg2 matrix-Γ/Hadamard, bf16-native GGUF, `--alg2-u-vo-mode pow2-monomial --alg2-u-vo-pow2-exp 1`.
-
-**Accuracy gate:**
-
-| Cell | Quality probe | HumanEval n=20 | Reading |
-|---|---:|---:|---|
-| Dense/default UVO | pass | 3/20 = 15 % | bf16 dense UVO hurts utility |
-| Non-UVO canonical | pass | 6/20 = 30 % | reference utility for current obfuscation family |
-| **pow2-monomial UVO** | **pass** | **6/20 = 30 %** | recovers dense-UVO utility loss |
-| h256 pow2 UVO | fail | skipped | larger h is not a current accuracy fix |
-
-**Attack gate highlights, pow2-UVO h128 β8:**
-
-| Surface / attack | Result | Gate reading |
-|---|---:|---|
-| Static VMA | 8.98 % top-1 / 23.44 % top-10 | pass on top-1; top-10 nontrivial |
-| Static IA | 0.05 % top-1 / 0.20 % top-10 | pass |
-| IMA EmbedRow transformer | 0.00 % top-1 / 0.00 % top-10 | pass |
-| IMA EmbedRow ridge | 55.47 % top-1 / 60.16 % top-10 | fail / out-of-paper side-probe |
-| Token TFMA | 0.78 % top-1 / 4.69 % top-10 | pass |
-| Token SDA | BLEU-4 1.28e-5 | pass |
-| ISA row-split `kq` L0 | plain 48.63 % → obf 47.20 % | fail / invariant QK surface |
-| ISA row-split `kqv_out` L0 | plain 97.46 % → obf 82.45 % | partial; L0 output-surface defense preserved |
-| ISA row-split `kqv_out` L17 | plain 16.68 % → obf 16.68 % | no later-layer gain |
-
-**Engineering result:** `evals/aloepri-attacks/m2_7/diagnose_isa/gpu_sweep.py` now has transparent long-run logging via `--progress-jsonl PATH` and flushed progress lines. The completed kqv_out run wrote:
-
-- `evals/aloepri-attacks/results/sweep/cell-qwen3-4b-uvo-pow2e1-attn-and-output-512-20260526/logs/gpu_sweep_kqv_out.progress.jsonl`
-- `evals/aloepri-attacks/results/sweep/cell-qwen3-4b-uvo-pow2e1-attn-and-output-512-20260526/logs/gpu_sweep_kqv_out.summary.json`
-
-**Roadmap implication:** pow2-monomial UVO is the current utility-preserving UVO form for bf16 deployment. It does **not** solve the strongest row-split Q/K attack; future defenses need Q/K-side changes or TEE/path-1 coverage for raw `kq`.
-
----
-
 ## 5. R-series perf-bucket outcomes
 
 ### R1 — Weight Arc drop & `provision_decoder_into` helper
