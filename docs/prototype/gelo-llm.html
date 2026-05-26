@@ -54,47 +54,42 @@
       <!-- ─── HEADLINE STATS ─── -->
       <div class="stat-strip">
         <div class="stat">
-          <div class="k">GELO overhead — TTFT</div>
-          <div class="v"><em>+93</em><span class="unit">% vs plain</span></div>
+          <div class="k">Prefill tok/s</div>
+          <div class="v"><em>121</em><span class="unit"> agg · B=8</span></div>
           <div class="sub">
-            Single-stream Qwen3-4B prefill at n = 2 048 · MaskKind::Auto · per-
-            forward A + shield(8,4.0) · RADV iGPU. Batched forward + decode
-            amortises this overhead across B sequences (see next stat / §08).
+            Qwen3-4B at production-extraction shape (n = 2 048, DCT-IV cascade).
+            Single-stream B = 1 long-context (n = 2 561) holds
+            <strong>81 tok/s</strong>.
+          </div>
+        </div>
+        <div class="stat">
+          <div class="k">Decode tok/s</div>
+          <div class="v"><em>4.62</em><span class="unit"> agg · B=8</span></div>
+          <div class="sub">
+            Qwen3-4B at n = 2 048 (in-TEE attention 54 % of wall). Single-stream
+            B = 1 long-context: <strong>1.44 tok/s</strong> —
+            attention-bandwidth-bound at this hardware tier.
           </div>
         </div>
         <div class="stat">
           <div class="k">Batched decode — wall amortisation</div>
           <div class="v">
-            <em>5.23</em><span class="unit">× vs serial × B</span>
+            <em>2.6</em><span class="unit">× vs B=1 × serial</span>
           </div>
           <div class="sub">
-            Batched substrate at B = 8, K = 8 decode steps · synth
-            Qwen3-4B-shape (hidden 2560, 32/8 heads, 9728 intermediate) · 9.83
-            ms / step / seq vs 50.56 ms serial baseline.
-          </div>
-        </div>
-        <div class="stat">
-          <div class="k">Auto vs Haar @ pow2-aligned</div>
-          <div class="v"><em>−36</em><span class="unit">% TTFT</span></div>
-          <div class="sub">
-            Qwen3-4B n = 2 040 · HD₃ branch · 16.29 s vs ~25.6 s Haar baseline ·
-            σ &lt; 12 ms across decode steps
+            Per-seq decode wall <strong>6.93 s</strong> at B = 8 n = 2 048 vs
+            ~17.8 s scaled single-stream of the same shape (Qwen3-4B, K = 32).
+            Substrate launch-overhead win at synth n = 64 measures 5.23×.
           </div>
         </div>
         <div class="stat">
-          <div class="k">U-Verify cost regime</div>
-          <div class="v">150<span class="unit">× slowdown</span></div>
+          <div class="k">Auto vs HD₃-forced @ pad 1.99</div>
+          <div class="v"><em>−39</em><span class="unit">% prefill</span></div>
           <div class="sub">
-            k = 2 Freivalds probes on 1.7B weights collapse decode to 0.04 tok/s
-            · open protocol gap · §07
-          </div>
-        </div>
-        <div class="stat">
-          <div class="k">parity vs plaintext</div>
-          <div class="v">8 / 8<span class="unit"> tokens</span></div>
-          <div class="sub">
-            argmax-stable: gpu_plain · gpu_gelo · gpu_full_stack emit
-            byte-identical token sequences on Qwen3-1.7B
+            B = 8 n = 2 048 — Auto routes to the DCT-IV cascade (<strong
+              >135.1 s</strong
+            >) over HD₃ with shield-pad to pow2 (<strong>222.4 s</strong>); the
+            pad penalty is what Auto avoids.
           </div>
         </div>
       </div>
@@ -3442,21 +3437,14 @@
               >#</a
             >
           </h2>
-          <div class="section-meta">
-            Qwen3-4B production state (2026-05-26) · Qwen3-1.7B baseline
-            (2026-05-18) · Qwen3-4B pre-cascade baseline (2026-05-20)
-          </div>
+          <div class="section-meta">Qwen3-4B production state · 2026-05-26</div>
         </header>
         <p class="lede">
-          End-to-end measurement of the GELO protocol on real-weight generation.
-          The headline subsection below records the current Qwen3-4B production
-          state — fp16 wgpu engine, LM-head GPU-offloaded under the same
+          End-to-end measurement of the GELO protocol on real-weight Qwen3-4B
+          generation — fp16 wgpu engine, LM-head GPU-offloaded under the same
           masked-offload boundary, mask family auto-dispatched by pad ratio (HD₃
           at pad ≤ 1.6, DCT-IV cascade above), and the CPU DCT-IV path running
           as a tile-fused six-stage cascade entirely in L2 per column tile.
-          Historical baselines (Qwen3-1.7B short prompt; Qwen3-4B pre-cascade
-          long-context) follow for the gpu_plain / gpu_gelo / gpu_full_stack
-          comparison that the embedder/reranker tables also use.
         </p>
 
         <h3 style="margin-top: 32px">
@@ -3702,291 +3690,6 @@
           row (32 KB) instead of the full 256 MB cached prefix. Compressing the
           decode bucket on iGPU isn't gated on engineering — it's gated on the
           memory hierarchy.
-        </p>
-
-        <h3 style="margin-top: 32px">
-          Historical baselines — gpu_plain / gpu_gelo / gpu_full_stack
-        </h3>
-        <p class="prose">
-          The two subsections below predate the cascade and the R3 LM-head
-          offload. They remain useful as the
-          <strong>gpu_plain</strong> (no privacy) ·
-          <strong>gpu_gelo</strong> (paper-parity per-forward Haar
-          <code>A</code> + shield(8, 4.0)) · <strong>gpu_full_stack</strong> (+
-          Freivalds U-Verify <code>k = 2</code>) overhead taxonomy that the
-          embedder and reranker tables also use. OutAttnMult forced on at every
-          <code>n</code> (<code>out_attn_mult_min_seq_len = Some(0)</code>) so
-          the 4-partition path is exercised even at decode-shape
-          <code>n_q = 1</code>; production auto-switch would otherwise keep
-          every linear in-TEE at these short shapes. Bench code:
-          <code>crates/gelo-gpu-wgpu/tests/qwen3_generation_bench.rs</code>.
-        </p>
-        <h4 style="margin-top: 24px">Qwen3-1.7B · short prompt · 2026-05-18</h4>
-
-        <table class="spec" style="margin-top: 16px">
-          <thead>
-            <tr>
-              <th>Cell</th>
-              <th>Total (s)</th>
-              <th>TTFT (ms)</th>
-              <th>TPOT mean (ms)</th>
-              <th>median (ms)</th>
-              <th>stddev (ms)</th>
-              <th>tokens / sec</th>
-              <th>vs gpu_plain</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td><b>gpu_plain</b></td>
-              <td class="num">1.342</td>
-              <td class="num">155.4</td>
-              <td class="num">148.4</td>
-              <td class="num">149.0</td>
-              <td class="num">2.9</td>
-              <td class="num">6.74</td>
-              <td>(base)</td>
-            </tr>
-            <tr>
-              <td><b>gpu_gelo</b> · mask + shield</td>
-              <td class="num">1.791</td>
-              <td class="num">201.9</td>
-              <td class="num">198.6</td>
-              <td class="num">200.3</td>
-              <td class="num">12.8</td>
-              <td class="num">5.03</td>
-              <td><span class="accent">+33.4 %</span></td>
-            </tr>
-            <tr>
-              <td><b>gpu_full_stack</b> · + U-Verify k=2</td>
-              <td class="num">202.835</td>
-              <td class="num">22 553.2</td>
-              <td class="num">22 535.2</td>
-              <td class="num">22 528.5</td>
-              <td class="num">81.2</td>
-              <td class="num">0.04</td>
-              <td>
-                <span class="accent" style="color: #b73228">+15 009 %</span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        <p class="prose" style="margin-top: 8px; font-size: 13px">
-          <em>Adapter:</em> AMD Radeon Graphics (RADV GFX1151, iGPU), Mesa
-          25.2.8-0ubuntu0.24.04.1, Vulkan. <em>Model:</em>
-          <code>Qwen/Qwen3-1.7B</code> bf16 safetensors, dequantised to f32 on
-          load (~13 GB working set; peak RSS 12.19 GiB across all three
-          executors thanks to Arc-shared weights +
-          <code>clone_shared</code> engine). <em>Workload:</em> prompt
-          <span class="mono">"The quick brown fox"</span>, greedy,
-          <code>max_tokens = 8</code>, one warmup iteration per cell.
-        </p>
-
-        <h4 style="margin-top: 32px">
-          Qwen3-4B · long-context prefill · 2026-05-20 · pre-cascade, pre-R3
-        </h4>
-        <p class="prose">
-          Same protocol surface, the production model size, and the
-          production-shape prompt length (n = 2 048 prefill + 4 decode tokens).
-          The table below records two
-          <code>MaskKind::Auto</code> measurements at this baseline — one on the
-          HD₃ branch (n = 2 040, exact pow2) and one on the DCT-IV branch (n = 2
-          048, non-pow2). The Auto resolver later moved its threshold up to pad
-          ratio 1.6 (HD₃ wins decisively up to 1.59, confirmed in the 2026-05-26
-          sweep), and the DCT-IV path itself moved to the tile-fused cascade —
-          the current-state table above supersedes this row for the production
-          shape. Bench code:
-          <code>crates/gelo-gpu-wgpu/tests/qwen3_long_context_bench.rs</code>.
-        </p>
-        <table class="spec" style="margin-top: 12px">
-          <thead>
-            <tr>
-              <th>Cell</th>
-              <th>n_prompt</th>
-              <th>TTFT (ms)</th>
-              <th>TPOT mean (ms)</th>
-              <th>total (s)</th>
-              <th>vs gpu_plain</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td><b>gpu_plain</b></td>
-              <td class="num">2 040</td>
-              <td class="num">11 905</td>
-              <td class="num">542</td>
-              <td class="num">14.07</td>
-              <td>(base)</td>
-            </tr>
-            <tr>
-              <td><b>gpu_gelo</b> · Auto → HD₃</td>
-              <td class="num">2 040</td>
-              <td class="num">16 289</td>
-              <td class="num">913</td>
-              <td class="num">19.94</td>
-              <td>
-                <span class="accent" style="color: #1e7050">+37 % TTFT</span>
-              </td>
-            </tr>
-            <tr style="border-top: 1px solid #ddd">
-              <td><b>gpu_plain</b></td>
-              <td class="num">2 048</td>
-              <td class="num">11 764</td>
-              <td class="num">552</td>
-              <td class="num">13.97</td>
-              <td>(base)</td>
-            </tr>
-            <tr>
-              <td><b>gpu_gelo</b> · Auto → DCT-IV</td>
-              <td class="num">2 048</td>
-              <td class="num">22 691</td>
-              <td class="num">915</td>
-              <td class="num">26.35</td>
-              <td><span class="accent">+93 % TTFT</span></td>
-            </tr>
-          </tbody>
-        </table>
-        <p class="prose" style="margin-top: 8px; font-size: 13px">
-          <em>Adapter:</em> AMD Radeon Graphics (RADV GFX1151, iGPU), Mesa
-          25.2.8-0ubuntu0.24.04.1, Vulkan. <em>Model:</em>
-          <code>Qwen/Qwen3-4B</code> bf16 safetensors, dequantised to f32 on
-          load (peak RSS 15.91 GiB). <em>Workload:</em> 2 048-token prompt,
-          greedy, <code>max_tokens = 4</code>, one warmup iteration per cell.
-          <em>BLIS:</em> AOCL-BLIS at <code>GELO_BLIS_THREADS = 16</code>.
-        </p>
-        <p class="prose" style="margin-top: 12px">
-          The two rows are Auto branches at this baseline:
-          <code>s = n + k_shield = 2 048</code> at n = 2 040 is exact pow2 →
-          HD₃; <code>s = 2 056</code> at n = 2 048 is not pow2 → DCT-IV (skip
-          the 4 096-row HD₃ pad penalty). Both branches beat the dense Haar
-          baseline at the same shape (Haar at n = 2 048: TTFT 25.87 s — see
-          §08). Auto still routes pad-1.99 shapes to DCT-IV today; the
-          difference vs the current-state table above is the tile-fused cascade
-          replacing the prior 3-stage path (and R3 lifting the LM-head GPU-side)
-          — together those land the production-shape prefill at 135 s.
-        </p>
-
-        <h4 style="margin-top: 32px">
-          Batched forward + decode — per-sequence wall amortisation
-        </h4>
-        <p class="prose">
-          The two tables above are single-stream — they measure the intrinsic
-          GELO overhead at <code>B = 1</code>, the regime where iGPU dispatch is
-          launch-overhead-bound and there's no batch dimension to amortise
-          across. The batched substrate puts <code>B</code> sequences in flight
-          at once. The per-sequence wall drops sharply even though the absolute
-          GELO overhead vs plain is unchanged — batching is an orthogonal lever
-          to mask-family selection.
-        </p>
-        <table class="spec" style="margin-top: 12px">
-          <thead>
-            <tr>
-              <th>Regime</th>
-              <th>Per-sequence wall</th>
-              <th>vs serial × B</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>Serial × B (no batching, no Rayon)</td>
-              <td class="num">50.6 ms / step / seq</td>
-              <td>(base)</td>
-            </tr>
-            <tr>
-              <td>
-                Batched substrate (mask topology + KV layout + parallel shield +
-                parallel in-TEE attention)
-              </td>
-              <td class="num"><b>9.8 ms / step / seq</b></td>
-              <td>
-                <span class="accent"><b>5.23×</b></span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        <p class="prose" style="margin-top: 12px; font-size: 13px">
-          Synth Qwen3-4B-shape weights (4 layers, hidden 2560, 32 / 8 heads,
-          head_dim 128, intermediate 9728), <code>B = 8</code>,
-          <code>K = 8</code> decode steps over a random <code>n_kv = 64</code>
-          prefix. Real-weight measurement at full Qwen3-4B layer count is
-          pending the cross-chunk extraction integration (orchestrator rewire +
-          cross-chunk batched-decode gate). See §08 for the substrate
-          description and per-bucket breakdown.
-        </p>
-
-        <h4 style="margin-top: 24px">
-          Correctness — argmax-stable token parity
-        </h4>
-        <p class="prose">
-          All three cells emitted the byte-identical token sequence
-          <span class="mono">" jumps over the lazy dog. 1"</span> — exactly what
-          HF transformers produces at <code>temperature = 0</code> on the same
-          prompt and the same checkpoint. Argmax robustness handles the float
-          drift the Haar mask introduces; U-Verify's Freivalds probes likewise
-          stay below the discrimination threshold of neighbouring vocab entries.
-          The same property is asserted in
-          <code>tests/qwen3_generation_e2e.rs</code> on every test run.
-        </p>
-        <p class="prose" style="margin-top: 12px">
-          <strong>What this measurement validates.</strong>
-          The GELO protocol is bit-stable for greedy sampling on a
-          1.7B-parameter decoder. Every Q/K/V/O + gate/up/down matmul rode
-          through a per-forward Haar <code>A</code> + shield(8, 4.0); QK-norm +
-          RoPE + attention compute stayed in-TEE; the LM-head tied-embedding
-          projection stayed in-TEE. Across 1 prefill (4-token prompt) + 8 decode
-          steps × 28 layers × 7 GPU dispatches per layer = 1568 masked offloads,
-          no protocol-induced argmax flip on the chosen vocab.
-        </p>
-
-        <h4 style="margin-top: 24px">
-          Open protocol gaps surfaced by this measurement
-        </h4>
-        <ul style="padding-left: 20px; line-height: 1.55">
-          <li>
-            <strong>U-Verify cost regime above ~1 B parameters.</strong>
-            <code>gpu_full_stack</code> is 150× slower than
-            <code>gpu_gelo</code> because each offloaded matmul fires
-            <em>k</em> Freivalds-style GEMVs against the full TEE-side weight
-            bytes — and at Qwen3-1.7B (~13 GB f32 working copy), the per-probe
-            TEE GEMM dominates everything. <em>k = 8</em> production probes
-            would scale linearly worse. The protocol needs a
-            sublinear-in-weight-size integrity primitive (randomised-block
-            Freivalds, batched verification across decode steps, or
-            checkpoint-only attestation). Not a blocker for today's measurement;
-            not safe to ship integrity production at this scale until resolved.
-          </li>
-          <li>
-            <strong>Decode KV-cache bandwidth at long context.</strong> The
-            current bench is <code>n_cache = 12</code> (4 prompt + 8 decode),
-            well within in-TEE bandwidth. The v2 measurement at
-            <code>n_cache ≥ 4k</code> will surface whether KV-cache bandwidth
-            dominates per-step decode — the gating signal for SCX-style
-            encoded-KV adoption (§10).
-          </li>
-          <li>
-            <strong
-              >OutAttnMult at decode shapes (<code>n_q = 1</code>).</strong
-            >
-            Forcing OutAttnMult on at every <code>n</code> (as this bench does
-            to exercise the path) is not the production setting — the
-            auto-switch threshold <code>n ≥ hidden_size = 2048</code> would keep
-            every decode-step linear in-TEE. Production decode TPOT would be
-            lower than the +33 % measured here.
-          </li>
-        </ul>
-
-        <h4 style="margin-top: 24px">Memory budget · shared engine pattern</h4>
-        <p class="prose">
-          The bench runs all three executor cells on a single shared
-          <code>WgpuVulkanEngine</code> via <code>clone_shared()</code>; weights
-          upload once and the per-cell <code>provision_weight</code> calls are
-          no-ops on the GPU side. The CPU-side weight bytes are
-          <code>Arc&lt;DecoderWeights&gt;</code> across all three executors.
-          U-Verify is the only cell that allocates its own TEE-side weight cache
-          (the <code>verify_probes &gt; 0</code> branch in
-          <code>InProcessTrustedExecutor::provision_weight</code>). Peak RSS
-          12.19 GiB on a 62 GB box — well under the integrated-GPU's shared-RAM
-          ceiling.
         </p>
       </section>
 
