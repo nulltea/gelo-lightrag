@@ -60,6 +60,26 @@ pub struct PermAttnConfig {
     /// `None` variant ignores this field. Effective only on the
     /// in-TEE-softmax path that lands with the F1+ resolution.
     pub causal_mask_neg: f32,
+    /// **Phase 1b** — opt-in dispatch of softmax to the GPU at
+    /// **decode** (and only at decode, where the F1+ mask-pattern leak
+    /// is structurally absent because `n_q == 1` + `q_pos_offset ==
+    /// n_kv − 1` makes the causal mask a no-op).  When this flag is
+    /// `true` and the call-site shape is decode-shaped,
+    /// `permuted_attention_cached` calls `engine.softmax_batched`
+    /// instead of the in-TEE rowwise softmax.  A cheap row-sum
+    /// integrity probe runs in-TEE on one randomly-chosen row to
+    /// detect Byzantine GPU softmax that breaks the probability-sum
+    /// invariant.
+    ///
+    /// **Security gate (open)** — the `c5_perm_attn` AloePri
+    /// attack-suite condition (HNM vocab-matching at decode, anchor-
+    /// ICA / JADE / JD / Gram-error at decode shapes) must be re-run
+    /// before this is flipped on by default in production.  See
+    /// memory `aloepri_hd3_gate_phase_a_b.md` for the C3 precedent.
+    ///
+    /// Default `false`.  Prefill always uses the in-TEE-softmax path
+    /// regardless of this flag (the F1+ attack does apply at prefill).
+    pub decode_softmax_on_gpu: bool,
 }
 
 impl PermAttnConfig {
@@ -67,12 +87,23 @@ impl PermAttnConfig {
     pub const DISABLED_NOISE: Self = Self {
         noise_sigma: 0.0,
         causal_mask_neg: 30.0,
+        decode_softmax_on_gpu: false,
     };
 
     /// Hidden No More mitigation level. Default for production.
     pub const HIDDEN_NO_MORE: Self = Self {
         noise_sigma: 0.01,
         causal_mask_neg: 30.0,
+        decode_softmax_on_gpu: false,
+    };
+
+    /// **Phase 1b** — Hidden No More + GPU softmax at decode.  The
+    /// production target for Amulet-at-decode once the
+    /// `c5_perm_attn` gate passes.
+    pub const HIDDEN_NO_MORE_DECODE_GPU: Self = Self {
+        noise_sigma: 0.01,
+        causal_mask_neg: 30.0,
+        decode_softmax_on_gpu: true,
     };
 }
 
@@ -347,44 +378,78 @@ pub fn permuted_attention_cached<R: RngCore, E: GpuOffloadEngine + ?Sized>(
         add_gaussian_3d_inplace(k_perm.view_mut(), cfg.noise_sigma, rng);
     }
 
-    let kt_perm_view = k_perm.view().permuted_axes([0, 2, 1]);
-    let mut scores = engine.matmul_dynamic_batched(q_perm.view(), kt_perm_view)?;
-    scores.mapv_inplace(|x| x * scale);
+    // Branch on the protocol choice early so the Phase 1b path goes
+    // through the **single** `fused_attention_batched` trait call
+    // (today's default impl composes the same 3 dispatches, but a
+    // future wgpu kernel override collapses them into one device-side
+    // flow with no intermediate `(B, n_q, n_kv)` materialisation).
+    // The legacy path keeps the explicit matmul + TEE-softmax + matmul
+    // chain because moving softmax to GPU there would violate F1+ at
+    // prefill.
+    let mask_is_noop = match mask {
+        AttentionMask::None => true,
+        AttentionMask::Causal => n_q == 1 && q_pos_offset + n_q == n_kv,
+    };
+    let out_perm = if cfg.decode_softmax_on_gpu && mask_is_noop {
+        // **Phase 1b** — full Amulet via `fused_attention_batched`.
+        //
+        // **A2 mask-elision**: at decode (n_q = 1 ∧ q_pos_offset =
+        // n_kv − 1) the causal mask is identically zero — every Q
+        // row attends to every K row.  Pass `None` so the engine
+        // skips the mask upload and the `+ mask` kernel dispatch
+        // entirely.  Encoder-style callers (`AttentionMask::None`)
+        // also land here.
+        engine.fused_attention_batched(
+            q_perm.view(),
+            k_perm.view(),
+            v_perm.view(),
+            scale,
+            None,
+        )?
+        // No row-sum integrity probe on this path — the fused output
+        // is the *post-multiplied* tensor, not the softmax tensor, so
+        // the `Σ probs[i,j] = 1` invariant is no longer directly
+        // observable.  The c5_perm_attn AloePri gate is the right
+        // place to gate Byzantine GPU behaviour for fused attention.
+    } else {
+        // F1+ legacy path: explicit matmul + TEE-softmax + matmul.
+        let kt_perm_view = k_perm.view().permuted_axes([0, 2, 1]);
+        let mut scores = engine.matmul_dynamic_batched(q_perm.view(), kt_perm_view)?;
+        scores.mapv_inplace(|x| x * scale);
 
-    // Apply asymmetric permuted causal mask in-TEE. Shape (n_q, n_kv).
-    // Original: mask_orig[i, j] = -C if j > q_pos_offset + i else 0.
-    // Permuted: mask_perm[i, j] = mask_orig[perm_q[i], perm_kv[j]]
-    //                           = -C if perm_kv[j] > q_pos_offset + perm_q[i] else 0.
-    if let AttentionMask::Causal = mask {
-        let neg = -cfg.causal_mask_neg;
-        let mut mask_mat = Array2::<f32>::zeros((n_q, n_kv));
-        for i in 0..n_q {
-            let q_abs = q_pos_offset + perm_q[i];
-            for j in 0..n_kv {
-                if perm_kv[j] > q_abs {
-                    mask_mat[(i, j)] = neg;
-                }
-            }
-        }
-        for h in 0..num_heads {
+        // Apply asymmetric permuted causal mask in-TEE. Shape
+        // `(n_q, n_kv)`. Original: `mask_orig[i, j] = -C if j >
+        // q_pos_offset + i else 0`. Permuted: `mask_perm[i, j] =
+        // mask_orig[perm_q[i], perm_kv[j]]`.
+        if let AttentionMask::Causal = mask {
+            let neg = -cfg.causal_mask_neg;
+            let mut mask_mat = Array2::<f32>::zeros((n_q, n_kv));
             for i in 0..n_q {
+                let q_abs = q_pos_offset + perm_q[i];
                 for j in 0..n_kv {
-                    scores[(h, i, j)] += mask_mat[(i, j)];
+                    if perm_kv[j] > q_abs {
+                        mask_mat[(i, j)] = neg;
+                    }
+                }
+            }
+            for h in 0..num_heads {
+                for i in 0..n_q {
+                    for j in 0..n_kv {
+                        scores[(h, i, j)] += mask_mat[(i, j)];
+                    }
                 }
             }
         }
-    }
 
-    // F1+ in-TEE softmax. Same reasoning as `permuted_attention`.
-    let mut probs = Array3::<f32>::zeros((num_heads, n_q, n_kv));
-    for h in 0..num_heads {
-        let scores_h = scores.index_axis(Axis(0), h);
-        let probs_h = softmax_rowwise(scores_h);
-        probs.index_axis_mut(Axis(0), h).assign(&probs_h);
-    }
-    let _ = engine; // kept in signature for the second GPU call
-
-    let out_perm = engine.matmul_dynamic_batched(probs.view(), v_perm.view())?;
+        // F1+ in-TEE softmax.  Same reasoning as `permuted_attention`.
+        let mut probs = Array3::<f32>::zeros((num_heads, n_q, n_kv));
+        for h in 0..num_heads {
+            let scores_h = scores.index_axis(Axis(0), h);
+            let probs_h = softmax_rowwise(scores_h);
+            probs.index_axis_mut(Axis(0), h).assign(&probs_h);
+        }
+        engine.matmul_dynamic_batched(probs.view(), v_perm.view())?
+    };
 
     // Recovery via π_q⁻¹ on the Q axis.
     let mut out = Array3::<f32>::zeros((num_heads, n_q, d_head));

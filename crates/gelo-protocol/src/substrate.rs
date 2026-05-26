@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
+use half::bf16;
 use ndarray::{Array2, Array3, ArrayView2, ArrayView3, Axis};
 
 use crate::ple::PleTable;
@@ -32,6 +33,14 @@ pub enum WeightKind {
     FfnGate,
     FfnUp,
     FfnDown,
+    /// LM-head (logits projection). M1.12 R3 — see
+    /// `docs/plans/m1-12-tee-gpu-throughput.md` §3. Registered only
+    /// when callers opt in via `LM_HEAD_GPU_OFFLOAD=1`. Tied-embedding
+    /// models register the transpose of `token_embedding` here
+    /// (`(hidden, vocab)`); the host-side `token_embedding`
+    /// `(vocab, hidden)` stays alive for `embedding_lookup`. The layer
+    /// index is by convention `0` — there's only one LM head per model.
+    LmHead,
 }
 
 /// The untrusted accelerator side of the split protocol.
@@ -45,12 +54,89 @@ pub trait GpuOffloadEngine: Send {
     /// model load. Shape is `(in_features, out_features)`.
     fn register_weight(&mut self, handle: WeightHandle, weight: ArrayView2<f32>) -> Result<()>;
 
+    /// Arc-shared variant of [`Self::register_weight`]. When the caller
+    /// already owns the weight in an `Arc<Array2<f32>>` (e.g. the
+    /// embedder's `DecoderLayerWeights` after the 2026-05-21
+    /// Arc-conversion), engines that retain a host-side cache can store
+    /// the Arc directly and avoid the 7.5 GB-per-Qwen3-4B clone in
+    /// `register_weight`.
+    ///
+    /// Default impl preserves the legacy behaviour by calling
+    /// `register_weight(handle, weight.view())`. Override on engines that
+    /// can take Arc ownership — currently `RayonCpuEngine`. The wgpu
+    /// engine does not need this override because it uploads weights to
+    /// VRAM at registration and never keeps a host copy.
+    fn register_weight_shared(
+        &mut self,
+        handle: WeightHandle,
+        weight: std::sync::Arc<ndarray::Array2<f32>>,
+    ) -> Result<()> {
+        self.register_weight(handle, weight.view())
+    }
+
+    /// **bf16-native** weight registration. Engines that can accept
+    /// bf16 directly (the wgpu engine in F16 mode, which converts
+    /// bf16 → f16 at upload) override this to avoid the loader-side
+    /// bf16 → f32 upcast that `register_weight` would otherwise force
+    /// — see `feedback_memory_efficiency_priority.md`.
+    ///
+    /// Default impl converts to f32 in a transient scratch buffer and
+    /// forwards to `register_weight`. This preserves correctness for
+    /// engines that haven't been updated, but is the path the loader
+    /// goes out of its way to avoid: a non-overridden engine on a
+    /// Qwen3-1.7B run pays ~3.4 GB of host RAM in the scratch buffer
+    /// during provisioning.
+    fn register_weight_bf16(
+        &mut self,
+        handle: WeightHandle,
+        weight: ArrayView2<bf16>,
+    ) -> Result<()> {
+        let f32_owned: Array2<f32> = weight.mapv(|v| v.to_f32());
+        self.register_weight(handle, f32_owned.view())
+    }
+
+    /// bf16 + Arc-shared. Mirrors [`Self::register_weight_shared`] for
+    /// the bf16 storage layout. Overriders should retain the Arc on
+    /// engines that hold a host-side cache; the default impl
+    /// downcasts via `register_weight_bf16` and drops the Arc.
+    fn register_weight_bf16_shared(
+        &mut self,
+        handle: WeightHandle,
+        weight: Arc<Array2<bf16>>,
+    ) -> Result<()> {
+        self.register_weight_bf16(handle, weight.view())
+    }
+
     /// Compute `input · W[handle]` and return the product.
     ///
     /// `input` has shape `(n, in_features)`; the result has shape
     /// `(n, out_features)`. The engine treats `input` as opaque bytes —
     /// masking is applied by the trusted side before the call.
     fn matmul(&self, handle: WeightHandle, input: ArrayView2<f32>) -> Result<Array2<f32>>;
+
+    /// **bf16-input** variant of [`Self::matmul`] — Path β of the
+    /// bf16 activation pipeline (plan
+    /// `m1-12-bf16-activation-pipeline.md` §4.2). Engines that can
+    /// convert bf16 → device precision directly (the wgpu engine in
+    /// F16 mode via `array2_bf16_to_tensor_f16`) override this to
+    /// avoid the substrate-side bf16 → f32 widen that the default
+    /// path forces.
+    ///
+    /// Output stays `Array2<f32>` because the engine's natural output
+    /// precision is unchanged (f16 internal, f32 download); narrowing
+    /// to bf16 is a separate substrate-side concern.
+    ///
+    /// Default impl widens to f32 in a transient buffer and forwards
+    /// to [`Self::matmul`]. Engines that haven't been updated still
+    /// produce correct output (just with the widening cost).
+    fn matmul_bf16_input(
+        &self,
+        handle: WeightHandle,
+        input: ArrayView2<bf16>,
+    ) -> Result<Array2<f32>> {
+        let f32_owned: Array2<f32> = input.mapv(|v| v.to_f32());
+        self.matmul(handle, f32_owned.view())
+    }
 
     /// Compute `input · W[h]` for each `h` in `handles`, sharing **one
     /// upload of `input` and one device sync** across all N matmuls.
@@ -77,6 +163,23 @@ pub trait GpuOffloadEngine: Send {
             .iter()
             .map(|h| self.matmul(*h, input))
             .collect()
+    }
+
+    /// bf16-input variant of [`Self::matmul_many`]. Default impl
+    /// widens once into an `Array2<f32>` and forwards to
+    /// [`Self::matmul_many`] — the widening happens exactly once and
+    /// is amortised across the N handles, so even default engines
+    /// pay a single conversion. Overriders that can keep bf16 across
+    /// the multi-matmul (the wgpu engine in F16 mode) should upload
+    /// the bf16 input once and re-use the device tensor across the
+    /// N kernel launches.
+    fn matmul_many_bf16_input(
+        &self,
+        handles: &[WeightHandle],
+        input: ArrayView2<bf16>,
+    ) -> Result<Vec<Array2<f32>>> {
+        let f32_owned: Array2<f32> = input.mapv(|v| v.to_f32());
+        self.matmul_many(handles, f32_owned.view())
     }
 
     /// Two-operand dynamic matmul where neither operand is a pre-registered
@@ -159,26 +262,34 @@ pub trait GpuOffloadEngine: Send {
 
     /// **M1.10 fused permuted attention seam.** Compute the full
     /// per-head causal-masked attention `softmax(scale · Q·Kᵀ + mask) · V`
-    /// in one engine call. The `mask` is an additive `(B, n_q, n_kv)`
-    /// tensor (`-inf` for blocked positions, `0` elsewhere); the
-    /// TEE side bakes the permuted-causal pattern into it before
-    /// invoking.
+    /// in one engine call.
     ///
-    /// Default impl composes the existing 3-dispatch path:
-    /// `matmul_dynamic_batched + add-mask + softmax_batched +
+    /// `mask` is an *optional* additive `(B, n_q, n_kv)` tensor:
+    ///   - `Some(m)` — the kernel adds `m` after the scale and before
+    ///     softmax (use `-cfg.causal_mask_neg` at blocked positions,
+    ///     `0` at allowed positions).
+    ///   - `None` — **A2 fast path**: no mask upload, no `+ mask`
+    ///     dispatch.  The caller signals "mask is identically zero
+    ///     and can be elided" (the decode case where `n_q == 1` and
+    ///     `q_pos_offset == n_kv − 1`, plus any encoder/bidirectional
+    ///     attention with `AttentionMask::None`).  Saves one GPU
+    ///     kernel dispatch + the (B·n_q·n_kv)-f32 upload per call.
+    ///
+    /// Default impl composes the existing dispatch chain:
+    /// `matmul_dynamic_batched + (optional add-mask) + softmax_batched +
     /// matmul_dynamic_batched`. Engines that ship a FlashAttention-
     /// style fused kernel (the M1.10 work — see
     /// `docs/plans/path-1-gelo-gemma.md` for the cubek/burn-cubecl
     /// option matrix) override this method so the kernel runs in one
-    /// GPU dispatch with no `(B, n, n)` score-tensor materialisation.
-    /// Until that override lands, callers get correct math at the
-    /// 3-dispatch wall-clock — same as today.
+    /// GPU dispatch with no `(B, n_q, n_kv)` score-tensor
+    /// materialisation.  Until that override lands, callers get
+    /// correct math at the chained-dispatch wall-clock.
     ///
     /// Shapes:
     ///   q: (B, n_q, d_head)
     ///   k: (B, n_kv, d_head)
     ///   v: (B, n_kv, d_head)
-    ///   mask: (B, n_q, n_kv) additive
+    ///   mask: Option<(B, n_q, n_kv)> additive
     ///   → (B, n_q, d_head)
     fn fused_attention_batched(
         &self,
@@ -186,15 +297,17 @@ pub trait GpuOffloadEngine: Send {
         k: ArrayView3<f32>,
         v: ArrayView3<f32>,
         scale: f32,
-        mask: ArrayView3<f32>,
+        mask: Option<ArrayView3<f32>>,
     ) -> Result<Array3<f32>> {
-        // Compose: scores = Q · Kᵀ; scaled + masked; softmax; · V.
+        // Compose: scores = Q · Kᵀ; scaled + (maybe) masked; softmax; · V.
         let (b, n_q, d_head) = q.dim();
         let n_kv = k.dim().1;
         debug_assert_eq!(q.dim().0, b);
         debug_assert_eq!(k.dim(), (b, n_kv, d_head));
         debug_assert_eq!(v.dim(), (b, n_kv, d_head));
-        debug_assert_eq!(mask.dim(), (b, n_q, n_kv));
+        if let Some(m) = mask {
+            debug_assert_eq!(m.dim(), (b, n_q, n_kv));
+        }
 
         // Build (B, d_head, n_kv) for K^T per batch slot.
         let mut kt = Array3::<f32>::zeros((b, d_head, n_kv));
@@ -207,11 +320,18 @@ pub trait GpuOffloadEngine: Send {
         }
 
         let mut scores = self.matmul_dynamic_batched(q, kt.view())?;
-        for bi in 0..b {
-            for i in 0..n_q {
-                for j in 0..n_kv {
-                    scores[(bi, i, j)] = scores[(bi, i, j)] * scale + mask[(bi, i, j)];
+        match mask {
+            Some(m) => {
+                for bi in 0..b {
+                    for i in 0..n_q {
+                        for j in 0..n_kv {
+                            scores[(bi, i, j)] = scores[(bi, i, j)] * scale + m[(bi, i, j)];
+                        }
+                    }
                 }
+            }
+            None => {
+                scores.mapv_inplace(|x| x * scale);
             }
         }
         let probs = self.softmax_batched(scores.view())?;
@@ -328,7 +448,7 @@ mod fused_attention_tests {
 
         let engine = LocalEngine;
         let got = engine
-            .fused_attention_batched(q.view(), k.view(), v.view(), scale, mask.view())
+            .fused_attention_batched(q.view(), k.view(), v.view(), scale, Some(mask.view()))
             .unwrap();
         let want = ref_attention(q.view(), k.view(), v.view(), scale, mask.view());
         for (a, b) in got.iter().zip(want.iter()) {
@@ -356,11 +476,40 @@ mod fused_attention_tests {
 
         let engine = LocalEngine;
         let got = engine
-            .fused_attention_batched(q.view(), k.view(), v.view(), scale, mask.view())
+            .fused_attention_batched(q.view(), k.view(), v.view(), scale, Some(mask.view()))
             .unwrap();
         let want = ref_attention(q.view(), k.view(), v.view(), scale, mask.view());
         for (a, b) in got.iter().zip(want.iter()) {
             assert!((a - b).abs() < 1e-5);
+        }
+    }
+
+    /// A2 regression: `None` mask must behave identically to an
+    /// all-zero `Some(mask)`.
+    #[test]
+    fn default_impl_none_mask_equivalent_to_zero_mask() {
+        let b = 2;
+        let n_q = 3;
+        let n_kv = 5;
+        let d_head = 8;
+        let q = rand_array3(b, n_q, d_head, 21);
+        let k = rand_array3(b, n_kv, d_head, 22);
+        let v = rand_array3(b, n_kv, d_head, 23);
+        let zero_mask = Array3::<f32>::zeros((b, n_q, n_kv));
+        let scale = 1.0 / (d_head as f32).sqrt();
+
+        let engine = LocalEngine;
+        let with_some = engine
+            .fused_attention_batched(q.view(), k.view(), v.view(), scale, Some(zero_mask.view()))
+            .unwrap();
+        let with_none = engine
+            .fused_attention_batched(q.view(), k.view(), v.view(), scale, None)
+            .unwrap();
+        for (a, b) in with_some.iter().zip(with_none.iter()) {
+            assert!(
+                (a - b).abs() < 1e-5,
+                "A2: Some(0) vs None must match: {a} vs {b}"
+            );
         }
     }
 }
@@ -400,6 +549,70 @@ pub trait TrustedExecutor {
         Ok(())
     }
 
+    /// **M1.11** — Begin a *batched* prefill forward pass over `B`
+    /// sequences, each padded to `n_max` tokens.
+    ///
+    /// Implementations in paper-parity mode sample `B` independent
+    /// per-sequence masks `A_b`, each of size `(n_max + shield_k,
+    /// n_max + shield_k)`, and store them as a `PerSequence` session
+    /// kind. Subsequent `offload_linear_batched` calls expect the
+    /// activation tensor shape `(B * n_max, d_in)` with contiguous
+    /// B-blocks, and apply `masks[b]` to slice
+    /// `[b*n_max..(b+1)*n_max, :]`.
+    ///
+    /// `end_forward_pass` terminates this bracket too — there's no
+    /// separate `end_prefill_pass`.
+    ///
+    /// Default impl falls back to `begin_forward_pass(batch_size *
+    /// n_max)` so backends that don't yet support batched topology
+    /// (PlaintextExecutor) produce correct math at the legacy single-
+    /// shared-A cost — at the price of treating all rows as one big
+    /// sequence under one mask. Engines targeting M1.11 perf override.
+    ///
+    /// See `docs/plans/m1-11-batched-decode.md` §3.4-3.5.
+    fn begin_prefill_pass(
+        &mut self,
+        batch_size: usize,
+        n_max: usize,
+    ) -> Result<()> {
+        // Default: degenerate to a single big forward pass over the
+        // flattened (B * n_max) row count.
+        self.begin_forward_pass(batch_size.saturating_mul(n_max))
+    }
+
+    /// **M1.11** — Begin a *batched* decode step over `B` sequences,
+    /// each contributing exactly one new token row to the per-layer
+    /// activation.
+    ///
+    /// Two mask topologies per `docs/plans/m1-11-batched-decode.md` §3.4:
+    ///
+    /// 1. **Default — per-sequence A_b.** Mirrors `begin_prefill_pass`
+    ///    with `n_max = 1`. Substrate samples `B` independent masks
+    ///    each of size `(1 + shield_k, 1 + shield_k)` (shape-adaptive
+    ///    shield overlay applies, defaulting to k=15 at n=1 so each
+    ///    A_b is `(16, 16)` HD₃-aligned). Each sequence's data row is
+    ///    masked under its own A_b — same per-row security argument as
+    ///    today's single-stream decode, just dispatched as one batched
+    ///    engine call.
+    ///
+    /// 2. **`BATCHED_DECODE_SHARED_A=1` (opt-in, post c5 gate).** One
+    ///    shared dense A of size `(B + k, B + k)` mixing B current-
+    ///    token rows + k shield rows. HD₃ fires cleanly at every B
+    ///    via `shield::shield_k_for_batch(B, 8)`. Mask-apply work is
+    ///    one HD₃ pass over `(B+k, hidden)` instead of B passes. Per
+    ///    M1.11 §7.1: gate flip pending AloePri
+    ///    `c5_batched_decode_shared_a` clearing at B=8.
+    ///
+    /// Default impl falls back to `begin_forward_pass(batch_size)` so
+    /// non-batched-aware executors produce correct math under one
+    /// shared mask (the legacy `n=B` single-mask topology — a
+    /// degenerate form of shared-A at decode shape).
+    fn begin_decode_pass(&mut self, batch_size: usize) -> Result<()> {
+        // Default: degenerate to a single-mask forward pass at row
+        // count B. Engines targeting M1.11 perf override.
+        self.begin_forward_pass(batch_size)
+    }
+
     /// Move this executor's randomness source to an independent
     /// stream. Used by the embedder's rayon-parallel `embed` path so
     /// each worker in a batch gets its own mask `A` — without this,
@@ -431,6 +644,34 @@ pub trait TrustedExecutor {
         weight: Arc<Array2<f32>>,
     ) -> Result<()> {
         self.provision_weight(handle, weight.view())
+    }
+
+    /// **bf16-native** weight provisioning. The trusted side does not
+    /// need a host f32 copy of offloadable projection weights —
+    /// activations are masked f32 but weights live on the engine
+    /// (GPU) at f16. Loader stores bf16 to avoid the
+    /// bf16 → f32 widening called out in
+    /// `feedback_memory_efficiency_priority.md`.
+    ///
+    /// Default impl forwards to `register_weight_bf16` on the engine
+    /// and skips the U-Verify cache (verify_probes is gated on the
+    /// f32 path; bf16 + U-Verify is not supported in v1).
+    fn provision_weight_bf16(
+        &mut self,
+        handle: WeightHandle,
+        weight: ArrayView2<bf16>,
+    ) -> Result<()>;
+
+    /// bf16 + Arc-shared variant. The loader's `Arc<Array2<bf16>>`
+    /// flows straight through to the engine; for the wgpu engine in
+    /// F16 mode the Arc is consumed during upload and the host bytes
+    /// drop when the Arc refcount hits zero.
+    fn provision_weight_bf16_shared(
+        &mut self,
+        handle: WeightHandle,
+        weight: Arc<Array2<bf16>>,
+    ) -> Result<()> {
+        self.provision_weight_bf16(handle, weight.view())
     }
 
     /// Provision a Per-Layer Embedding (PLE) table into the trusted

@@ -47,16 +47,14 @@ use gelo_embedder::common::HfTokenizer;
 use gelo_embedder::decoder::config::DecoderConfig;
 use gelo_embedder::decoder::qwen3::Qwen3Variant;
 use gelo_embedder::decoder::rope::RopeTables;
-use gelo_embedder::decoder::weights::DecoderWeights;
+use gelo_embedder::decoder::weights::{DecoderWeights, provision_into_shared};
 use gelo_gpu_wgpu::WgpuVulkanEngine;
 use gelo_protocol::profile;
 use gelo_protocol::rng::MaskSeed;
-use gelo_protocol::{
-    InProcessTrustedExecutor, PlaintextExecutor, TrustedExecutor, WeightHandle, WeightKind,
-};
+use gelo_protocol::{InProcessTrustedExecutor, PlaintextExecutor, TrustedExecutor};
 use hf_hub::api::sync::{ApiBuilder, ApiRepo};
 
-const VARIANT: Qwen3Variant = Qwen3Variant::Q1_7B;
+const VARIANT: Qwen3Variant = Qwen3Variant::Q4B;
 const DEFAULT_PROMPT_LENGTHS: &[usize] = &[64, 512, 2048];
 const DEFAULT_MAX_TOKENS: usize = 16;
 
@@ -87,11 +85,12 @@ fn skip_permuted_from_env() -> bool {
         .unwrap_or(false)
 }
 
-/// Opt into HD₃ Hadamard-cascade mask via `GELO_BENCH_MASK_KIND=hd3`.
-/// Default (any other value, or unset) uses the paper-parity Haar
-/// mask. The `gpu_gelo` cell honours this — `gpu_plain` is unaffected
-/// (no mask) and `gpu_gelo_permuted` keeps Haar (its protocol assumes
-/// the dense mask).
+/// Opt into HD₃ Hadamard-cascade mask via `GELO_BENCH_MASK_KIND=hd3`
+/// or DCT-IV cascade via `GELO_BENCH_MASK_KIND=dct4`. Default (any
+/// other value, or unset) uses the paper-parity Haar mask. The
+/// `gpu_gelo` cell honours this — `gpu_plain` is unaffected (no mask)
+/// and `gpu_gelo_permuted` keeps Haar (its protocol assumes the dense
+/// mask).
 fn mask_kind_from_env() -> gelo_protocol::MaskKind {
     match std::env::var("GELO_BENCH_MASK_KIND")
         .ok()
@@ -100,6 +99,8 @@ fn mask_kind_from_env() -> gelo_protocol::MaskKind {
         .as_deref()
     {
         Some("hd3") => gelo_protocol::MaskKind::Hd3,
+        Some("dct4") => gelo_protocol::MaskKind::Dct4,
+        Some("auto") => gelo_protocol::MaskKind::Auto,
         _ => gelo_protocol::MaskKind::Haar,
     }
 }
@@ -225,7 +226,7 @@ fn time_generate<X: TrustedExecutor>(
         let mut best_val = f32::NEG_INFINITY;
         for v in 0..vocab {
             let row = weights.token_embedding.row(v);
-            let dot: f32 = h_last.iter().zip(row.iter()).map(|(a, b)| a * b).sum();
+            let dot: f32 = h_last.iter().zip(row.iter()).map(|(a, b)| a * b.to_f32()).sum();
             if dot > best_val {
                 best_val = dot;
                 best_idx = v as u32;
@@ -302,29 +303,7 @@ fn provision_decoder_weights<X: TrustedExecutor>(
     weights: &DecoderWeights,
     exec: &mut X,
 ) -> Result<()> {
-    for (li, layer) in weights.layers.iter().enumerate() {
-        if !cfg.offload_layer(li) {
-            continue;
-        }
-        let li16 = li as u16;
-        exec.provision_weight(WeightHandle::new(li16, WeightKind::Q), layer.wq.view())?;
-        exec.provision_weight(WeightHandle::new(li16, WeightKind::K), layer.wk.view())?;
-        exec.provision_weight(WeightHandle::new(li16, WeightKind::V), layer.wv.view())?;
-        exec.provision_weight(WeightHandle::new(li16, WeightKind::O), layer.wo.view())?;
-        exec.provision_weight(
-            WeightHandle::new(li16, WeightKind::FfnGate),
-            layer.w_gate.view(),
-        )?;
-        exec.provision_weight(
-            WeightHandle::new(li16, WeightKind::FfnUp),
-            layer.w_up.view(),
-        )?;
-        exec.provision_weight(
-            WeightHandle::new(li16, WeightKind::FfnDown),
-            layer.w_down.view(),
-        )?;
-    }
-    Ok(())
+    provision_into_shared(weights, cfg, exec)
 }
 
 /// Build a prompt of exactly `target_tokens` token IDs by tokenising a
@@ -407,9 +386,12 @@ fn qwen3_1_7b_long_context_breakdown() -> Result<()> {
         gpu_root.clone_shared(),
         MaskSeed::from_bytes([13u8; 32]),
     );
-    if mask_kind == gelo_protocol::MaskKind::Hd3 {
-        gpu_gelo = gpu_gelo.with_hd3_mask();
-    }
+    gpu_gelo = match mask_kind {
+        gelo_protocol::MaskKind::Hd3 => gpu_gelo.with_hd3_mask(),
+        gelo_protocol::MaskKind::Dct4 => gpu_gelo.with_dct4_mask(),
+        gelo_protocol::MaskKind::Auto => gpu_gelo.with_auto_mask(),
+        gelo_protocol::MaskKind::Haar => gpu_gelo,
+    };
     provision_decoder_weights(&cfg_offload, &weights, &mut gpu_gelo)?;
     eprintln!("RSS after gpu_gelo provision: {}", fmt_gib(rss_bytes()));
 

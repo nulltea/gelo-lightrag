@@ -79,20 +79,20 @@ fn synth_weights(cfg: &DecoderConfig, rng: &mut impl rand::RngCore) -> DecoderWe
     let layers = (0..cfg.num_hidden_layers)
         .map(|_| DecoderLayerWeights {
             norm_attn: Array1::from_elem(d, 1.0),
-            wq: rand2(d, q, rng, 0.05),
-            wk: rand2(d, kv, rng, 0.05),
-            wv: rand2(d, kv, rng, 0.05),
-            wo: rand2(q, d, rng, 0.05),
+            wq: Some(std::sync::Arc::new(rand2(d, q, rng, 0.05).mapv(|v| half::bf16::from_f32(v)))),
+            wk: Some(std::sync::Arc::new(rand2(d, kv, rng, 0.05).mapv(|v| half::bf16::from_f32(v)))),
+            wv: Some(std::sync::Arc::new(rand2(d, kv, rng, 0.05).mapv(|v| half::bf16::from_f32(v)))),
+            wo: Some(std::sync::Arc::new(rand2(q, d, rng, 0.05).mapv(|v| half::bf16::from_f32(v)))),
             norm_ffn: Array1::from_elem(d, 1.0),
-            w_gate: rand2(d, f, rng, 0.05),
-            w_up: rand2(d, f, rng, 0.05),
-            w_down: rand2(f, d, rng, 0.05),
+            w_gate: Some(std::sync::Arc::new(rand2(d, f, rng, 0.05).mapv(|v| half::bf16::from_f32(v)))),
+            w_up: Some(std::sync::Arc::new(rand2(d, f, rng, 0.05).mapv(|v| half::bf16::from_f32(v)))),
+            w_down: Some(std::sync::Arc::new(rand2(f, d, rng, 0.05).mapv(|v| half::bf16::from_f32(v)))),
             q_norm: None,
             k_norm: None,
         })
         .collect();
     DecoderWeights {
-        token_embedding: rand2(cfg.vocab_size, d, rng, 0.1),
+        token_embedding: rand2(cfg.vocab_size, d, rng, 0.1).mapv(|v| half::bf16::from_f32(v)),
         final_norm: Array1::from_elem(d, 1.0),
         layers,
         model_identity: [0u8; 32],
@@ -105,13 +105,13 @@ fn provision_decoder<E: GpuOffloadEngine>(weights: &DecoderWeights, cfg: &Decode
             continue;
         }
         let li16 = li as u16;
-        engine.register_weight(WeightHandle::new(li16, WeightKind::Q), layer.wq.view()).unwrap();
-        engine.register_weight(WeightHandle::new(li16, WeightKind::K), layer.wk.view()).unwrap();
-        engine.register_weight(WeightHandle::new(li16, WeightKind::V), layer.wv.view()).unwrap();
-        engine.register_weight(WeightHandle::new(li16, WeightKind::O), layer.wo.view()).unwrap();
-        engine.register_weight(WeightHandle::new(li16, WeightKind::FfnGate), layer.w_gate.view()).unwrap();
-        engine.register_weight(WeightHandle::new(li16, WeightKind::FfnUp), layer.w_up.view()).unwrap();
-        engine.register_weight(WeightHandle::new(li16, WeightKind::FfnDown), layer.w_down.view()).unwrap();
+        engine.register_weight_bf16(WeightHandle::new(li16, WeightKind::Q), layer.wq.as_ref().expect("offloadable weight").view()).unwrap();
+        engine.register_weight_bf16(WeightHandle::new(li16, WeightKind::K), layer.wk.as_ref().expect("offloadable weight").view()).unwrap();
+        engine.register_weight_bf16(WeightHandle::new(li16, WeightKind::V), layer.wv.as_ref().expect("offloadable weight").view()).unwrap();
+        engine.register_weight_bf16(WeightHandle::new(li16, WeightKind::O), layer.wo.as_ref().expect("offloadable weight").view()).unwrap();
+        engine.register_weight_bf16(WeightHandle::new(li16, WeightKind::FfnGate), layer.w_gate.as_ref().expect("offloadable weight").view()).unwrap();
+        engine.register_weight_bf16(WeightHandle::new(li16, WeightKind::FfnUp), layer.w_up.as_ref().expect("offloadable weight").view()).unwrap();
+        engine.register_weight_bf16(WeightHandle::new(li16, WeightKind::FfnDown), layer.w_down.as_ref().expect("offloadable weight").view()).unwrap();
     }
 }
 
@@ -145,7 +145,7 @@ fn stub_tokenizer() -> HfTokenizer {
 
 fn build_service<X: TrustedExecutor>(
     cfg: DecoderConfig,
-    weights: Arc<DecoderWeights>,
+    weights: DecoderWeights,
     rope: Arc<RopeTables>,
     head: YesNoHead,
     exec: X,
@@ -158,7 +158,7 @@ fn build_service<X: TrustedExecutor>(
 fn masked_and_plaintext_executors_agree_on_score() {
     let cfg = tiny_decoder_config(2, 32, 4, 2, 8, 64);
     let mut rng = ChaCha20Rng::from_seed([41u8; 32]);
-    let weights = Arc::new(synth_weights(&cfg, &mut rng));
+    let weights = synth_weights(&cfg, &mut rng);
     let rope = Arc::new(RopeTables::new(
         cfg.head_dim_value(),
         cfg.max_position_embeddings,
@@ -201,7 +201,7 @@ fn masked_and_plaintext_executors_agree_on_score() {
 fn masked_executor_preserves_top1_rank() {
     let cfg = tiny_decoder_config(2, 32, 4, 2, 8, 64);
     let mut rng = ChaCha20Rng::from_seed([57u8; 32]);
-    let weights = Arc::new(synth_weights(&cfg, &mut rng));
+    let weights = synth_weights(&cfg, &mut rng);
     let rope = Arc::new(RopeTables::new(
         cfg.head_dim_value(),
         cfg.max_position_embeddings,
@@ -237,3 +237,10 @@ fn masked_executor_preserves_top1_rank() {
     };
     assert_eq!(argmax(&plain_scores), argmax(&masked_scores));
 }
+
+// R2 score-level parity is covered by a unit test inside
+// `causal_discriminator.rs` (private helper `score_candidates_batched`
+// is not reachable from this external crate). The integration-level
+// `rerank()` contract is satisfied by the existing
+// `masked_and_plaintext_executors_agree_on_score` test which exercises
+// the same forward + yes/no gather code path.

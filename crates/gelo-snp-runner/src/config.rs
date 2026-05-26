@@ -38,6 +38,18 @@ pub struct RunnerConfig {
     /// (`light-kg-store` integration).
     #[serde(default)]
     pub compass_backend_url: Option<String>,
+    /// Directory holding the Qwen3-4B (or compatible) extraction
+    /// decoder weights: `config.json`, `tokenizer.json`, and one or
+    /// more `*.safetensors` shards. `None` → the
+    /// `/lightrag/extract_and_build` route returns 503.
+    #[serde(default)]
+    pub extraction_decoder_path: Option<PathBuf>,
+    /// Directory holding the Qwen3-Embedding-0.6B (or compatible)
+    /// embedder used to embed chunks + entity/relation descriptions
+    /// inside `/lightrag/extract_and_build`. `None` → the route
+    /// returns 503.
+    #[serde(default)]
+    pub extraction_embedder_path: Option<PathBuf>,
 }
 
 fn default_listen() -> String {
@@ -72,6 +84,8 @@ impl RunnerConfig {
                 embedder: default_embedder(),
                 weights_path: None,
                 compass_backend_url: None,
+                extraction_decoder_path: None,
+                extraction_embedder_path: None,
             });
         }
         let txt = std::fs::read_to_string(&path)

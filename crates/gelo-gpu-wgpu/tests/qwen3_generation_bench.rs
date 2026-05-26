@@ -45,12 +45,12 @@ use gelo_embedder::decoder::config::DecoderConfig;
 use gelo_embedder::decoder::generation::{GenerationConfig, SamplerConfig, generate};
 use gelo_embedder::decoder::qwen3::Qwen3Variant;
 use gelo_embedder::decoder::rope::RopeTables;
-use gelo_embedder::decoder::weights::DecoderWeights;
+use gelo_embedder::decoder::weights::{
+    DecoderWeights, provision_into_shared, provision_lm_head_into,
+};
 use gelo_gpu_wgpu::WgpuVulkanEngine;
 use gelo_protocol::rng::MaskSeed;
-use gelo_protocol::{
-    InProcessTrustedExecutor, PlaintextExecutor, TrustedExecutor, WeightHandle, WeightKind,
-};
+use gelo_protocol::{InProcessTrustedExecutor, PlaintextExecutor, TrustedExecutor};
 use hf_hub::api::sync::{ApiBuilder, ApiRepo};
 
 const VARIANT: Qwen3Variant = Qwen3Variant::Q1_7B;
@@ -210,7 +210,7 @@ fn compute_logits(
     let mut logits = ndarray::Array1::<f32>::zeros(vocab);
     for v in 0..vocab {
         let row = weights.token_embedding.row(v);
-        let dot: f32 = h_last.iter().zip(row.iter()).map(|(a, b)| a * b).sum();
+        let dot: f32 = h_last.iter().zip(row.iter()).map(|(a, b)| a * b.to_f32()).sum();
         logits[v] = dot;
     }
     if let Some(cap) = cfg.final_logit_softcapping {
@@ -276,29 +276,9 @@ fn provision_decoder_weights<X: TrustedExecutor>(
     weights: &DecoderWeights,
     exec: &mut X,
 ) -> Result<()> {
-    for (li, layer) in weights.layers.iter().enumerate() {
-        if !cfg.offload_layer(li) {
-            continue;
-        }
-        let li16 = li as u16;
-        exec.provision_weight(WeightHandle::new(li16, WeightKind::Q), layer.wq.view())?;
-        exec.provision_weight(WeightHandle::new(li16, WeightKind::K), layer.wk.view())?;
-        exec.provision_weight(WeightHandle::new(li16, WeightKind::V), layer.wv.view())?;
-        exec.provision_weight(WeightHandle::new(li16, WeightKind::O), layer.wo.view())?;
-        exec.provision_weight(
-            WeightHandle::new(li16, WeightKind::FfnGate),
-            layer.w_gate.view(),
-        )?;
-        exec.provision_weight(
-            WeightHandle::new(li16, WeightKind::FfnUp),
-            layer.w_up.view(),
-        )?;
-        exec.provision_weight(
-            WeightHandle::new(li16, WeightKind::FfnDown),
-            layer.w_down.view(),
-        )?;
-    }
-    Ok(())
+    provision_into_shared(weights, cfg, exec)?;
+    // M1.12 R3 — LM head is the default-and-only path.
+    provision_lm_head_into(weights, exec)
 }
 
 fn pct_over(c: &CellTiming, base: &CellTiming) -> String {

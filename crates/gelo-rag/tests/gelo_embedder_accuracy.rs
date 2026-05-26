@@ -325,13 +325,7 @@ fn gelo_masking_vs_plain_across_architectures() {
         RayonCpuEngine::new(),
         MaskSeed::from_bytes([11u8; 32]),
     );
-    let mut qwen_gelo = GeloQwenEmbedder::new(
-        qwen_cfg.clone(),
-        qwen_tokenizer.clone(),
-        Arc::clone(&qwen_weights),
-        Arc::clone(&qwen_rope),
-        masked_exec_qwen,
-    )
+    let mut qwen_gelo = GeloQwenEmbedder::with_shared_weights(qwen_cfg.clone(), qwen_tokenizer.clone(), Arc::clone(&qwen_weights), Arc::clone(&qwen_rope), masked_exec_qwen)
     .expect("Qwen3 build with masked executor");
     let qwen_gelo_hits = retrieve_topk(&mut qwen_gelo, &corpus, &qs);
     let qwen_gelo_result = ConfigResult {
@@ -352,13 +346,7 @@ fn gelo_masking_vs_plain_across_architectures() {
         RayonCpuEngine::new(),
         MaskSeed::from_bytes([11u8; 32]),
     );
-    let mut qwen_outattn = GeloQwenEmbedder::new(
-        qwen_cfg.clone(),
-        qwen_tokenizer.clone(),
-        Arc::clone(&qwen_weights),
-        Arc::clone(&qwen_rope),
-        masked_exec_outattn,
-    )
+    let mut qwen_outattn = GeloQwenEmbedder::with_shared_weights(qwen_cfg.clone(), qwen_tokenizer.clone(), Arc::clone(&qwen_weights), Arc::clone(&qwen_rope), masked_exec_outattn)
     .expect("Qwen3 build with masked executor")
     .with_out_attn_mult(true)
     .with_out_attn_mult_min_seq_len(Some(0));
@@ -376,13 +364,7 @@ fn gelo_masking_vs_plain_across_architectures() {
     // — share weights via Arc to keep this nearly free).
     eprintln!("[run] Qwen3-0.6B (plain) WITH instruction prefix \"Instruct: ...\\nQuery:\" ...");
     let plain_exec_qwen_p = PlaintextExecutor::new(RayonCpuEngine::new());
-    let mut qwen_plain_prefixed = GeloQwenEmbedder::new(
-        qwen_cfg.clone(),
-        qwen_tokenizer.clone(),
-        Arc::clone(&qwen_weights),
-        Arc::clone(&qwen_rope),
-        plain_exec_qwen_p,
-    )
+    let mut qwen_plain_prefixed = GeloQwenEmbedder::with_shared_weights(qwen_cfg.clone(), qwen_tokenizer.clone(), Arc::clone(&qwen_weights), Arc::clone(&qwen_rope), plain_exec_qwen_p)
     .expect("Qwen3 plain rebuild");
     let prefix_fmt = |q: &str| {
         format!(

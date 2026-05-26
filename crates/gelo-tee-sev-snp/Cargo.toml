@@ -12,6 +12,7 @@ mock = ["dep:rcgen", "dep:p384", "dep:time"]
 [dependencies]
 anyhow.workspace = true
 gelo-protocol = { path = "../gelo-protocol" }
+half.workspace = true
 hex.workspace = true
 ndarray.workspace = true
 rand.workspace = true

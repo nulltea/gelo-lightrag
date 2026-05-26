@@ -1,9 +1,11 @@
+use half::bf16;
 use ndarray::{Array2, ArrayView2, Axis, s};
 use rand::RngCore;
 use rand_distr::{Distribution, StandardNormal};
 
 pub use crate::rng::MaskSeed;
 
+use crate::dct4::Dct4Mask;
 use crate::hd3::Hd3Mask;
 
 /// Mask family used by [`crate::sim::InProcessTrustedExecutor`].
@@ -12,22 +14,28 @@ use crate::hd3::Hd3Mask;
 /// `O(s²·d)` per apply/unapply). `Hd3` is the QuIP#/QuaRot-style
 /// structured-orthogonal cascade `D₃·H·D₂·H·D₁·H` with `O(s)` sample
 /// and `O(s·d·log s)` per apply/unapply at power-of-two `s` — see
-/// [`crate::hd3`] for the math + security trade.
+/// [`crate::hd3`] for the math + security trade. `Dct4` is the
+/// arbitrary-order analog `D₃·C·D₂·C·D₁·C` with DCT-IV as the inner
+/// orthogonal — works at any `n` so the caller skips the pow2 pad —
+/// see [`crate::dct4`] for the math + security argument.
 #[derive(Debug, Clone)]
 pub enum MaskFamily {
     Haar(GeloMask),
     Hd3(Hd3Mask),
+    Dct4(Dct4Mask),
 }
 
 impl MaskFamily {
     /// Side length the mask operates on. For `Haar` this matches the
     /// stacked-with-shield row count `n + k`; for `Hd3` this is
     /// `(n + k).next_power_of_two()` (the caller must arrange the
-    /// pow2 padding before constructing the mask).
+    /// pow2 padding before constructing the mask); for `Dct4` it is
+    /// exactly `n + k` (no padding needed).
     pub fn n(&self) -> usize {
         match self {
             Self::Haar(m) => m.n(),
             Self::Hd3(m) => m.n(),
+            Self::Dct4(m) => m.n(),
         }
     }
 
@@ -35,6 +43,7 @@ impl MaskFamily {
         match self {
             Self::Haar(m) => m.apply(hidden),
             Self::Hd3(m) => m.apply(hidden),
+            Self::Dct4(m) => m.apply(hidden),
         }
     }
 
@@ -42,18 +51,135 @@ impl MaskFamily {
         match self {
             Self::Haar(m) => m.unapply(masked),
             Self::Hd3(m) => m.unapply(masked),
+            Self::Dct4(m) => m.unapply(masked),
+        }
+    }
+
+    /// Consume `masked` and return the unmasked output. For [`Self::Hd3`]
+    /// and [`Self::Dct4`] runs `Aᵀ` in place on the input buffer —
+    /// saving the `(s, p)` allocation + copy that the allocating
+    /// [`Self::unapply`] pays per call. For [`Self::Haar`] falls back
+    /// to the allocating path because the dense `Aᵀ · M` GEMM needs a
+    /// separate output workspace anyway.
+    pub fn unapply_take(&self, masked: Array2<f32>) -> Array2<f32> {
+        match self {
+            Self::Haar(m) => m.unapply(masked.view()),
+            Self::Hd3(m) => {
+                let mut buf = masked;
+                m.unapply_in_place(&mut buf);
+                buf
+            }
+            Self::Dct4(m) => {
+                let mut buf = masked;
+                m.unapply_in_place(&mut buf);
+                buf
+            }
+        }
+    }
+
+    /// `&'static str` profile category for `gelo:mask_apply` that
+    /// splits by mask family. Used by `InProcessTrustedExecutor` to
+    /// make the per-stage profile dump distinguish Haar / HD₃ /
+    /// DCT-IV cost — otherwise Auto's runtime choice is invisible
+    /// in the breakdown.
+    pub fn apply_profile_category(&self) -> &'static str {
+        match self {
+            Self::Haar(_) => "gelo:mask_apply:haar",
+            Self::Hd3(_) => "gelo:mask_apply:hd3",
+            Self::Dct4(_) => "gelo:mask_apply:dct4",
+        }
+    }
+
+    /// Same as [`Self::apply_profile_category`] but for the unapply
+    /// path.
+    pub fn unapply_profile_category(&self) -> &'static str {
+        match self {
+            Self::Haar(_) => "gelo:mask_unapply:haar",
+            Self::Hd3(_) => "gelo:mask_unapply:hd3",
+            Self::Dct4(_) => "gelo:mask_unapply:dct4",
         }
     }
 }
 
 /// Which mask family `InProcessTrustedExecutor` should use. Default
 /// is [`MaskKind::Haar`] (paper-parity). Switch to [`MaskKind::Hd3`]
-/// via [`crate::sim::InProcessTrustedExecutor::with_hd3_mask`].
+/// via [`crate::sim::InProcessTrustedExecutor::with_hd3_mask`], to
+/// [`MaskKind::Dct4`] via `with_dct4_mask` for arbitrary-order
+/// (non-pow2) shapes, or to [`MaskKind::Auto`] via `with_auto_mask`
+/// for shape-adaptive dispatch (HD₃ when pad penalty is small,
+/// DCT-IV otherwise). See `docs/research/hd3-non-pow2-fix.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MaskKind {
     #[default]
     Haar,
     Hd3,
+    Dct4,
+    /// Per-call dispatch between [`Self::Hd3`] and [`Self::Dct4`]
+    /// based on the pad penalty `s_pad / s` where `s = n + k_shield`
+    /// and `s_pad = s.next_power_of_two()`. HD₃ is picked when the
+    /// pad ratio is ≤ [`HD3_AUTO_MAX_PAD_RATIO_NUM`] /
+    /// [`HD3_AUTO_MAX_PAD_RATIO_DEN`] (default 4/3 ≈ 33 % pad max,
+    /// empirically derived for Qwen3-4B on Strix Halo iGPU); DCT-IV
+    /// otherwise. The choice is per-forward-pass (recorded in the
+    /// session mask) or per-offload depending on the executor's
+    /// `per_forward_mask` setting.
+    Auto,
+}
+
+/// Numerator of the HD₃-vs-DCT-IV pad-ratio threshold used by
+/// [`MaskKind::Auto`]. HD₃ is selected when
+/// `s_pad * HD3_AUTO_MAX_PAD_RATIO_DEN <= s * HD3_AUTO_MAX_PAD_RATIO_NUM`.
+///
+/// Empirical history:
+/// - **2026-05-20** (4/3 ≈ 1.333): initial setting based on the
+///   `qwen3_4b_perf_2026_05_20.md` bench; conservative.
+/// - **2026-05-21** (7/5 = 1.4): relaxed; the 4/3 setting rejected
+///   HD₃ at ratio 1.36 (s=753, s_pad=1024) even though HD₃ was
+///   faster.
+/// - **2026-05-26** (8/5 = 1.6): bumped after the 2026-05-26 perf sweep
+///   (`docs/plans/gelo-llm-perf-roadmap.md` §1.4). Sweep measured HD₃-forced
+///   wins by 1-2 % at pad ratios 1.56 and 1.59 (n=320 / n=2561
+///   cells); the 7/5 = 1.4 threshold was sending those shapes to
+///   DCT-IV unnecessarily. At pad ratio 1.99 (B=8 n=2048, the
+///   production long-n shape) HD₃-forced loses 19 %, so the
+///   threshold stays below that. Actual crossover is somewhere in
+///   (1.59, 1.99); 8/5 sits in the confirmed-safe range.
+pub const HD3_AUTO_MAX_PAD_RATIO_NUM: usize = 8;
+pub const HD3_AUTO_MAX_PAD_RATIO_DEN: usize = 5;
+
+/// Resolve a configured [`MaskKind`] (possibly [`MaskKind::Auto`]) to
+/// a concrete physical kind given the stacked size `s = n + k_shield`.
+/// For non-Auto kinds this is the identity; for Auto it applies the
+/// pad-ratio rule documented above.
+pub fn resolve_mask_kind_for_shape(kind: MaskKind, s: usize) -> MaskKind {
+    match kind {
+        MaskKind::Auto => {
+            let s_pad = s.next_power_of_two().max(2);
+            let picked = if s_pad.saturating_mul(HD3_AUTO_MAX_PAD_RATIO_DEN)
+                <= s.saturating_mul(HD3_AUTO_MAX_PAD_RATIO_NUM)
+            {
+                MaskKind::Hd3
+            } else {
+                MaskKind::Dct4
+            };
+            // Diagnostic — surfaces what Auto picked for every
+            // begin_forward_pass(n). Enable with
+            // `RUST_LOG=gelo_protocol=debug` (or trace). Cheap: one
+            // small kv-record per forward, never per offload.
+            tracing::debug!(
+                target: "gelo_protocol::mask",
+                s,
+                s_pad,
+                pad_ratio_x1000 = (s_pad * 1000 / s.max(1)) as u64,
+                threshold_x1000 = (HD3_AUTO_MAX_PAD_RATIO_NUM * 1000
+                    / HD3_AUTO_MAX_PAD_RATIO_DEN) as u64,
+                picked = ?picked,
+                "auto-mask resolved"
+            );
+            picked
+        }
+        kind => kind,
+    }
 }
 
 /// Token-axis orthogonal mask used to obfuscate hidden states before the
@@ -66,16 +192,50 @@ pub enum MaskKind {
 /// trick over a standard normal seed.
 #[derive(Debug, Clone)]
 pub struct GeloMask {
-    /// `(n, n)` orthogonal mask matrix.
+    /// `(n, n)` orthogonal mask matrix in f32. Source of truth for
+    /// the sample (Mezzadri sign correction is applied at f32
+    /// precision — load-bearing for Haar-uniformity per
+    /// `sample_haar_orthogonal`).
     a: Array2<f32>,
+    /// Optional bf16 cache of `a`, populated eagerly at construction
+    /// when [`Self::fresh_bf16`] / [`Self::from_seed_bf16`] is used.
+    /// When `Some`, [`Self::apply`] / [`Self::unapply`] route through
+    /// the AOCL LPGEMM bf16 path (`aocl_gemm_bf16bf16f32of32`) instead
+    /// of the f32 BLIS path.
+    ///
+    /// Memory cost: +50 % over f32-only (s² × 2 bytes for the bf16
+    /// cache on top of s² × 4 bytes for the f32 source). Dropping the
+    /// f32 cache after sample is a future optimisation; for the
+    /// initial 3a wire-up we keep both to make the precision
+    /// contract empirically verifiable (parity tests compare the two
+    /// paths apples-to-apples).
+    a_bf16: Option<Array2<bf16>>,
 }
 
 impl GeloMask {
-    /// Sample a fresh Haar-uniform orthogonal `A ∈ R^(n×n)`.
+    /// Sample a fresh Haar-uniform orthogonal `A ∈ R^(n×n)`. Apply/
+    /// unapply run at f32 precision via the existing BLIS path.
     pub fn fresh<R: RngCore>(n: usize, rng: &mut R) -> Self {
         Self {
             a: sample_haar_orthogonal(n, rng),
+            a_bf16: None,
         }
+    }
+
+    /// Sample a fresh Haar-uniform orthogonal `A` AND eagerly cache a
+    /// bf16 downcast. Apply/unapply route through
+    /// `aocl_gemm_bf16bf16f32of32` (AVX-512_BF16 vdpbf16ps) for the
+    /// matmul. f32 accumulators inside the kernel; bf16 noise floor on
+    /// the output. Mezzadri sign correction is still applied at f32
+    /// during sample — only the multiplication is quantised.
+    ///
+    /// Cost: +50 % memory over [`Self::fresh`]; one O(n²) f32 → bf16
+    /// pass at construction. M1.12 bucket-3a entry point.
+    #[cfg(feature = "blas")]
+    pub fn fresh_bf16<R: RngCore>(n: usize, rng: &mut R) -> Self {
+        let a = sample_haar_orthogonal(n, rng);
+        let a_bf16 = Some(a.mapv(bf16::from_f32));
+        Self { a, a_bf16 }
     }
 
     /// Deterministic constructor for tests.
@@ -84,14 +244,30 @@ impl GeloMask {
         Self::fresh(n, &mut rng)
     }
 
+    /// Deterministic bf16 constructor for tests (M1.12 bucket-3a
+    /// parity).
+    #[cfg(feature = "blas")]
+    pub fn from_seed_bf16(n: usize, seed: MaskSeed) -> Self {
+        let mut rng = seed.rng();
+        Self::fresh_bf16(n, &mut rng)
+    }
+
     /// `n`, the token-axis dimension this mask operates on.
     pub fn n(&self) -> usize {
         self.a.nrows()
     }
 
-    /// Reference to the underlying `(n, n)` orthogonal matrix.
+    /// Reference to the underlying `(n, n)` orthogonal matrix at f32
+    /// precision. Always returns the f32 source-of-truth view, even
+    /// when bf16 caching is active.
     pub fn matrix(&self) -> ArrayView2<'_, f32> {
         self.a.view()
+    }
+
+    /// `true` if this mask routes through the bf16 LPGEMM path on
+    /// apply/unapply.
+    pub fn is_bf16(&self) -> bool {
+        self.a_bf16.is_some()
     }
 
     /// Apply the mask: `U = A · H`.
@@ -105,6 +281,16 @@ impl GeloMask {
         );
         #[cfg(feature = "blas")]
         {
+            if let Some(a_bf16) = &self.a_bf16 {
+                // Downcast hidden to bf16 then call AOCL LPGEMM.
+                // f32 → bf16 conversion is one O(n·d) pass per call;
+                // small vs the matmul itself.
+                let hidden_bf16 = hidden.mapv(bf16::from_f32);
+                return crate::aocl_lpgemm::matmul_bf16_lpgemm(
+                    a_bf16.view(),
+                    hidden_bf16.view(),
+                );
+            }
             return sgemm_blis(self.a.view(), hidden, false);
         }
         #[cfg(not(feature = "blas"))]
@@ -122,6 +308,13 @@ impl GeloMask {
         );
         #[cfg(feature = "blas")]
         {
+            if let Some(a_bf16) = &self.a_bf16 {
+                let masked_bf16 = masked_output.mapv(bf16::from_f32);
+                return crate::aocl_lpgemm::matmul_bf16_lpgemm_trans_a(
+                    a_bf16.view(),
+                    masked_bf16.view(),
+                );
+            }
             return sgemm_blis(self.a.view(), masked_output, true);
         }
         #[cfg(not(feature = "blas"))]
@@ -279,6 +472,21 @@ pub fn tee_matmul(a: ArrayView2<'_, f32>, b: ArrayView2<'_, f32>) -> Array2<f32>
         }
     }
     a.dot(&b)
+}
+
+/// bf16-weight variant of [`tee_matmul`] for the sensitive-layer
+/// carve-out (paper §3.2 skip_first / skip_last). Activations stay
+/// f32; the weight matrix is bf16. We widen per-element into a
+/// transient `Array2<f32>` then forward to `tee_matmul`.
+///
+/// **Only called when offload=false for a given layer.** With the
+/// project defaults (skip-first / skip-last both off), this path is
+/// unreachable at runtime. The per-element widening is acceptable
+/// because skip-layer mode is an explicit operator opt-in, and the
+/// resulting alloc lifetime is bounded by the matmul call.
+pub fn tee_matmul_bf16(a: ArrayView2<'_, f32>, b: ArrayView2<'_, half::bf16>) -> Array2<f32> {
+    let b_f32 = b.mapv(|v| v.to_f32());
+    tee_matmul(a, b_f32.view())
 }
 
 /// BLIS-backed general matmul `C = A · B`. Both operands assumed
@@ -641,6 +849,78 @@ mod tests {
         let diff = &m1.a - &m2.a;
         let max_abs = diff.iter().fold(0.0_f32, |a, &b| a.max(b.abs()));
         assert_eq!(max_abs, 0.0);
+    }
+
+    /// M1.12 bucket-3a parity: bf16-mode mask round-trip recovers
+    /// the same `H · W` as the f32-mode mask, to bf16-floor.
+    ///
+    /// At s = 16, d = 12, p = 8 the chain depth is small enough that
+    /// the bf16 quantisation budget (~k · 2¯⁷ relative ≈ 0.1 at k=12)
+    /// stays well under the 0.05 absolute tolerance for the test
+    /// inputs (`StandardNormal`, magnitudes ~1.0).
+    #[cfg(feature = "blas")]
+    #[test]
+    fn bf16_mask_round_trip_matches_f32() {
+        let mut rng = rand_chacha::ChaCha20Rng::from_seed([19u8; 32]);
+        let n = 16;
+        let d = 12;
+        let p = 8;
+        // Sample both f32 and bf16 masks from the same seed →
+        // identical underlying `a` matrix (Mezzadri-corrected); the
+        // bf16 mask additionally caches a downcast.
+        let seed = MaskSeed::from_bytes([19u8; 32]);
+        let mask_f32 = GeloMask::from_seed(n, seed);
+        let mask_bf16 = GeloMask::from_seed_bf16(n, seed);
+        assert!(!mask_f32.is_bf16());
+        assert!(mask_bf16.is_bf16());
+
+        let normal = StandardNormal;
+        let h = Array2::<f32>::from_shape_fn((n, d), |_| normal.sample(&mut rng));
+        let w = Array2::<f32>::from_shape_fn((d, p), |_| normal.sample(&mut rng));
+
+        // f32 path (existing baseline)
+        let masked_f32 = mask_f32.apply(h.view());
+        let masked_out_f32 = masked_f32.dot(&w);
+        let recovered_f32 = mask_f32.unapply(masked_out_f32.view());
+
+        // bf16 path (new LPGEMM route)
+        let masked_bf16 = mask_bf16.apply(h.view());
+        let masked_out_bf16 = masked_bf16.dot(&w);
+        let recovered_bf16 = mask_bf16.unapply(masked_out_bf16.view());
+
+        // Both should recover the plaintext H·W within tolerance.
+        let plaintext = h.dot(&w);
+        for ((i, j), pt) in plaintext.indexed_iter() {
+            // f32 path stays at the existing 1e-3 tolerance.
+            assert!(
+                approx_eq(*pt, recovered_f32[[i, j]], 1e-3),
+                "f32 round-trip mismatch at ({i},{j}): plain={pt} got={}",
+                recovered_f32[[i, j]]
+            );
+            // bf16 path loosens to bf16-floor (1e-1 absolute for the
+            // n × d × p chain at this shape — bf16 has 7 mantissa bits
+            // so per-element rel error is ~2¯⁷ and the chain
+            // accumulates `O(n + d)` independent rounding errors).
+            assert!(
+                approx_eq(*pt, recovered_bf16[[i, j]], 1e-1),
+                "bf16 round-trip exceeded bf16-floor at ({i},{j}): plain={pt} got={}",
+                recovered_bf16[[i, j]]
+            );
+        }
+
+        // bf16 path tracks f32 path: max element-wise delta ≤ 5 % rel
+        // at this shape. Production-shape tolerance is in the
+        // crate-level integration tests.
+        for ((i, j), &f32_val) in recovered_f32.indexed_iter() {
+            let bf16_val = recovered_bf16[[i, j]];
+            let delta = (f32_val - bf16_val).abs();
+            let scale = f32_val.abs().max(1.0);
+            let rel = delta / scale;
+            assert!(
+                rel < 0.05,
+                "bf16-vs-f32 path drift at ({i},{j}): rel={rel:.4} f32={f32_val} bf16={bf16_val}"
+            );
+        }
     }
 
     /// Haar-uniformity smoke test. The Mezzadri sign correction is what

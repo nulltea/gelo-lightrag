@@ -709,6 +709,147 @@ fn trait_method_cached_sigma_zero_matches_plaintext_executor() {
 }
 
 #[test]
+fn phase_1b_decode_softmax_on_gpu_matches_in_tee() {
+    // Phase 1b: at decode (n_q=1, q_pos_offset = n_kv − 1) the causal
+    // mask is structurally a no-op, so softmax can run on the engine
+    // without the F1+ mask-pattern leak.  This test pins the parity
+    // claim: PermAttnConfig with `decode_softmax_on_gpu = true` and
+    // σ=0 must produce the same output as the legacy in-TEE softmax
+    // path (`DISABLED_NOISE`) to f32 floor.  The RNG state advances
+    // identically on both paths because the row-sum integrity probe
+    // consumes the same two `next_u32`s the in-TEE path doesn't —
+    // hence we use separate executors (one config each) rather than
+    // toggling at runtime on the same RNG.
+    let h = 4;
+    let d_head = 32;
+    let scale = 1.0 / (d_head as f32).sqrt();
+
+    for n_kv in [1usize, 8, 64, 256] {
+        let n_q = 1;
+        let q_pos_offset = n_kv - n_q;
+        let mut rng = ChaCha20Rng::seed_from_u64(0xDECA_F00D ^ n_kv as u64);
+        let q = random_q3(h, n_q, d_head, &mut rng);
+        let k = random_q3(h, n_kv, d_head, &mut rng);
+        let v = random_q3(h, n_kv, d_head, &mut rng);
+
+        let mut in_tee_exec = InProcessTrustedExecutor::with_seed(
+            RayonCpuEngine::new(),
+            MaskSeed([99u8 ^ n_kv as u8; 32]),
+        )
+        .with_perm_attention(PermAttnConfig::DISABLED_NOISE);
+        let in_tee_out = in_tee_exec
+            .offload_attention_permuted_cached(
+                q.view(),
+                k.view(),
+                v.view(),
+                scale,
+                q_pos_offset,
+                gelo_protocol::attention::AttentionMask::Causal,
+            )
+            .unwrap();
+
+        let mut gpu_exec = InProcessTrustedExecutor::with_seed(
+            RayonCpuEngine::new(),
+            MaskSeed([99u8 ^ n_kv as u8; 32]),
+        )
+        .with_perm_attention(PermAttnConfig {
+            noise_sigma: 0.0,
+            causal_mask_neg: 30.0,
+            decode_softmax_on_gpu: true,
+        });
+        let gpu_out = gpu_exec
+            .offload_attention_permuted_cached(
+                q.view(),
+                k.view(),
+                v.view(),
+                scale,
+                q_pos_offset,
+                gelo_protocol::attention::AttentionMask::Causal,
+            )
+            .unwrap();
+
+        let drift = in_tee_out
+            .iter()
+            .zip(gpu_out.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            drift < 1e-5,
+            "Phase 1b decode-softmax-on-GPU parity must hold to f32 floor at \
+             decode shape n_q=1 n_kv={n_kv}: drift={drift}",
+        );
+    }
+}
+
+#[test]
+fn phase_1b_prefill_falls_back_to_in_tee_softmax() {
+    // Negative guard: at prefill (n_q > 1) the causal mask is NOT a
+    // no-op, so the F1+ mask-pattern leak applies and softmax MUST
+    // stay in-TEE regardless of `decode_softmax_on_gpu`.  Parity
+    // with `DISABLED_NOISE` (which always uses in-TEE softmax) is
+    // therefore expected — if it failed, the flag would be leaking
+    // into prefill, which is a security bug.
+    let h = 4;
+    let d_head = 32;
+    let n_q = 8;
+    let n_kv = 16;
+    let q_pos_offset = n_kv - n_q;
+    let scale = 1.0 / (d_head as f32).sqrt();
+
+    let mut rng = ChaCha20Rng::seed_from_u64(0xFACE_F00D);
+    let q = random_q3(h, n_q, d_head, &mut rng);
+    let k = random_q3(h, n_kv, d_head, &mut rng);
+    let v = random_q3(h, n_kv, d_head, &mut rng);
+
+    let make_executor = |cfg: PermAttnConfig| {
+        InProcessTrustedExecutor::with_seed(
+            RayonCpuEngine::new(),
+            MaskSeed([55u8; 32]),
+        )
+        .with_perm_attention(cfg)
+    };
+
+    let mut a = make_executor(PermAttnConfig::DISABLED_NOISE);
+    let out_a = a
+        .offload_attention_permuted_cached(
+            q.view(),
+            k.view(),
+            v.view(),
+            scale,
+            q_pos_offset,
+            gelo_protocol::attention::AttentionMask::Causal,
+        )
+        .unwrap();
+
+    let mut b = make_executor(PermAttnConfig {
+        noise_sigma: 0.0,
+        causal_mask_neg: 30.0,
+        decode_softmax_on_gpu: true,
+    });
+    let out_b = b
+        .offload_attention_permuted_cached(
+            q.view(),
+            k.view(),
+            v.view(),
+            scale,
+            q_pos_offset,
+            gelo_protocol::attention::AttentionMask::Causal,
+        )
+        .unwrap();
+
+    let drift = out_a
+        .iter()
+        .zip(out_b.iter())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        drift < 1e-5,
+        "Phase 1b must not affect prefill (n_q={n_q}, n_kv={n_kv}): drift={drift} \
+         — if non-zero, decode_softmax_on_gpu is leaking into the prefill path",
+    );
+}
+
+#[test]
 fn trait_method_causal_mask_matches_plaintext() {
     // With AttentionMask::Causal, the InProcessTrustedExecutor must
     // produce output equivalent to the PlaintextExecutor's causal

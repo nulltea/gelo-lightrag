@@ -12,6 +12,7 @@ license.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 rag_core = { path = "../core", package = "core" }
+gelo-protocol = { path = "../gelo-protocol" }
 hmac.workspace = true
 light-kg-store = { path = "../light-kg-store" }
 rand.workspace = true
@@ -20,6 +21,7 @@ serde.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
 xormm-emm = { path = "../xormm-emm" }
 zeroize.workspace = true
 

@@ -1,0 +1,4 @@
+RSS at start: 0.01 GiB
+RSS after weights load: 7.67 GiB
+RSS after provision (projections + LmHead): 2.39 GiB
+SWEEP_RESULT variant=Q4B B=16 n=2048 K=8 mask=auto prefill_wall_s=285.363 decode_wall_s=22.615 prefill_tps_agg=114.83 prefill_tps_per_seq=7.18 decode_tps_agg=5.66 decode_tps_per_seq=0.35

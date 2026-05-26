@@ -78,20 +78,20 @@ fn synth_weights(cfg: &DecoderConfig, rng: &mut impl rand::RngCore) -> DecoderWe
     let layers = (0..cfg.num_hidden_layers)
         .map(|_| DecoderLayerWeights {
             norm_attn: Array1::from_elem(d, 1.0),
-            wq: rand2(d, q, rng, 0.05),
-            wk: rand2(d, kv, rng, 0.05),
-            wv: rand2(d, kv, rng, 0.05),
-            wo: rand2(q, d, rng, 0.05),
+            wq: Some(std::sync::Arc::new(rand2(d, q, rng, 0.05).mapv(|v| half::bf16::from_f32(v)))),
+            wk: Some(std::sync::Arc::new(rand2(d, kv, rng, 0.05).mapv(|v| half::bf16::from_f32(v)))),
+            wv: Some(std::sync::Arc::new(rand2(d, kv, rng, 0.05).mapv(|v| half::bf16::from_f32(v)))),
+            wo: Some(std::sync::Arc::new(rand2(q, d, rng, 0.05).mapv(|v| half::bf16::from_f32(v)))),
             norm_ffn: Array1::from_elem(d, 1.0),
-            w_gate: rand2(d, f, rng, 0.05),
-            w_up: rand2(d, f, rng, 0.05),
-            w_down: rand2(f, d, rng, 0.05),
+            w_gate: Some(std::sync::Arc::new(rand2(d, f, rng, 0.05).mapv(|v| half::bf16::from_f32(v)))),
+            w_up: Some(std::sync::Arc::new(rand2(d, f, rng, 0.05).mapv(|v| half::bf16::from_f32(v)))),
+            w_down: Some(std::sync::Arc::new(rand2(f, d, rng, 0.05).mapv(|v| half::bf16::from_f32(v)))),
             q_norm: None,
             k_norm: None,
         })
         .collect();
     DecoderWeights {
-        token_embedding: rand2(cfg.vocab_size, d, rng, 0.5),
+        token_embedding: rand2(cfg.vocab_size, d, rng, 0.5).mapv(|v| half::bf16::from_f32(v)),
         final_norm: Array1::from_elem(d, 1.0),
         layers,
         model_identity: [0u8; 32],
@@ -109,27 +109,38 @@ fn provision_decoder<E: GpuOffloadEngine>(
         }
         let li16 = li as u16;
         engine
-            .register_weight(WeightHandle::new(li16, WeightKind::Q), layer.wq.view())
+            .register_weight_bf16(WeightHandle::new(li16, WeightKind::Q), layer.wq.as_ref().expect("offloadable weight").view())
             .unwrap();
         engine
-            .register_weight(WeightHandle::new(li16, WeightKind::K), layer.wk.view())
+            .register_weight_bf16(WeightHandle::new(li16, WeightKind::K), layer.wk.as_ref().expect("offloadable weight").view())
             .unwrap();
         engine
-            .register_weight(WeightHandle::new(li16, WeightKind::V), layer.wv.view())
+            .register_weight_bf16(WeightHandle::new(li16, WeightKind::V), layer.wv.as_ref().expect("offloadable weight").view())
             .unwrap();
         engine
-            .register_weight(WeightHandle::new(li16, WeightKind::O), layer.wo.view())
+            .register_weight_bf16(WeightHandle::new(li16, WeightKind::O), layer.wo.as_ref().expect("offloadable weight").view())
             .unwrap();
         engine
-            .register_weight(WeightHandle::new(li16, WeightKind::FfnGate), layer.w_gate.view())
+            .register_weight_bf16(WeightHandle::new(li16, WeightKind::FfnGate), layer.w_gate.as_ref().expect("offloadable weight").view())
             .unwrap();
         engine
-            .register_weight(WeightHandle::new(li16, WeightKind::FfnUp), layer.w_up.view())
+            .register_weight_bf16(WeightHandle::new(li16, WeightKind::FfnUp), layer.w_up.as_ref().expect("offloadable weight").view())
             .unwrap();
         engine
-            .register_weight(WeightHandle::new(li16, WeightKind::FfnDown), layer.w_down.view())
+            .register_weight_bf16(WeightHandle::new(li16, WeightKind::FfnDown), layer.w_down.as_ref().expect("offloadable weight").view())
             .unwrap();
     }
+    // M1.12 R3 — LM head is the production default-and-only path.
+    // Register the tied-embedding transpose so
+    // `generation::generate` can dispatch its per-token offload.
+    let lm_head_t = weights
+        .token_embedding
+        .t()
+        .as_standard_layout()
+        .to_owned();
+    engine
+        .register_weight_bf16(WeightHandle::new(0, WeightKind::LmHead), lm_head_t.view())
+        .unwrap();
 }
 
 fn make_exec_and_weights() -> (
@@ -226,7 +237,7 @@ fn decode_replays_under_prefill() {
             logits[v] = h_row
                 .iter()
                 .zip(token_embedding.row(v).iter())
-                .map(|(a, b)| a * b)
+                .map(|(a, b)| a * b.to_f32())
                 .sum();
         }
         let got = argmax_row(logits.view());
@@ -737,7 +748,7 @@ fn hybrid_decode_replay_invariant_holds() {
             logits[v] = h_row
                 .iter()
                 .zip(token_embedding.row(v).iter())
-                .map(|(a, b)| a * b)
+                .map(|(a, b)| a * b.to_f32())
                 .sum();
         }
         let got = argmax_row(logits.view());

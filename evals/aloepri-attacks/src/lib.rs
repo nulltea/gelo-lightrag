@@ -63,6 +63,18 @@ pub enum Condition {
     /// suites. Holding shield constant between C2 and C3 isolates
     /// the mask family as the only variable.
     C3Hd3,
+    /// C6 — same as C2 except the LM-head projection
+    /// (`(1, hidden) × (hidden, vocab)`) is routed through the masked
+    /// offload path instead of running in-TEE. Tests whether the new
+    /// `(1+k, vocab)` masked-output shape (37× wider than the QKV
+    /// `(1+k, q_dim)` shapes the existing AloePri suite exercises)
+    /// opens an inverse-recovery surface the c1–c3 conditions don't
+    /// cover. Decode-shape capture: forces `max_tokens ≥ 1` so
+    /// `compute_logits_gpu` fires at least once per prompt. Acceptance
+    /// per `docs/plans/m1-12-tee-gpu-throughput.md` §4: attack
+    /// accuracy on every recovery driver within sample-noise of c2.
+    /// Flag → revert the LM-head-on-GPU default.
+    C6LmHeadOffload,
 }
 
 impl Condition {
@@ -72,6 +84,7 @@ impl Condition {
             Condition::C1MaskOnly => "c1_mask_only",
             Condition::C2Default => "c2_default",
             Condition::C3Hd3 => "c3_hd3",
+            Condition::C6LmHeadOffload => "c6_lm_head_offload",
         }
     }
 
@@ -81,8 +94,11 @@ impl Condition {
             "c1" | "c1_mask_only" | "mask_only" => Ok(Condition::C1MaskOnly),
             "c2" | "c2_default" | "default" => Ok(Condition::C2Default),
             "c3" | "c3_hd3" | "hd3" => Ok(Condition::C3Hd3),
+            "c6" | "c6_lm_head_offload" | "lm_head_offload" => {
+                Ok(Condition::C6LmHeadOffload)
+            }
             other => Err(anyhow!(
-                "unknown condition slug '{other}' (expected c0 / c1 / c2 / c3)"
+                "unknown condition slug '{other}' (expected c0 / c1 / c2 / c3 / c6)"
             )),
         }
     }
@@ -99,6 +115,12 @@ pub fn kind_slug(kind: WeightKind) -> &'static str {
         WeightKind::FfnGate => "gate_proj",
         WeightKind::FfnUp => "up_proj",
         WeightKind::FfnDown => "down_proj",
+        // M1.12 R3 — new VRAM-only LM-head handle. The c6 AloePri
+        // spot-check will add a `lm_head_proj` capture path; until
+        // then the snapshot exporter doesn't see this kind because
+        // the LM-head offload is gated by `LM_HEAD_GPU_OFFLOAD=1`
+        // and the existing c1–c5 capture conditions don't set it.
+        WeightKind::LmHead => "lm_head_proj",
     }
 }
 
@@ -395,6 +417,22 @@ impl<E: GpuOffloadEngine> TrustedExecutor for CapturingPlaintextExecutor<E> {
         weight: std::sync::Arc<Array2<f32>>,
     ) -> Result<()> {
         self.inner.provision_weight_shared(handle, weight)
+    }
+
+    fn provision_weight_bf16(
+        &mut self,
+        handle: WeightHandle,
+        weight: ArrayView2<half::bf16>,
+    ) -> Result<()> {
+        self.inner.provision_weight_bf16(handle, weight)
+    }
+
+    fn provision_weight_bf16_shared(
+        &mut self,
+        handle: WeightHandle,
+        weight: std::sync::Arc<Array2<half::bf16>>,
+    ) -> Result<()> {
+        self.inner.provision_weight_bf16_shared(handle, weight)
     }
 
     fn begin_forward_pass(&mut self, n: usize) -> Result<()> {

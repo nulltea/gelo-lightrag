@@ -1,0 +1,42 @@
+=== bf16 cascade microbench (validation of §4.E.3 phase 3 hypothesis) ===
+Tue May 26 13:47:56 CEST 2026
+
+warning: use of deprecated struct `sim::RayonCpuEngine`: RayonCpuEngine is the reference CPU impl; use `gelo_gpu_wgpu::WgpuVulkanEngine` for all measurements, benches, and production runtimes — see `feedback_benches_use_gelo_gpu.md` + `feedback_no_rayon_cpu_engine.md`.
+  --> crates/gelo-protocol/src/lib.rs:47:60
+   |
+47 | pub use sim::{InProcessTrustedExecutor, PlaintextExecutor, RayonCpuEngine};
+   |                                                            ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: `gelo-protocol` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 0.10s
+     Running tests/bf16_cascade_microbench.rs (target/release/deps/bf16_cascade_microbench-675a7350749a19fa)
+
+running 2 tests
+=== DCT-IV cascade microbench — n=2056 d=2560 ===
+warmup: 3 iter; measure: 25 iter
+
+
+=== HD₃ cascade microbench — n=4096 d=2560 ===
+warmup: 3 iter; measure: 25 iter
+
+                       f32 mean ± stddev          bf16 mean ± stddev         ratio (bf16/f32)
+  apply               5.475 ms ±    0.557 ms        5.175 ms ±    0.372 ms     0.945
+  unapply             5.446 ms ±    0.484 ms        4.959 ms ±    0.379 ms     0.911
+  apply+unapply      10.921 ms ±    0.975 ms       10.134 ms ±    0.509 ms     0.928
+
+  → bf16 speedup vs f32: 1.078× (-7.2% wall change)
+DCT4_RESULT shape=(2056,2560) f32_ms=10.921 bf16_ms=10.134 speedup=1.078 saving_pct=7.20
+test dct4_bf16_vs_f32_cascade_at_production_shape ... ok
+                       f32 mean ± stddev          bf16 mean ± stddev         ratio (bf16/f32)
+  apply              10.798 ms ±    9.513 ms       19.110 ms ±    1.058 ms     1.770
+  unapply             9.550 ms ±    8.676 ms       18.503 ms ±    0.921 ms     1.937
+  apply+unapply      20.349 ms ±   17.762 ms       37.613 ms ±    1.746 ms     1.848
+
+  → bf16 speedup vs f32: 0.541× (+84.8% wall change)
+HD3_RESULT shape=(4096,2560) f32_ms=20.349 bf16_ms=37.613 speedup=0.541 saving_pct=-84.84
+test hd3_bf16_vs_f32_cascade_at_production_shape ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.29s
+

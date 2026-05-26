@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/core",
+    "crates/gelo-chunker",
     "crates/gelo-rag",
     "crates/gelo-protocol",
     "crates/gelo-embedder",
@@ -19,6 +20,12 @@ members = [
     # AloePri attack-resistance harness. Lives under evals/ so the GELO
     # protocol crates stay untouched.
     "evals/aloepri-attacks",
+]
+exclude = [
+    # Vendored + patched cubecl-hip-sys for ROCm 7.2.1 — kept out of the
+    # workspace because it's a third-party crate with its own pinned
+    # edition/rust-version. Pulled in via [patch.crates-io] only.
+    "vendor/cubecl-hip-sys-patched",
 ]
 resolver = "2"
 
@@ -58,7 +65,18 @@ blis-src = { version = "0.2", default-features = false, features = ["system", "c
 rand = "0.9.2"
 rand_chacha = "0.9.0"
 rand_distr = "0.5"
+# Fast non-cryptographic RNG (Xoshiro256++) used for shield-row
+# noise generation in `gelo-protocol::gaussian` — bulk-fill ~3× faster
+# than ChaCha20 and the shield is not key material (the mask `A` is).
+# The protocol's per-offload-freshness invariant against cross-offload
+# correlation attacks holds for any distribution-quality RNG.
+rand_xoshiro = "0.7"
 rayon = "1.10"
+# DCT-IV cascade mask (`gelo-protocol::dct4`) — alternative to HD₃ that
+# works at arbitrary `s` (not just powers of two). Used by the
+# hybrid-auto-dispatch path at non-pow2 prompt shapes. See
+# `docs/research/hd3-non-pow2-fix.md` §6 for the design.
+rustdct = "0.7"
 reqwest = { version = "0.12.9", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 safetensors = "0.4"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -81,11 +99,30 @@ cubecl-runtime = { version = "=0.9.0", default-features = false, features = ["st
 cubecl-std = { version = "=0.9.0", default-features = false }
 cubecl-common = { version = "=0.9.0", default-features = false, features = ["std"] }
 cubecl-wgpu = { version = "=0.9.0", default-features = false, features = ["std", "spirv"] }
+# AMD ROCm/HIP runtime for cubecl. Used by the Q4 spike
+# (`crates/gelo-gpu-wgpu/tests/q4_hip_kernel_spike.rs`) to compare against
+# the Vulkan path's poor Q4 perf. Optional: only pulled in as a dev-dep
+# on `gelo-gpu-wgpu`, never in release binaries.
+cubecl-hip = { version = "=0.9.0", default-features = false, features = ["std", "rocwmma"] }
+# CubeK attention kernels — fused FlashAttention-style Q·Kᵀ →
+# softmax → ·V in a single GPU dispatch. Used by
+# `WgpuVulkanEngine::fused_attention_batched` at decode shapes
+# where the burn-tensor chain otherwise pays 3-5 kernel-launch
+# overheads per attention block. Pinned to 0.1.1 — same upstream
+# (tracel-ai/cubek) the burn-cubecl 0.20.1 release uses
+# transitively, so version alignment with our cubecl 0.9.0 stack
+# is automatic.
+cubek-attention = { version = "=0.1.1", default-features = false, features = ["std"] }
+# Need the 7.1.x hip-sys API surface for cubecl-hip 0.9.0 to compile;
+# ROCm 7.2.1 reports HIP patch 53211 which is past the 52802 binding
+# cap. Patched locally via `vendor/cubecl-hip-sys-patched` (see
+# [patch.crates-io] below) to alias hip_53211 → bindings_52802.
+cubecl-hip-sys = "=7.1.5280200"
 # Spike: burn-cubecl as smart-runtime over cubecl (real autotune + fusion + lazy eval).
 # Replaces direct cubecl-matmul use — cubecl-matmul has no stable release, only 0.9.0-pre.X.
 burn-cubecl = { version = "=0.20.1", default-features = false, features = ["std", "autotune", "fusion"] }
 burn-tensor = { version = "=0.20.1", default-features = false, features = ["std"] }
-burn-backend = { version = "=0.20.1", default-features = false, features = ["std", "cubecl-wgpu"] }
+burn-backend = { version = "=0.20.1", default-features = false, features = ["std", "cubecl-wgpu", "cubecl-hip"] }
 # M5 — SEV-SNP attestation
 sev = { version = "7", default-features = false, features = ["snp", "crypto_nossl"] }
 x509-cert = { version = "0.2", default-features = false, features = ["std", "pem"] }
@@ -112,4 +149,12 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 toml = "0.8"
 base64 = "0.22"
+
+[patch.crates-io]
+# Local patch: bindings/mod.rs has `hip_53211` aliased to `bindings_52802`
+# so the cubecl-hip-sys build.rs (which auto-detects HIP patch 53211 from
+# our installed ROCm 7.2.1) finds a matching feature flag. Upstream
+# cubecl-hip-sys 7.1.5280200 caps at hip_52802. Remove this patch once
+# cubecl-hip-sys publishes ROCm 7.2 bindings.
+cubecl-hip-sys = { path = "vendor/cubecl-hip-sys-patched" }
 

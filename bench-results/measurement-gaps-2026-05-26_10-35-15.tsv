@@ -1,0 +1,4 @@
+SWEEP_RESULT variant=Q4B B=8 n=3500 K=32 mask=auto prefill_wall_s=287.868 decode_wall_s=82.110 prefill_tps_agg=97.27 prefill_tps_per_seq=12.16 decode_tps_agg=3.12 decode_tps_per_seq=0.39
+SWEEP_RESULT variant=Q4B B=8 n=2400 K=32 mask=auto prefill_wall_s=216.149 decode_wall_s=61.401 prefill_tps_agg=88.83 prefill_tps_per_seq=11.10 decode_tps_agg=4.17 decode_tps_per_seq=0.52
+SWEEP_RESULT variant=Q4B B=8 n=2400 K=32 mask=hd3 prefill_wall_s=264.455 decode_wall_s=132.961 prefill_tps_agg=72.60 prefill_tps_per_seq=9.08 decode_tps_agg=1.93 decode_tps_per_seq=0.24
+SWEEP_RESULT variant=Q4B B=1 n=2561 K=32 mask=auto prefill_wall_s=31.860 decode_wall_s=21.157 prefill_tps_agg=80.38 prefill_tps_per_seq=80.38 decode_tps_agg=1.51 decode_tps_per_seq=1.51

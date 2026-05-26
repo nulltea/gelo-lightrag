@@ -30,7 +30,12 @@ use gelo_protocol::{
 };
 
 fn synth_executor() -> InProcessTrustedExecutor<RayonCpuEngine> {
+    // Pin to Haar so the test's hard-coded stacked-row counts
+    // `[n + k, d]` stay valid — Auto/HD₃ would round `n + k` up to
+    // the next power of two and break the shape assertions.  These
+    // tests target the snapshot-capture wiring, not the mask family.
     InProcessTrustedExecutor::with_seed(RayonCpuEngine::new(), MaskSeed::from_bytes([7u8; 32]))
+        .with_haar_mask()
 }
 
 fn provision_three_layers(

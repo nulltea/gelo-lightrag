@@ -297,6 +297,13 @@ fn default_trait_executor_rejects_ple_provision() {
         ) -> Result<()> {
             Ok(())
         }
+        fn provision_weight_bf16(
+            &mut self,
+            _h: WeightHandle,
+            _w: ArrayView2<half::bf16>,
+        ) -> Result<()> {
+            Ok(())
+        }
         fn offload_linear(
             &mut self,
             _h: WeightHandle,

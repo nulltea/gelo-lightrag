@@ -1,0 +1,197 @@
+=== Auto threshold re-tune verification — Qwen3-4B K=32 ===
+log: bench-results/m1-12-auto-tune-verify-2026-05-26_08-42-00.log
+tsv: bench-results/m1-12-auto-tune-verify-2026-05-26_08-42-00.tsv
+Tue May 26 08:42:00 CEST 2026
+
++ cargo build --release -p gelo-gpu-wgpu --test qwen3_m1_12_r1_q1_microbench
+   Compiling gelo-protocol v0.1.0 (/home/timo/repos/private-rag/crates/gelo-protocol)
+warning: use of deprecated struct `sim::RayonCpuEngine`: RayonCpuEngine is the reference CPU impl; use `gelo_gpu_wgpu::WgpuVulkanEngine` for all measurements, benches, and production runtimes — see `feedback_benches_use_gelo_gpu.md` + `feedback_no_rayon_cpu_engine.md`.
+  --> crates/gelo-protocol/src/lib.rs:47:60
+   |
+47 | pub use sim::{InProcessTrustedExecutor, PlaintextExecutor, RayonCpuEngine};
+   |                                                            ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+   Compiling gelo-embedder v0.1.0 (/home/timo/repos/private-rag/crates/gelo-embedder)
+   Compiling gelo-tee-sev-snp v0.1.0 (/home/timo/repos/private-rag/crates/gelo-tee-sev-snp)
+   Compiling gelo-gpu-wgpu v0.1.0 (/home/timo/repos/private-rag/crates/gelo-gpu-wgpu)
+warning: function `tensor_to_2d` is never used
+   --> crates/gelo-embedder/src/decoder/weights.rs:305:4
+    |
+305 | fn tensor_to_2d(view: TensorView<'_>) -> Result<Array2<f32>> {
+    |    ^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `gelo-embedder` (lib) generated 1 warning
+warning: `gelo-protocol` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 26.05s
+
+─── verify cell 1 / 3: B=8 n=320 mask=auto ───
+Tue May 26 08:42:26 CEST 2026
+warning: use of deprecated struct `sim::RayonCpuEngine`: RayonCpuEngine is the reference CPU impl; use `gelo_gpu_wgpu::WgpuVulkanEngine` for all measurements, benches, and production runtimes — see `feedback_benches_use_gelo_gpu.md` + `feedback_no_rayon_cpu_engine.md`.
+  --> crates/gelo-protocol/src/lib.rs:47:60
+   |
+47 | pub use sim::{InProcessTrustedExecutor, PlaintextExecutor, RayonCpuEngine};
+   |                                                            ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: `gelo-protocol` (lib) generated 1 warning
+warning: function `tensor_to_2d` is never used
+   --> crates/gelo-embedder/src/decoder/weights.rs:305:4
+    |
+305 | fn tensor_to_2d(view: TensorView<'_>) -> Result<Array2<f32>> {
+    |    ^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `gelo-embedder` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 0.16s
+     Running tests/qwen3_m1_12_r1_q1_microbench.rs (target/release/deps/qwen3_m1_12_r1_q1_microbench-996a308e7db6a8b1)
+
+running 1 test
+=== M1.12+ sweep cell: Q4B B=8 n=320 K=32 mask=auto ===
+RSS at start: 0.01 GiB
+RSS after weights load: 7.67 GiB
+RSS after provision (projections + LmHead): 2.39 GiB
+[Q4B B=8 n=320 K=32 mask=auto] PREFILL: B=8 n_max=320, wall 24.22s, prefill 13.2 tok/s/seq
+test m1_12_sweep_cell has been running for over 60 seconds
+[Q4B B=8 n=320 K=32 mask=auto] DECODE:  B=8 K=32, wall 26.82s, decode 1.2 tok/s/seq, per-step mean 838 ms (= 104.8 ms / tok / seq)
+--- Q4B B=8 n=320 K=32 mask=auto PREFILL buckets ---
+  gelo:mask_apply:hd3                       989.9 ms  (144 calls)
+  gelo:mask_unapply:hd3                    2235.7 ms  (252 calls)
+  gelo:mask_sample                            0.0 ms  (8 calls)
+  gelo:shield_stack                         370.0 ms  (144 calls)
+  engine:matmul                            6891.6 ms  (72 calls)
+  engine:matmul_many                      10762.8 ms  (72 calls)
+  tee:attn_inplace_many                     708.3 ms  (36 calls)
+--- Q4B B=8 n=320 K=32 mask=auto DECODE buckets ---
+  gelo:mask_apply:hd3                       736.6 ms  (4864 calls)
+  gelo:mask_unapply:hd3                    1724.0 ms  (8320 calls)
+  gelo:mask_sample                            0.3 ms  (512 calls)
+  gelo:shield_stack                        1576.5 ms  (4864 calls)
+  gelo:strip_shield                           3.0 ms  (256 calls)
+  engine:matmul                           10217.9 ms  (2560 calls)
+  engine:matmul_many                       9278.3 ms  (2304 calls)
+  tee:attn_cached_inplace_many             2731.2 ms  (1152 calls)
+  tee:compute_logits                       2257.5 ms  (256 calls)
+SWEEP_RESULT variant=Q4B B=8 n=320 K=32 mask=auto prefill_wall_s=24.223 decode_wall_s=26.819 prefill_tps_agg=105.68 prefill_tps_per_seq=13.21 decode_tps_agg=9.55 decode_tps_per_seq=1.19
+test m1_12_sweep_cell ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 79.31s
+
+
+─── verify cell 2 / 3: B=1 n=2561 mask=auto ───
+Tue May 26 08:43:46 CEST 2026
+warning: use of deprecated struct `sim::RayonCpuEngine`: RayonCpuEngine is the reference CPU impl; use `gelo_gpu_wgpu::WgpuVulkanEngine` for all measurements, benches, and production runtimes — see `feedback_benches_use_gelo_gpu.md` + `feedback_no_rayon_cpu_engine.md`.
+  --> crates/gelo-protocol/src/lib.rs:47:60
+   |
+47 | pub use sim::{InProcessTrustedExecutor, PlaintextExecutor, RayonCpuEngine};
+   |                                                            ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: `gelo-protocol` (lib) generated 1 warning
+warning: function `tensor_to_2d` is never used
+   --> crates/gelo-embedder/src/decoder/weights.rs:305:4
+    |
+305 | fn tensor_to_2d(view: TensorView<'_>) -> Result<Array2<f32>> {
+    |    ^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `gelo-embedder` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 0.16s
+     Running tests/qwen3_m1_12_r1_q1_microbench.rs (target/release/deps/qwen3_m1_12_r1_q1_microbench-996a308e7db6a8b1)
+
+running 1 test
+=== M1.12+ sweep cell: Q4B B=1 n=2561 K=32 mask=auto ===
+RSS at start: 0.01 GiB
+RSS after weights load: 7.67 GiB
+RSS after provision (projections + LmHead): 2.39 GiB
+[Q4B B=1 n=2561 K=32 mask=auto] PREFILL: n=2561, wall 31.92s, prefill 80.2 tok/s
+test m1_12_sweep_cell has been running for over 60 seconds
+[Q4B B=1 n=2561 K=32 mask=auto] DECODE:  K=32, wall 21.43s, decode 1.5 tok/s, per-step mean 670 ms
+--- Q4B B=1 n=2561 K=32 mask=auto PREFILL buckets ---
+  gelo:mask_apply:hd3                      2085.3 ms  (144 calls)
+  gelo:mask_unapply:hd3                    3612.5 ms  (252 calls)
+  gelo:mask_sample                            0.0 ms  (1 calls)
+  gelo:shield_stack                         518.3 ms  (144 calls)
+  gelo:strip_shield                        1727.1 ms  (144 calls)
+  engine:matmul                            6686.2 ms  (72 calls)
+  engine:matmul_many                      10687.5 ms  (72 calls)
+--- Q4B B=1 n=2561 K=32 mask=auto DECODE buckets ---
+  gelo:mask_apply:hd3                       708.0 ms  (4640 calls)
+  gelo:mask_unapply:hd3                    1088.4 ms  (8096 calls)
+  gelo:mask_sample                            0.1 ms  (64 calls)
+  gelo:shield_stack                         716.3 ms  (4640 calls)
+  gelo:strip_shield                          10.2 ms  (4640 calls)
+  engine:matmul                            2918.6 ms  (2336 calls)
+  engine:matmul_many                       2637.2 ms  (2304 calls)
+  tee:compute_logits                        358.5 ms  (32 calls)
+SWEEP_RESULT variant=Q4B B=1 n=2561 K=32 mask=auto prefill_wall_s=31.918 decode_wall_s=21.425 prefill_tps_agg=80.24 prefill_tps_per_seq=80.24 decode_tps_agg=1.49 decode_tps_per_seq=1.49
+test m1_12_sweep_cell ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 81.33s
+
+
+─── verify cell 3 / 3: B=8 n=2048 mask=auto ───
+Tue May 26 08:45:08 CEST 2026
+warning: use of deprecated struct `sim::RayonCpuEngine`: RayonCpuEngine is the reference CPU impl; use `gelo_gpu_wgpu::WgpuVulkanEngine` for all measurements, benches, and production runtimes — see `feedback_benches_use_gelo_gpu.md` + `feedback_no_rayon_cpu_engine.md`.
+  --> crates/gelo-protocol/src/lib.rs:47:60
+   |
+47 | pub use sim::{InProcessTrustedExecutor, PlaintextExecutor, RayonCpuEngine};
+   |                                                            ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: `gelo-protocol` (lib) generated 1 warning
+warning: function `tensor_to_2d` is never used
+   --> crates/gelo-embedder/src/decoder/weights.rs:305:4
+    |
+305 | fn tensor_to_2d(view: TensorView<'_>) -> Result<Array2<f32>> {
+    |    ^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `gelo-embedder` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 0.17s
+     Running tests/qwen3_m1_12_r1_q1_microbench.rs (target/release/deps/qwen3_m1_12_r1_q1_microbench-996a308e7db6a8b1)
+
+running 1 test
+=== M1.12+ sweep cell: Q4B B=8 n=2048 K=32 mask=auto ===
+RSS at start: 0.01 GiB
+RSS after weights load: 7.67 GiB
+RSS after provision (projections + LmHead): 2.39 GiB
+test m1_12_sweep_cell has been running for over 60 seconds
+[Q4B B=8 n=2048 K=32 mask=auto] PREFILL: B=8 n_max=2048, wall 174.91s, prefill 11.7 tok/s/seq
+[Q4B B=8 n=2048 K=32 mask=auto] DECODE:  B=8 K=32, wall 55.08s, decode 0.6 tok/s/seq, per-step mean 1721 ms (= 215.1 ms / tok / seq)
+--- Q4B B=8 n=2048 K=32 mask=auto PREFILL buckets ---
+  gelo:mask_apply:dct4                    23534.5 ms  (144 calls)
+  gelo:mask_unapply:dct4                  42820.2 ms  (252 calls)
+  gelo:mask_sample                            0.3 ms  (8 calls)
+  gelo:shield_stack                        1943.1 ms  (144 calls)
+  engine:matmul                           27999.5 ms  (72 calls)
+  engine:matmul_many                      42772.3 ms  (72 calls)
+  tee:attn_inplace_many                   22078.9 ms  (36 calls)
+--- Q4B B=8 n=2048 K=32 mask=auto DECODE buckets ---
+  gelo:mask_apply:hd3                       736.0 ms  (4864 calls)
+  gelo:mask_unapply:hd3                    1617.3 ms  (8320 calls)
+  gelo:mask_sample                            0.4 ms  (512 calls)
+  gelo:shield_stack                        1638.2 ms  (4864 calls)
+  gelo:strip_shield                           3.4 ms  (256 calls)
+  engine:matmul                           10926.7 ms  (2560 calls)
+  engine:matmul_many                       9849.3 ms  (2304 calls)
+  tee:attn_cached_inplace_many            29696.2 ms  (1152 calls)
+  tee:compute_logits                       2319.7 ms  (256 calls)
+SWEEP_RESULT variant=Q4B B=8 n=2048 K=32 mask=auto prefill_wall_s=174.915 decode_wall_s=55.076 prefill_tps_agg=93.67 prefill_tps_per_seq=11.71 decode_tps_agg=4.65 decode_tps_per_seq=0.58
+test m1_12_sweep_cell ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 258.20s
+
+
+=== summary ===
+
+Tue May 26 08:49:27 CEST 2026

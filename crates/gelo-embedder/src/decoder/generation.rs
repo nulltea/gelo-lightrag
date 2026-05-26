@@ -18,9 +18,9 @@
 //! `weights.token_embedding` when present.
 
 use anyhow::{Result, anyhow};
-use ndarray::ArrayView1;
+use ndarray::{ArrayView1, Axis};
 
-use gelo_protocol::TrustedExecutor;
+use gelo_protocol::{profile, TrustedExecutor, WeightHandle, WeightKind};
 
 use super::config::{AttentionClass, DecoderConfig};
 use super::forward;
@@ -92,38 +92,54 @@ fn argmax(logits: ArrayView1<'_, f32>) -> u32 {
 /// Compute logits = `h_last · token_embedding.T` for tied-embedding
 /// models. Returns a `(vocab_size,)` 1-D vector. Stays in-TEE — the LM
 /// head is the same primitive as any other masked offload but at
-/// decode-step shape `(1, d_hidden) · (d_hidden, vocab)` it's smaller
-/// than the dispatch overhead would amortise, so v1 keeps it on CPU.
-/// M1.1 will route this through a `WeightKind::LmHead` offload when
-/// the loader provides one.
+/// Compute logits = `h_last · token_embedding.T` for tied-embedding
+/// models via the executor's masked-offload path. Returns a
+/// `(vocab_size,)` 1-D vector.
+///
+/// **The LM-head projection is GPU-offloaded by default and only.**
+/// Each call opens its own one-row forward-pass bracket, dispatches
+/// the `(1, hidden) × (hidden, vocab)` matmul through
+/// `exec.offload_linear` under the substrate's per-forward mask +
+/// shield, and returns plaintext logits to the in-TEE sampler. The
+/// caller must have provisioned the tied-embedding transpose at
+/// [`gelo_protocol::WeightKind::LmHead`] via
+/// [`crate::decoder::weights::provision_lm_head_into`] before any
+/// call — typically once at runtime startup. M1.12 R3 — see
+/// `docs/plans/m1-12-tee-gpu-throughput.md` §3.
 ///
 /// Applies final-logit softcap (`tanh(x / c) * c`) when
 /// `cfg.final_logit_softcapping` is `Some(c)` — Gemma 4 uses
-/// `c = 30.0`. Without softcap (None), behaviour is byte-for-byte
-/// the same as before.
-fn compute_logits(
+/// `c = 30.0`.
+fn compute_logits<X: TrustedExecutor>(
     cfg: &DecoderConfig,
     weights: &DecoderWeights,
+    exec: &mut X,
     h_last: ArrayView1<'_, f32>,
-) -> ndarray::Array1<f32> {
-    let vocab = weights.token_embedding.nrows();
-    let mut logits = ndarray::Array1::<f32>::zeros(vocab);
-    for v in 0..vocab {
-        let row = weights.token_embedding.row(v);
-        let dot: f32 = h_last
-            .iter()
-            .zip(row.iter())
-            .map(|(a, b)| a * b)
-            .sum();
-        logits[v] = dot;
-    }
-    if let Some(cap) = cfg.final_logit_softcapping {
-        let inv = 1.0_f32 / cap;
-        for x in logits.iter_mut() {
-            *x = (*x * inv).tanh() * cap;
+) -> Result<ndarray::Array1<f32>> {
+    profile::time("tee:compute_logits", || -> Result<ndarray::Array1<f32>> {
+        let vocab = weights.token_embedding.nrows();
+        let h2 = h_last.insert_axis(Axis(0));
+        exec.begin_forward_pass(1)?;
+        let logits_2d = exec.offload_linear(
+            WeightHandle::new(0, WeightKind::LmHead),
+            h2,
+        )?;
+        exec.end_forward_pass()?;
+        anyhow::ensure!(
+            logits_2d.nrows() == 1 && logits_2d.ncols() == vocab,
+            "lm-head offload returned shape ({}, {}), expected (1, {vocab})",
+            logits_2d.nrows(),
+            logits_2d.ncols(),
+        );
+        let mut logits = logits_2d.row(0).to_owned();
+        if let Some(cap) = cfg.final_logit_softcapping {
+            let inv = 1.0_f32 / cap;
+            for x in logits.iter_mut() {
+                *x = (*x * inv).tanh() * cap;
+            }
         }
-    }
-    logits
+        Ok(logits)
+    })
 }
 
 /// Run prefill + decode loop. Returns the newly-sampled tokens (prompt
@@ -180,7 +196,7 @@ pub fn generate(
     let mut tokens = Vec::with_capacity(gen_cfg.max_tokens);
     let mut stopped_on_eos = false;
     for _ in 0..gen_cfg.max_tokens {
-        let logits = compute_logits(cfg, weights, h_last.view());
+        let logits = compute_logits(cfg, weights, exec, h_last.view())?;
         let next_token = sample(logits.view(), &gen_cfg.sampler)?;
         tokens.push(next_token);
         if gen_cfg.eos_token_ids.contains(&next_token) {
@@ -195,6 +211,160 @@ pub fn generate(
         tokens,
         stopped_on_eos,
     })
+}
+
+/// **M1.11 D1.4** — Run prefill + autoregressive decode over `B`
+/// prompts in parallel. Returns one [`GenerationOutput`] per prompt
+/// in input order.
+///
+/// Per the M1.11 plan §3.4: at the substrate level each batched
+/// decode step uses **per-sequence A_b** by default; setting
+/// `BATCHED_DECODE_SHARED_A=1` switches to one shared dense A
+/// mixing B current-token rows (gated on AloePri c5; see plan §7.1).
+/// Both topologies are functionally equivalent here — the choice
+/// affects only performance and security argument.
+///
+/// **Greedy contract:** per-sequence determinism matches single-
+/// stream [`generate`] **to f32 mask round-trip floor** (not byte-
+/// identical — mask shapes differ across B). Argmax may flip at
+/// tied logits. Tests assert on entity-set / ranked-id equivalence,
+/// not token-id sequences. See plan §4 R3 + §5 D3.
+///
+/// **EOS handling (pad-with-EOS, plan §2 / Q6):** when sequence
+/// `b` emits a stop token, `finished_b` flips true; subsequent
+/// steps feed `<pad>` (or the EOS token itself, since pad-with-EOS
+/// is the simplest implementation) so the batched forward keeps
+/// running on all B until either every sequence has finished or any
+/// sequence hits `max_tokens`. Output for finished sequences is
+/// frozen at the EOS step. Wastes some attention compute on dead
+/// sequences but avoids the KV-cache compaction step; break-even
+/// vs compaction is ~30% EOS divergence (plan §2).
+pub fn generate_batched(
+    cfg: &DecoderConfig,
+    weights: &DecoderWeights,
+    rope: &RopeTables,
+    exec: &mut impl TrustedExecutor,
+    prompts: &[Vec<u32>],
+    gen_cfg: &GenerationConfig,
+) -> Result<Vec<GenerationOutput>> {
+    if prompts.is_empty() {
+        return Err(anyhow!("generate_batched: prompts must be non-empty"));
+    }
+    if gen_cfg.max_tokens == 0 {
+        return Ok(prompts
+            .iter()
+            .map(|_| GenerationOutput {
+                tokens: Vec::new(),
+                stopped_on_eos: false,
+            })
+            .collect());
+    }
+    let batch_size = prompts.len();
+    let seq_lens: Vec<usize> = prompts.iter().map(|s| s.len()).collect();
+    let max_prompt = seq_lens.iter().copied().max().unwrap_or(0);
+    if max_prompt == 0 {
+        return Err(anyhow!(
+            "generate_batched: at least one prompt must be non-empty"
+        ));
+    }
+    let max_cache_len = max_prompt + gen_cfg.max_tokens;
+    if max_cache_len > cfg.max_position_embeddings {
+        return Err(anyhow!(
+            "max_prompt {max_prompt} + max_tokens {} > max_position_embeddings {}",
+            gen_cfg.max_tokens,
+            cfg.max_position_embeddings,
+        ));
+    }
+
+    // Pick a pad-token for finished sequences. We feed the
+    // sequence's own most-recent EOS token back on subsequent
+    // steps (idempotent — its output row is discarded anyway). If
+    // no EOS list was provided, use token 0 as a generic pad.
+    let pad_token: u32 = gen_cfg.eos_token_ids.first().copied().unwrap_or(0);
+
+    // Batched KV cache. Use sharing-aware constructor for Gemma 4
+    // hybrid models; otherwise standard separate K/V.
+    let mut kv_cache = if cfg.kv_shared_in_global && cfg.attention_classes.is_some() {
+        let shared: Vec<bool> = (0..weights.layers.len())
+            .map(|li| matches!(cfg.effective_attention_class(li), AttentionClass::Global))
+            .collect();
+        KvCache::new_with_sharing_batched(
+            batch_size,
+            weights.layers.len(),
+            max_cache_len,
+            cfg.kv_dim(),
+            &shared,
+        )
+    } else {
+        KvCache::new_batched(batch_size, weights.layers.len(), max_cache_len, cfg.kv_dim())
+    };
+
+    // Prefill — populate the cache per sequence, get the (B, n_max,
+    // hidden) prefill hidden states.
+    let (hidden_3d, _) =
+        forward::run_prefill_batched(cfg, weights, rope, exec, prompts, &mut kv_cache)?;
+
+    // Per-sequence state: last-valid-row hidden + token list +
+    // finished flag.
+    let mut last_hidden: Vec<ndarray::Array1<f32>> = (0..batch_size)
+        .map(|b| {
+            hidden_3d
+                .slice(ndarray::s![b, seq_lens[b] - 1, ..])
+                .to_owned()
+        })
+        .collect();
+    let mut tokens: Vec<Vec<u32>> =
+        (0..batch_size).map(|_| Vec::with_capacity(gen_cfg.max_tokens)).collect();
+    let mut stopped: Vec<bool> = vec![false; batch_size];
+
+    for _step in 0..gen_cfg.max_tokens {
+        // 1. Sample next token per sequence from the prefill /
+        //    previous-step's hidden.
+        let mut next_tokens: Vec<u32> = Vec::with_capacity(batch_size);
+        for b in 0..batch_size {
+            if stopped[b] {
+                next_tokens.push(pad_token);
+                continue;
+            }
+            let logits = compute_logits(cfg, weights, exec, last_hidden[b].view())?;
+            let nxt = sample(logits.view(), &gen_cfg.sampler)?;
+            tokens[b].push(nxt);
+            if gen_cfg.eos_token_ids.contains(&nxt) {
+                stopped[b] = true;
+            }
+            next_tokens.push(nxt);
+        }
+
+        // 2. Early-exit if every sequence has stopped.
+        if stopped.iter().all(|&s| s) {
+            break;
+        }
+
+        // 3. Run one batched decode step. Finished sequences feed
+        //    pad_token; their output row is overwritten in
+        //    last_hidden but never sampled again.
+        let h_step =
+            forward::run_decode_step_batched(cfg, weights, rope, exec, &next_tokens, &mut kv_cache)?;
+
+        // 4. Update per-sequence last_hidden from the batched
+        //    step's (B, hidden) result.
+        for b in 0..batch_size {
+            if stopped[b] {
+                // Don't bother copying — saves a hidden-size memcpy
+                // per finished sequence. Their slot will never be
+                // read again.
+                continue;
+            }
+            last_hidden[b].assign(&h_step.row(b));
+        }
+    }
+
+    Ok((0..batch_size)
+        .map(|b| GenerationOutput {
+            tokens: std::mem::take(&mut tokens[b]),
+            stopped_on_eos: stopped[b],
+        })
+        .collect())
 }
 
 #[cfg(test)]

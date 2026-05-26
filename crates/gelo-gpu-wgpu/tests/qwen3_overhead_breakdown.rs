@@ -92,12 +92,7 @@ fn qwen3_overhead_step_breakdown() {
     assert!(gpu_root.is_real_gpu());
 
     // Build the two embedders we want to compare against each other.
-    let mut gpu_plain = GeloQwenEmbedder::new(
-        cfg.clone(),
-        tokenizer.clone(),
-        Arc::clone(&weights_arc),
-        Arc::clone(&rope_arc),
-        PlaintextExecutor::new(gpu_root.clone_shared()),
+    let mut gpu_plain = GeloQwenEmbedder::with_shared_weights(cfg.clone(), tokenizer.clone(), Arc::clone(&weights_arc), Arc::clone(&rope_arc), PlaintextExecutor::new(gpu_root.clone_shared()),
     )
     .expect("gpu_plain")
     .with_out_attn_mult(false);
@@ -117,12 +112,7 @@ fn qwen3_overhead_step_breakdown() {
     let mut gpu_gelo_only = {
         let mut c = cfg.clone();
         c.use_out_attn_mult = false;
-        GeloQwenEmbedder::new(
-            c,
-            tokenizer.clone(),
-            Arc::clone(&weights_arc),
-            Arc::clone(&rope_arc),
-            InProcessTrustedExecutor::with_seed(
+        GeloQwenEmbedder::with_shared_weights(c, tokenizer.clone(), Arc::clone(&weights_arc), Arc::clone(&rope_arc), InProcessTrustedExecutor::with_seed(
                 gpu_root.clone_shared(),
                 MaskSeed::from_bytes([3u8; 32]),
             ),
@@ -143,12 +133,7 @@ fn qwen3_overhead_step_breakdown() {
         );
         let issuer = MockReportIssuer::from_bundled().expect("load bundled mock VCEK key");
         let snp = SnpTrustedExecutor::new(inner, issuer, MODEL_IDENT, SCHEME_IDENT);
-        GeloQwenEmbedder::new(
-            c,
-            tokenizer.clone(),
-            Arc::clone(&weights_arc),
-            Arc::clone(&rope_arc),
-            snp,
+        GeloQwenEmbedder::with_shared_weights(c, tokenizer.clone(), Arc::clone(&weights_arc), Arc::clone(&rope_arc), snp,
         )
         .expect("gpu_gelo_outattn (snp-wrapped)")
     };

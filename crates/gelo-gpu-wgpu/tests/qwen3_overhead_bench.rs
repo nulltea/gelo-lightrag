@@ -189,12 +189,7 @@ fn qwen3_overhead_breakdown() {
     assert!(gpu_root.is_real_gpu(), "bench needs real GPU hardware");
 
     eprintln!("[gpu_plain] building...");
-    let mut gpu_plain = GeloQwenEmbedder::new(
-        cfg.clone(),
-        tokenizer.clone(),
-        Arc::clone(&weights_arc),
-        Arc::clone(&rope_arc),
-        PlaintextExecutor::new(gpu_root.clone_shared()),
+    let mut gpu_plain = GeloQwenEmbedder::with_shared_weights(cfg.clone(), tokenizer.clone(), Arc::clone(&weights_arc), Arc::clone(&rope_arc), PlaintextExecutor::new(gpu_root.clone_shared()),
     )
     .expect("gpu_plain")
     .with_out_attn_mult(false);
@@ -208,12 +203,7 @@ fn qwen3_overhead_breakdown() {
         // production auto-switch (n ≥ hidden_size) would otherwise route
         // these short prompts through in-TEE attention.
         cfg.out_attn_mult_min_seq_len = Some(0);
-        GeloQwenEmbedder::new(
-            cfg,
-            tokenizer.clone(),
-            Arc::clone(&weights_arc),
-            Arc::clone(&rope_arc),
-            InProcessTrustedExecutor::with_seed(
+        GeloQwenEmbedder::with_shared_weights(cfg, tokenizer.clone(), Arc::clone(&weights_arc), Arc::clone(&rope_arc), InProcessTrustedExecutor::with_seed(
                 gpu_root.clone_shared(),
                 MaskSeed::from_bytes([1u8; 32]),
             ),
@@ -246,12 +236,7 @@ fn qwen3_overhead_breakdown() {
             ShieldConfig::new(8, 6.0),
         )
         .with_verify_probes(BENCH_VERIFY_PROBES);
-        GeloQwenEmbedder::new(
-            cfg,
-            tokenizer.clone(),
-            Arc::clone(&weights_arc),
-            Arc::clone(&rope_arc),
-            exec,
+        GeloQwenEmbedder::with_shared_weights(cfg, tokenizer.clone(), Arc::clone(&weights_arc), Arc::clone(&rope_arc), exec,
         )
         .expect("gpu_full_stack")
     };

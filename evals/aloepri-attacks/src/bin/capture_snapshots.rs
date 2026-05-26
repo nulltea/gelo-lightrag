@@ -26,7 +26,7 @@
 //!    TEE-side weight cache + GPU device handle build once per
 //!    condition; the prompt loop only resets the snapshot capture
 //!    buffer between prompts.
-//! 3. **`provision_weight_shared` with `Arc<Array2<f32>>`**: the
+//! 3. **`provision_weight_shared` with `Arc<Array2<half::bf16>>`**: the
 //!    TEE-side weight cache holds an `Arc::clone` of the embedder's
 //!    weight tensor rather than a fresh `.to_owned()` byte copy,
 //!    so we pay ~3.4 GB for the cache instead of 6.8 GB on
@@ -71,6 +71,15 @@ enum ConditionArg {
     /// HD₃ Hadamard-cascade mask + default shield (round-3 gate B.3
     /// extension; mirrors C2 except `.with_hd3_mask()`).
     C3,
+    /// LM-head GPU masked offload at the new
+    /// `(1+k, vocab=152 064)` shape (M1.12 R3 gate). Mirrors C2 on
+    /// mask family + shield + per-forward cadence; the only variable
+    /// is that the LM-head projection rides the masked offload path
+    /// instead of running in-TEE. Requires `--max-tokens >= 1` so the
+    /// LM-head shape actually appears in the capture; prefill-only
+    /// runs (`--max-tokens 0`) silently produce zero LM-head
+    /// snapshots and the gate will fail loud.
+    C6,
     All,
 }
 
@@ -95,11 +104,13 @@ impl ConditionArg {
             ConditionArg::C1 => vec![Condition::C1MaskOnly],
             ConditionArg::C2 => vec![Condition::C2Default],
             ConditionArg::C3 => vec![Condition::C3Hd3],
+            ConditionArg::C6 => vec![Condition::C6LmHeadOffload],
             ConditionArg::All => vec![
                 Condition::C0Plain,
                 Condition::C1MaskOnly,
                 Condition::C2Default,
                 Condition::C3Hd3,
+                Condition::C6LmHeadOffload,
             ],
         }
     }
@@ -250,6 +261,17 @@ fn main() -> Result<()> {
         max_snapshots: Some(args.max_snapshots_per_prompt),
     };
 
+    // C6 needs at least one decode step so `compute_logits_gpu`
+    // dispatches at least once and the (1+k, vocab) shape lands in
+    // the capture. Fail loud at startup rather than silently
+    // produce a c6 snapshot set with zero LM-head rows.
+    if conditions.contains(&Condition::C6LmHeadOffload) && args.max_tokens == 0 {
+        return Err(anyhow!(
+            "condition c6 requires --max-tokens >= 1 so the LM-head shape \
+             appears in the capture (prefill-only never calls compute_logits)"
+        ));
+    }
+
     for cond in conditions {
         eprintln!("== condition {} ==", cond.slug());
         let t0 = std::time::Instant::now();
@@ -372,7 +394,7 @@ fn load_prompts(path: Option<&Path>, max_prompts: usize) -> Result<Vec<String>> 
     Ok(raw.into_iter().take(limit).collect())
 }
 
-/// Wrap each offload-bound weight tensor in `Arc<Array2<f32>>` once
+/// Wrap each offload-bound weight tensor in `Arc<Array2<half::bf16>>` once
 /// at startup, returning a `(WeightHandle, Arc)` vector. The engine
 /// registration path uses `arc.view()`; the executor uses
 /// `Arc::clone` via `provision_weight_shared`. Halves the TEE-side
@@ -380,18 +402,16 @@ fn load_prompts(path: Option<&Path>, max_prompts: usize) -> Result<Vec<String>> 
 fn build_weight_arcs(
     cfg: &DecoderConfig,
     weights: &DecoderWeights,
-) -> Vec<(WeightHandle, Arc<Array2<f32>>)> {
+) -> Vec<(WeightHandle, Arc<Array2<half::bf16>>)> {
     let mut arcs = Vec::with_capacity(weights.layers.len() * 7);
     for (li, layer) in weights.layers.iter().enumerate() {
         if !cfg.offload_layer(li) {
             continue;
         }
         let li16 = li as u16;
-        // Note on the clone: the embedder's `DecoderLayerWeights`
-        // currently stores `Array2<f32>` rather than `Arc<Array2<f32>>`,
-        // so we pay one f32 clone here. That's the right boundary —
-        // the Arc-of-Array2 pool can be shared with the executor and
-        // dropped together when the binary exits.
+        // As of 2026-05-21 `DecoderLayerWeights` stores `Arc<Array2<half::bf16>>`
+        // directly; clone the Arc to get a second handle on the same
+        // backing buffer — no f32 byte clone.
         for (kind, tensor) in [
             (WeightKind::Q, &layer.wq),
             (WeightKind::K, &layer.wk),
@@ -401,16 +421,22 @@ fn build_weight_arcs(
             (WeightKind::FfnUp, &layer.w_up),
             (WeightKind::FfnDown, &layer.w_down),
         ] {
-            arcs.push((WeightHandle::new(li16, kind), Arc::new(tensor.clone())));
+            // Snapshot binary holds an external Arc pool; opt out of
+            // the embedder's take-after-upload pattern by cloning the
+            // Arc handle (refcount += 1) and leaving the original.
+            let arc = tensor
+                .as_ref()
+                .expect("offloadable weight missing — fresh DecoderWeights expected here");
+            arcs.push((WeightHandle::new(li16, kind), Arc::clone(arc)));
         }
     }
     arcs
 }
 
-fn approx_arc_pool_gb(arcs: &[(WeightHandle, Arc<Array2<f32>>)]) -> f32 {
+fn approx_arc_pool_gb(arcs: &[(WeightHandle, Arc<Array2<half::bf16>>)]) -> f32 {
     let bytes: usize = arcs
         .iter()
-        .map(|(_, a)| a.nrows() * a.ncols() * std::mem::size_of::<f32>())
+        .map(|(_, a)| a.nrows() * a.ncols() * std::mem::size_of::<half::bf16>())
         .sum();
     bytes as f32 / 1e9
 }
@@ -420,7 +446,7 @@ fn run_condition<E>(
     cond: Condition,
     cfg: &DecoderConfig,
     weights: &Arc<DecoderWeights>,
-    weight_arcs: &[(WeightHandle, Arc<Array2<f32>>)],
+    weight_arcs: &[(WeightHandle, Arc<Array2<half::bf16>>)],
     rope: &Arc<RopeTables>,
     prompt_token_ids: &[Vec<u32>],
     prompts: &[String],
@@ -448,6 +474,11 @@ where
         // family is the only variable. Same numbers go into meta.json
         // so the Python loader treats C2 and C3 as comparable rows.
         Condition::C3Hd3 => (8_usize, 4.0_f32, true),
+        // C6 mirrors C2 on every parameter the meta.json records. The
+        // only delta is that the LM-head projection rides the masked
+        // offload path; the capture sees `(1+k, vocab)` masked outputs
+        // alongside the existing QKV / O / gate / up / down shapes.
+        Condition::C6LmHeadOffload => (8_usize, 4.0_f32, true),
     };
 
     let mut executor: ExecVariant<E> = match cond {
@@ -482,6 +513,23 @@ where
             debug_assert_eq!(exec.mask_kind(), gelo_protocol::MaskKind::Hd3);
             ExecVariant::InProc(exec)
         }
+        Condition::C6LmHeadOffload => {
+            // C6 — same builder as C2 (paper-parity Haar + shield(8,
+            // 4.0)); the variable is that the LM-head projection
+            // rides the masked offload path. The LM-head weight
+            // `WeightKind::LmHead` is registered separately below
+            // (after the standard 7-projection provisioning loop) so
+            // the substrate has it available when
+            // `compute_logits_gpu` opens its per-token
+            // `begin_forward_pass(1)` bracket.
+            let exec = InProcessTrustedExecutor::with_seed(
+                engine,
+                MaskSeed::from_bytes([seed_byte; 32]),
+            )
+            .with_snapshot_capture(snapshot_cfg);
+            debug_assert_eq!(exec.shield_config().k, 8);
+            ExecVariant::InProc(exec)
+        }
     };
 
     // Provision weights once. For the InProc branches we use
@@ -492,14 +540,45 @@ where
     match &mut executor {
         ExecVariant::Plain(e) => {
             for (handle, arc) in weight_arcs {
-                e.provision_weight(*handle, arc.view())?;
+                e.provision_weight_bf16(*handle, arc.view())?;
             }
         }
         ExecVariant::InProc(e) => {
             for (handle, arc) in weight_arcs {
-                e.provision_weight_shared(*handle, Arc::clone(arc))?;
+                e.provision_weight_bf16_shared(*handle, Arc::clone(arc))?;
             }
         }
+    }
+
+    // M1.12 R3 — LM head is the production default-and-only path
+    // for `generation::generate`. Provision the tied-embedding
+    // transpose unconditionally when `max_tokens > 0` so the
+    // generate() loop has somewhere to dispatch the per-token
+    // offload. C6 is the condition the gate actually scrutinises;
+    // C0–C3 just need the registration so prefill+decode runs at all.
+    // Skipped at `max_tokens == 0` (`run_prefill` direct) — saves the
+    // transient bf16 transpose.
+    if max_tokens > 0 {
+        use gelo_embedder::decoder::weights::provision_lm_head_into;
+        match &mut executor {
+            ExecVariant::InProc(e) => provision_lm_head_into(weights, e)?,
+            ExecVariant::Plain(e) => {
+                let lm_head_t = weights
+                    .token_embedding
+                    .t()
+                    .as_standard_layout()
+                    .to_owned();
+                e.provision_weight_bf16(
+                    WeightHandle::new(0, WeightKind::LmHead),
+                    lm_head_t.view(),
+                )?;
+            }
+        }
+    } else if matches!(cond, Condition::C6LmHeadOffload) {
+        return Err(anyhow!(
+            "c6 captures require --max-tokens >= 1 so the LM-head shape \
+             appears in the capture (prefill-only never calls compute_logits)"
+        ));
     }
 
     // Accumulators for the per-condition export.
