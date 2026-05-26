@@ -10,6 +10,7 @@
 //! - last-token pooling for the embedding
 
 pub mod attention;
+pub mod bf16_kernels;
 pub mod config;
 pub mod embedder;
 pub mod forward;
