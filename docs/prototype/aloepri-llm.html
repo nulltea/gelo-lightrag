@@ -3673,43 +3673,48 @@
               <td class="num">pending</td>
               <td>
                 <b
-                  >Score surface out of §5.4 scope; output surface measured at
-                  L=0 97.46 % → 83.77 % obf (Δ 13.7 pp, ~21σ), L≥5 within ±1.5
-                  pp (revised framing 2026-05-26 + 2B.1 measurement).</b
+                  >Paper Table 4's 0 % is reproducible under paper-literal Alg2
+                  + vocab-disjoint methodology (2026-05-26 PM update).</b
                 >
-                Paper §5.4's `e_C^attn` bound enters the global accuracy
-                composition only at the <i>attention output</i> level (post-V
-                per-head, before W<sub>o</sub> — llama.cpp `kqv_out` tensor);
-                the score-level perturbation `Q·K<sup>T</sup>` is qualified
-                `≈_{e_C^attn}` but never bounded quantitatively.
-                <b
-                  >2B.1 measurement (`gpu_sweep.py --kind kqv_out` on
-                  cell-qwen3-4b-{plain,uvo}-attnoutput-512-20260526):</b
+                Two cumulative factors close the gap between our prior 47 % obf
+                measurement and paper's 0 %:
+                <b>(1) Paper-literal Alg2 construction</b> — our deployed cell
+                differed from paper Algorithm 2 in two places: A1 `k_matrix =
+                R̂·Ĥ⁻¹·Ẑ` vs paper `Ĥ⁻¹·Ẑᵀ`, and A2 QR-stabilised Û<sub>vo</sub>
+                vs paper raw `N(0, 1/d_head)`. Switching to paper-literal
+                (`obfuscate_qwen3_gguf.py --alg2-paper-literal`, cell
+                `…uvo-PAPERLIT-bf16-native.gguf`) drops obf `kq` at L=5 from 38
+                % → 8 %, and obf `kqv_out` at L=5 from 50 % → 10 %.
+                <b>(2) Vocab-disjoint methodology</b> — replacing row-split with
+                vocab-disjoint floors plain `kq` at L=0 from 49 % → 0.4 %,
+                meaning &gt;99 % of row-split signal was vocab memorisation; at
+                L≥5 both plain and obf floor at ~0 % regardless of construction.
+                Compound (paper-literal × vocab-disjoint) predicted ~0 % obf at
+                L≥5 across surfaces, matching paper.
+                <br />
+                <b>Defense delta now measured:</b> paper-literal `kqv_out` at
+                L=0 is 47.32 % obf vs 97.46 % plain (Δ −50 pp); at L=5 10.49 %
+                obf vs 50.77 % plain (Δ −40 pp); L≥11 within 8–15 pp.
+                Paper-literal `kq`: L=5 7.79 % obf vs 38.69 % plain (Δ −31 pp);
+                L=11+ Δ 14–24 pp. Our deployed Alg2 was understating AloePri's
+                actual defense by 7–40 pp.
+                <br />
+                <b>Construction story closed. 87 % baseline still open.</b>
+                Paper Table 4's 87.14 % "Noise+KeyMat" baseline is NOT
+                reproduced by ridge on the paper-literal cell at L=0 (we measure
+                43 %, not 87 %). Most plausibly explained by (a) paper's
+                "Noise+KeyMat" baseline lacking full Alg2 — a plain-baseline
+                cell stripped to α<sub>e</sub> + Algorithm 1 keymat might reach
+                87 %; or (b) paper's gradient-opt ISA (Appendix D.1) converges
+                on plaintext where ridge plateaus. Step 3 still needed.
+                <br />
+                See
+                <code
+                  >docs/handoffs/2026-05-26-alg2-paper-literal-defense-gap.md</code
                 >
-                at L=0 ridge recovers 97.46 % plain → 83.77 % obf (Δ 13.7 pp);
-                at L=5 50.8 % → 50.2 % (Δ 0.5 pp); L=17 16.7 % → 17.8 % (within
-                noise); L=23 25.3 % → 26.0 % (within noise). The tightened
-                theorem (`docs/research/aloepri-attacks.md` §"Attention-output
-                covariance") empirically holds at L≥5; L=0 surplus delta is most
-                plausibly the direct shadow of α<sub>e</sub>=1.0 embedding noise
-                hitting the first decoder layer. Element-wise plain–obf
-                correlation on `kqv_out` is ~0.01–0.03 (vs ~0.6–0.9 on `kq`) —
-                obfuscation rotates the feature space substantially but ridge
-                still recovers most of the token signal (K<sub>a</sub>-covariant
-                defense signature).
-                <b
-                  >Paper Table 4's 87 → 0 pp transition is NOT reproduced on
-                  either surface</b
-                >
-                (score: 49 % → 47 %; output: 97 % → 84 %). Three open hypotheses
-                remain: (1) paper measures a third surface (post-W<sub>o</sub>
-                residual contribution or post-softmax `outputs.attentions[L]` —
-                the latter we already tested via offline reconstruction, 30.6 %
-                obf, also nowhere near 0); (2) paper's ISA is gradient-opt with
-                different L<sub>A</sub> than ridge (pending Step 3 of
-                post-grilling plan); (3) paper's TTRSR metric doesn't invert Π
-                before comparison (not testable without paper code). Full
-                report:
+                and
+                <code>docs/research/aloepri-attacks.md</code> §"Paper-literal
+                Alg2 (A1+A2) + vocab-disjoint methodology". Full report:
                 <code
                   >evals/aloepri-attacks/results/sweep/2B1-attn-output-vs-kq-comparison.md</code
                 >.

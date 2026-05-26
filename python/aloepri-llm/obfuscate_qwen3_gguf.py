@@ -37,7 +37,21 @@ Usage:
     --in /path/to/plaintext-qwen3.gguf \\
     --out /path/to/obfuscated.gguf \\
     --mode {identity-pad|gamma-only|keymat} \\
-    --expansion-size 128 --seed 42
+    --expansion-size 256 --seed 42
+
+Deployment defaults (2026-05-22):
+  --expansion-size 256
+    Up from paper default 128. c1 luckiness-signature probe (N=10 pool
+    seeds × K=64 K_a^k matrices) at d=2560 measured σ_pool 2.12 pp
+    @ h=128 → 1.37 pp @ h=256 (−35 %) and mean TTRSR 3.19 % → 2.30 %
+    (−28 %), at +9 % inference-time d_obs cost. Paper-faithful: yes.
+    See docs/research/aloepri-keymat-variance.md § "Defender plan".
+
+  --seed 42 (default; for adversarial selection use the output of
+    python/aloepri-llm/select_adversarial_kd.py to pick a K_d seed
+    that maximises top_sv_overlap_r{H}.mean against a reference K_a
+    pool — c1 Spearman ρ = −0.78 between this score and attacker
+    TTRSR, so high score ⇒ low expected attacker TTRSR).
 """
 from __future__ import annotations
 
@@ -278,6 +292,14 @@ def rewrite_gguf(
     # 0.82 %→0.0 % gap (Noise+KeyMat vs Noise+KeyMat+Head&BlockPerm).
     # Default off for backward-compat with prior deployments.
     alg2_enable_u_vo: bool = False,
+    # When True: switch Alg2 to paper-literal construction (A1+A2):
+    #   - k_matrix = Ĥ⁻¹ · Ẑᵀ (paper Algorithm 2 line 6 literal, NO R̂_qk;
+    #     leaves a ‖Ẑ² − I‖ score residual when Ẑ is non-involutive)
+    #   - Û_vo = raw N(0, 1/d_head) (no QR-stabilize, no perturbation);
+    #     wider spectrum → more kqv_out distortion at the cost of
+    #     condition number on Û_vo⁻¹
+    # Default False keeps the deployed cell's construction unchanged.
+    alg2_paper_literal: bool = False,
     # Output precision for the large matmul tensors (token_embd,
     # output, attn_*, ffn_*). Norm tensors and the matrix-Γ Γ_q/Γ_k
     # tensors always stay F32 regardless of this setting. Default
@@ -509,14 +531,21 @@ def rewrite_gguf(
                 rope_base=rope_base,
                 h_hadamard_signs=alg2_h_hadamard_signs,
                 enable_u_vo=alg2_enable_u_vo,
+                paper_literal=alg2_paper_literal,
             )
             if alg2_qk_norm_matrix:
                 keys = full_keys
             else:
                 # Legacy: head-shuffle only; intra-head q/k_matrix → I.
+                # Pass Û_vo through from full_keys so `--alg2 --alg2-u-vo`
+                # without `--alg2-qk-norm-matrix` still gets V↔O obfuscation.
+                # Without this both u_vo fields were missing → TypeError on
+                # construction (dataclass has no defaults).
                 keys = alg2.LayerAlg2Keys(
                     q_matrix=np.eye(head_dim_a, dtype=np.float32),
                     k_matrix=np.eye(head_dim_a, dtype=np.float32),
+                    u_vo=full_keys.u_vo,
+                    u_vo_inv=full_keys.u_vo_inv,
                     tau_kv=full_keys.tau_kv,
                     inv_tau_kv=full_keys.inv_tau_kv,
                     tau_group=full_keys.tau_group,
@@ -784,7 +813,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--in", dest="in_path", type=Path, required=True)
     parser.add_argument("--out", dest="out_path", type=Path, required=True)
     parser.add_argument("--mode", choices=["identity-pad", "keymat", "gamma-only"], default="keymat")
-    parser.add_argument("--expansion-size", type=int, default=128)
+    parser.add_argument("--expansion-size", type=int, default=256,
+                        help="h: half of the dim expansion, so d_obs = d + 2h. "
+                             "Default raised from paper's 128 to 256 (2026-05-22) "
+                             "per c1 N=10 measurement: −35 %% σ_pool, −28 %% mean "
+                             "TTRSR at +9 %% inference latency. Paper-faithful.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--lam", type=float, default=0.3)
     parser.add_argument("--pi", action="store_true",
@@ -843,6 +876,18 @@ def main(argv: list[str] | None = None) -> int:
                              "0.82 to 0.0 percent HiddenState gap. Default off for "
                              "backward compatibility with prior deployments; tag "
                              "obfuscated GGUFs under a distinct name when enabling.")
+    parser.add_argument("--alg2-paper-literal", action="store_true",
+                        help="Switch Alg2 to paper-literal construction (A1+A2 paper "
+                             "fidelity sanity check, 2026-05-26). Two changes vs "
+                             "default: (1) k_matrix = H^-1 * Z^T (no R), per paper "
+                             "Algorithm 2 line 6 literally; leaves a ||Z^2 - I|| score "
+                             "residual when Z is non-involutive. (2) U_vo is the raw "
+                             "Gaussian N(0, 1/d_head) without QR-stabilise + 0.05 "
+                             "perturbation; wider spectrum increases kqv_out "
+                             "distortion. Tag GGUFs distinctly when on. Expected to "
+                             "lower ridge recovery vs default but NOT to reach paper "
+                             "Table 4's 0%% (those gaps are attack-class or "
+                             "methodology, not construction).")
     parser.add_argument("--output-dtype", choices=("fp32", "bf16"), default="bf16",
                         help="Precision for the large matmul tensors. Default bf16: "
                              "half the file size and 2× decode throughput vs fp32, "
@@ -870,6 +915,7 @@ def main(argv: list[str] | None = None) -> int:
                        alg2_qk_norm_matrix=args.alg2_qk_norm_matrix,
                        alg2_h_hadamard_signs=args.alg2_h_hadamard_signs,
                        alg2_enable_u_vo=args.alg2_u_vo,
+                       alg2_paper_literal=args.alg2_paper_literal,
                        output_dtype=args.output_dtype)
     log.info("done: %s", info)
     return 0

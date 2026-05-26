@@ -160,18 +160,26 @@ def generate_head_perm(n: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
 # ────────────────────────────────────────────────────────────────────
 
 
-def generate_u_vo(head_dim: int, seed: int) -> np.ndarray:
+def generate_u_vo(head_dim: int, seed: int, *, paper_literal: bool = False) -> np.ndarray:
     """Random projection Û_vo for the V→O cancellation (paper §5.2.3 step 4).
 
-    Sampled from N(0, (1/head_dim) · I) and rescaled so its singular
-    values land in a numerically stable band — the matrix is later
-    inverted (step 7: W̃_o = Û_vo⁻¹ · W_o) and a low-conditioning
-    sample would blow up the obfuscated W_o. We sample from a Gaussian
-    then QR-orthogonalise plus a small diagonal perturbation so the
-    inverse is well-conditioned at bf16 and the matrix is non-trivially
-    different from identity (a pure orthogonal would still preserve
-    too much per-head structure for the head_dim-axis attack to be
-    foiled).
+    Sampled from N(0, (1/head_dim) · I) per paper Algorithm 2 line 4.
+
+    When `paper_literal=True`: return the raw Gaussian sample directly
+    (paper-faithful). The matrix is later inverted (step 7:
+    W̃_o = Û_vo⁻¹ · W_o); high condition number on the raw sample may
+    introduce numerical loss when bf16-casting Û_vo⁻¹. Paper accepts
+    this as part of the obfuscation; we re-test accuracy + recovery
+    under this exact construction (A2 paper-faithful sanity check,
+    2026-05-26).
+
+    When `paper_literal=False` (default, our deployed cell): the raw
+    Gaussian is QR-orthogonalised then perturbed by a small Gaussian.
+    This produces a near-orthogonal matrix with well-conditioned
+    inverse at bf16, at the cost of preserving more per-head structure
+    than paper's pure Gaussian. Empirically the deployed cell shows
+    ridge `kqv_out` recovery at L=0 of 83.77% obf — a wider-spectrum
+    Û_vo (paper-literal) is expected to lower this.
 
     Returns: (head_dim, head_dim) float32.
     """
@@ -179,6 +187,8 @@ def generate_u_vo(head_dim: int, seed: int) -> np.ndarray:
     # Standard Gaussian with paper's variance 1/head_dim.
     raw = rng.standard_normal(size=(head_dim, head_dim)).astype(np.float64)
     raw *= (1.0 / np.sqrt(head_dim))
+    if paper_literal:
+        return raw.astype(np.float32)
     # QR-stabilise: gives Q (orthogonal) · R (upper triangular with positive
     # diagonal). We return Q · (I + δ·R_norm) where R_norm is the
     # diagonal-of-R scaled small — keeps the matrix invertible with a
@@ -223,6 +233,7 @@ def build_layer_keys(
     rope_base: float = 1e6,
     h_hadamard_signs: bool = False,
     enable_u_vo: bool = False,
+    paper_literal: bool = False,
 ) -> LayerAlg2Keys:
     r_qk = generate_r_qk(head_dim, seed + 1)
     h_qk = generate_h_qk(head_dim, qk_scale_range, seed + 2,
@@ -246,10 +257,34 @@ def build_layer_keys(
     # extra factor of Z² in the cancellation — only collapses to I when
     # Z² = I (which the identity-Z degeneracy above silently provided).
     # See docs/handoffs/2026-05-19-alg2-z-block-degeneracy.md.
-    k_matrix = (r_qk @ h_qk_inv @ z_block).astype(np.float32)
+    #
+    # CAVEAT (added 2026-05-25). The `M_q · M_kᵀ = I` identity is necessary
+    # but NOT sufficient for end-to-end score invariance under RoPE: RoPE
+    # is a per-RoPE-pair rotation at position-dependent frequency, and Ẑ
+    # permutes the RoPE-pair index → M_q does NOT commute with RoPE per
+    # pair when β > 1. Measured score Δ vs plain (head_dim=128, β=8
+    # DEPLOYED): 35 % relative. β-sweep:
+    #   β= 1 → 3.6e-8 ; β= 2 → 9.4 % ; β= 4 → 33 % ; β= 8 → 35 % ;
+    #   β=16 → 54 %  ; β=64 → 75 %.
+    # So the "matrix-Γ algebra is still exact under that M_q" claim in the
+    # 2026-05-19 handoff only holds at β=1; the deployed β=8 introduces a
+    # ~35 % score perturbation. Treated as a *deliberate non-covariant*
+    # defence component (it accounts for most of Alg2's measured ISA
+    # HiddenState delta — see docs/handoffs/2026-05-25-alg2-attack-crossmap.md).
+    if paper_literal:
+        # Paper Algorithm 2 line 6 literal: W̃_k = Q̂_k W_k Ĥ⁻¹ Ẑᵀ. No R̂.
+        # Score residual: M_q · M_k.T = R · H · Z · Z · H⁻¹ which only collapses
+        # to R (absorbed by RoPE) when Z² = I. With β=8 and uniform-S_w
+        # BlockPerm, Z² ≠ I almost surely → extra ‖Z² − I‖ score-surface
+        # perturbation. Paper's qualitative ≈_{e_C^attn} permits this; we
+        # measure the resulting recovery rate as an honest characterization
+        # of paper-faithful Alg2.
+        k_matrix = (h_qk_inv @ z_block.T).astype(np.float32)
+    else:
+        k_matrix = (r_qk @ h_qk_inv @ z_block).astype(np.float32)
 
     if enable_u_vo:
-        u_vo = generate_u_vo(head_dim, seed + 7)
+        u_vo = generate_u_vo(head_dim, seed + 7, paper_literal=paper_literal)
         u_vo_inv = np.linalg.inv(u_vo.astype(np.float64)).astype(np.float32)
     else:
         u_vo = None
