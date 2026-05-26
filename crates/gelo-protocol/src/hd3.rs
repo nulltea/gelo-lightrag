@@ -65,6 +65,7 @@
 //! - Ailon-Chazelle, *Fast JL Transform*, STOC '06 — single-stage randomized Hadamard transform, the building block.
 //! - GELO paper §3.2 — security argument we inherit unchanged (shield rows + per-batch freshness + orthogonal mask = BSS-distinguishing-game hardness on the protected quantities).
 
+use half::bf16;
 use ndarray::{Array2, ArrayView2};
 use rand::RngCore;
 use rayon::prelude::*;
@@ -305,6 +306,53 @@ impl Hd3Mask {
         fwht_rows_inplace_slice(buf, self.n, cols);
         apply_diag_inplace_slice(buf, &self.d1, cols);
         fwht_rows_inplace_slice(buf, self.n, cols);
+    }
+
+    /// bf16 in/out variant of [`Self::apply_in_place_slice`] — phase 3a
+    /// of the bf16 activation pipeline.
+    ///
+    /// Unlike [`crate::dct4::Dct4Mask::apply_in_place_slice_bf16`] which
+    /// uses tile-fused cascade widening, the FWHT operates directly on
+    /// the full buffer with multiple stride-aligned passes — no L2-
+    /// resident tile structure to widen into. This impl widens to an
+    /// f32 scratch once at entry, runs the existing f32 cascade, and
+    /// narrows back at exit. Bandwidth net-neutral vs the f32 path
+    /// (one extra widen-narrow pair offsets the bf16 storage savings
+    /// at the boundaries) — its purpose is to enable bf16 propagation
+    /// through the substrate, not to win bandwidth on its own.
+    ///
+    /// Decode mask is ~4 % of decode wall at production shape so the
+    /// lack of an inner-kernel win is below the variance floor. The
+    /// real bf16 win at HD₃ shapes lives in §4.E.1 (bf16-storage FWHT
+    /// butterflies), which is deferred.
+    pub fn apply_in_place_slice_bf16(&self, buf: &mut [bf16], cols: usize) {
+        assert_eq!(
+            buf.len(),
+            self.n.saturating_mul(cols),
+            "Hd3Mask::apply_in_place_slice_bf16: buf has {} bf16s, expected n={} * cols={}",
+            buf.len(), self.n, cols,
+        );
+        let mut scratch: Vec<f32> = buf.iter().map(|v| v.to_f32()).collect();
+        self.apply_in_place_slice(&mut scratch, cols);
+        for (b, &f) in buf.iter_mut().zip(scratch.iter()) {
+            *b = bf16::from_f32(f);
+        }
+    }
+
+    /// bf16 in/out variant of [`Self::unapply_in_place_slice`]. Same
+    /// bulk widen-narrow structure as `apply_in_place_slice_bf16`.
+    pub fn unapply_in_place_slice_bf16(&self, buf: &mut [bf16], cols: usize) {
+        assert_eq!(
+            buf.len(),
+            self.n.saturating_mul(cols),
+            "Hd3Mask::unapply_in_place_slice_bf16: buf has {} bf16s, expected n={} * cols={}",
+            buf.len(), self.n, cols,
+        );
+        let mut scratch: Vec<f32> = buf.iter().map(|v| v.to_f32()).collect();
+        self.unapply_in_place_slice(&mut scratch, cols);
+        for (b, &f) in buf.iter_mut().zip(scratch.iter()) {
+            *b = bf16::from_f32(f);
+        }
     }
 }
 
@@ -1165,6 +1213,98 @@ mod tests {
         assert!(
             err_rms / target_rms < 1e-4,
             "round-trip relative rms at long-n: {:.3e}",
+            err_rms / target_rms
+        );
+    }
+
+    /// Phase 3a parity: bf16 apply matches f32 apply on bf16-quantised
+    /// inputs within bf16-floor tolerance. HD₃ uses bulk widen-narrow
+    /// (no inner-kernel bf16) so the only delta is the round-trip
+    /// rounding at the kernel boundaries.
+    #[test]
+    fn hd3_apply_bf16_parity_at_long_n() {
+        let mut rng = ChaCha20Rng::from_seed([23u8; 32]);
+        let n = 4096;
+        let d = 2560;
+        let mask = Hd3Mask::fresh(n, &mut rng);
+        let h = sample_normal(&mut rng, n, d);
+        let h_bf16: Vec<bf16> = h.iter().map(|&v| bf16::from_f32(v)).collect();
+        let mut h_f32_q: Vec<f32> = h_bf16.iter().map(|v| v.to_f32()).collect();
+        let mut h_bf16_buf = h_bf16.clone();
+
+        mask.apply_in_place_slice(&mut h_f32_q, d);
+        mask.apply_in_place_slice_bf16(&mut h_bf16_buf, d);
+
+        let max_abs = h_f32_q
+            .iter()
+            .zip(h_bf16_buf.iter())
+            .map(|(f, b)| (f - b.to_f32()).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_abs < 5e-2,
+            "hd3 apply_in_place_slice_bf16 max abs delta {max_abs} exceeds bf16-floor bound 5e-2"
+        );
+    }
+
+    #[test]
+    fn hd3_unapply_bf16_parity_at_long_n() {
+        let mut rng = ChaCha20Rng::from_seed([29u8; 32]);
+        let n = 4096;
+        let d = 2560;
+        let mask = Hd3Mask::fresh(n, &mut rng);
+        let h = sample_normal(&mut rng, n, d);
+        let h_bf16: Vec<bf16> = h.iter().map(|&v| bf16::from_f32(v)).collect();
+        let mut h_f32_q: Vec<f32> = h_bf16.iter().map(|v| v.to_f32()).collect();
+        let mut h_bf16_buf = h_bf16.clone();
+
+        mask.unapply_in_place_slice(&mut h_f32_q, d);
+        mask.unapply_in_place_slice_bf16(&mut h_bf16_buf, d);
+
+        let max_abs = h_f32_q
+            .iter()
+            .zip(h_bf16_buf.iter())
+            .map(|(f, b)| (f - b.to_f32()).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_abs < 5e-2,
+            "hd3 unapply_in_place_slice_bf16 max abs delta {max_abs} exceeds bf16-floor bound 5e-2"
+        );
+    }
+
+    /// Phase 3a end-to-end: bf16 round-trip
+    /// `unapply_bf16(apply_bf16(H) · W) ≈ H · W` at production long-n
+    /// shape (pad to pow2).
+    #[test]
+    fn hd3_bf16_round_trip_preserves_matmul() {
+        let mut rng = ChaCha20Rng::from_seed([31u8; 32]);
+        let n = 4096;
+        let d = 2560;
+        let p = 256;
+        let mask = Hd3Mask::fresh(n, &mut rng);
+        let h = sample_normal(&mut rng, n, d);
+        let w = sample_normal(&mut rng, d, p);
+        let target = h.dot(&w);
+
+        let mut h_bf16: Vec<bf16> = h.iter().map(|&v| bf16::from_f32(v)).collect();
+        mask.apply_in_place_slice_bf16(&mut h_bf16, d);
+        let h_masked_f32: Vec<f32> = h_bf16.iter().map(|v| v.to_f32()).collect();
+        let h_masked = Array2::from_shape_vec((n, d), h_masked_f32).unwrap();
+        let v = h_masked.dot(&w);
+        let mut v_bf16: Vec<bf16> = v.iter().map(|&x| bf16::from_f32(x)).collect();
+        mask.unapply_in_place_slice_bf16(&mut v_bf16, p);
+        let recovered = Array2::from_shape_vec((n, p), v_bf16.iter().map(|v| v.to_f32()).collect()).unwrap();
+
+        let target_rms = (target.iter().map(|v| v * v).sum::<f32>() / target.len() as f32).sqrt();
+        let err_rms = ((recovered
+            .iter()
+            .zip(target.iter())
+            .map(|(a, b)| (a - b).powi(2))
+            .sum::<f32>())
+            / target.len() as f32)
+            .sqrt();
+        assert!(
+            err_rms / target_rms < 3e-2,
+            "hd3 bf16 round-trip relative rms at long-n: {:.3e}",
             err_rms / target_rms
         );
     }
