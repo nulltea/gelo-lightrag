@@ -74,22 +74,26 @@
         <div class="stat">
           <div class="k">Batched decode — wall amortisation</div>
           <div class="v">
-            <em>2.6</em><span class="unit">× vs B=1 × serial</span>
+            <em>2.6 – 5.2</em><span class="unit">× vs B=1 × serial</span>
           </div>
           <div class="sub">
-            Per-seq decode wall <strong>6.93 s</strong> at B = 8 n = 2 048 vs
-            ~17.8 s scaled single-stream of the same shape (Qwen3-4B, K = 32).
-            Substrate launch-overhead win at synth n = 64 measures 5.23×.
+            Both at B = 8. <strong>2.6×</strong> per-seq at the real-weight
+            production shape (Qwen3-4B n = 2 048, per-step per-seq 217 ms
+            batched vs ~557 ms scaled single-stream — compute-amortised regime,
+            in-TEE attention dominates). <strong>5.2×</strong> at the synth
+            Qwen3-4B-shape n_kv = 64 bench (4 layers, 9.83 ms vs 50.56 ms
+            per-step per-seq — launch-overhead-amortised regime, attention is
+            small).
           </div>
         </div>
         <div class="stat">
-          <div class="k">Auto vs HD₃-forced @ pad 1.99</div>
-          <div class="v"><em>−39</em><span class="unit">% prefill</span></div>
+          <div class="k">Auto vs Haar @ pow2-aligned</div>
+          <div class="v"><em>−36</em><span class="unit">% TTFT</span></div>
           <div class="sub">
-            B = 8 n = 2 048 — Auto routes to the DCT-IV cascade (<strong
-              >135.1 s</strong
-            >) over HD₃ with shield-pad to pow2 (<strong>222.4 s</strong>); the
-            pad penalty is what Auto avoids.
+            Qwen3-4B n = 2 040 · Auto routes to HD₃ at pad ratio 1.0 ·
+            <strong>16.3 s</strong> vs ~25.6 s dense Haar QR baseline · σ &lt;
+            12 ms across decode steps. Cascade doesn't touch HD₃ shapes so this
+            gap is stable post-2026-05-26.
           </div>
         </div>
       </div>
