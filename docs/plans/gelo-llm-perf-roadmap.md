@@ -511,27 +511,41 @@ Cross-cuts buckets A and B by overlapping CPU mask (layer N+1)
 with GPU matmul (layer N). Doesn't fit any single bottleneck,
 so it gets its own bucket.
 
-**Gate**: **Q#2 RADV-async spike (½ day)** — does RADV actually
-overlap wgpu submissions, or does it serialise them under the
-queue? If RADV serialises, R4 is dead on iGPU and we either
-skip to dGPU substrate (where async is well-defined) or to §4.E
-which reduces the bytes the CPU mask path moves rather than
-overlapping them.
+**Gate — Q#2 RESOLVED 2026-05-26** (`bench-results/q2-radv-async-spike-2026-05-26_14-14-23`):
+PARTIAL OVERLAP measured. burn-tensor exposes `into_data_async`
+under the hood so wgpu submit is non-blocking by design — the
+question reduced to bus contention on Strix Halo UMA. Result:
 
-**Impact estimate**:
+| Regime | Wall (n=2056, d=2560, d_out=2560) |
+|---|---:|
+| T_gpu (engine.matmul alone) | 19.08 ms ± 0.42 |
+| T_cpu (DCT-IV cascade alone) | 10.02 ms ± 0.23 |
+| T_concurrent (both via std::thread) | 23.26 ms ± 0.84 |
+| Speedup vs serial | **1.25×** |
+| Wall saved | **5.84 ms = 58.3 % of min(T_cpu, T_gpu)** |
+
+CPU runs at ~58 % efficiency under concurrent GPU load. Well
+above the "weak" threshold; in the "partial overlap, R4 viable"
+band. **R4 green-lit.**
+
+**Impact estimate (refreshed by measurement)**:
 
 | Substrate | Estimate | Reason |
 |---|---|---|
-| iGPU (UMA) | ~15 % wall | CPU and GPU share DDR5; overlap doesn't reduce total bytes |
-| dGPU (PCIe) | ~25-30 % wall | PCIe DMA + GPU matmul are physically separate from CPU mask FWHT |
+| iGPU (UMA) | **~12 % wall** at production prefill | Mask bucket 20 % × 58 % overlap × applicable shapes |
+| dGPU (PCIe) | ~25-30 % wall | PCIe DMA + GPU matmul are physically separate; no shared-bus contention |
 
-**Engineering**: 5-8 days substrate refactor, conditional on Q#2
-clearing.
+**Engineering**: 5-8 days substrate refactor — add
+`engine.matmul_async` + `engine.read_result` to the trait,
+expose async path through substrate `offload_linear_async`,
+pipeline forward.rs to issue layer N's matmul before computing
+layer N+1's mask cascade.
 
-**Order interaction**: if §4.E (bf16 activations) ships first,
-the CPU mask bucket shrinks and R4's overlap savings shrink
-proportionally. Sequence §4.E before R4 only if Q#2 says iGPU
-overlap actually works.
+**Order interaction** (revised): §4.E bf16 activation pipeline
+was deprioritised 2026-05-26 (microbench-disconfirmed). R4 is
+now the next legitimate iGPU lever. The 5-8 day investment is
+justified by the 12 % wall projection — at production shape
+135 s → 119 s prefill.
 
 ### §4.E bf16 / activation precision (cross-cutting)
 

@@ -1,0 +1,45 @@
+=== Q#2 RADV-async spike — CPU/GPU overlap on iGPU UMA ===
+Tue May 26 14:14:23 CEST 2026
+
+warning: use of deprecated struct `sim::RayonCpuEngine`: RayonCpuEngine is the reference CPU impl; use `gelo_gpu_wgpu::WgpuVulkanEngine` for all measurements, benches, and production runtimes — see `feedback_benches_use_gelo_gpu.md` + `feedback_no_rayon_cpu_engine.md`.
+  --> crates/gelo-protocol/src/lib.rs:47:60
+   |
+47 | pub use sim::{InProcessTrustedExecutor, PlaintextExecutor, RayonCpuEngine};
+   |                                                            ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: `gelo-protocol` (lib) generated 1 warning
+warning: function `tensor_to_2d` is never used
+   --> crates/gelo-embedder/src/decoder/weights.rs:305:4
+    |
+305 | fn tensor_to_2d(view: TensorView<'_>) -> Result<Array2<f32>> {
+    |    ^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `gelo-embedder` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 0.22s
+     Running tests/q2_radv_async_spike.rs (target/release/deps/q2_radv_async_spike-9b4a4c634858b7aa)
+
+running 1 test
+=== Q#2 RADV-async spike — n=2056 d=2560 d_out=2560 ===
+warmup: 3 iter; measure: 15 iter
+
+  T_gpu            19.083 ms ±    0.415 ms
+  T_cpu            10.022 ms ±    0.230 ms
+  T_concurrent     23.264 ms ±    0.838 ms
+
+  T_gpu + T_cpu    29.105 ms        (serial baseline)
+  max(T_gpu, T_cpu)   19.083 ms     (full-overlap ceiling)
+
+  speedup vs serial         1.251× (1.0 = no overlap, 2.0 = full overlap)
+  wall saved vs serial         5.840 ms (58.3% of min(T_gpu,T_cpu))
+
+  → PARTIAL OVERLAP: R4 delivers some win. Project saving = 58.3% of overlapped bucket.
+
+Q2_RESULT shape=(2056,2560,2560) t_gpu_ms=19.083 t_cpu_ms=10.022 t_concurrent_ms=23.264 speedup=1.251 overlap_pct=58.3
+test q2_radv_async_overlap_at_production_shape ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.49s
+
