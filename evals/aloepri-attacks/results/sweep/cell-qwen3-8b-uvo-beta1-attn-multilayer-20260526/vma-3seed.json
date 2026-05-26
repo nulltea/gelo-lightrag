@@ -1,0 +1,37 @@
+{
+  "attack": "vma_seed_sweep",
+  "plain": "/home/timo/.cache/huggingface/hub/models--bartowski--Qwen_Qwen3-8B-GGUF/snapshots/0b69f75b7472688e6808490aa2b85efdb81b5ce7/Qwen_Qwen3-8B-bf16.gguf",
+  "obfuscated": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-8b/keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-uvo-beta1-bf16.gguf",
+  "key": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-8b/keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-uvo-beta1-bf16.gguf.key.npz",
+  "n_seeds": 3,
+  "eval_size": 256,
+  "candidate_pool_size": 4096,
+  "bins": 64,
+  "per_seed": [
+    {
+      "seed": 20260518,
+      "ttrsr_top1": 0.015625,
+      "ttrsr_top10": 0.05078125,
+      "risk_level": "low",
+      "elapsed_s": 174.79157386394218
+    },
+    {
+      "seed": 20260519,
+      "ttrsr_top1": 0.0078125,
+      "ttrsr_top10": 0.0625,
+      "risk_level": "low",
+      "elapsed_s": 122.60354390973225
+    },
+    {
+      "seed": 20260520,
+      "ttrsr_top1": 0.015625,
+      "ttrsr_top10": 0.04296875,
+      "risk_level": "low",
+      "elapsed_s": 122.6958210519515
+    }
+  ],
+  "top1_mean": 0.013020833333333334,
+  "top1_std": 0.004510548978043951,
+  "top10_mean": 0.052083333333333336,
+  "top10_std": 0.009830513587592123
+}

@@ -2947,7 +2947,7 @@
             <tr>
               <th>Task</th>
               <th>n</th>
-              <th>Plaintext (ref)</th>
+              <th>Plain / non-UVO ref</th>
               <th>Obfuscated 4B bf16</th>
               <th>Obfuscated 8B bf16</th>
               <th>Notes</th>
@@ -2957,22 +2957,23 @@
             <tr>
               <td>HumanEval pass@1</td>
               <td class="num">20</td>
-              <td class="num">~7/20 ≈ 35 % (4B baseline)</td>
-              <td class="num">6/20 = 30 %</td>
+              <td class="num">6/20 = 30 % (non-UVO canonical)</td>
+              <td class="num"><b>6/20 = 30 %</b> (pow2 UVO)</td>
               <td class="num"><b>8/20 = 40 %</b></td>
               <td>
-                8B at α<sub>e</sub>=1.0 beats every other obfuscated cell —
-                including 1.7B at the much weaker α<sub>e</sub>=0.1 (35 %)
+                4B pow2 UVO matches the non-UVO canonical n=20 gate and improves over
+                dense/default UVO (3/20 = 15 %). 8B remains best on this small
+                HumanEval sample.
               </td>
             </tr>
             <tr>
               <td>5-prompt quality probe</td>
               <td class="num">5</td>
               <td class="num">5/5 readable</td>
-              <td class="num">5/5 readable</td>
+              <td class="num">5/5 readable (pow2 UVO)</td>
               <td class="num">5/5 readable</td>
               <td>
-                capitals, math, haiku, code, French translation all coherent
+                pow2 UVO passes readability; some short probes remain repetitive, so HumanEval is the stronger utility signal
               </td>
             </tr>
             <tr>
@@ -3288,12 +3289,12 @@
               </td>
             </tr>
             <tr>
-              <td><b>Obfuscated (4B) — current best-defense</b></td>
+              <td><b>Obfuscated (4B) — current best utility+defense</b></td>
               <td>
                 <code
-                  >untied-keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-uvo-bf16-native.gguf</code
+                  >untied-keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-uvo-pow2e1-bf16-native.gguf</code
                 >
-                (9.7 GB bf16; d=2560, h=128, λ=0.3). Built from
+                (9.7 GB bf16; d=2560, h=128, β=8, pow2-monomial UVO ±1). Built from
                 <code>Qwen3-4B-Q8_0-untied.gguf</code> via
                 <code>untie_qwen3_gguf.py</code> (Qwen3-4B ships with
                 <code>tie_word_embeddings: true</code>; obfuscator's P̂<sub
@@ -3330,18 +3331,17 @@
                   </li>
                   <li>
                     <b>Algorithm 2 — Û<sub>vo</sub></b
-                    >: <code>--alg2-u-vo</code> (per-head V↔O random projection
-                    — contributes −12.9 pp on VMA)
+                    >: <code>--alg2-u-vo --alg2-u-vo-mode pow2-monomial --alg2-u-vo-pow2-exp 1</code>
+                    (bf16-commuting signed permutation + power-of-two channel
+                    scaling; recovers the dense-UVO HumanEval loss while keeping
+                    the L0 <code>kqv_out</code> defence)
                   </li>
                   <li><b>Storage</b>: <code>--output-dtype bf16</code></li>
                   <li>
-                    <b>Ẑ<sub>block</sub> β=8 (default) is dead-weight</b>:
-                    confirmed by Cell F vs Cell C bisection (β=1 ≡ β=8 on VMA,
-                    identical 17.58 % top-1). Drops to β=1 give same security on
-                    the current ledger plus zero RoPE attention-score
-                    perturbation (β=8 introduces 35 % rel score Δ vs plain —
-                    accuracy cost). Deployed file still has β=8; broadly-optimal
-                    config would set β=1.
+                    <b>Ẑ<sub>block</sub> β=8 retained</b>: β=1 was readable but
+                    semantically worse in the current pow2-UVO quality gate;
+                    h=256 failed quality outright. Current best measured cell
+                    therefore stays at h=128, β=8.
                   </li>
                   <li>
                     <b
@@ -3356,16 +3356,15 @@
                 </ul>
               </td>
               <td>
-                Larger-d sibling deployment (+25 % dim headroom vs 1.7B). Same
-                paper-default
+                Larger-d sibling deployment (+25 % dim headroom vs 1.7B). Current
+                measured best utility+defense cell:
                 <code
-                  >(α<sub>e</sub>=1.0, α<sub>h</sub>=0.2, h=128, λ=0.3)</code
+                  >(α<sub>e</sub>=1.0, α<sub>h</sub>=0.2, h=128, β=8)</code
                 >
-                + full Algorithm 2.
-                <b>Best defense on current attack ledger.</b> Per-component
-                bisection on VMA: §5.2.2 −63 pp + R̂<sub>qk</sub>+Ĥ±1 −17.8 pp +
-                Û<sub>vo</sub> −12.9 pp + sub-additive overlap +4.8 pp =
-                combined −89 pp (98.4 % → 9.5 % 3-seed mean).
+                + matrix-Γ/Hadamard Alg2 + pow2-monomial Û<sub>vo</sub>.
+                <b>Why this cell:</b> dense/default UVO scored 3/20 HumanEval;
+                pow2 UVO restores 6/20 while preserving the useful L0
+                <code>kqv_out</code> runtime defence.
               </td>
             </tr>
             <tr>
@@ -3593,10 +3592,9 @@
                 >
               </td>
               <td class="num accent">
-                <b>8.54 % top-1</b> ± 4.74 (3-seed mean)<br /><span
+                <b>not rerun on pow2 UVO</b><br /><span
                   style="font-size: 11px; color: #888"
-                  >seeds: 11.08 / 12.56 / 1.97 %; updated 2026-05-26 on
-                  current-best-defense cell (Û<sub>vo</sub> on)</span
+                  >prior default-UVO 3-seed mean: 8.54 % ± 4.74</span
                 >
               </td>
               <td class="num" style="color: #a66; font-weight: bold">
@@ -3606,25 +3604,10 @@
                 >
               </td>
               <td>
-                <b
-                  >4B pass (5.11 %); 8B marginal (9.73 % top-1, near-zero
-                  attenuation).</b
-                >
-                Both pass paper's &lt; 15 % gate, but defence behaviour diverges
-                by size. 4B: plain ceiling 10.18 % → obf 5.11 % top-1 = ~50 %
-                relative attenuation, defence working as expected. 8B: plain
-                10.18 % → obf 9.73 % top-1 = ~4 % attenuation only, defence
-                essentially silent on top-1 (top-10 still attenuates 26.55 % →
-                22.14 % = 17 % — defence blurs the prediction distribution but
-                doesn't displace top-1). Bigger d_obs gives both attacker and
-                defender more room and at this attacker scale the attacker's
-                gain dominates — same direction we observed with IMA multi-key
-                (Q3-8B ≥ Q3-4B). Above paper's literal 0.0 % on Q2.5-14B,
-                attributable to smaller d_obs (2,816 / 4,352 vs paper's 5,376) +
-                Qwen3 attackability (paper Table 3: Q3-14B VMA = 25.05 % vs
-                Q2.5-14B VMA = 13.51 %) + covariance synthesis approximation
-                (training data slightly cleaner than deployment test). See
-                <code>evals/aloepri-attacks/m2_7/run_isa_multikey.py</code>.
+                <b>Prior 4B pass; not rerun on pow2 UVO.</b> Keep this row as
+                historical/default-UVO context only. The current pow2 runtime
+                confirmation is the ISA AttnScore / <code>kqv_out</code> row
+                below.
               </td>
             </tr>
             <tr>
@@ -3658,66 +3641,23 @@
                   <code>evals/aloepri-attacks/m2_7/diagnose_isa/</code>.</span
                 >
               </td>
-              <td class="num accent">
-                <b>47.22 % ± 0.84</b> (pre-softmax kq-0)<br />
-                <b>30.60 % ± 0.64</b> (post-softmax @ L=0)<br /><span
+              <td class="num" style="color: #a66; font-weight: bold">
+                <b>kq L0: 47.20 % ± 0.85</b><br />
+                kq L17: 22.02 % ± 0.64<br />
+                <b>kqv_out L0: 82.45 % ± 0.57</b><br />
+                kqv_out L17: 16.68 % ± 0.59<br /><span
                   style="font-size: 11px; color: #888"
-                  >Δ_pre = 1.41 pp ≈ 1.2 σ; Δ_post = 1.49 pp ≈ similar — not
-                  significant on EITHER surface. K<sub>a</sub>-invariance
-                  survives the softmax non-linearity (softmax is deterministic +
-                  equivariant; plain≈obf at pre → plain≈obf at post). At
-                  L={5,11,17,23} pre-softmax obf is similarly within 0.2-1.4 pp
-                  of plain.</span
+                  >pow2 UVO h128 β8, 512 prompts, 10 row-split seeds</span
                 >
               </td>
               <td class="num">pending</td>
               <td>
-                <b
-                  >Paper Table 4's 0 % is reproducible under paper-literal Alg2
-                  + vocab-disjoint methodology (2026-05-26 PM update).</b
-                >
-                Two cumulative factors close the gap between our prior 47 % obf
-                measurement and paper's 0 %:
-                <b>(1) Paper-literal Alg2 construction</b> — our deployed cell
-                differed from paper Algorithm 2 in two places: A1 `k_matrix =
-                R̂·Ĥ⁻¹·Ẑ` vs paper `Ĥ⁻¹·Ẑᵀ`, and A2 QR-stabilised Û<sub>vo</sub>
-                vs paper raw `N(0, 1/d_head)`. Switching to paper-literal
-                (`obfuscate_qwen3_gguf.py --alg2-paper-literal`, cell
-                `…uvo-PAPERLIT-bf16-native.gguf`) drops obf `kq` at L=5 from 38
-                % → 8 %, and obf `kqv_out` at L=5 from 50 % → 10 %.
-                <b>(2) Vocab-disjoint methodology</b> — replacing row-split with
-                vocab-disjoint floors plain `kq` at L=0 from 49 % → 0.4 %,
-                meaning &gt;99 % of row-split signal was vocab memorisation; at
-                L≥5 both plain and obf floor at ~0 % regardless of construction.
-                Compound (paper-literal × vocab-disjoint) predicted ~0 % obf at
-                L≥5 across surfaces, matching paper.
-                <br />
-                <b>Defense delta now measured:</b> paper-literal `kqv_out` at
-                L=0 is 47.32 % obf vs 97.46 % plain (Δ −50 pp); at L=5 10.49 %
-                obf vs 50.77 % plain (Δ −40 pp); L≥11 within 8–15 pp.
-                Paper-literal `kq`: L=5 7.79 % obf vs 38.69 % plain (Δ −31 pp);
-                L=11+ Δ 14–24 pp. Our deployed Alg2 was understating AloePri's
-                actual defense by 7–40 pp.
-                <br />
-                <b>Construction story closed. 87 % baseline still open.</b>
-                Paper Table 4's 87.14 % "Noise+KeyMat" baseline is NOT
-                reproduced by ridge on the paper-literal cell at L=0 (we measure
-                43 %, not 87 %). Most plausibly explained by (a) paper's
-                "Noise+KeyMat" baseline lacking full Alg2 — a plain-baseline
-                cell stripped to α<sub>e</sub> + Algorithm 1 keymat might reach
-                87 %; or (b) paper's gradient-opt ISA (Appendix D.1) converges
-                on plaintext where ridge plateaus. Step 3 still needed.
-                <br />
-                See
-                <code
-                  >docs/handoffs/2026-05-26-alg2-paper-literal-defense-gap.md</code
-                >
-                and
-                <code>docs/research/aloepri-attacks.md</code> §"Paper-literal
-                Alg2 (A1+A2) + vocab-disjoint methodology". Full report:
-                <code
-                  >evals/aloepri-attacks/results/sweep/2B1-attn-output-vs-kq-comparison.md</code
-                >.
+                <b>Fail on kq; partial on kqv_out.</b> V/O-only UVO is
+                invisible to raw Q/K attention scores, so kq remains high.
+                pow2 UVO preserves the useful default-UVO L0 kqv_out drop
+                (97.46 % plain → 82.45 % obf) while recovering HumanEval, but
+                L≥5 kqv_out deltas are small. True-paper-K/no-R variants remain
+                separate stronger-defence probes, not this deployed cell.
               </td>
             </tr>
             <tr>
@@ -3746,24 +3686,16 @@
               </td>
               <td class="num accent">98.44 % (identity-τ, 3-seed)</td>
               <td class="num accent">
-                <b>9.51 % ± 2.50</b> (3-seed mean)<br /><span
+                <b>8.98 % top-1</b><br />23.44 % top-10<br /><span
                   style="font-size: 11px; color: #888"
-                  >updated 2026-05-26; supersedes prior single-seed 18.4 %
-                  (likely outlier-high within VMA's seed-noise distribution).
-                  Attribution: §5.2.2 −63 pp + R̂<sub>qk</sub>+Ĥ±1 −17.8 pp +
-                  Û<sub>vo</sub> −12.9 pp + sub-add +4.8 pp = −89 pp</span
+                  >pow2 UVO h128 β8; static harness, n_test=256</span
                 >
               </td>
               <td class="num accent">5.1 %</td>
               <td>
-                <b>Pass at both sizes.</b> α<sub>e</sub>=1.0 + Π scramble W<sub
-                  >e</sub
-                >
-                rows (load-bearing: −63 pp). R̂<sub>qk</sub> + Hadamard ±1 in
-                matrix-Γ kernel scramble Q/K columns superadditively with §5.2.2
-                (−17.8 pp). Û<sub>vo</sub> scrambles V/O column magnitudes per
-                head (−12.9 pp). Ẑ<sub>block</sub> + Π<sub>head</sub>
-                contribute 0 (sort-invariant under column permutation).
+                <b>Pass.</b> Static RowSort remains below the 15 % top-1 gate on
+                the pow2-UVO cell. Top-10 is still nontrivial, so this is a
+                pass, not a zero-recovery result.
               </td>
             </tr>
             <tr>
@@ -3785,14 +3717,11 @@
               </td>
               <td class="num">5.95 % (Q2.5-14B, T1)</td>
               <td class="num accent">98.5 % (identity-τ)</td>
-              <td class="num accent">0.05 % (gate) / 0.00 % (attn)</td>
+              <td class="num accent">0.05 % top-1 / 0.20 % top-10</td>
               <td class="num accent">0.07 %</td>
               <td>
-                <b>Pass — but Alg 1 alone is enough.</b> 2026-05-25 Alg1-only
-                bisection shows IA Gate-IA = 0.00 %, IA Attn-IA = 0.02 % without
-                any §5.2.2 or Alg 2. The rectangular keymat d→d<sub>obs</sub>
-                breaks both invariants on its own; §5.2.2 + Alg 2 add no
-                measurable defense (already at floor).
+                <b>Pass.</b> IA is at floor on the pow2-UVO cell; rectangular
+                Alg1 keymat already breaks the gate/attention invariants.
               </td>
             </tr>
             <tr>
@@ -3895,6 +3824,29 @@
               the ridge-bootstrap threshold. See
               `docs/research/aloepri-attacks.md`.
             -->
+            <tr style="background: #fdf3e8">
+              <td>
+                <b>IMA-EmbedRow-ridge</b>
+                <div class="alias">static embedding-row ridge side-probe</div>
+              </td>
+              <td>
+                Recovers τ from static obfuscated embedding rows using a ridge
+                inverter trained on synthetic row pairs. This is a stronger
+                side-probe than the paper-like transformer row below and remains
+                outside the main paper Table 4 comparison.
+              </td>
+              <td class="num"><span style="font-size: 12px; color: #888">not reported</span></td>
+              <td class="num"><span style="font-size: 12px; color: #888">n/a</span></td>
+              <td class="num" style="color: #a66; font-weight: bold">
+                <b>55.47 % top-1</b><br />60.16 % top-10
+              </td>
+              <td class="num">pending</td>
+              <td>
+                <b>Fail / out-of-paper side-probe.</b> Pow2 UVO does not defend
+                this static ridge surface; do not count it as solved by the
+                paper-like transformer pass.
+              </td>
+            </tr>
             <tr>
               <td>
                 <b>IMA-EmbedRow-transformer</b>
@@ -3922,9 +3874,9 @@
                 13.5 % @ep=100 (identity-τ, still rising)
               </td>
               <td class="num accent">
-                <b>multi-key: 3.13 % @ep=15</b> (saturated, no growth after)<br /><span
+                <b>0.00 % top-1</b><br />0.00 % top-10<br /><span
                   style="font-size: 11px; color: #888"
-                  >single-key: 0.0 % (weaker baseline)</span
+                  >pow2 UVO h128 β8; 2-epoch paper-like transformer</span
                 >
               </td>
               <td class="num accent">
@@ -3934,29 +3886,9 @@
                 >
               </td>
               <td>
-                <b>Pass.</b> Paper-faithful threat model: attacker runs
-                Algorithm 1 with their own (τ_a, K_a, noise_a) — never sees
-                deployment's secret keys. Two attacker strengths reported:
-                <em>single-key</em> generates one synthetic (τ_a, K_a) per run —
-                the inverter overfits to that specific keymat and cannot
-                transfer to deployment's independent K_d, so TTRSR collapses to
-                0 %. This is the weaker baseline and matches paper Table 2's 0.0
-                % cell (paper does not specify multi-key).
-                <em>Multi-key</em> pre-generates K=64 attacker keymats and
-                samples one per batch with fresh per-batch noise, forcing
-                key-invariant inversion. Multi-key best ep = 15 (4B) / 10 (8B);
-                both Q3 sizes land at identical 3.13 % top-1, well under paper's
-                &lt;15 % gate. The ~3 pp multi-key residual vs paper's 0.0 %
-                single-key is plausibly the threat-model gap (multi-key is a
-                stronger attacker than the paper's framing) compounded by Qwen3
-                being more attackable than Qwen2.5 on weight-based attacks
-                (paper Table 3: Q3-14B VMA = 25.05 % vs Q2.5-14B VMA = 13.51 %).
-                See
-                <code
-                  >evals/aloepri-attacks/m2_7/run_ima_embedrow_attacks_multikey.py</code
-                >
-                + handoff
-                <code>2026-05-21-ima-transformer-paper-disparity.md</code>.
+                <b>Pass for paper-like transformer.</b> Current pow2-UVO harness
+                lands at 0 % top-1/top-10. Ridge side-probe above remains high
+                and is tracked separately.
               </td>
             </tr>
             <tr style="background: #fdf3e8">
@@ -4031,12 +3963,11 @@
                   >(identity-τ, no permutation to recover)</span
                 >
               </td>
-              <td class="num accent">0.4 % top-1 / 4.3 % top-10</td>
+              <td class="num accent">0.78 % top-1 / 4.69 % top-10</td>
               <td class="num accent">0.4 % top-1 / 4.3 % top-10</td>
               <td>
-                <b>Pass.</b> Wire-stream surface — orthogonal to Alg 1 + Alg 2;
-                defence comes from Π alone (fresh-per-deployment τ defeats fixed
-                token-frequency priors). top-10 within n=64 sample noise.
+                <b>Pass.</b> Pow2 UVO does not matter here; Π/token permutation
+                keeps frequency matching below gate on the 64-prompt stream.
               </td>
             </tr>
             <tr>
@@ -4064,12 +3995,10 @@
                   >(identity-τ, no cipher)</span
                 >
               </td>
-              <td class="num accent">BLEU-4 7.8×10<sup>−6</sup></td>
+              <td class="num accent">BLEU-4 1.28×10<sup>−5</sup></td>
               <td class="num accent">BLEU-4 1.6×10<sup>−5</sup></td>
               <td>
-                <b>Pass.</b> n-gram cipher decipherment needs orders of
-                magnitude more wire data; 64×24-token corpus is far below the
-                bootstrap threshold for a fresh-per-deployment τ.
+                <b>Pass.</b> SDA remains at near-zero BLEU on the 64-prompt stream.
               </td>
             </tr>
           </tbody>

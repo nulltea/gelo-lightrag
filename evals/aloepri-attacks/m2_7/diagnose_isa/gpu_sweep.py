@@ -6,7 +6,7 @@ Pushes all tensors to cuda, ridge solve via torch.linalg.solve →
 rocSOLVER on Strix Halo gfx1151. Reports per-config TTRSR top-1/top-10.
 """
 from __future__ import annotations
-import argparse, sys, time
+import argparse, json, sys, time
 from pathlib import Path
 import numpy as np
 import torch
@@ -15,6 +15,42 @@ REPO = Path("/home/timo/repos/private-rag-path-2")
 sys.path.insert(0, str(REPO / "evals" / "aloepri-attacks"))
 from snapshots_loader import SnapshotSet  # type: ignore
 from attack_drivers.run_ima import load_qwen3_embedding_table  # type: ignore
+
+
+def _jsonable(v):
+    if isinstance(v, Path):
+        return str(v)
+    if isinstance(v, np.generic):
+        return v.item()
+    if isinstance(v, torch.Size):
+        return list(v)
+    if isinstance(v, torch.Tensor):
+        if v.numel() == 1:
+            return v.item()
+        return v.detach().cpu().tolist()
+    if isinstance(v, tuple):
+        return [_jsonable(x) for x in v]
+    if isinstance(v, list):
+        return [_jsonable(x) for x in v]
+    if isinstance(v, dict):
+        return {str(k): _jsonable(x) for k, x in v.items()}
+    return v
+
+
+def emit_progress(args, event: str, **fields):
+    record = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "event": event,
+        **{k: _jsonable(v) for k, v in fields.items()},
+    }
+    if getattr(args, "progress_jsonl", None):
+        args.progress_jsonl.parent.mkdir(parents=True, exist_ok=True)
+        with args.progress_jsonl.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, sort_keys=True) + "\n")
+            f.flush()
+    if not getattr(args, "quiet_progress", False):
+        payload = " ".join(f"{k}={record[k]}" for k in record if k not in {"ts", "event"})
+        print(f"[gpu_sweep][{event}] {payload}", flush=True)
 
 
 def fit_ridge_gpu(X: torch.Tensor, Y: torch.Tensor, alpha: float) -> dict:
@@ -195,40 +231,83 @@ def main():
                    help="Per-head dim used for kqv_out per-head slicing.")
     p.add_argument("--skip-per-head", action="store_true",
                    help="Skip the per-head probe section.")
+    p.add_argument("--progress-jsonl", type=Path, default=None,
+                   help="Append machine-readable progress/results events to this JSONL file.")
+    p.add_argument("--quiet-progress", action="store_true",
+                   help="Write progress JSONL without extra human-readable progress lines.")
     args = p.parse_args()
+
+    if args.progress_jsonl:
+        args.progress_jsonl.parent.mkdir(parents=True, exist_ok=True)
+        args.progress_jsonl.write_text("", encoding="utf-8")
+    emit_progress(args, "start", plain=args.plain, obf=args.obf, kind=args.kind,
+                  split=args.split, layers=args.layers, seeds=args.seeds,
+                  model_id=args.model_id, per_head_layer=args.per_head_layer,
+                  skip_per_head=args.skip_per_head)
 
     assert torch.cuda.is_available(), "GPU required"
     dev = "cuda"
-    print(f"[gpu_sweep] device={dev} name={torch.cuda.get_device_name(0)}")
+    device_name = torch.cuda.get_device_name(0)
+    print(f"[gpu_sweep] device={dev} name={device_name}", flush=True)
+    emit_progress(args, "device", device=dev, name=device_name)
     embed = load_qwen3_embedding_table(args.model_id).to(torch.float32).to(dev)
-    print(f"[gpu_sweep] embed shape={tuple(embed.shape)} mem={torch.cuda.memory_allocated()/1e9:.2f}GB")
+    embed_mem_gb = torch.cuda.memory_allocated() / 1e9
+    print(f"[gpu_sweep] embed shape={tuple(embed.shape)} mem={embed_mem_gb:.2f}GB", flush=True)
+    emit_progress(args, "embedding_loaded", shape=tuple(embed.shape), mem_gb=embed_mem_gb)
 
     # ===== Layer sweep =====
-    print(f"\n===== LAYER SWEEP plain vs obf (kind={args.kind}, split={args.split}, {args.seeds} seeds) =====")
-    print(f"{'layer':>5} | {'cell':>5} | {'top1 mean ± std':>20} | {'top10':>10} | {'wall':>6}")
+    print(f"\n===== LAYER SWEEP plain vs obf (kind={args.kind}, split={args.split}, {args.seeds} seeds) =====", flush=True)
+    print(f"{'layer':>5} | {'cell':>5} | {'top1 mean ± std':>20} | {'top10':>10} | {'wall':>6}", flush=True)
     layer_results = {}
     for L in args.layers:
         for label, cap in [("PLAIN", args.plain), ("OBF", args.obf)]:
+            emit_progress(args, "layer_cell_load_start", layer=L, cell=label, captures_dir=cap)
             X, y = load_flat(cap, L, args.kind, head_idx=None)
             if X is None:
-                print(f"  L={L} {label}: no captures"); continue
+                print(f"  L={L} {label}: no captures", flush=True)
+                emit_progress(args, "layer_cell_no_captures", layer=L, cell=label, captures_dir=cap)
+                continue
             t0 = time.perf_counter()
+            emit_progress(args, "layer_cell_start", layer=L, cell=label,
+                          x_shape=tuple(X.shape), n_tokens=int(y.shape[0]))
             t1s, t10s, alphas = [], [], []
             for k in range(args.seeds):
-                r = run_one(X, y, embed, seed=20260518 + k, split=args.split)
-                if r[0] is None: continue
+                seed = 20260518 + k
+                seed_t0 = time.perf_counter()
+                emit_progress(args, "layer_seed_start", layer=L, cell=label,
+                              seed_index=k, seed=seed)
+                r = run_one(X, y, embed, seed=seed, split=args.split)
+                seed_wall = time.perf_counter() - seed_t0
+                if r[0] is None:
+                    emit_progress(args, "layer_seed_skipped", layer=L, cell=label,
+                                  seed_index=k, seed=seed, wall_s=seed_wall)
+                    continue
                 t1s.append(r[0]); t10s.append(r[1]); alphas.append(r[2])
+                cur1 = np.array(t1s) * 100
+                cur10 = np.array(t10s) * 100
+                emit_progress(args, "layer_seed_end", layer=L, cell=label,
+                              seed_index=k, seed=seed, top1=100*r[0],
+                              top10=100*r[1], alpha=r[2], wall_s=seed_wall,
+                              running_n=len(t1s), running_top1_mean=float(cur1.mean()),
+                              running_top1_std=float(cur1.std()),
+                              running_top10_mean=float(cur10.mean()))
             a1 = np.array(t1s) * 100; a10 = np.array(t10s) * 100
+            wall = time.perf_counter() - t0
             print(f"  L={L:>3} | {label:>5} | {a1.mean():>6.2f}% ± {a1.std():>5.2f} (n={len(t1s)}, X={tuple(X.shape)}) | "
-                  f"{a10.mean():>5.2f}% | {time.perf_counter()-t0:>5.1f}s  alphas={alphas[:3]}...")
+                  f"{a10.mean():>5.2f}% | {wall:>5.1f}s  alphas={alphas[:3]}...", flush=True)
+            emit_progress(args, "layer_cell_end", layer=L, cell=label,
+                          x_shape=tuple(X.shape), n=len(t1s), top1_mean=float(a1.mean()),
+                          top1_std=float(a1.std()), top10_mean=float(a10.mean()),
+                          wall_s=wall, alphas=alphas)
             layer_results[(L, label)] = (a1.mean(), a1.std(), a10.mean())
 
     if args.skip_per_head:
+        emit_progress(args, "done", kind=args.kind, split=args.split, skipped_per_head=True)
         return
 
     # ===== Per-head probe @ specified layer =====
     PH = args.per_head_layer
-    print(f"\n===== PER-HEAD RIDGE @ L={PH} kind={args.kind} (3 seeds, alpha=1e-2) =====")
+    print(f"\n===== PER-HEAD RIDGE @ L={PH} kind={args.kind} (3 seeds, alpha=1e-2) =====", flush=True)
     for label, cap in [("PLAIN", args.plain), ("OBF", args.obf)]:
         # First infer n_heads from sample shape (3-D kq) or from kqv_out width.
         attn = SnapshotSet.open("attn", root=cap)
@@ -236,24 +315,49 @@ def main():
         sample = attn.get_operand(s0, strip_shield=False)
         if sample.ndim == 3:
             n_heads = sample.shape[0]
-            print(f"  L={PH} {label}: n_heads={n_heads} per-head shape=(?, {sample.shape[2]})")
+            print(f"  L={PH} {label}: n_heads={n_heads} per-head shape=(?, {sample.shape[2]})", flush=True)
+            emit_progress(args, "per_head_cell_start", layer=PH, cell=label,
+                          n_heads=n_heads, sample_shape=tuple(sample.shape), per_head_dim=sample.shape[2])
         elif sample.ndim == 2:
             n_heads = sample.shape[1] // args.head_dim
-            print(f"  L={PH} {label}: n_heads={n_heads} per-head shape=(?, {args.head_dim})")
+            print(f"  L={PH} {label}: n_heads={n_heads} per-head shape=(?, {args.head_dim})", flush=True)
+            emit_progress(args, "per_head_cell_start", layer=PH, cell=label,
+                          n_heads=n_heads, sample_shape=tuple(sample.shape), per_head_dim=args.head_dim)
         else:
-            print(f"  L={PH} {label}: unsupported ndim={sample.ndim}"); continue
+            print(f"  L={PH} {label}: unsupported ndim={sample.ndim}", flush=True)
+            emit_progress(args, "per_head_unsupported", layer=PH, cell=label, ndim=sample.ndim)
+            continue
         head_t1 = np.zeros((n_heads, 3))
         t0 = time.perf_counter()
         for h in range(n_heads):
+            head_t0 = time.perf_counter()
             head_arg = h if sample.ndim == 3 else (h, args.head_dim)
             X, y = load_flat(cap, PH, args.kind, head_idx=head_arg)
+            emit_progress(args, "per_head_start", layer=PH, cell=label, head=h,
+                          x_shape=tuple(X.shape), n_tokens=int(y.shape[0]))
             for k in range(3):
-                r = run_one(X, y, embed, seed=20260518 + k, split=args.split, alpha_grid=(1e-2,))
+                seed = 20260518 + k
+                r = run_one(X, y, embed, seed=seed, split=args.split, alpha_grid=(1e-2,))
                 head_t1[h, k] = r[0] or 0.0
+                emit_progress(args, "per_head_seed_end", layer=PH, cell=label,
+                              head=h, seed_index=k, seed=seed,
+                              top1=100*head_t1[h, k], alpha=1e-2)
+            emit_progress(args, "per_head_end", layer=PH, cell=label, head=h,
+                          top1_mean=float(head_t1[h].mean() * 100),
+                          top1_std=float(head_t1[h].std() * 100),
+                          wall_s=time.perf_counter() - head_t0)
         means = head_t1.mean(axis=1) * 100
+        cell_wall = time.perf_counter() - t0
         print(f"    {label} per-head top-1: min={means.min():.2f}  median={np.median(means):.2f}  "
               f"mean={means.mean():.2f}  p90={np.percentile(means, 90):.2f}  max={means.max():.2f}  "
-              f"best head idx={int(np.argmax(means))}  (wall {time.perf_counter()-t0:.1f}s)")
+              f"best head idx={int(np.argmax(means))}  (wall {cell_wall:.1f}s)", flush=True)
+        emit_progress(args, "per_head_cell_end", layer=PH, cell=label,
+                      n_heads=n_heads, top1_min=float(means.min()),
+                      top1_median=float(np.median(means)), top1_mean=float(means.mean()),
+                      top1_p90=float(np.percentile(means, 90)),
+                      top1_max=float(means.max()), best_head=int(np.argmax(means)),
+                      wall_s=cell_wall)
+    emit_progress(args, "done", kind=args.kind, split=args.split)
 
 
 if __name__ == "__main__":

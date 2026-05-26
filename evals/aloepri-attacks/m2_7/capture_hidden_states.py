@@ -16,24 +16,21 @@ prompt:
    (``run_nn``, ``run_ima``, ``run_isa``, ``run_ima_paper_like``)
    work unchanged.
 
-Server spawn (HiddenState pass — flash-attn on is fine):
+Server spawn (HiddenState pass — flash-attn on is fine). Use the
+GPU-safe launcher; it passes render/video groups plus `/dev/dri` and
+`/dev/kfd` when present so the server does not silently fall back to CPU:
 
-  docker run --rm --name aloepri-m2_7-server \\
-      -p 127.0.0.1:8061:8080 \\
-      -v /home/timo/.cache/huggingface/path-2-aloepri/qwen3-1.7b:/models:ro \\
-      -v /tmp:/dump \\
-      --device /dev/dri \\
-      aloepri-llama-server:m2_7 \\
-      -m /models/keymat-h128-pi-noise-alg2-fp32.gguf \\
-      -ngl 999 -np 1 --flash-attn on -c 4096 \\
-      --tensor-filter '^attn_norm-(0|11|23)$' \\
-      --tensor-dump-path /dump/m2_7_dump.bin \\
-      --host 0.0.0.0 --port 8080
+  OBF_GGUF=/home/timo/.cache/huggingface/path-2-aloepri/qwen3-1.7b/keymat-h128-pi-noise-alg2-fp32.gguf \
+  PORT=8061 CONTAINER=aloepri-m2_7-server \
+  TENSOR_FILTER='^attn_norm-(0|11|23)$' \
+  TENSOR_DUMP_PATH=/dump/m2_7_dump.bin DUMP_DIR=/tmp \
+  evals/aloepri-attacks/m2_7/spawn_obfuscated_server.sh
 
 Server spawn (AttnScore pass — flash-attn MUST be off so `kq-*` materialises):
 
-  ... --flash-attn off --tensor-filter '^kq-23$' \\
-      --tensor-dump-path /dump/m2_7_dump.bin ...
+  FLASH_ATTN=off TENSOR_FILTER='^kq-23$' \
+  TENSOR_DUMP_PATH=/dump/m2_7_dump.bin DUMP_DIR=/tmp \
+  evals/aloepri-attacks/m2_7/spawn_obfuscated_server.sh
 
 The Python wrapper accesses ``/dump/m2_7_dump.bin`` through the same
 shared mount as the server (``--dump-path /tmp/m2_7_dump.bin``).

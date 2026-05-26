@@ -302,6 +302,8 @@ def run_isa_multikey(
     attacker_lam: float = 0.3,
     attacker_num_keys: int = 64,
     attacker_seed: int = 20260521,
+    split_seed: int | None = None,
+    kd_test_seed: int | None = None,
     keymat_impl: str = "vendor_cpu",
     ridge_alphas: tuple[float, ...] = (1e-4, 1e-2, 1.0),
     train_frac: float = 0.5,
@@ -371,7 +373,8 @@ def run_isa_multikey(
     # methodology more than the defence. Available as a secondary
     # reading.
     unique_ids = torch.unique(y_ids_t).tolist()
-    rng = np.random.default_rng(attacker_seed + 17)
+    effective_split_seed = int(split_seed) if split_seed is not None else int(attacker_seed) + 17
+    rng = np.random.default_rng(effective_split_seed)
     if split_mode == "vocab":
         shuffled = rng.permutation(unique_ids).tolist()
         n_train_ids = int(len(shuffled) * train_frac)
@@ -424,9 +427,14 @@ def run_isa_multikey(
         y_test_ids = y_ids_t[te_mask]
     else:
         # Paper-faithful: synthesise K attacker-keymat-transformed inputs
-        # per training row. Test inputs come from obf captures.
-        if obf_snapshots is None:
-            raise RuntimeError("obf_snapshots is required in non-identity_tau mode")
+        # per training row. Test inputs come from obf captures or — under
+        # the kd_test_seed universality probe — from a synthesised K_d_test
+        # applied to plain test rows.
+        if obf_snapshots is None and kd_test_seed is None:
+            raise RuntimeError(
+                "either obf_snapshots or kd_test_seed must be provided in "
+                "non-identity_tau mode"
+            )
         print(f"  pre-generating multi-key pool: K={attacker_num_keys} keymats "
               f"(impl={keymat_impl}, h={attacker_expansion}, λ={attacker_lam}, "
               f"seed={attacker_seed})")
@@ -469,20 +477,37 @@ def run_isa_multikey(
         if resolved_device.startswith("cuda"):
             torch.cuda.empty_cache()
 
-        # Test inputs: deployment's obf captures at the same layer, but
-        # filtered to test plain_ids only (vocab-disjoint from train).
-        X_obf_full, y_obf_ids, _ = stack_prompt_observations(
-            obf_snapshots, layer=layer, kind=kind, strip_shield=True,
-        )
-        X_obf_t = torch.from_numpy(X_obf_full).to(torch.float32).to(resolved_device)
-        y_obf_t = torch.from_numpy(y_obf_ids).to(torch.long).to(resolved_device)
-        te_obf_mask = torch.tensor(
-            [int(i) in test_ids for i in y_obf_t.tolist()],
-            dtype=torch.bool, device=resolved_device,
-        )
-        X_test = X_obf_t[te_obf_mask]
-        y_test_ids = y_obf_t[te_obf_mask]
-        print(f"  obf test rows: {int(te_obf_mask.sum())} (filtered to test plain_ids)")
+        # Test inputs: either deployment's real obf captures, or a
+        # synthetic K_d_test applied to plain captures (Algorithm-1-only
+        # universality probe — no Algorithm 2 perturbations).
+        if kd_test_seed is not None:
+            print(f"  K_d-test mode: synthesising test inputs from plain "
+                  f"captures @ K_d_test(seed={kd_test_seed}) — Algorithm-1 only, no obf captures used")
+            sys.path.insert(0, "/home/timo/repos/private-rag-path-2/vendor/aloepri-py")
+            sys.path.insert(0, "/home/timo/repos/private-rag-path-2/vendor/aloepri-py/src")
+            from keymat import build_keymat_transform  # type: ignore  # noqa: E402
+            kd_t = build_keymat_transform(
+                d=d_plain, h=int(attacker_expansion), lam=float(attacker_lam),
+                init_seed=int(kd_test_seed),
+            )
+            K_d_test = torch.from_numpy(kd_t.key.numpy()).to(torch.float32).to(resolved_device)
+            X_plain_test = X_plain_t[te_mask]
+            X_test = X_plain_test @ K_d_test  # (n_test, d_obs)
+            y_test_ids = y_ids_t[te_mask]
+            print(f"  synthetic test rows: {X_test.shape[0]} (K_d_test seed={kd_test_seed})")
+        else:
+            X_obf_full, y_obf_ids, _ = stack_prompt_observations(
+                obf_snapshots, layer=layer, kind=kind, strip_shield=True,
+            )
+            X_obf_t = torch.from_numpy(X_obf_full).to(torch.float32).to(resolved_device)
+            y_obf_t = torch.from_numpy(y_obf_ids).to(torch.long).to(resolved_device)
+            te_obf_mask = torch.tensor(
+                [int(i) in test_ids for i in y_obf_t.tolist()],
+                dtype=torch.bool, device=resolved_device,
+            )
+            X_test = X_obf_t[te_obf_mask]
+            y_test_ids = y_obf_t[te_obf_mask]
+            print(f"  obf test rows: {int(te_obf_mask.sum())} (filtered to test plain_ids)")
 
     # 4) Multi-α ridge selection on val
     best_alpha: float | None = None
@@ -529,6 +554,8 @@ def run_isa_multikey(
             "attacker_lam": float(attacker_lam),
             "attacker_num_keys": int(attacker_num_keys) if not identity_tau else 0,
             "attacker_seed": int(attacker_seed),
+            "split_seed": int(effective_split_seed),
+            "kd_test_seed": int(kd_test_seed) if kd_test_seed is not None else None,
             "keymat_impl": str(keymat_impl),
             "best_ridge_alpha": best_alpha,
             "alpha_scan": alpha_scores,
@@ -586,19 +613,32 @@ def main() -> int:
     p.add_argument("--paper-checkpoint-dir", type=Path, default=None,
                    help="(accepted for compat with shared wrapper; ISA has no checkpoint)")
     p.add_argument("--attacker-seed", type=int, default=20260521)
+    p.add_argument("--kd-test-seed", type=int, default=None,
+                   help="Universality probe. When set, synthesises test inputs as "
+                        "State_plain[test] @ K_d_test(seed=N) instead of loading "
+                        "deployment obf captures. Isolates Algorithm-1 × multi-key "
+                        "ridge interaction with no Algorithm 2 perturbations. "
+                        "Passing the deployment's actual K_d seed (42) acts as a "
+                        "covariance-approximation sanity check.")
+    p.add_argument("--split-seed", type=int, default=None,
+                   help="Seed for the train/val/test split RNG. Defaults to "
+                        "attacker_seed + 17 (legacy behaviour). Pass an "
+                        "independent integer to decouple pool variance from "
+                        "split variance — useful for variance-decomposition "
+                        "sweeps.")
     p.add_argument("--ridge-alpha", type=float, action="append", default=None,
                    help="Override the default multi-α grid. Can be passed multiple times.")
     p.add_argument("--output", type=Path, required=True)
     args = p.parse_args()
 
-    if not args.identity_tau and args.obf_captures is None:
-        raise SystemExit("--obf-captures is required unless --identity-tau is set")
+    if not args.identity_tau and args.kd_test_seed is None and args.obf_captures is None:
+        raise SystemExit("--obf-captures is required unless --identity-tau or --kd-test-seed is set")
 
     print(f"[ISA-multikey] plain captures: {args.plain_captures}")
     plain_snap = SnapshotSet.open(args.plain_captures / "hidden")
     print(f"  {plain_snap.n_prompts()} prompt(s), layers={plain_snap.captured_layers}, "
           f"kinds={plain_snap.captured_kinds}")
-    if args.identity_tau:
+    if args.identity_tau or args.kd_test_seed is not None:
         obf_snap = None
     else:
         print(f"[ISA-multikey] obf captures: {args.obf_captures}")
@@ -622,6 +662,8 @@ def main() -> int:
         attacker_lam=float(args.attacker_lambda),
         attacker_num_keys=int(args.attacker_num_keys),
         attacker_seed=int(args.attacker_seed),
+        split_seed=args.split_seed,
+        kd_test_seed=args.kd_test_seed,
         keymat_impl=str(args.keymat_impl),
         ridge_alphas=ridge_alphas,
         identity_tau=bool(args.identity_tau),

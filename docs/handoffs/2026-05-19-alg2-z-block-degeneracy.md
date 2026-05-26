@@ -7,6 +7,15 @@ of `2026-05-19-alg2-qwen3-shape-analysis.md`).
 follow-up if paper Table 3's "Head&BlockPerm" headline number matters
 for the deployment narrative.
 
+> **Update 2026-05-25.** Ẑ_block was patched (fixed-β windowed
+> shuffle, see `lib/alg2.py:generate_block_perm`) but the claim below
+> that "matrix-Γ algebra is still exact under that M_q" is only true
+> at the patched-but-degenerate β=1 case. At the deployed β=8 the
+> Ẑ_block-permuted M_q breaks RoPE commutation by ~35 % rel score Δ
+> — the "matrix-Γ exact" assertion no longer applies. Z_block is now
+> treated as a deliberate non-covariant defence component. Full
+> cross-component picture: `docs/handoffs/2026-05-25-alg2-attack-crossmap.md`.
+
 ## What the bug is
 
 `python/aloepri-llm/lib/alg2.py:generate_block_perm` and the equivalent in

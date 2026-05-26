@@ -269,6 +269,7 @@ def rewrite_gguf(
     alg2_seed: int = 0,
     alg2_beta: int = 8,
     alg2_gamma: float = 1e3,
+    alg2_block_perm_mode: str = "fixed_window",
     alg2_qk_scale_range: tuple[float, float] = (0.95, 1.05),
     # When True: bake real R̂_qk intra-head transform into W_q/W_k output
     # axis AND replace 1D γ_q/γ_k with 2D Γ = M_qᵀ · Diag(γ) · M_q.
@@ -292,14 +293,24 @@ def rewrite_gguf(
     # 0.82 %→0.0 % gap (Noise+KeyMat vs Noise+KeyMat+Head&BlockPerm).
     # Default off for backward-compat with prior deployments.
     alg2_enable_u_vo: bool = False,
+    # UVO matrix family. qr-perturb preserves the historical deployed
+    # artifact. orthogonal and signed-permutation are bf16-safer quality
+    # candidates; raw-gaussian is paper-literal and numerically risky.
+    alg2_u_vo_mode: str = "qr-perturb",
+    alg2_u_vo_pow2_exp: int = 1,
     # When True: switch Alg2 to paper-literal construction (A1+A2):
-    #   - k_matrix = Ĥ⁻¹ · Ẑᵀ (paper Algorithm 2 line 6 literal, NO R̂_qk;
+    #   - k_matrix = R̂_qk · Ĥ⁻¹ · Ẑᵀ (paper Algorithm 2 line 6;
     #     leaves a ‖Ẑ² − I‖ score residual when Ẑ is non-involutive)
     #   - Û_vo = raw N(0, 1/d_head) (no QR-stabilize, no perturbation);
-    #     wider spectrum → more kqv_out distortion at the cost of
-    #     condition number on Û_vo⁻¹
+    #     wider spectrum increases condition number on Û_vo⁻¹
     # Default False keeps the deployed cell's construction unchanged.
     alg2_paper_literal: bool = False,
+    # Split controls for the two paper-literal deviations. The bundled
+    # alg2_paper_literal flag above remains a compatibility shortcut for
+    # enabling both.
+    alg2_paper_literal_k: bool = False,
+    alg2_paper_literal_u_vo: bool = False,
+    alg2_paper_literal_k_no_r: bool = False,
     # Output precision for the large matmul tensors (token_embd,
     # output, attn_*, ffn_*). Norm tensors and the matrix-Γ Γ_q/Γ_k
     # tensors always stay F32 regardless of this setting. Default
@@ -529,9 +540,15 @@ def rewrite_gguf(
                 beta=alg2_beta,
                 gamma=alg2_gamma,
                 rope_base=rope_base,
+                block_perm_mode=alg2_block_perm_mode,
                 h_hadamard_signs=alg2_h_hadamard_signs,
                 enable_u_vo=alg2_enable_u_vo,
+                u_vo_mode=alg2_u_vo_mode,
+                u_vo_pow2_exp=alg2_u_vo_pow2_exp,
                 paper_literal=alg2_paper_literal,
+                paper_literal_k=alg2_paper_literal_k,
+                paper_literal_u_vo=alg2_paper_literal_u_vo,
+                paper_literal_k_no_r=alg2_paper_literal_k_no_r,
             )
             if alg2_qk_norm_matrix:
                 keys = full_keys
@@ -609,8 +626,14 @@ def rewrite_gguf(
     if apply_alg2:
         writer.add_uint32("aloepri.alg2_beta", int(alg2_beta))
         writer.add_float32("aloepri.alg2_gamma", float(alg2_gamma))
+        writer.add_string("aloepri.alg2_block_perm_mode", str(alg2_block_perm_mode))
         writer.add_bool("aloepri.qk_norm_matrix", bool(alg2_qk_norm_matrix))
         writer.add_bool("aloepri.alg2_u_vo_applied", bool(alg2_enable_u_vo))
+        writer.add_string("aloepri.alg2_u_vo_mode", str(alg2_u_vo_mode))
+        writer.add_uint32("aloepri.alg2_u_vo_pow2_exp", int(alg2_u_vo_pow2_exp))
+        writer.add_bool("aloepri.alg2_paper_literal_k", bool(alg2_paper_literal or alg2_paper_literal_k))
+        writer.add_bool("aloepri.alg2_paper_literal_u_vo", bool(alg2_paper_literal or alg2_paper_literal_u_vo))
+        writer.add_bool("aloepri.alg2_paper_literal_k_no_r", bool(alg2_paper_literal_k_no_r))
     if mode == "keymat":
         writer.add_float32("aloepri.kappa_e", float(kappa_e))
         writer.add_float32("aloepri.kappa", float(kappa))
@@ -767,6 +790,8 @@ def rewrite_gguf(
             save_kwargs["alg2_n_q_heads"] = np.int64(n_q_heads)
             save_kwargs["alg2_n_kv_heads"] = np.int64(n_kv_heads)
             save_kwargs["alg2_head_dim"] = np.int64(head_dim_a)
+            save_kwargs["alg2_u_vo_mode"] = np.array(alg2_u_vo_mode)
+            save_kwargs["alg2_u_vo_pow2_exp"] = np.int64(alg2_u_vo_pow2_exp)
             for il, keys in alg2_per_layer.items():
                 save_kwargs[f"alg2_l{il}_q_matrix"] = keys.q_matrix
                 save_kwargs[f"alg2_l{il}_k_matrix"] = keys.k_matrix
@@ -847,9 +872,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--alg2-seed", type=int, default=987654321,
                         help="base seed for Algorithm 2 per-layer keys.")
     parser.add_argument("--alg2-beta", type=int, default=8,
-                        help="max RoPE-block window size for dynamic_window Ẑ_block (paper default 8).")
+                        help="max RoPE-block window size for Ẑ_block (paper default 8).")
     parser.add_argument("--alg2-gamma", type=float, default=1e3,
                         help="dynamic_window similarity-score scale (paper default 1e3).")
+    parser.add_argument("--alg2-block-perm-mode", choices=("fixed_window", "dynamic_window"),
+                        default="fixed_window",
+                        help="BlockPerm sampler. fixed_window is the hardened path-2 default; "
+                             "dynamic_window matches the paper text and often collapses to "
+                             "identity at gamma=1e3.")
     parser.add_argument("--alg2-qk-scale-min", type=float, default=0.95,
                         help="Ĥ_qk per-block scale lower bound (reference default 0.95).")
     parser.add_argument("--alg2-qk-scale-max", type=float, default=1.05,
@@ -876,10 +906,21 @@ def main(argv: list[str] | None = None) -> int:
                              "0.82 to 0.0 percent HiddenState gap. Default off for "
                              "backward compatibility with prior deployments; tag "
                              "obfuscated GGUFs under a distinct name when enabling.")
+    parser.add_argument("--alg2-u-vo-mode",
+                        choices=("qr-perturb", "orthogonal", "signed-permutation", "pow2-monomial", "raw-gaussian"),
+                        default="qr-perturb",
+                        help="Matrix family for --alg2-u-vo. qr-perturb preserves the "
+                             "current deployed artifact; orthogonal keeps condition "
+                             "number 1; signed-permutation is bf16-exact; pow2-monomial "
+                             "adds bf16-exact power-of-two channel scaling; raw-gaussian "
+                             "is paper-literal and can be badly conditioned at bf16.")
+    parser.add_argument("--alg2-u-vo-pow2-exp", type=int, default=1,
+                        help="For --alg2-u-vo-mode pow2-monomial, sample channel "
+                             "scales from powers 2^k with k in [-E, E]. Default E=1.")
     parser.add_argument("--alg2-paper-literal", action="store_true",
                         help="Switch Alg2 to paper-literal construction (A1+A2 paper "
                              "fidelity sanity check, 2026-05-26). Two changes vs "
-                             "default: (1) k_matrix = H^-1 * Z^T (no R), per paper "
+                             "default: (1) k_matrix = R * H^-1 * Z^T, per paper "
                              "Algorithm 2 line 6 literally; leaves a ||Z^2 - I|| score "
                              "residual when Z is non-involutive. (2) U_vo is the raw "
                              "Gaussian N(0, 1/d_head) without QR-stabilise + 0.05 "
@@ -888,6 +929,23 @@ def main(argv: list[str] | None = None) -> int:
                              "lower ridge recovery vs default but NOT to reach paper "
                              "Table 4's 0%% (those gaps are attack-class or "
                              "methodology, not construction).")
+    parser.add_argument("--alg2-paper-literal-k", action="store_true",
+                        help="Enable only A1 from --alg2-paper-literal: use paper "
+                             "Algorithm 2 line 6 literally for K, k_matrix = R * H^-1 * Z^T. "
+                             "This is the hypothesised main defence lever "
+                             "for row-split ISA-AttnScore/kqv_out because it injects "
+                             "non-covariant QK score perturbation. Can be combined with "
+                             "the default QR-stabilised U_vo.")
+    parser.add_argument("--alg2-paper-literal-uvo", action="store_true",
+                        help="Enable only A2 from --alg2-paper-literal: sample raw "
+                             "paper Gaussian U_vo without QR stabilisation. GPU "
+                             "micro-tests suggest this is not the primary ridge defence "
+                             "lever when isolated; use to measure quality/precision risk.")
+    parser.add_argument("--alg2-paper-literal-k-no-r", action="store_true",
+                        help="Experimental beyond-paper A1 variant: k_matrix = H^-1 * Z^T, "
+                             "omitting the paper's R on the K side. This was the "
+                             "pre-2026-05-26 misread 'paper-literal' construction and "
+                             "is kept only as an explicit hardening knob.")
     parser.add_argument("--output-dtype", choices=("fp32", "bf16"), default="bf16",
                         help="Precision for the large matmul tensors. Default bf16: "
                              "half the file size and 2× decode throughput vs fp32, "
@@ -911,11 +969,17 @@ def main(argv: list[str] | None = None) -> int:
                        noise_seed=args.noise_seed,
                        apply_alg2=args.alg2, alg2_seed=args.alg2_seed,
                        alg2_beta=args.alg2_beta, alg2_gamma=args.alg2_gamma,
+                       alg2_block_perm_mode=args.alg2_block_perm_mode,
                        alg2_qk_scale_range=(args.alg2_qk_scale_min, args.alg2_qk_scale_max),
                        alg2_qk_norm_matrix=args.alg2_qk_norm_matrix,
                        alg2_h_hadamard_signs=args.alg2_h_hadamard_signs,
                        alg2_enable_u_vo=args.alg2_u_vo,
+                       alg2_u_vo_mode=args.alg2_u_vo_mode,
+                       alg2_u_vo_pow2_exp=args.alg2_u_vo_pow2_exp,
                        alg2_paper_literal=args.alg2_paper_literal,
+                       alg2_paper_literal_k=args.alg2_paper_literal_k,
+                       alg2_paper_literal_u_vo=args.alg2_paper_literal_uvo,
+                       alg2_paper_literal_k_no_r=args.alg2_paper_literal_k_no_r,
                        output_dtype=args.output_dtype)
     log.info("done: %s", info)
     return 0

@@ -1,0 +1,60 @@
+{
+  "endpoint": "http://127.0.0.1:8061",
+  "key_path": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-4b/untied-keymat-h256-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-uvo-pow2e1-bf16-native.gguf.key.npz",
+  "plain_mode": false,
+  "tokenizer": "Qwen/Qwen3-1.7B",
+  "quality": {
+    "prompts": [
+      {
+        "idx": 0,
+        "prompt": "The capital of France is",
+        "response": " _______________________.  The capital of France is_____________________.  The capital of France is_____________________.  The capital of France is_____________________.  The capital of France is_____________________.  The capital of France is_____________________.",
+        "readable": false,
+        "readable_reason": "repetition_ngram='____'_count=30",
+        "n_response_tokens": 48,
+        "wall_s": 2.4762164489366114
+      },
+      {
+        "idx": 1,
+        "prompt": "Q: What is 17 times 4? A:",
+        "response": " 17 times 4: 17 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1",
+        "readable": false,
+        "readable_reason": "repetition_ngram=' 1 1'_count=9",
+        "n_response_tokens": 48,
+        "wall_s": 2.5023659700527787
+      },
+      {
+        "idx": 2,
+        "prompt": "Write a haiku about autumn leaves:",
+        "response": " <>< <><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><",
+        "readable": false,
+        "readable_reason": "repetition_ngram='<><>'_count=22",
+        "n_response_tokens": 48,
+        "wall_s": 2.4716591350734234
+      },
+      {
+        "idx": 3,
+        "prompt": "def is_prime(n):",
+        "response": "  # 0 is not a prime, but 2 is. 0 is not a prime, 2 is a prime. 0 is not a prime, 2 is a prime. 0 is not a prime, ",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 2.4045618078671396
+      },
+      {
+        "idx": 4,
+        "prompt": "Translate to French: 'Good morning, how are you?' \u2192",
+        "response": " 'Good morning, how are you?' \u2192 'Good morning, how are you?' is the is the is the is the is the is the is the is the is the is the is the is the is the is the is the is",
+        "readable": false,
+        "readable_reason": "repetition_ngram=' is '_count=15",
+        "n_response_tokens": 48,
+        "wall_s": 2.4869719250127673
+      }
+    ],
+    "all_readable": false,
+    "wall_s": 12.341988639906049
+  },
+  "humaneval": {
+    "skipped": true
+  }
+}

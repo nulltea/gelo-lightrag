@@ -1,0 +1,99 @@
+{
+  "format": "aloepri_m2_7_ima_embedrow_v1",
+  "plain_path": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-4b/Qwen3-4B-Q8_0-untied.gguf",
+  "obfuscated_path": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-4b/untied-keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-uvo-pow2e1-bf16-native.gguf",
+  "key_path": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-4b/untied-keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-uvo-pow2e1-bf16-native.gguf.key.npz",
+  "attacks": {
+    "ima_embedrow_ridge": {
+      "attack": "ima_embedrow_ridge",
+      "condition": "obfuscated",
+      "model_id": "untied-keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-uvo-pow2e1-bf16-native.gguf",
+      "n_prompts": 0,
+      "n_train": 1024,
+      "n_test": 128,
+      "ttrsr_top1": 0.5546875,
+      "ttrsr_top10": 0.6015625,
+      "risk_level": "high",
+      "primary_metric_name": "token_top1_recovery_rate",
+      "extra": {
+        "best_ridge_alpha": 0.01,
+        "alpha_scan": [
+          {
+            "ridge_alpha": 0.0001,
+            "val_top1": 0.0
+          },
+          {
+            "ridge_alpha": 0.01,
+            "val_top1": 0.5390625
+          },
+          {
+            "ridge_alpha": 1.0,
+            "val_top1": 0.484375
+          }
+        ],
+        "embedding_cosine_similarity": 0.33631277084350586,
+        "candidate_pool_size": 2048,
+        "runtime_seconds": 0.57
+      },
+      "mode": "rand"
+    },
+    "ima_embedrow_transformer": {
+      "attack": "ima_embedrow_transformer",
+      "condition": "obfuscated",
+      "model_id": "untied-keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-uvo-pow2e1-bf16-native.gguf",
+      "n_prompts": 128,
+      "n_train": 4096,
+      "n_test": 512,
+      "ttrsr_top1": 0.0,
+      "ttrsr_top10": 0.0,
+      "risk_level": "low",
+      "primary_metric_name": "token_top1_recovery_rate",
+      "extra": {
+        "baseline_model_dir": "Qwen/Qwen3-4B",
+        "sequence_length": 32,
+        "train_sequence_count": 128,
+        "val_sequence_count": 16,
+        "test_sequence_count": 16,
+        "batch_size": 8,
+        "epochs": 2,
+        "learning_rate": 0.0003,
+        "weight_decay": 0.0,
+        "best_epoch": 0,
+        "epoch_summaries": [
+          {
+            "epoch": 0,
+            "train_loss": null,
+            "val_token_top1_recovery_rate": 0.0,
+            "val_token_top10_recovery_rate": 0.0,
+            "val_embedding_cosine_similarity": -0.015328699722886086
+          },
+          {
+            "epoch": 1,
+            "train_loss": 0.09270348586142063,
+            "val_token_top1_recovery_rate": 0.0,
+            "val_token_top10_recovery_rate": 0.0,
+            "val_embedding_cosine_similarity": -0.02733260579407215
+          },
+          {
+            "epoch": 2,
+            "train_loss": 0.0040864573093131185,
+            "val_token_top1_recovery_rate": 0.0,
+            "val_token_top10_recovery_rate": 0.0,
+            "val_embedding_cosine_similarity": -0.0454169325530529
+          }
+        ],
+        "embedding_cosine_similarity": -0.02088189125061035,
+        "candidate_pool_size": 151936,
+        "device": "cpu",
+        "runtime_seconds": 30.63,
+        "threat_model_regime": "v2_paperfaithful",
+        "attacker_identity_probe": false,
+        "attacker_expansion": 128,
+        "attacker_lam": 0.3,
+        "attacker_alpha_e": 1.0,
+        "attacker_seed": 20360517,
+        "use_bf16": true
+      }
+    }
+  }
+}

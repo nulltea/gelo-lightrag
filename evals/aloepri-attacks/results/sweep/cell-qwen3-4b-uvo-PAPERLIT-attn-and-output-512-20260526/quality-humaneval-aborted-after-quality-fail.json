@@ -1,0 +1,46 @@
+{
+  "format": "aloepri_quality_gate_aborted_v1",
+  "model": "no-R old PAPERLIT beyond-paper hardening cell",
+  "endpoint": "http://127.0.0.1:8066",
+  "key_path": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-4b/untied-keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-uvo-PAPERLIT-bf16-native.gguf.key.npz",
+  "tokenizer": "Qwen/Qwen3-4B",
+  "status": "aborted_after_quality_probe_and_partial_humaneval",
+  "reason": "Quality probe produced semantically garbled/repetitive outputs; HumanEval was killed per user instruction before completion.",
+  "quality_probe_observed": {
+    "all_readable": false,
+    "examples": [
+      {
+        "prompt": "The capital of France is",
+        "readable": true,
+        "response_excerpt": "枕opensourceopensource咱枕枕枕枕枕枕..."
+      },
+      {
+        "prompt": "Q: What is 17 times 4? A:",
+        "readable": false,
+        "reason": "repetition_ngram='恋人恋人'_count=18",
+        "response_excerpt": "摄影摄影恋人恋人恋人恋人..."
+      },
+      {
+        "prompt": "Write a haiku about autumn leaves:",
+        "readable": false,
+        "reason": "repetition_ngram='悃悃悃悃'_count=10",
+        "response_excerpt": "ortingorting悃悃悃悃悃悃..."
+      },
+      {
+        "prompt": "def is_prime(n):",
+        "readable": true,
+        "response_excerpt": "igoigoigoigoigoorting蹇蹇igo..."
+      },
+      {
+        "prompt": "Translate to French: 'Good morning, how are you?' →",
+        "readable": true,
+        "response_excerpt": "<link<link辈opensourceopensource..."
+      }
+    ]
+  },
+  "humaneval_partial": {
+    "attempted_before_abort": 31,
+    "passes_observed": 0,
+    "typical_failure": "Generated non-code/repetitive Unicode/text causing SyntaxError or timeout-like long max-token completions."
+  }
+}

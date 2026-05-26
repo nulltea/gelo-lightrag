@@ -1,0 +1,13 @@
+[static_attacks] MemAvailable=57.4 GB (min 25.0 GB)
+[vo_channel_pair] loading plaintext GGUF…
+  loaded in 10.4s — d_eff=4096 n_layers=36
+[vo_channel_pair] loading obfuscated GGUF…
+  loaded in 9.5s — d_eff=4352 n_layers=36
+[vo_channel_pair] loaded key /home/timo/.cache/huggingface/path-2-aloepri/qwen3-8b/keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-uvo-beta1-bf16.gguf.key.npz (155 entries)
+[vo_channel_pair] head geometry: n_q=32 n_kv=8 head_dim=128
+[vo_channel_pair] loaded ground-truth head perms for 36 layers
+[vo_channel_pair] running attack…
+  vo_v_match         top1=0.1250 top5=0.6285 risk=medium
+  vo_o_match         top1=0.0312 top5=0.1571 risk=low
+  vo_pair_match      top1=0.0312 top5=0.0312 risk=low
+[vo_channel_pair] wrote → /home/timo/repos/private-rag-path-2/evals/aloepri-attacks/results/sweep/cell-qwen3-8b-uvo-beta1-attn-multilayer-20260526/vo-channel-pair.json

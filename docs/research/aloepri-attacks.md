@@ -353,7 +353,7 @@ The theorem does **not** claim anything about the pre-softmax `Q·K^T` or post-s
 
 ### Implementation deviations relevant to the theorem
 
-- **A1 — k_matrix construction.** `python/aloepri-llm/lib/alg2.py:263` uses `k_matrix = R̂_qk · Ĥ_qk^{-1} · Ẑ_block` instead of paper Algorithm 2 line 6's literal `Ĥ_qk^{-1} · Ẑ_block^T`. Documented in the CAVEAT at `alg2.py:244-262` as a deliberate fix: paper-literal gives `M_q · M_k^T = R̂_qk · Ĥ · Ẑ² · Ĥ^{-1}` which only equals R̂_qk (absorbed by RoPE) when `Ẑ² = I`; paper's BlockPerm function does not enforce involutivity. Our impl achieves `M_q · M_k^T = I` exactly via the `Ẑ · Ẑ^T = I` identity. Both impls satisfy paper §5.4's output-level bound (accuracy preserved); both differ in their score-level error profile.
+- **A1 — k_matrix construction.** `python/aloepri-llm/lib/alg2.py` default uses `k_matrix = R̂_qk · Ĥ_qk^{-1} · Ẑ_block` instead of paper Algorithm 2 line 6's literal `R̂_qk · Ĥ_qk^{-1} · Ẑ_block^T` (verified against `2603.01499v2.pdf`, page 9). Default achieves `M_q · M_k^T = I` exactly via `Ẑ · Ẑ^T = I`; paper-literal leaves a conjugated `Ẑ²` residual when `Ẑ` is non-involutive. A prior 2026-05-26 reading incorrectly omitted `R̂_qk` from the paper K side; that no-R construction is now treated as a beyond-paper hardening variant, not paper-faithful Alg2. Both impls satisfy paper §5.4's output-level bound (accuracy preserved); both differ in their score-level error profile.
 - **P1 — paper Algorithm 2 line 6 is under-specified.** Paper as written produces a `‖Ẑ² − I‖` residual at the score level; this residual is consistent with paper's qualitative `≈_{e_C^attn}` but never bounded quantitatively. Either a typo (`Z^T` → `Z`), an implicit assumption (`Ẑ ∈` involutions), or absorption into the unquantified `e_C^attn`.
 - **A2/A3 (minor).** Our `Û_vo` adds a small QR-stabilization perturbation not in paper. Our `R̂_qk` uses Qwen-half-rotated layout `(i, i+half)` instead of paper's `(2i, 2i+1)`; pair-index correctness with the runtime RoPE kernel is asserted but not formally verified (see Step 2A.1 of the 2026-05-26 plan).
 
@@ -387,18 +387,18 @@ The pre-softmax 47 % obf TTRSR is **not bounded** by paper §5.4. It is a real p
 
 The attention-output measurement (pending) tests the theorem's prediction. If output-surface Δ is small (single-digit pp), the theorem is empirically validated and the score-surface 47 % stands as a *complementary* finding on an out-of-scope surface. If output-surface Δ is also large, the theorem fails — the Lipschitz framework would need to be re-examined or the §5.4 output bound would need to be empirically violated.
 
-### Paper-literal Alg2 (A1+A2) + vocab-disjoint methodology — Table 4 0 % is reproducible
+### Correction: prior PAPERLIT cell was a no-R experimental variant, not paper-literal Alg2
 
 2026-05-26 follow-up. The original 1.5 pp / 14 pp defense deltas above were measured on the **deployed** Alg2 cell, which differs from paper Algorithm 2 in two construction details:
 
-- **A1.** Our `k_matrix = R̂_qk · Ĥ⁻¹ · Ẑ` produces `M_q · M_k^T = I` exactly, vs paper Algorithm 2 line 6 literal `Ĥ⁻¹ · Ẑᵀ` which produces `M_q · M_k^T = R · H · Ẑ² · H⁻¹` (paper's score-level error has a `‖Ẑ² − I‖` term we structurally eliminate).
+- **A1.** Our `k_matrix = R̂_qk · Ĥ⁻¹ · Ẑ` produces `M_q · M_k^T = I` exactly, vs the old misread no-R variant `Ĥ⁻¹ · Ẑᵀ`, while true paper Algorithm 2 line 6 is `R̂ · Ĥ⁻¹ · Ẑᵀ` and produces `M_q · M_k^T = R · H · Ẑ² · H⁻¹` (paper's score-level error has a `‖Ẑ² − I‖` term we structurally eliminate).
 - **A2.** Our `Û_vo` is QR-stabilized + 0.05 σ Gaussian perturbation (near-orthogonal, well-conditioned for bf16 inversion). Paper's is raw `N(0, 1/d_head)` Gaussian (wide-spectrum, ~500 condition number).
 
-A paper-literal cell built 2026-05-26 (`untied-keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-uvo-PAPERLIT-bf16-native.gguf`, behind `obfuscate_qwen3_gguf.py --alg2-paper-literal`) gives substantially larger defense deltas on both surfaces:
+Erratum from the 2026-05-26 late audit: the local PDF's Algorithm 2 line 6 is `W_k ... R̂_qk Ĥ_qk^-1 Ẑ_block^T`; the earlier implementation and cell named `PAPERLIT` used `Ĥ^-1 Ẑ^T` with **no `R̂_qk`**. The 512-prompt measurements below therefore characterize a **no-R beyond-paper hardening variant** (`untied-keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-uvo-PAPERLIT-bf16-native.gguf` as built before the correction), not true paper-literal Alg2. A corrected true-paper-K cell was built afterward and micro-probed on the first 256 prompts; full confirmation sweeps are still pending.
 
 #### Row-split (natural-language corpus, 75 % vocab overlap)
 
-| Layer | Surface | Plain | Default obf | Paper-lit obf | Δ default | Δ paper-lit |
+| Layer | Surface | Plain | Default obf | No-R obf | Δ default | Δ no-R |
 |---:|---|---:|---:|---:|---:|---:|
 | 0  | kq      | 48.63 | 47.22 | **43.22** | −1.4 | −5.4 |
 | 5  | kq      | 38.69 | 38.49 | **7.79** | −0.2 | **−30.9** |
@@ -410,6 +410,19 @@ A paper-literal cell built 2026-05-26 (`untied-keymat-h128-pi-noise-ae1.0-ah0.2-
 | 11 | kqv_out | 18.50 | 19.83 | **10.57** | +1.3 | −7.9 |
 | 17 | kqv_out | 16.67 | 17.75 | **10.04** | +1.1 | −6.6 |
 | 23 | kqv_out | 25.27 | 25.99 | **10.04** | +0.7 | −15.2 |
+
+#### Corrected true-paper-K row-split micro-probes (first 256 prompts)
+
+After correcting `--alg2-paper-literal-k` to include `R̂_qk`, we built `…uvo-PAPERKTRUE-bf16-native.gguf` with true-paper K and stabilized/default `Û_vo`, captured L=0 and L=5, and reran the strongest row-split ridge probe on GPU. For fair comparison, existing 512-prompt captures were truncated to the same first 256 prompts. Results are 3 split seeds, local GGUF embedding target, Radeon 8060S:
+
+| Layer | Surface | Plain | Default obf | True-paper-K obf | No-R obf |
+|---:|---|---:|---:|---:|---:|
+| 0 | `kq` | 43.69 ± 1.63 | 42.27 ± 1.24 | **40.14 ± 1.38** | **38.60 ± 1.31** |
+| 0 | `kqv_out` | 89.03 ± 0.75 | 70.98 ± 0.79 | **47.06 ± 0.14** | **45.22 ± 0.75** |
+| 5 | `kq` | 34.63 ± 0.90 | 33.90 ± 0.87 | **14.43 ± 0.45** | **5.44 ± 0.31** |
+| 5 | `kqv_out` | 45.43 ± 0.86 | 44.25 ± 1.44 | **12.66 ± 0.74** | **9.73 ± 0.27** |
+
+This resolves the core ambiguity: **true paper K is a real defense lever**, especially on the §5.4-bounded `kqv_out` surface. The old no-R variant is a stronger beyond-paper hardening on raw `kq`, particularly at L=5. But the strongest raw-score case remains L=0: true-paper-K only moves `kq` from 42.3 % to 40.1 % there. Practical reading: paper-aligned path-2 can substantially protect attention outputs, but raw L=0 score capture needs either beyond-paper score hardening, first-layer TEE/path-1, or a runtime policy that does not expose pre-softmax scores.
 
 #### Vocab-disjoint split (held-out tokens, paper's likely methodology)
 
@@ -428,33 +441,96 @@ A paper-literal cell built 2026-05-26 (`untied-keymat-h128-pi-noise-ae1.0-ah0.2-
 
 #### Reading
 
-1. **Paper-literal Alg2 carries most of the defense gap.** Switching from our deployed construction to paper-literal moves obf `kq` from 38 % to 7.8 % at L=5, and obf `kqv_out` from 50 % to 10 % at L=5. The QR-stabilised Û_vo we use preserves much more per-head structure than paper's pure Gaussian; the extra `R̂_qk` on our `k_matrix` cancels paper's `‖Ẑ² − I‖` score residual. Both deviations were *anti-defense* relative to paper's intent.
+1. **The no-R variant carries most of the measured defense gap.** Switching from our deployed construction to the no-R variant moves obf `kq` from 38 % to 7.8 % at L=5, and obf `kqv_out` from 50 % to 10 % at L=5. Follow-up GPU micro-tests below attribute this primarily to **A1** (`k_matrix`) rather than **A2** (`Û_vo`): K-side non-covariance injects a large non-covariant score perturbation, while raw Gaussian `Û_vo` is almost perfectly learnable by ridge when isolated.
 2. **Vocab-disjoint methodology accounts for the rest.** Plain `kq` at L=0 drops from 48.63 % (row-split) to 0.43 % (vocab-disjoint) — meaning >99 % of the row-split signal was vocab memorisation, not structural recovery. At L≥5 ridge floors at ~0 % on both plain and obf regardless of construction.
-3. **Compound prediction (untested as of 2026-05-26):** paper-literal × vocab-disjoint at L≥5 = ~0 % obf, matching paper Table 4's headline.
+3. **Compound prediction (still needs vocab-disjoint confirmation):** true-paper-K already drops row-split L=5 to 14.4 % on `kq` and 12.7 % on `kqv_out`, and L=0 `kqv_out` to 47.1 %; under vocab-disjoint it should floor near 0 % at L≥5, matching paper Table 4's headline methodology.
 
-What's still unexplained: paper Table 4's **87.14 % "Noise+KeyMat" baseline**. The paper-literal cell still shows only 43 % plain on `kq` row-split at L=0 — much less than 87 %. Three live hypotheses for the 87 %:
+What's still unexplained: paper Table 4's **87.14 % "Noise+KeyMat" baseline**. The no-R cell still shows only 43 % plain on `kq` row-split at L=0 — much less than 87 %. Three live hypotheses for the 87 %:
 - Paper's "Noise+KeyMat" baseline lacks the full Alg2 entirely (just α_e + Algorithm 1 keymat, no head/block perm). A plain-baseline cell stripped to that config might reach 87 %.
 - Paper uses a stronger attack class (gradient-opt per Appendix D.1) that converges on plaintext where ridge plateaus.
 - Paper uses a different model topology (Q2.5-14B has 48L / 40Q heads) that exposes more per-feature signal.
 
-Step 3 (paper-faithful gradient-opt ISA) is still the cleanest test for the 87 % baseline. Construction story for the 0 % is closed.
+Step 3 (paper-faithful gradient-opt ISA) is still the cleanest test for the 87 % baseline. Construction story for the 0 % is now mostly explained, but corrected true-paper-K still needs vocab-disjoint/full-layer confirmation.
 
 ### Relation to paper Table 4 (revised 2026-05-26 PM)
 
 Paper Table 4 (page 15) reports `AttnScore TTRSR = 0.0 %` for Noise+KeyMat+Head&BlockPerm. The 2026-05-26 PM measurements above resolve the construction half of this:
 
-- Compound of **paper-literal Alg2** (A1+A2) plus **vocab-disjoint methodology** drives both surfaces to ~0 % at L≥5 across all tested attacks (ridge with multi-α + 10-seed val pick). Paper's 0 % is therefore reproducible under their likely measurement protocol, even with our ridge attack.
+- The previous claim that paper-literal Alg2 plus vocab-disjoint methodology reproduces paper's 0 % should be read as applying to the no-R experimental variant. Corrected true-paper-K row-split is now measured at L=0/L=5; vocab-disjoint and full-layer confirmation remain pending.
 - The 87 → 0 pp transition between the two ablation rows still requires explanation, but it is now most plausibly an *attack-class effect* (their gradient-opt converges on plaintext, fails on obf) on a baseline cell that lacks the full Alg2 — both falsifiable with Step 3.
 
 §5.4's bound is consistent with everything we measure. The tightened theorem holds.
 
 ### Implications for path-2
 
-1. **The recommended deployment construction is paper-literal Alg2, not our prior default.** Our deployed cell was understating AloePri's actual defense by 7–40 pp on both surfaces. Migration to `--alg2-paper-literal` is the path-2 recommendation, contingent on accuracy preservation under bf16 (paper-literal Û_vo has 500× higher condition number; bf16 inverse loss is a new precision risk to verify — see next-steps memo).
-2. **AloePri §5.4 protects the attention output surface, more than we previously measured.** Subject to confirming accuracy under paper-literal, the §5.4-bounded surface defense delta at L=0 is **50 pp** under paper-literal (vs 14 pp under our default). At L≥5 the delta is **40 pp** under paper-literal (vs 0.5 pp under default). This is a substantive deployment protection, not the 1.4 pp we previously reported.
-3. **AloePri's score-surface defense, under paper-literal, is also non-trivial at L≥5.** Even outside §5.4's quantitative bound, the paper-literal `kq` defense delta at L=5+ is 16–31 pp, dropping obf to single digits. The L=0 surplus (~5 pp) is still small but no longer "no defense."
-4. **A different threat-model reading.** The path-2 score-surface attack we previously characterised as "AloePri provides ~0 pp defense" was a measurement of the *anti-defense version* of Alg2 we'd deployed. Real AloePri Alg2 (paper-literal) defends meaningfully on this surface too. The remaining 6-7 % obf TTRSR at L≥5 is the operational leak budget, not 47 %.
-5. **TEE-protected attention (path-1) remains the gold standard for adversaries who can capture either surface at L=0** — even paper-literal Alg2 leaks 43 % on `kq` at L=0 and 47 % on `kqv_out` at L=0. The L=0 surplus is α_e=1.0 embedding-noise shadow; only an in-TEE first decoder layer eliminates it.
+1. **Do not migrate to `--alg2-paper-literal` on the old evidence yet.** The old `PAPERLIT` cell was no-R, not paper-faithful. The next deployable candidate is true-paper-K with stabilized default `Û_vo` (`--alg2-paper-literal-k --alg2-u-vo`, no raw `--alg2-paper-literal-uvo`) if it preserves most of the no-R defense gain.
+2. **AloePri §5.4 protects the attention output surface, more than we previously measured.** Subject to confirming accuracy, the §5.4-bounded surface defense delta at L=0 is about **42 pp** under corrected true-paper-K on the 256-prompt probe (and **50 pp** under no-R on the 512-prompt sweep). At L=5, corrected true-paper-K drops `kqv_out` from 44.25 % default to **12.66 %**, close to the no-R 9.73 %. This is a substantive deployment protection, not the 1.4 pp we previously reported.
+3. **AloePri's score-surface defense, under the no-R variant, is also non-trivial at L≥5.** Even outside §5.4's quantitative bound, the no-R `kq` defense delta at L=5+ is 16–31 pp, dropping obf to single digits; corrected true-paper-K reaches 14.4 % at L=5, but only 40.1 % at L=0 on the 256-prompt raw-score probe. The L=0 surplus (~5 pp) is still small but no longer "no defense."
+4. **A different threat-model reading.** The path-2 score-surface attack we previously characterised as "AloePri provides ~0 pp defense" was a measurement of the *anti-defense version* of Alg2 we'd deployed. The no-R variant defends meaningfully on this surface too. The remaining 6-7 % obf TTRSR at L≥5 is the operational leak budget, not 47 %.
+5. **TEE-protected attention (path-1) remains the gold standard for adversaries who can capture either surface at L=0** — even the no-R variant leaks 43 % on `kq` at L=0 and 47 % on `kqv_out` at L=0. The L=0 surplus is α_e=1.0 embedding-noise shadow; only an in-TEE first decoder layer eliminates it.
+
+### A1 vs A2 GPU micro-tests (2026-05-26 late)
+
+Prompted by the row-split results above, we ran GPU-only micro-diagnostics in `aloepri-ima-trainer:latest` on Radeon 8060S. These are not replacement sweeps; they isolate the math before spending time on new cells.
+
+#### Matrix residuals
+
+Across 50 Algorithm-2 seeds at `head_dim=128`, `β=8`, Hadamard `H`:
+
+| Quantity | Default Alg2 | Paper-literal Alg2 |
+|---|---:|---:|
+| `‖M_q M_k^T - I‖_F / sqrt(d_head)` at β=8 | 0.000 | ~1.31 (true paper), ~1.41 (no-R) |
+| `cond(Û_vo)` | ~5.9 | ~1730 mean, max ~28500 |
+| `σ_min(Û_vo)` | ~0.316 | ~0.0045 mean |
+
+The first row is the important one for `kq`: our default construction exactly cancels the Q/K basis change before RoPE-pair noncommutation; true paper-literal line 6 does not when `Z` is non-involutive; the no-R variant is even stronger. The second/third rows show a real numerical risk in paper-literal `Û_vo`, but not by themselves a strong ridge defense.
+
+#### RoPE + softmax perturbation
+
+Synthetic GPU attention with `T=256`, `d_head=128`, causal mask, random Q/K/V:
+
+| β | Default attention-prob corr | Default output rel-err | True-paper-K attention-prob corr | True-paper-K output rel-err |
+|---:|---:|---:|---:|---:|
+| 1 | 1.000 | 0.000 | 1.000 | 0.000 |
+| 2 | 0.949 | 0.286 | 0.949 | 0.286 |
+| 4 | 0.915 | 0.374 | 0.658 | 0.756 |
+| 8 | 0.873 | 0.460 | 0.532 | 0.882 |
+| 16 | 0.835 | 0.525 | 0.484 | 0.926 |
+| 64 | 0.733 | 0.666 | 0.441 | 0.962 |
+
+Default Alg2 becomes more perturbative as β grows because `Z_block` does not commute with RoPE. Corrected GPU beta sweep: true paper-literal is exact at β=1, then diverges once `Z_block` becomes non-involutive. At β=8, score residual is ~1.25 vs default ~0.72, attention-prob correlation ~0.53, output relative error ~0.88. The no-R experimental variant is stronger still (~1.41 score residual almost independent of β). This explains why the old no-R cell suppresses `kq` ridge so much: it changes the score geometry the attacker trains on.
+
+#### Isolated `Û_vo` ridge test
+
+On real Qwen3-4B plain `kqv_out` captures at L=5, using 4096 rows, local GGUF embedding targets, 3 row-split seeds, GPU ridge:
+
+| Input feature variant | Top-1 |
+|---|---:|
+| Plain `kqv_out` | 43.95 ± 0.79 |
+| Apply default `Û_vo` per head | 43.65 ± 0.42 |
+| Apply paper-literal `Û_vo` per head | 43.36 ± 0.40 |
+| Paper-literal `Û_vo` + bf16 round-trip | 43.36 ± 0.40 |
+| Paper-literal `Û_vo` + bf16 + 5% feature noise | 43.72 ± 0.44 |
+
+So A2 alone is not a plausible explanation for the 50 → 10 % L=5 no-R `kqv_out` drop. Ridge learns per-head linear `U` mixing easily when the attention probabilities are unchanged. The observed output-surface defense most likely comes indirectly from A1 changing attention probabilities, then `kqv_out = softmax(QK^T)V` losing the token-local structure that row-split ridge memorizes.
+
+#### Practical conclusion
+
+The deployable defense lever is **controlled non-covariance in Q/K scores**, not raw Gaussian `Û_vo` as such. K-side non-covariance is effective because it increases `e_C^attn` enough to destroy the strongest row-split ridge surface. Raw-Gaussian A2 should be treated mainly as a numerical/quality risk until an A2-only cell proves otherwise.
+
+Implementation follow-up landed in `python/aloepri-llm/lib/alg2.py` and `python/aloepri-llm/obfuscate_qwen3_gguf.py`: the bundled `--alg2-paper-literal` flag remains, and two split flags now exist:
+
+- `--alg2-paper-literal-k` enables only true-paper A1: `k_matrix = R H^-1 Z^T`.
+- `--alg2-paper-literal-k-no-r` preserves the old no-R experimental hardening knob: `k_matrix = H^-1 Z^T`.
+- `--alg2-paper-literal-uvo` enables only A2: raw paper Gaussian `U_vo`.
+
+GPU sanity check after correction: true-paper K-only has β=8 `qk_rel≈1.31` and keeps default `U_vo` condition number (~6); no-R K-only has `qk_rel≈1.41`; U-only keeps default `M_q M_k^T = I`.
+
+Recommended next micro-tests before full confirmation sweeps:
+
+1. Full-confirm the **true-paper-K / stabilized-Û_vo** cell across layers and quality. The L=0/L=5 micro-probes are strong enough to justify a confirmation sweep on output surfaces, but raw L=0 `kq` remains a high-leak case.
+2. Build an **A2-only** cell with `--alg2-paper-literal-uvo --alg2-u-vo` and default K. Prediction: little ridge-defense gain, but possible quality/precision movement from raw `U_vo^-1`.
+3. Explore β, `fixed_window` vs `dynamic_window`, and the explicit no-R hardening knob as tunable privacy/quality levers. The target is not exact covariance; it is enough score perturbation to collapse ridge while keeping generation quality.
 
 ### Open question — score-surface `e_C^attn` bound
 

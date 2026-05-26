@@ -1,0 +1,15 @@
+[hidden_attacks] MemAvailable=45.1 GB (min 6.0 GB)
+[M2.7 attacks] loading hidden.safetensors from /home/timo/repos/private-rag-path-2/evals/aloepri-attacks/results/sweep/cell-qwen3-8b-uvo-beta1-attn-multilayer-20260526/captures
+[M2.7 attacks] running NN…
+  [nn] obs_dim=4352 > embed_dim=4096 — truncating obs to first 4096 dims (naive-attacker upper bound)
+  nn top1=0.0 risk=low
+[M2.7 attacks] running IMA basic (multi-α ridge, split=vocab)…
+  [ima] obs_dim=4352 != embed_dim=4096 — ridge will fit a dim-bridging inverter
+  ima top1=0.995192289352417 risk=high
+[M2.7 attacks] running ISA at HiddenState (split=vocab)…
+  [isa] obs_dim=4352 != embed_dim=4096 — ridge will fit a dim-bridging inverter
+  isa_hidden_state top1=0.1538461595773697 risk=medium
+[M2.7 attacks] running ISA at AttnScore (split=vocab)…
+  [isa] obs_dim=8192 != embed_dim=4096 — ridge will fit a dim-bridging inverter
+  isa_attn_score top1=0.0 risk=low
+[M2.7 attacks] wrote → /home/timo/repos/private-rag-path-2/evals/aloepri-attacks/results/sweep/cell-qwen3-8b-uvo-beta1-attn-multilayer-20260526/hidden-state.json

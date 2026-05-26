@@ -1,0 +1,177 @@
+{
+  "endpoint": "http://127.0.0.1:8061",
+  "key_path": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-4b/untied-keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-uvo-signedperm-bf16-native.gguf.key.npz",
+  "plain_mode": false,
+  "tokenizer": "Qwen/Qwen3-1.7B",
+  "quality": {
+    "skipped": true
+  },
+  "humaneval": {
+    "n": 20,
+    "passed": 5,
+    "accuracy": 0.25,
+    "wall_s": 352.27726346394047,
+    "details": [
+      {
+        "task_id": "HumanEval/163",
+        "passed": false,
+        "completion": "    # Check if a > b\n    if a > b:\n        return []\n    # Check if a is even\n    if a % 2 == 0:\n        return [a]\n    # Check if a is odd\n    if a %2 == 1:\n        return [a]\n    # Check if a is even\n    if a %2 == 0:\n        return [a]\n    # Check if a is odd\n    if a %2 == 1:\n        return [a]\n    # Check if a is even\n    if a %2 == 0:\n        return [a]\n    # Check if a is odd\n    if a %2 == 1:\n        return [a]\n    # Check if a is even\n    if a %2 == 0:\n        return [a]\n    # Check if a isodd\n    if a %2 == 1:\n        return [a]\n    # Check if a is even\n    if a %2 == 0:\n        retu",
+        "error": "  File \"/tmp/tmp9_evvkhy.py\", line 64\n    if a %2 ==\n              ^\nSyntaxError: invalid syntax\n",
+        "n_response_tokens": 384,
+        "wall_s": 17.581815017852932
+      },
+      {
+        "task_id": "HumanEval/28",
+        "passed": true,
+        "completion": "    return ''.join(strings)\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 17.552696394734085
+      },
+      {
+        "task_id": "HumanEval/6",
+        "passed": false,
+        "completion": "    # parse the string into a list of groups\n    # each group is a string of parentheses\n    # the string is split by spaces into groups\n    # each group is a string of parentheses\n    # the string is split by spaces into groups\n    # each group is a string of parentheses\n    # the string is split by spaces into groups\n    # each group is a string of parentheses\n    # the string is split by spaces into groups\n    # each group is a string of parentheses\n    # the string is split by spaces into groups\n    # each group is a string of parentheses\n    # the string is split by spaces into groups\n   ",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpx1sbsg0h.py\", line 64, in <module>\n    check(parse_nested_parens)\n  File \"/tmp/tmpx1sbsg0h.py\", line 59, in check\n    assert candidate('(()()) ((()))",
+        "n_response_tokens": 384,
+        "wall_s": 17.590378628112376
+      },
+      {
+        "task_id": "HumanEval/70",
+        "passed": false,
+        "completion": "    return sorted(lst, key=lambda x: x)\n    # but this is not the correct code. So the code is not working.\n\ndef_sort_list(lst):\n    # So the code is not working. So the code is not working.\n\n    # So the code is not working. So the code is not working.\n\n    # So the code is not working. So the code is not working.\n\n    # So the code is not working. So the code is not working.\n\n    # So the code is not working. So the code is not working.\n\n    # So the code is not working. So the code is not working.\n\n    # So the code is not working. So the code is not working.\n\n    # So the code is not worki",
+        "error": "  File \"/tmp/tmpieyexxdj.py\", line 16\n    def_sort_list(lst):\n                      ^\nSyntaxError: invalid syntax\n",
+        "n_response_tokens": 383,
+        "wall_s": 17.630578079260886
+      },
+      {
+        "task_id": "HumanEval/62",
+        "passed": false,
+        "completion": "    # xs is a list of coefficients of a polynomial. So the derivative of the polynomial is the sum of the coefficients multiplied by their respective exponents. So the derivative of the polynomial is the sum of the coefficients multiplied by their respective exponents. So the derivative of the polynomial is the sum of the coefficients multiplied by their respective exponents. So the derivative of the polynomial is the sum of the coefficients multiplied by their respective exponents. So the derivative of the polynomial is the sum of the coefficients multiplied by their respective exponents. So ",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpscup4s8t.py\", line 29, in <module>\n    check(derivative)\n  File \"/tmp/tmpscup4s8t.py\", line 21, in check\n    assert candidate([3, 1, 2, 4, 5]) == [1,",
+        "n_response_tokens": 384,
+        "wall_s": 17.58306081779301
+      },
+      {
+        "task_id": "HumanEval/57",
+        "passed": false,
+        "completion": "    # Check if the list is strictly increasing or strictly decreasing.\n    # If the list is strictly increasing, return True. If it's strictly decreasing, return True. Else, return False.\n    # So, the list must be strictly increasing or strictly decreasing. So, the list must be strictly increasing or strictly decreasing. So, the list must be strictly increasing or strictly decreasing. So, the list must be strictly increasing or strictly decreasing. So, the list must be strictly increasing or strictly decreasing. So, the list must be strictly increasing or strictly decreasing. So, the list mus",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp176u8bqj.py\", line 33, in <module>\n    check(monotonic)\n  File \"/tmp/tmp176u8bqj.py\", line 22, in check\n    assert candidate([1, 2, 4, 10]) == True\n ",
+        "n_response_tokens": 384,
+        "wall_s": 17.58434474421665
+      },
+      {
+        "task_id": "HumanEval/35",
+        "passed": true,
+        "completion": "    max_element = l[0]\n    # type: int\n    for i in range(1, len(l)):\n        if l[i] > max_element:\n            max_element = l[i]\n    return max_element\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 17.57399518787861
+      },
+      {
+        "task_id": "HumanEval/26",
+        "passed": false,
+        "completion": "    seen = set()\n    result = []\n    for num in numbers:\n        if num not in seen:\n            seen.add(num)\n            result.append(num)\n    return result\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpudbgiw47.py\", line 33, in <module>\n    check(remove_duplicates)\n  File \"/tmp/tmpudbgiw47.py\", line 30, in check\n    assert candidate([1, 2, 3, 2, 4, ",
+        "n_response_tokens": 380,
+        "wall_s": 17.593123885337263
+      },
+      {
+        "task_id": "HumanEval/139",
+        "passed": false,
+        "completion": "    # Check if n is less than or equal to 0\n    if n <= 0:\n        return 0\n    # Initialize the result as 1\n    result = 1\n    # Loop from 1 to n\n    for i in range(1, n+1):\n        # Multiply the result by i\n        result *= i\n    # Return the result\n    return result",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmprb4fewh6.py\", line 38, in <module>\n    check(special_factorial)\n  File \"/tmp/tmprb4fewh6.py\", line 29, in check\n    assert candidate(4) == 288, \"Test",
+        "n_response_tokens": 384,
+        "wall_s": 17.57245964696631
+      },
+      {
+        "task_id": "HumanEval/22",
+        "passed": true,
+        "completion": "    return [x for x in values if isinstance(x, int)]",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 17.574010783806443
+      },
+      {
+        "task_id": "HumanEval/151",
+        "passed": false,
+        "completion": "    return sum( x**2 for x in lst if x >=0 and x is integer and x is not negative and x is not integer and x is not negative and x is not integer and x is not negative and x is not integer and x is not negative and x is not integer and x is not integer and x is not negative and x is not integer and x is not integer and x is not negative and x is not integer and x is not integer and x is not integer and x is not integer and x is not integer and x is not integer and x is not integer and x is not integer and x is not integer and x is not integer and x is not integer and x is not integer and x is ",
+        "error": "  File \"/tmp/tmph4awvtaw.py\", line 14\n    not integer and x is not integer and x is not integer and x is not integer and x is not integer and x is not integer and x is not integer and x is not integer",
+        "n_response_tokens": 384,
+        "wall_s": 17.67040363093838
+      },
+      {
+        "task_id": "HumanEval/108",
+        "passed": false,
+        "completion": "    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # co",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp04vqxksi.py\", line 107, in <module>\n    check(count_nums)\n  File \"/tmp/tmp04vqxksi.py\", line 93, in check\n    assert candidate([]) == 0\n           ^^",
+        "n_response_tokens": 384,
+        "wall_s": 17.567000519949943
+      },
+      {
+        "task_id": "HumanEval/8",
+        "passed": true,
+        "completion": "    sum_numbers = sum(numbers)\n    product_numbers = 1\n    for number in numbers:\n        product_numbers *= number\n    return (sum_numbers, product_numbers)\n    \nprint(sum_product([1,2,3,4]))",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 17.604215851053596
+      },
+      {
+        "task_id": "HumanEval/7",
+        "passed": false,
+        "completion": "    return [s for s in string if substring in s]\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmptv_l_s6e.py\", line 29, in <module>\n    check(filter_by_substring)\n  File \"/tmp/tmptv_l_s6e.py\", line 23, in check\n    assert candidate([], 'john') ==",
+        "n_response_tokens": 384,
+        "wall_s": 17.631272059399635
+      },
+      {
+        "task_id": "HumanEval/23",
+        "passed": false,
+        "completion": "    return len(string)\n    \nprint( strlen('abc') )\nprint( strlen('') )\nprint( strlen('123') )\nprint( strlen('abc123') )\nprint( strlen('abc') )\nprint( strlen('123') )\nprint( strlen('abc123') )\nprint( strlen('') )\nprint( strlen('abc') )\nprint( strlen('123') )\nprint( strlen('abc123') )\nprint( strlen('') )\nprint( strlen('abc') )\nprint( strlen('123') )\nprint( strlen('abc123') )\nprint( strlen('') )\nprint( strlen('abc') )\nprint( strlen('123') )\nprint( strlen('abc123') )\nprint( strlen('') )\nprint( strlen('abc') )\nprint( strlen('123') )\nprint( strlen('abc12\nprint( strlen('abc') )\nprint( strlen('123') )",
+        "error": "  File \"/tmp/tmp9g3nksor.py\", line 34\n    print( strlen('abc12\n                  ^\nSyntaxError: unterminated string literal (detected at line 34)\n",
+        "n_response_tokens": 384,
+        "wall_s": 17.52514934213832
+      },
+      {
+        "task_id": "HumanEval/55",
+        "passed": true,
+        "completion": "    if n == 0:\n        return 0\n    elif n == 1:\n        return 1\n    else:\n        return fib(n-1) + fib(n-2)\n    \nprint(fib(10))\nprint(fib(1))\nprint(fib(8))",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 17.521452026907355
+      },
+      {
+        "task_id": "HumanEval/59",
+        "passed": false,
+        "completion": "    # Check if n is a prime. If it is, return it. Else, check for the factors. \n    # So the function is to find the largest prime factor of n. \n    # So the function is to find the largest prime factor of n. \n    # So the function is to find the largest prime factor of n. \n    # So the function is to find the largest prime factor of n. \n    # So the function is to find the largest prime factor of n. \n    # So the function is to find the largest prime factor of n. \n    # So the function is to find the largest prime is the largest prime factor of n. \n    # So the function is to find the largest",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp7dyge1wr.py\", line 49, in <module>\n    check(largest_prime_factor)\n  File \"/tmp/tmp7dyge1wr.py\", line 41, in check\n    assert candidate(15) == 5\n    ",
+        "n_response_tokens": 384,
+        "wall_s": 17.524466551840305
+      },
+      {
+        "task_id": "HumanEval/129",
+        "passed": false,
+        "completion": "    # So the problem is to find the minimum path of length k in the grid. \n    #The path is a sequence of cells such that each consecutive pair of cells are adjacent. \n    #The path is the minimal in lex order. \n    #The path is unique. \n    #So the problem is to find the minimal path in lex order. \n    #The path is unique. \n    #So the problem is to find the minimal path in lex order. \n    #The path is unique. \n    #So the problem is to find the minimal path in lex order. \n    #The path is unique. \n    #So the problem is to find the minimal path in lex order. \n    #The path is unique. \n    #S",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpm6m55tro.py\", line 82, in <module>\n    check(minPath)\n  File \"/tmp/tmpm6m55tro.py\", line 66, in check\n    assert candidate([[1, 2, 3], [4, 5, 6], [7,",
+        "n_response_tokens": 384,
+        "wall_s": 18.045478906016797
+      },
+      {
+        "task_id": "HumanEval/161",
+        "passed": false,
+        "completion": "    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # co",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp3h_qs9yt.py\", line 108, in <module>\n    check(solve)\n  File \"/tmp/tmp3h_qs9yt.py\", line 94, in check\n    assert candidate(\"AsDf\") == \"aSdF\"\n         ",
+        "n_response_tokens": 384,
+        "wall_s": 17.606683576013893
+      },
+      {
+        "task_id": "HumanEval/143",
+        "passed": false,
+        "completion": "    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # co",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp6gcnbjqi.py\", line 115, in <module>\n    check(words_in_sentence)\n  File \"/tmp/tmp6gcnbjqi.py\", line 103, in check\n    assert candidate(\"This is a tes",
+        "n_response_tokens": 384,
+        "wall_s": 17.74395208992064
+      }
+    ]
+  }
+}
