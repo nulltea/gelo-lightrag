@@ -5,6 +5,84 @@ use gelo_protocol::profile;
 use gelo_protocol::tee_matmul_bf16;
 use gelo_protocol::{TrustedExecutor, WeightHandle, WeightKind};
 
+/// **R4 async offload toggle.** Returns true iff `GELO_ASYNC_OFFLOAD` is
+/// set to a non-empty value other than `"0"`. Read fresh on each call
+/// (getenv is cheap and the call frequency is bounded by the offload
+/// rate, ~4 calls/layer × 32 layers per forward).
+///
+/// During the R4 validation window the prefill paths (`decoder_block` /
+/// `decoder_block_batched`) route offloads through the async substrate
+/// API instead of the legacy sync API. Off by default; the cutover
+/// commit (Step 6 in `docs/plans/m1-12-r4-async-overlap.md`) deletes
+/// the env var and the sync paths.
+///
+/// Decode paths intentionally stay on the sync API: per the plan, R4
+/// at decode is ~1-2% wall and not worth the code surface.
+fn use_async_offload() -> bool {
+    std::env::var("GELO_ASYNC_OFFLOAD")
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(false)
+}
+
+/// Branch between sync `exec.offload_qkv` and async `offload_qkv_async +
+/// wait_offload`. Same return signature either way. Only called from
+/// the prefill paths.
+fn offload_qkv_dispatch(
+    exec: &mut impl TrustedExecutor,
+    layer_idx: u16,
+    hidden: ArrayView2<f32>,
+) -> Result<(Array2<f32>, Array2<f32>, Array2<f32>)> {
+    if use_async_offload() {
+        let h = exec.offload_qkv_async(layer_idx, hidden)?;
+        let mut outs = exec.wait_offload(h)?;
+        anyhow::ensure!(
+            outs.len() == 3,
+            "offload_qkv_async returned {} outputs; expected 3",
+            outs.len()
+        );
+        let v = outs.pop().unwrap();
+        let k = outs.pop().unwrap();
+        let q = outs.pop().unwrap();
+        Ok((q, k, v))
+    } else {
+        exec.offload_qkv(layer_idx, hidden)
+    }
+}
+
+/// Branch between sync `exec.offload_linear` and async siblings.
+fn offload_linear_dispatch(
+    exec: &mut impl TrustedExecutor,
+    handle: WeightHandle,
+    hidden: ArrayView2<f32>,
+) -> Result<Array2<f32>> {
+    if use_async_offload() {
+        let h = exec.offload_linear_async(handle, hidden)?;
+        let mut outs = exec.wait_offload(h)?;
+        anyhow::ensure!(
+            outs.len() == 1,
+            "offload_linear_async returned {} outputs; expected 1",
+            outs.len()
+        );
+        Ok(outs.pop().unwrap())
+    } else {
+        exec.offload_linear(handle, hidden)
+    }
+}
+
+/// Branch between sync `exec.offload_linear_many` and async siblings.
+fn offload_linear_many_dispatch(
+    exec: &mut impl TrustedExecutor,
+    handles: &[WeightHandle],
+    hidden: ArrayView2<f32>,
+) -> Result<Vec<Array2<f32>>> {
+    if use_async_offload() {
+        let h = exec.offload_linear_many_async(handles, hidden)?;
+        exec.wait_offload(h)
+    } else {
+        exec.offload_linear_many(handles, hidden)
+    }
+}
+
 use super::attention::{
     causal_gqa_attention, causal_gqa_attention_cached, causal_gqa_attention_permuted,
     causal_gqa_attention_permuted_cached, causal_gqa_attention_swa_cached,
@@ -979,9 +1057,11 @@ fn decoder_block_batched(
 
     // Q/K/V — under PerSequence session, `offload_qkv` falls through
     // to 3 `offload_linear` calls each running the per-sequence
-    // path (substrate handles slicing).
+    // path (substrate handles slicing). `offload_qkv_dispatch`
+    // additionally branches to the R4 async path when
+    // `GELO_ASYNC_OFFLOAD=1` is set.
     let (mut q, mut k, v) = if offload {
-        exec.offload_qkv(layer_idx, h_norm.view())?
+        offload_qkv_dispatch(exec, layer_idx, h_norm.view())?
     } else {
         profile::time("tee:qkv_direct", || {
             (
@@ -1103,7 +1183,11 @@ fn decoder_block_batched(
     });
 
     let attn_out = if offload {
-        exec.offload_linear(WeightHandle::new(layer_idx, WeightKind::O), ctx.view())?
+        offload_linear_dispatch(
+            exec,
+            WeightHandle::new(layer_idx, WeightKind::O),
+            ctx.view(),
+        )?
     } else {
         profile::time("tee:o_direct", || {
             tee_matmul_bf16(
@@ -1127,7 +1211,7 @@ fn decoder_block_batched(
             WeightHandle::new(layer_idx, WeightKind::FfnGate),
             WeightHandle::new(layer_idx, WeightKind::FfnUp),
         ];
-        let mut out = exec.offload_linear_many(&handles, h1_norm.view())?;
+        let mut out = offload_linear_many_dispatch(exec, &handles, h1_norm.view())?;
         let u = out.pop().expect("offload_linear_many returns 2 outputs");
         let g = out.pop().expect("offload_linear_many returns 2 outputs");
         (g, u)
@@ -1155,7 +1239,8 @@ fn decoder_block_batched(
     };
     let activated = profile::time("tee:swiglu_activate", || swiglu(gate.view(), up.view()));
     let ffn_out = if offload {
-        exec.offload_linear(
+        offload_linear_dispatch(
+            exec,
             WeightHandle::new(layer_idx, WeightKind::FfnDown),
             activated.view(),
         )?
@@ -1191,7 +1276,7 @@ fn decoder_block(
     // Q/K/V projections — offloaded one mask shared across the three reads,
     // matching the BERT path.
     let (mut q, mut k, v) = if offload {
-        exec.offload_qkv(layer_idx, h_norm.view())?
+        offload_qkv_dispatch(exec, layer_idx, h_norm.view())?
     } else {
         profile::time("tee:qkv_direct", || {
             (
@@ -1275,7 +1360,11 @@ fn decoder_block(
 
     // Output projection — fresh mask.
     let attn_out = if offload {
-        exec.offload_linear(WeightHandle::new(layer_idx, WeightKind::O), ctx.view())?
+        offload_linear_dispatch(
+            exec,
+            WeightHandle::new(layer_idx, WeightKind::O),
+            ctx.view(),
+        )?
     } else {
         profile::time("tee:o_direct", || tee_matmul_bf16(ctx.view(), layer.wo.as_ref().expect("offload=false requires layer.wo present (skip-layers mode)").view()))
     };
@@ -1294,7 +1383,7 @@ fn decoder_block(
             WeightHandle::new(layer_idx, WeightKind::FfnGate),
             WeightHandle::new(layer_idx, WeightKind::FfnUp),
         ];
-        let mut out = exec.offload_linear_many(&handles, h1_norm.view())?;
+        let mut out = offload_linear_many_dispatch(exec, &handles, h1_norm.view())?;
         let u = out.pop().expect("offload_linear_many returns 2 outputs");
         let g = out.pop().expect("offload_linear_many returns 2 outputs");
         (g, u)
@@ -1310,7 +1399,8 @@ fn decoder_block(
     let activated = profile::time("tee:swiglu_activate", || swiglu(gate.view(), up.view()));
 
     let ffn_out = if offload {
-        exec.offload_linear(
+        offload_linear_dispatch(
+            exec,
             WeightHandle::new(layer_idx, WeightKind::FfnDown),
             activated.view(),
         )?
