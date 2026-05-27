@@ -54,7 +54,7 @@ def run(
     strip_shield: bool = True,
     candidate_pool_size: int = 2048,
     seed: int = 20260518,
-    split_mode: str = "row",
+    split_mode: str = "vocab",
 ) -> AttackResult:
     """Run ISA against a single condition's snapshots. The defaults
     mirror `ISABaselineConfig` (sequence_length=8, train_sequences=64

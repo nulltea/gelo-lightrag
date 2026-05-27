@@ -225,7 +225,7 @@ transforms.
    GGUF rewriter vs runtime in the patched llama.cpp).
 3. **Rebuild the GGUF as `keymat-h128-pi-noise-alg2-FULL-fp32.gguf`**
    (or equivalent slug) — one of the rewriter scripts under
-   `python/path-2/` likely needs to grow the intra-head step.
+   `python/aloepri-llm/` likely needs to grow the intra-head step.
 4. **Re-run M2.7 against the full Algorithm 2 GGUF.** Both
    IMA-basic + IMA paper-like should drop to ≤ 15 %. ISA HS should
    drop below plain ceiling (≤ 8.7 %). All other passes should hold.

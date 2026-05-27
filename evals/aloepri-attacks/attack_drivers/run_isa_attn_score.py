@@ -67,7 +67,7 @@ def run(
     layer: int = 23,
     kind: str = "kq",
     seed: int = 20260518,
-    split_mode: str = "row",
+    split_mode: str = "vocab",
     strip_shield: bool = True,
     **_kwargs,
 ) -> AttackResult:

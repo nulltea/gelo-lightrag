@@ -43,13 +43,30 @@ from attack_drivers.common import AttackResult, classify_risk_level  # type: ign
 
 
 def _sorted_quantile_features(matrix: np.ndarray, bins: int = 64) -> np.ndarray:
-    """Port of AloePri vma.py:305-313. Returns (rows, bins) of sorted
-    row quantiles — dimension-agnostic, so plaintext (cols=2048) and
-    obfuscated (cols=2304) yield comparable signatures.
+    """Port of AloePri vma.py:305-315 (reference-impl parity). Returns
+    (rows, bins) of mean-centred, L2-normalised sorted row quantiles —
+    dimension-agnostic, so plaintext (cols=2048) and obfuscated
+    (cols=2304) yield comparable signatures.
+
+    Three behaviours that must match the reference exactly (otherwise the
+    similarity metric and the per-row scale differ):
+
+    1. **positions = .round()**, not truncation (`astype(int64)` rounds
+       toward zero and silently drops 0.5 at every other position).
+    2. **mean-centre per row** before normalising — turns the cosine
+       step downstream into Pearson correlation, which matches the
+       reference's "row-wise z-score then voting" pipeline.
+    3. **L2-normalise per row** so downstream voting can sum cosines
+       directly without re-normalising.
     """
     sorted_rows = np.sort(matrix.astype(np.float32), axis=1)
-    positions = np.linspace(0, sorted_rows.shape[1] - 1, num=bins).astype(np.int64)
-    return sorted_rows[:, positions]
+    positions = np.round(
+        np.linspace(0, sorted_rows.shape[1] - 1, num=bins)
+    ).astype(np.int64)
+    features = sorted_rows[:, positions]
+    features = features - features.mean(axis=1, keepdims=True)
+    norms = np.maximum(np.linalg.norm(features, axis=1, keepdims=True), 1e-8)
+    return features / norms
 
 
 def _rowwise_standardize(score_matrix: np.ndarray) -> np.ndarray:
@@ -78,12 +95,16 @@ def run_vma(
     plain: ModelWeights,
     obfuscated: ModelWeights,
     *,
+    tau: np.ndarray | None = None,
     eval_size: int = 256,
     candidate_pool_size: int = 4096,
     topk: int = 10,
     bins: int = 64,
-    projection_kinds: tuple[str, ...] = ("attn_q", "attn_k", "attn_v", "ffn_gate", "ffn_up"),
-    layer_indices: tuple[int, ...] = (0, 11, 23),
+    projection_kinds: tuple[str, ...] = (
+        "attn_q", "attn_k", "attn_v", "attn_output",
+        "ffn_gate", "ffn_up", "ffn_down",
+    ),
+    layer_indices: tuple[int, ...] | None = None,
     seed: int = 20260518,
 ) -> AttackResult:
     """RowSort + sorted-quantile + voting. Two source families:
@@ -96,6 +117,14 @@ def run_vma(
     Voting: per-source we get a (eval_size, candidate_pool_size)
     similarity matrix; we standardise rows, sum across sources, take
     top-k.
+
+    τ semantics. The obfuscator writes `W̃[i, :] = W[inv_tau[i], :]`,
+    i.e. obs row at index k holds the obfuscation of plain id `inv_tau[k]`.
+    For a query plain id `i`, the correct match in the obs table is at
+    obs id `tau[i]`. The hit predicate must therefore be
+    `pool_ids[top_idx] == tau[eval_ids]`, not `== eval_ids` (the latter
+    only holds for τ=identity). Pass `tau=None` for the identity-τ control
+    (plain==obfuscated); pass the actual τ for obfuscated cells.
     """
     t0 = time.perf_counter()
     rng = np.random.default_rng(seed)
@@ -104,9 +133,16 @@ def run_vma(
     eval_size = min(eval_size, vocab)
     candidate_pool_size = min(candidate_pool_size, vocab)
     eval_ids = rng.choice(vocab, size=eval_size, replace=False)
-    # Ensure ground truth always reachable in candidate pool.
+    # Truth in obs-id space (where the obfuscated row actually lives).
+    if tau is None:
+        true_obf_ids = eval_ids
+    else:
+        if tau.shape[0] != vocab:
+            raise ValueError(f"τ length {tau.shape[0]} != vocab_size {vocab}")
+        true_obf_ids = tau[eval_ids].astype(np.int64)
+    # Candidate pool sampled in obs-id space; force truth into the pool.
     pool_ids = rng.choice(vocab, size=candidate_pool_size, replace=False)
-    pool_ids = np.unique(np.concatenate([pool_ids, eval_ids]))
+    pool_ids = np.unique(np.concatenate([pool_ids, true_obf_ids]))
 
     plain_W_e = plain.token_embd  # (vocab, d_plain)
     obs_W_e = obfuscated.token_embd  # (vocab, d_obs)
@@ -115,22 +151,55 @@ def run_vma(
     # Materialising (vocab, vocab) or (vocab, intermediate) would
     # cost 50–100 GB at f32 — we just need (eval_size, out) and
     # (pool_size, out).
-    plain_W_e_eval = plain_W_e[eval_ids]   # (eval_size, d_plain)
-    obs_W_e_pool = obs_W_e[pool_ids]       # (pool_size, d_obs)
+    plain_W_e_eval = plain_W_e[eval_ids]   # (eval_size, d_plain), keyed by plain id
+    obs_W_e_pool = obs_W_e[pool_ids]       # (pool_size, d_obs),  keyed by obs id
 
-    # Collect source-row pairs (plain_eval_rows, obs_pool_rows, name).
-    source_pairs: list[tuple[np.ndarray, np.ndarray, str]] = []
+    # Default layer set covers all layers in BOTH models (reference impl
+    # pattern). At 36 × 7 = 252 projection sources + 2 direct sources,
+    # one VMA pass over 4B costs ~30 s of matmul; that's the cost of
+    # paper-comparable signal aggregation.
+    if layer_indices is None:
+        layer_indices = tuple(range(min(plain.n_layers, obfuscated.n_layers)))
+
+    # Streaming over sources: for each projection, compute features,
+    # accumulate the cosine + row-zscore sim into `accum`, drop the
+    # projected matrices immediately. Materialising all ~254 sources
+    # at once peaks around 40 GB on 4B (intermediate=9728 × pool=4096);
+    # streaming keeps peak < 1 GB at the cost of doing the matmul
+    # one source at a time.
+    d_plain = plain.d_eff
+    d_obs = obfuscated.d_eff
+
+    def _project(W: np.ndarray, x: np.ndarray, d_eff: int) -> np.ndarray | None:
+        # Pick the W axis equal to d_eff as the contract axis. Returns
+        # None if neither axis matches (e.g., embed_norm scalar — skip).
+        if W.shape[1] == d_eff:
+            return x @ W.T
+        if W.shape[0] == d_eff:
+            return x @ W
+        return None
+
+    n_sources = 0
+    accum = np.zeros((eval_size, pool_ids.shape[0]), dtype=np.float32)
+
+    def _add_source(plain_src: np.ndarray, obs_src: np.ndarray) -> None:
+        nonlocal n_sources
+        plain_eval = _sorted_quantile_features(plain_src, bins=bins)
+        obs_pool = _sorted_quantile_features(obs_src, bins=bins)
+        # Features are unit-norm already; raw matmul IS the cosine matrix.
+        sim = plain_eval @ obs_pool.T
+        accum[:] += _rowwise_standardize(sim)
+        n_sources += 1
 
     # Direct source 1: W_embed rows themselves.
-    source_pairs.append((plain_W_e_eval, obs_W_e_pool, "embed"))
+    _add_source(plain_W_e_eval, obs_W_e_pool)
 
     # Direct source 2: W_output rows (also vocab-indexed).
-    plain_out_eval = plain.output[eval_ids]
-    obs_out_pool = obfuscated.output[pool_ids]
-    source_pairs.append((plain_out_eval, obs_out_pool, "output"))
+    _add_source(plain.output[eval_ids], obfuscated.output[pool_ids])
 
-    # Projection-derived sources (paper Table 8): W_embed @ W_proj^T.
-    # We compute this on the eval/pool row subset only.
+    # Projection-derived sources (paper Table 8): W_embed @ W_proj.
+    # nn.Linear store is (out, in); attn_output / ffn_down are (in, out).
+    # _project picks the right contract axis per weight.
     for li in layer_indices:
         if li >= plain.n_layers or li >= obfuscated.n_layers:
             continue
@@ -139,37 +208,26 @@ def run_vma(
             obs_W = obfuscated.per_layer[li].get(kind)
             if plain_W is None or obs_W is None:
                 continue
-            # nn.Linear weights are (out, in); we want
-            # rows of W_embed projected onto the kind output:
-            # (eval_size, d) @ (d, out) = (eval_size, out).
-            plain_src = plain_W_e_eval @ plain_W.T  # (eval_size, out)
-            obs_src = obs_W_e_pool @ obs_W.T        # (pool_size, out)
-            source_pairs.append((plain_src, obs_src, f"l{li}_{kind}"))
-
-    # Per-source quantile features + cosine similarity + voting.
-    n_sources = len(source_pairs)
-    accum = np.zeros((eval_size, pool_ids.shape[0]), dtype=np.float32)
-    for plain_src, obs_src, _ in source_pairs:
-        plain_eval = _sorted_quantile_features(plain_src, bins=bins)
-        obs_pool = _sorted_quantile_features(obs_src, bins=bins)
-        # Cosine similarity matrix (eval_size × pool_size).
-        pn = plain_eval / np.maximum(np.linalg.norm(plain_eval, axis=1, keepdims=True), 1e-8)
-        on = obs_pool / np.maximum(np.linalg.norm(obs_pool, axis=1, keepdims=True), 1e-8)
-        sim = pn @ on.T
-        accum += _rowwise_standardize(sim)
+            plain_src = _project(plain_W, plain_W_e_eval, d_plain)
+            obs_src = _project(obs_W, obs_W_e_pool, d_obs)
+            if plain_src is None or obs_src is None:
+                continue
+            _add_source(plain_src, obs_src)
+            del plain_src, obs_src
 
     # Top-k voting result.
     k = min(topk, accum.shape[1])
     top_idx = np.argpartition(-accum, kth=k - 1, axis=1)[:, :k]
     # Resolve to pool_ids and check ground-truth hits.
+    # predicted is in obs-id space; compare against true_obf_ids.
     predicted = pool_ids[top_idx]
-    truth = eval_ids[:, None]
-    top1 = float((predicted[:, 0] == eval_ids).mean())
+    truth = true_obf_ids[:, None]
+    top1 = float((predicted[:, 0] == true_obf_ids).mean())
     top10 = float((predicted[:, :min(10, k)] == truth).any(axis=1).mean())
 
     return AttackResult(
         attack="vma",
-        condition="obfuscated",
+        condition="obfuscated" if tau is not None else "identity_tau",
         model_id=str(obfuscated.path.name),
         n_prompts=0,
         n_train=0,
@@ -184,6 +242,7 @@ def run_vma(
             "projection_kinds": list(projection_kinds),
             "layer_indices": list(layer_indices),
             "candidate_pool_size": int(pool_ids.shape[0]),
+            "tau_applied": tau is not None,
             "runtime_seconds": round(time.perf_counter() - t0, 2),
         },
     )
@@ -252,6 +311,7 @@ def run_ia(
     plain: ModelWeights,
     obfuscated: ModelWeights,
     *,
+    tau: np.ndarray | None = None,
     layer: int = 0,
     eval_size: int = 4096,
     candidate_pool_size: int = 8192,
@@ -260,6 +320,11 @@ def run_ia(
 ) -> AttackResult:
     """Compute Gate-IA + Attn-IA invariants on both models, match by
     nearest neighbour, report TTRSR.
+
+    τ semantics — see `run_vma` docstring. The plain invariant for plain
+    id `i` should match the obs invariant at obs id `tau[i]`. Hit predicate
+    becomes `pool_ids[top_idx] == tau[eval_ids]`. Pass `tau=None` for the
+    identity-τ control.
     """
     t0 = time.perf_counter()
     rng = np.random.default_rng(seed)
@@ -267,8 +332,14 @@ def run_ia(
     eval_size = min(eval_size, vocab)
     candidate_pool_size = min(candidate_pool_size, vocab)
     eval_ids = rng.choice(vocab, size=eval_size, replace=False)
+    if tau is None:
+        true_obf_ids = eval_ids
+    else:
+        if tau.shape[0] != vocab:
+            raise ValueError(f"τ length {tau.shape[0]} != vocab_size {vocab}")
+        true_obf_ids = tau[eval_ids].astype(np.int64)
     pool_ids = rng.choice(vocab, size=candidate_pool_size, replace=False)
-    pool_ids = np.unique(np.concatenate([pool_ids, eval_ids]))
+    pool_ids = np.unique(np.concatenate([pool_ids, true_obf_ids]))
 
     plain_W_e = plain.token_embd
     obs_W_e = obfuscated.token_embd
@@ -286,9 +357,9 @@ def run_ia(
     obs_gate_inv = obs_gate_inv_all[pool_ids]
     gate_top = _nearest_match_1d(plain_gate_inv, obs_gate_inv, topk)
     gate_predicted = pool_ids[gate_top]
-    gate_top1 = float((gate_predicted[:, 0] == eval_ids).mean())
+    gate_top1 = float((gate_predicted[:, 0] == true_obf_ids).mean())
     gate_top10 = float(
-        (gate_predicted[:, :min(10, gate_top.shape[1])] == eval_ids[:, None]).any(axis=1).mean()
+        (gate_predicted[:, :min(10, gate_top.shape[1])] == true_obf_ids[:, None]).any(axis=1).mean()
     )
 
     # Attn-IA invariants.
@@ -298,9 +369,9 @@ def run_ia(
     obs_attn_inv = obs_attn_inv_all[pool_ids]
     attn_top = _nearest_match_nd(plain_attn_inv, obs_attn_inv, topk)
     attn_predicted = pool_ids[attn_top]
-    attn_top1 = float((attn_predicted[:, 0] == eval_ids).mean())
+    attn_top1 = float((attn_predicted[:, 0] == true_obf_ids).mean())
     attn_top10 = float(
-        (attn_predicted[:, :min(10, attn_top.shape[1])] == eval_ids[:, None]).any(axis=1).mean()
+        (attn_predicted[:, :min(10, attn_top.shape[1])] == true_obf_ids[:, None]).any(axis=1).mean()
     )
 
     # Headline TTRSR: max of the two variants (an attacker uses
@@ -310,7 +381,7 @@ def run_ia(
 
     return AttackResult(
         attack="ia",
-        condition="obfuscated",
+        condition="obfuscated" if tau is not None else "identity_tau",
         model_id=str(obfuscated.path.name),
         n_prompts=0,
         n_train=0,
@@ -325,6 +396,7 @@ def run_ia(
             "attn_ia_top10": attn_top10,
             "layer": layer,
             "candidate_pool_size": int(pool_ids.shape[0]),
+            "tau_applied": tau is not None,
             "runtime_seconds": round(time.perf_counter() - t0, 2),
         },
     )
@@ -334,6 +406,21 @@ def main() -> int:
     p = argparse.ArgumentParser(description="Run static-weight attacks against the §05 obfuscated GGUF")
     p.add_argument("--plain", type=Path, required=True, help="Path to plaintext Qwen3 GGUF")
     p.add_argument("--obfuscated", type=Path, required=True, help="Path to §05 obfuscated GGUF")
+    p.add_argument(
+        "--key",
+        type=Path,
+        help=".key.npz produced by obfuscate_qwen3_gguf.py (contains τ). "
+             "Required unless --identity-tau is set. The hit predicate "
+             "needs τ to compare predicted obs-id against tau[eval_plain_id].",
+    )
+    p.add_argument(
+        "--identity-tau",
+        action="store_true",
+        help="Use τ = identity (no permutation). Pair with --plain == "
+             "--obfuscated for the plain-side control — the attack should "
+             "succeed ~100 %% since the bijection is trivial. Validates that "
+             "the attack itself works.",
+    )
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--vma-eval-size", type=int, default=256)
     p.add_argument("--vma-pool-size", type=int, default=4096)
@@ -347,6 +434,14 @@ def main() -> int:
     # to start if we don't have headroom — the post-OOM lesson from path-1.
     check_phase_memory("static_attacks", args.min_mem_gb, args.skip_mem_check)
 
+    if args.identity_tau and args.key is not None:
+        raise SystemExit("pass --key or --identity-tau, not both")
+    if not args.identity_tau and args.key is None:
+        raise SystemExit(
+            "--key is required (real τ) unless --identity-tau is set "
+            "(plain control). The hit predicate cannot evaluate without τ."
+        )
+
     print("[M2.7] loading plaintext GGUF…")
     t0 = time.perf_counter()
     plain = load_model(args.plain, "plaintext")
@@ -359,10 +454,21 @@ def main() -> int:
     print(f"  loaded in {time.perf_counter() - t0:.1f} s — "
           f"vocab={obfuscated.vocab_size} d_eff={obfuscated.d_eff} n_layers={obfuscated.n_layers}")
 
+    if args.identity_tau:
+        tau = None
+        print("[M2.7] τ = identity (plain control)")
+    else:
+        z = np.load(args.key, allow_pickle=False)
+        tau = z["tau"].astype(np.int64)
+        active_size = int(z.get("active_size", -1)) if "active_size" in z.files else -1
+        print(f"[M2.7] loaded τ from {args.key} "
+              f"(len={tau.shape[0]} active_size={active_size})")
+
     print("[M2.7] running VMA…")
     vma = run_vma(
         plain,
         obfuscated,
+        tau=tau,
         eval_size=args.vma_eval_size,
         candidate_pool_size=args.vma_pool_size,
     )
@@ -372,6 +478,7 @@ def main() -> int:
     ia = run_ia(
         plain,
         obfuscated,
+        tau=tau,
         eval_size=args.ia_eval_size,
         candidate_pool_size=args.ia_pool_size,
     )
@@ -383,6 +490,7 @@ def main() -> int:
         "format": "aloepri_m2_7_static_v1",
         "plain_path": str(args.plain),
         "obfuscated_path": str(args.obfuscated),
+        "key_path": str(args.key) if args.key else "identity_tau",
         "attacks": {
             "vma": vma.to_dict(),
             "ia": ia.to_dict(),

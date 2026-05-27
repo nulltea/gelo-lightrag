@@ -37,7 +37,7 @@ Switched to lowering noise (α_e: 1.0 → 0.3, α_h: 0.2 → 0.1). Pass@1 only c
 
 Server log showed the 500s came from llama-server's response encoder failing on multi-language gibberish token sequences in long outputs. Cross-checking against Stage 1 (no Π): **0 server-500s**, regardless of how the model performs accuracy-wise. The differentiator was Π itself, not noise.
 
-Read `python/path-2/obfuscate_qwen3_gguf.py:308-323`:
+Read `python/aloepri-llm/obfuscate_qwen3_gguf.py:308-323`:
 
 ```python
 pi_active_size = 151669
@@ -50,7 +50,7 @@ tau[:pi_active_size] = perm
 
 ## The fix
 
-`python/path-2/obfuscate_qwen3_gguf.py:297-368` now reads `tokenizer.ggml.token_type` from the source GGUF, filters to `type ∈ {NORMAL=1, BYTE=6}` for the permutable set, and leaves all other token IDs (CONTROL, USER_DEFINED, UNUSED) at identity. For Qwen3-1.7B this is 151,643 permuted, 26 kept identity.
+`python/aloepri-llm/obfuscate_qwen3_gguf.py:297-368` now reads `tokenizer.ggml.token_type` from the source GGUF, filters to `type ∈ {NORMAL=1, BYTE=6}` for the permutable set, and leaves all other token IDs (CONTROL, USER_DEFINED, UNUSED) at identity. For Qwen3-1.7B this is 151,643 permuted, 26 kept identity.
 
 **Privacy implication of leaving specials at identity:** none. Special token IDs are public knowledge (the tokenizer config is part of the GGUF metadata, distributed openly). Permuting them gains zero confidentiality and costs the entire inference-server stop-token plumbing.
 
@@ -90,7 +90,7 @@ Tracked JSONs from before today's investigation were `git rm`'d:
 - `evals/aloepri-attacks/results/sweep/` — full investigation record (8 cells × {run.log, quality-humaneval.json, optional ima-embedrow.json}). Includes plain reference, ablation stages 1-3, ae0.3 broken vs fixed comparison.
 
 **Modified:**
-- `python/path-2/obfuscate_qwen3_gguf.py` — Π special-token exclusion (the fix).
+- `python/aloepri-llm/obfuscate_qwen3_gguf.py` — Π special-token exclusion (the fix).
 - `evals/aloepri-attacks/m2_7/run_all_m2_7.py` — `--allow-quality-humaneval` step that calls the new driver.
 
 ## Suggested next steps
@@ -106,7 +106,7 @@ Tracked JSONs from before today's investigation were `git rm`'d:
 # Rebuild
 PLAIN_GGUF=~/.cache/huggingface/hub/models--bartowski--Qwen_Qwen3-1.7B-GGUF/snapshots/dcb19155b962dbb6389f4691a982043a8e651022/Qwen_Qwen3-1.7B-Q8_0.gguf
 OUT=~/.cache/huggingface/path-2-aloepri/qwen3-1.7b/keymat-h128-pi-noise-ae0.3-ah0.1-fp32.gguf
-python/path-2/.venv/bin/python python/path-2/obfuscate_qwen3_gguf.py \
+python/aloepri-llm/.venv/bin/python python/aloepri-llm/obfuscate_qwen3_gguf.py \
   --in "$PLAIN_GGUF" --out "$OUT" --mode keymat \
   --expansion-size 128 --seed 42 --lam 0.3 \
   --pi --pi-seed 42424242 \
@@ -120,7 +120,7 @@ docker run --rm -d --name aloepri-m2_7-server \
   -c 4096 --ubatch-size 1024 --host 0.0.0.0 --port 8080
 
 # Measure
-python/path-2/.venv/bin/python evals/aloepri-attacks/m2_7/run_quality_humaneval.py \
+python/aloepri-llm/.venv/bin/python evals/aloepri-attacks/m2_7/run_quality_humaneval.py \
   --endpoint http://127.0.0.1:8061 --key "$OUT.key.npz" \
   --output /tmp/cell.json --n-humaneval 20
 ```

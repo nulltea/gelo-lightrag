@@ -162,13 +162,13 @@ move the dial on ISA but not IMA.
 
 **Code (uncommitted):**
 
-- `python/path-2/lib/alg2.py` — `generate_block_perm` rewritten as
+- `python/aloepri-llm/lib/alg2.py` — `generate_block_perm` rewritten as
   β-wide-window permutation; `generate_h_qk` extended with
   `hadamard_signs=True` mode; `build_layer_keys` takes
   `h_hadamard_signs` flag and uses repaired M_k construction.
-- `python/path-2/obfuscate_qwen3_gguf.py` — `--alg2-h-hadamard-signs`
+- `python/aloepri-llm/obfuscate_qwen3_gguf.py` — `--alg2-h-hadamard-signs`
   CLI flag.
-- `python/path-2/scripts/check_alg2_invariance.py` — bumped to realistic
+- `python/aloepri-llm/scripts/check_alg2_invariance.py` — bumped to realistic
   params (head_dim=128, β=8).
 - `evals/aloepri-attacks/attack_drivers/common.py` — `stack_prompt_observations`
   flattens 3-D tensors to 2-D so Q/K post-norm snapshots feed the
