@@ -22,7 +22,7 @@ use gelo_embedder::decoder::rope::RopeTables;
 use gelo_embedder::decoder::weights::{DecoderLayerWeights, DecoderWeights};
 use gelo_protocol::rng::MaskSeed;
 use gelo_protocol::{
-    GpuOffloadEngine, InProcessTrustedExecutor, PlaintextExecutor, RayonCpuEngine,
+    GpuOffloadEngine, InProcessTrustedExecutor, PlaintextExecutor, ReferenceCpuEngine,
     TrustedExecutor, WeightHandle, WeightKind,
 };
 
@@ -166,12 +166,12 @@ fn masked_and_plaintext_executors_agree_on_score() {
     ));
     let head = YesNoHead { yes_token_id: 3, no_token_id: 9 };
 
-    let mut plain_engine = RayonCpuEngine::new();
+    let mut plain_engine = ReferenceCpuEngine::new();
     provision_decoder(&weights, &cfg, &mut plain_engine);
     let plain = PlaintextExecutor::new(plain_engine);
     let mut plain_svc = build_service(cfg.clone(), weights.clone(), rope.clone(), head, plain);
 
-    let mut masked_engine = RayonCpuEngine::new();
+    let mut masked_engine = ReferenceCpuEngine::new();
     provision_decoder(&weights, &cfg, &mut masked_engine);
     let masked =
         InProcessTrustedExecutor::with_seed(masked_engine, MaskSeed::from_bytes([43u8; 32]));
@@ -209,12 +209,12 @@ fn masked_executor_preserves_top1_rank() {
     ));
     let head = YesNoHead { yes_token_id: 7, no_token_id: 11 };
 
-    let mut plain_engine = RayonCpuEngine::new();
+    let mut plain_engine = ReferenceCpuEngine::new();
     provision_decoder(&weights, &cfg, &mut plain_engine);
     let plain = PlaintextExecutor::new(plain_engine);
     let mut plain_svc = build_service(cfg.clone(), weights.clone(), rope.clone(), head, plain);
 
-    let mut masked_engine = RayonCpuEngine::new();
+    let mut masked_engine = ReferenceCpuEngine::new();
     provision_decoder(&weights, &cfg, &mut masked_engine);
     let masked =
         InProcessTrustedExecutor::with_seed(masked_engine, MaskSeed::from_bytes([60u8; 32]));

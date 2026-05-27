@@ -15,7 +15,7 @@ license.workspace = true
 # fallback). To force the pure-Rust matrixmultiply path (e.g. for a
 # crate consumer without AOCL), build with
 # `--no-default-features`.
-default = ["blas"]
+default = ["blas", "reference-engine"]
 # `blas` calls into BLIS for the mask apply/unapply CPU GEMMs (via a
 # direct cblas_sgemm dispatch in `mask::apply` / `mask::unapply`).
 # Pulls in `blas-src + blis-src + cblas-sys`. AOCL-BLIS is the linked
@@ -34,6 +34,20 @@ blas = ["dep:blas-src", "dep:blis-src", "dep:cblas-sys"]
 # clears the BLIS-vs-matrixmultiply crossover. Empirically measured
 # 2026-05-15 on AMD Strix Halo iGPU.
 blas-ndarray = ["blas", "ndarray/blas"]
+
+# Exposes [`ReferenceCpuEngine`] — the rayon-backed CPU adapter for
+# the `GpuOffloadEngine` seam. Test-side only: it backs
+# `gelo-protocol`'s own unit tests, the CPU↔GPU parity oracle in
+# `gelo-gpu-wgpu/tests/parity.rs`, and the byzantine-tampering attack
+# suites (`tests/ple_pcie_leak.rs`, `tests/u_verify.rs`,
+# `tests/bss_recovery.rs`) that wrap it in `SpyEngine` /
+# `TamperingEngine` / `SnoopingEngine`. Production callers must use
+# `gelo_gpu_wgpu::WgpuVulkanEngine`. Default-on so the workspace test
+# suite + `cargo check --all-targets` run without per-crate dev-dep
+# tweaks; a downstream crate that wants compile-time isolation from
+# the test adapter can set `default-features = false, features =
+# ["blas"]` on its `gelo-protocol` dep.
+reference-engine = []
 
 [dependencies]
 anyhow.workspace = true

@@ -21,18 +21,18 @@ use rand_distr::{Distribution, StandardNormal};
 
 use gelo_protocol::rng::MaskSeed;
 use gelo_protocol::{
-    GpuOffloadEngine, InProcessTrustedExecutor, RayonCpuEngine, ShieldConfig, TrustedExecutor,
+    GpuOffloadEngine, InProcessTrustedExecutor, ReferenceCpuEngine, ShieldConfig, TrustedExecutor,
     WeightHandle, WeightKind,
 };
 
 /// Wraps another engine, recording every input matrix it sees.
 struct SnoopingEngine {
-    inner: RayonCpuEngine,
+    inner: ReferenceCpuEngine,
     captured: Mutex<Vec<Array2<f32>>>,
 }
 
 impl SnoopingEngine {
-    fn new(inner: RayonCpuEngine) -> Self {
+    fn new(inner: ReferenceCpuEngine) -> Self {
         Self {
             inner,
             captured: Mutex::new(Vec::new()),
@@ -95,7 +95,7 @@ fn bare_orthogonal_mask_leaks_gram_matrix() {
     let hidden = random_matrix(n, d, &mut rng);
     let weight = random_matrix(d, p, &mut rng);
 
-    let mut engine = SnoopingEngine::new(RayonCpuEngine::new());
+    let mut engine = SnoopingEngine::new(ReferenceCpuEngine::new());
     let handle = WeightHandle::new(0, WeightKind::Q);
     engine.register_weight(handle, weight.view()).unwrap();
 
@@ -129,7 +129,7 @@ fn shielded_mask_masks_gram_matrix() {
     let hidden = random_matrix(n, d, &mut rng);
     let weight = random_matrix(d, p, &mut rng);
 
-    let mut engine = SnoopingEngine::new(RayonCpuEngine::new());
+    let mut engine = SnoopingEngine::new(ReferenceCpuEngine::new());
     let handle = WeightHandle::new(0, WeightKind::Q);
     engine.register_weight(handle, weight.view()).unwrap();
 
@@ -168,7 +168,7 @@ fn shielded_executor_preserves_functional_output() {
     let hidden = random_matrix(n, d, &mut rng);
     let weight = random_matrix(d, p, &mut rng);
 
-    let mut engine = RayonCpuEngine::new();
+    let mut engine = ReferenceCpuEngine::new();
     let handle = WeightHandle::new(0, WeightKind::Q);
     engine.register_weight(handle, weight.view()).unwrap();
 

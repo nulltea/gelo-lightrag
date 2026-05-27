@@ -18,7 +18,7 @@ use gelo_embedder::decoder::rope::RopeTables;
 use gelo_embedder::decoder::weights::{DecoderLayerWeights, DecoderWeights};
 use gelo_protocol::rng::MaskSeed;
 use gelo_protocol::{
-    GpuOffloadEngine, InProcessTrustedExecutor, PlaintextExecutor, RayonCpuEngine, TrustedExecutor,
+    GpuOffloadEngine, InProcessTrustedExecutor, PlaintextExecutor, ReferenceCpuEngine, TrustedExecutor,
     WeightHandle, WeightKind,
 };
 use ndarray::Axis;
@@ -128,12 +128,12 @@ fn synthetic_decoder_parity_two_layer_gqa() {
 
     let input_ids: Vec<u32> = vec![1, 5, 9, 13, 17, 21];
 
-    let mut plain_engine = RayonCpuEngine::new();
+    let mut plain_engine = ReferenceCpuEngine::new();
     provision_decoder(&weights, &cfg, &mut plain_engine);
     let mut plain = PlaintextExecutor::new(plain_engine);
     let plain_out = forward::run(&cfg, &weights, &rope, &mut plain, &input_ids).unwrap();
 
-    let mut masked_engine = RayonCpuEngine::new();
+    let mut masked_engine = ReferenceCpuEngine::new();
     provision_decoder(&weights, &cfg, &mut masked_engine);
     let mut masked =
         InProcessTrustedExecutor::with_seed(masked_engine, MaskSeed::from_bytes([22u8; 32]));
@@ -172,12 +172,12 @@ fn synthetic_decoder_parity_permuted_attention() {
 
     let input_ids: Vec<u32> = vec![1, 5, 9, 13, 17, 21];
 
-    let mut plain_engine = RayonCpuEngine::new();
+    let mut plain_engine = ReferenceCpuEngine::new();
     provision_decoder(&weights, &cfg, &mut plain_engine);
     let mut plain = PlaintextExecutor::new(plain_engine);
     let plain_out = forward::run(&cfg, &weights, &rope, &mut plain, &input_ids).unwrap();
 
-    let mut masked_engine = RayonCpuEngine::new();
+    let mut masked_engine = ReferenceCpuEngine::new();
     provision_decoder(&weights, &cfg, &mut masked_engine);
     let mut masked =
         InProcessTrustedExecutor::with_seed(masked_engine, MaskSeed::from_bytes([92u8; 32]));
@@ -209,12 +209,12 @@ fn synthetic_decoder_parity_sensitive_layer_exclusion() {
 
     let input_ids: Vec<u32> = vec![2, 8, 14, 20];
 
-    let mut plain_engine = RayonCpuEngine::new();
+    let mut plain_engine = ReferenceCpuEngine::new();
     provision_decoder(&weights, &cfg, &mut plain_engine);
     let mut plain = PlaintextExecutor::new(plain_engine);
     let plain_out = forward::run(&cfg, &weights, &rope, &mut plain, &input_ids).unwrap();
 
-    let mut masked_engine = RayonCpuEngine::new();
+    let mut masked_engine = ReferenceCpuEngine::new();
     provision_decoder(&weights, &cfg, &mut masked_engine);
     let mut masked =
         InProcessTrustedExecutor::with_seed(masked_engine, MaskSeed::from_bytes([29u8; 32]));
@@ -249,12 +249,12 @@ fn synthetic_batched_forward_b1_matches_single_stream() {
 
     let input_ids: Vec<u32> = vec![1, 5, 9, 13, 17, 21];
 
-    let mut plain_engine = RayonCpuEngine::new();
+    let mut plain_engine = ReferenceCpuEngine::new();
     provision_decoder(&weights, &cfg, &mut plain_engine);
     let mut plain = PlaintextExecutor::new(plain_engine);
     let single = forward::run(&cfg, &weights, &rope, &mut plain, &input_ids).unwrap();
 
-    let mut batched_engine = RayonCpuEngine::new();
+    let mut batched_engine = ReferenceCpuEngine::new();
     provision_decoder(&weights, &cfg, &mut batched_engine);
     let mut batched_exec = InProcessTrustedExecutor::with_seed(
         batched_engine,
@@ -301,14 +301,14 @@ fn synthetic_batched_forward_per_sequence_matches_single_stream() {
     // Plaintext per-sequence references.
     let mut refs: Vec<ndarray::Array2<f32>> = Vec::with_capacity(seqs.len());
     for ids in &seqs {
-        let mut plain_engine = RayonCpuEngine::new();
+        let mut plain_engine = ReferenceCpuEngine::new();
         provision_decoder(&weights, &cfg, &mut plain_engine);
         let mut plain = PlaintextExecutor::new(plain_engine);
         refs.push(forward::run(&cfg, &weights, &rope, &mut plain, ids).unwrap());
     }
 
     // One batched call.
-    let mut batched_engine = RayonCpuEngine::new();
+    let mut batched_engine = ReferenceCpuEngine::new();
     provision_decoder(&weights, &cfg, &mut batched_engine);
     let mut batched_exec = InProcessTrustedExecutor::with_seed(
         batched_engine,
@@ -365,7 +365,7 @@ fn synthetic_generate_batched_b1_matches_single_stream() {
     };
 
     // Single-stream reference.
-    let mut single_engine = RayonCpuEngine::new();
+    let mut single_engine = ReferenceCpuEngine::new();
     provision_decoder(&weights, &cfg, &mut single_engine);
     let mut single_exec = InProcessTrustedExecutor::with_seed(
         single_engine,
@@ -376,7 +376,7 @@ fn synthetic_generate_batched_b1_matches_single_stream() {
             .expect("single generate");
 
     // Batched at B=1.
-    let mut batched_engine = RayonCpuEngine::new();
+    let mut batched_engine = ReferenceCpuEngine::new();
     provision_decoder(&weights, &cfg, &mut batched_engine);
     let mut batched_exec = InProcessTrustedExecutor::with_seed(
         batched_engine,
@@ -442,7 +442,7 @@ fn synthetic_generate_batched_per_sequence_matches_single_stream() {
     let mut refs: Vec<gelo_embedder::decoder::generation::GenerationOutput> =
         Vec::with_capacity(prompts.len());
     for prompt in &prompts {
-        let mut eng = RayonCpuEngine::new();
+        let mut eng = ReferenceCpuEngine::new();
         provision_decoder(&weights, &cfg, &mut eng);
         let mut exec =
             InProcessTrustedExecutor::with_seed(eng, MaskSeed::from_bytes([72u8; 32]));
@@ -453,7 +453,7 @@ fn synthetic_generate_batched_per_sequence_matches_single_stream() {
     }
 
     // Batched.
-    let mut batched_engine = RayonCpuEngine::new();
+    let mut batched_engine = ReferenceCpuEngine::new();
     provision_decoder(&weights, &cfg, &mut batched_engine);
     let mut batched_exec = InProcessTrustedExecutor::with_seed(
         batched_engine,
@@ -507,7 +507,7 @@ fn synthetic_generate_batched_per_sequence_eos_freezes() {
     };
     let mut refs = Vec::with_capacity(prompts.len());
     for p in &prompts {
-        let mut eng = RayonCpuEngine::new();
+        let mut eng = ReferenceCpuEngine::new();
         provision_decoder(&weights, &cfg, &mut eng);
         let mut exec =
             InProcessTrustedExecutor::with_seed(eng, MaskSeed::from_bytes([82u8; 32]));
@@ -558,7 +558,7 @@ fn synthetic_generate_batched_per_sequence_eos_freezes() {
         .position(|t| *t == eos_token)
         .expect("eos_token came from refs[0]");
 
-    let mut batched_engine = RayonCpuEngine::new();
+    let mut batched_engine = ReferenceCpuEngine::new();
     provision_decoder(&weights, &cfg, &mut batched_engine);
     let mut batched_exec = InProcessTrustedExecutor::with_seed(
         batched_engine,
@@ -632,7 +632,7 @@ fn synthetic_generate_batched_shared_a_per_sequence_matches_single_stream() {
     }
     let mut refs = Vec::with_capacity(prompts.len());
     for p in &prompts {
-        let mut eng = RayonCpuEngine::new();
+        let mut eng = ReferenceCpuEngine::new();
         provision_decoder(&weights, &cfg, &mut eng);
         let mut exec =
             InProcessTrustedExecutor::with_seed(eng, MaskSeed::from_bytes([92u8; 32]));
@@ -645,7 +645,7 @@ fn synthetic_generate_batched_shared_a_per_sequence_matches_single_stream() {
         std::env::set_var("BATCHED_DECODE_SHARED_A", "1");
     }
 
-    let mut eng = RayonCpuEngine::new();
+    let mut eng = ReferenceCpuEngine::new();
     provision_decoder(&weights, &cfg, &mut eng);
     let mut exec =
         InProcessTrustedExecutor::with_seed(eng, MaskSeed::from_bytes([93u8; 32]));
@@ -707,7 +707,7 @@ fn synthetic_lm_head_gpu_offload_matches_in_tee_to_mask_floor() {
     }
 
     // GPU offload: through the masked substrate.
-    let mut engine = RayonCpuEngine::new();
+    let mut engine = ReferenceCpuEngine::new();
     register_lm_head(&weights, &mut engine);
     let mut exec = InProcessTrustedExecutor::with_seed(
         engine,

@@ -225,6 +225,161 @@ impl<B: BlockBackend, BS: ByteStoreBackend> LightKgStore<B, BS> {
     pub fn chunk_text(&self, chunk_id: &str) -> Result<String, LightKgError> {
         Ok(self.chunk_text.get(chunk_id)?)
     }
+
+    /// One-shot kg retrieval — the deep entry point all production
+    /// callers should reach for. Owns the six-step fan-out (entities
+    /// top-k → id↔name → optional relations top-k + endpoint inflation
+    /// → adjacency → src_chunks → chunk_text decrypt) so the orchestrator
+    /// doesn't need to know the store's internal id-map layout.
+    ///
+    /// The embeddings are expected to be **pre-perturbed** — the
+    /// retrieval-side search-pattern perturbation
+    /// ([`lightrag_private::perturb`]) is owned by the orchestrator,
+    /// not the store, so the store remains agnostic to the
+    /// search_pattern_key (HKDF v2 child #7).
+    ///
+    /// `hl_perturbed` is ignored when `shape == QueryShape::Local`; pass
+    /// `&[]` in that case.
+    pub async fn query_context(
+        &mut self,
+        ll_perturbed: &[f32],
+        hl_perturbed: &[f32],
+        params: &KgQueryParams,
+    ) -> Result<KgContext, LightKgError> {
+        // 1. Entities search
+        let entity_block_ids = self
+            .entities
+            .search(ll_perturbed, params.top_k_entities)
+            .await?;
+        let entity_id_to_name: HashMap<u32, String> = self
+            .entity_block_id
+            .iter()
+            .map(|(name, id)| (*id, name.clone()))
+            .collect();
+        let mut entity_names: Vec<String> = entity_block_ids
+            .iter()
+            .filter_map(|id| entity_id_to_name.get(id).cloned())
+            .collect();
+
+        // 2. Hybrid: relations search + endpoint inflation
+        let mut relation_keys_from_search: Vec<String> = Vec::new();
+        if matches!(params.shape, QueryShape::Hybrid) {
+            let relation_block_ids = self
+                .relations
+                .search(hl_perturbed, params.top_k_relations)
+                .await?;
+            let relation_id_to_canon: HashMap<u32, String> = self
+                .relation_block_id
+                .iter()
+                .map(|(canon, id)| (*id, canon.clone()))
+                .collect();
+            for id in &relation_block_ids {
+                if let Some(canon) = relation_id_to_canon.get(id) {
+                    relation_keys_from_search.push(canon.clone());
+                }
+                if let Some((src, tgt)) = self.relation_endpoints.get(id) {
+                    entity_names.push(src.clone());
+                    entity_names.push(tgt.clone());
+                }
+            }
+        }
+        let mut seen_e = std::collections::HashSet::new();
+        entity_names.retain(|n| seen_e.insert(n.clone()));
+
+        // 3. Adjacency fan-out
+        let mut all_relations: Vec<String> = relation_keys_from_search;
+        for name in &entity_names {
+            let mut rels = self.adjacency_for_entity(name)?;
+            all_relations.append(&mut rels);
+        }
+        let mut seen_r = std::collections::HashSet::new();
+        all_relations.retain(|r| seen_r.insert(r.clone()));
+
+        // 4. src_chunks fan-out
+        let mut chunk_ids: Vec<String> = Vec::new();
+        for name in &entity_names {
+            let mut chunks = self.src_chunks_for_entity(name)?;
+            chunks.truncate(params.top_k_chunks_per_entity);
+            chunk_ids.append(&mut chunks);
+        }
+        let mut seen_c = std::collections::HashSet::new();
+        chunk_ids.retain(|id| seen_c.insert(id.clone()));
+
+        // 5. Decrypt chunk texts
+        let mut chunks: Vec<(String, String)> = Vec::with_capacity(chunk_ids.len());
+        for id in &chunk_ids {
+            let text = self.chunk_text(id)?;
+            chunks.push((id.clone(), text));
+        }
+
+        Ok(KgContext {
+            entities: entity_names,
+            relations: all_relations,
+            chunks,
+        })
+    }
+}
+
+/// Local vs Hybrid retrieval shape. Local hits the entities index only;
+/// Hybrid additionally pulls top-k relations and unions their endpoint
+/// entities into the entity set before adjacency / src_chunk fan-out.
+#[derive(Debug, Clone, Copy)]
+pub enum QueryShape {
+    Local,
+    Hybrid,
+}
+
+/// Tuning surface for [`LightKgStore::query_context`].
+#[derive(Debug, Clone)]
+pub struct KgQueryParams {
+    pub top_k_entities: usize,
+    pub top_k_chunks_per_entity: usize,
+    pub shape: QueryShape,
+    /// Hybrid-mode only — number of relations to pull from the
+    /// relations index before endpoint inflation. Ignored in Local
+    /// mode.
+    pub top_k_relations: usize,
+}
+
+impl Default for KgQueryParams {
+    fn default() -> Self {
+        Self {
+            top_k_entities: 5,
+            top_k_chunks_per_entity: 2,
+            shape: QueryShape::Local,
+            top_k_relations: 5,
+        }
+    }
+}
+
+/// One assembled retrieval result. Same shape upstream LightRAG's
+/// `kg_query` returns to its caller (modulo `_token_truncation`).
+#[derive(Debug, Default, Clone)]
+pub struct KgContext {
+    pub entities: Vec<String>,
+    pub relations: Vec<String>,
+    pub chunks: Vec<(String, String)>,
+}
+
+impl KgContext {
+    /// Bare context string for the LLM. Minimal format — bit-for-bit
+    /// LightRAG `_build_context_str` parity is M7.4.
+    pub fn to_context_string(&self) -> String {
+        let mut out = String::new();
+        out.push_str("# Entities\n");
+        for e in &self.entities {
+            out.push_str(&format!("- {e}\n"));
+        }
+        out.push_str("\n# Relations\n");
+        for r in &self.relations {
+            out.push_str(&format!("- {r}\n"));
+        }
+        out.push_str("\n# Source chunks\n");
+        for (id, text) in &self.chunks {
+            out.push_str(&format!("[{id}] {text}\n"));
+        }
+        out
+    }
 }
 
 /// Internal build driver. Shared between the in-memory and

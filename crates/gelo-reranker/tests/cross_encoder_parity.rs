@@ -23,7 +23,7 @@ use gelo_embedder::bert::weights::{BertLayerWeights, BertWeights};
 use gelo_embedder::common::tokenizer::HfTokenizer;
 use gelo_protocol::rng::MaskSeed;
 use gelo_protocol::{
-    GpuOffloadEngine, InProcessTrustedExecutor, PlaintextExecutor, RayonCpuEngine,
+    GpuOffloadEngine, InProcessTrustedExecutor, PlaintextExecutor, ReferenceCpuEngine,
     TrustedExecutor, WeightHandle, WeightKind,
 };
 
@@ -171,12 +171,12 @@ fn masked_and_plaintext_executors_agree_on_score() {
     let weights = Arc::new(synthetic_weights(&cfg, &mut rng));
     let head = synthetic_head(cfg.hidden_size, &mut rng);
 
-    let mut plain_engine = RayonCpuEngine::new();
+    let mut plain_engine = ReferenceCpuEngine::new();
     provision_layers(&weights, &cfg, &mut plain_engine);
     let plain = PlaintextExecutor::new(plain_engine);
     let mut plain_svc = build_service(cfg.clone(), weights.clone(), head.clone(), plain);
 
-    let mut masked_engine = RayonCpuEngine::new();
+    let mut masked_engine = ReferenceCpuEngine::new();
     provision_layers(&weights, &cfg, &mut masked_engine);
     let masked =
         InProcessTrustedExecutor::with_seed(masked_engine, MaskSeed::from_bytes([19u8; 32]));
@@ -206,12 +206,12 @@ fn masked_executor_preserves_top1_rank() {
     let weights = Arc::new(synthetic_weights(&cfg, &mut rng));
     let head = synthetic_head(cfg.hidden_size, &mut rng);
 
-    let mut plain_engine = RayonCpuEngine::new();
+    let mut plain_engine = ReferenceCpuEngine::new();
     provision_layers(&weights, &cfg, &mut plain_engine);
     let plain = PlaintextExecutor::new(plain_engine);
     let mut plain_svc = build_service(cfg.clone(), weights.clone(), head.clone(), plain);
 
-    let mut masked_engine = RayonCpuEngine::new();
+    let mut masked_engine = ReferenceCpuEngine::new();
     provision_layers(&weights, &cfg, &mut masked_engine);
     let masked =
         InProcessTrustedExecutor::with_seed(masked_engine, MaskSeed::from_bytes([27u8; 32]));

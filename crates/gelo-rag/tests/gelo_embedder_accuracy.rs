@@ -42,7 +42,7 @@
 //! - If both are 1.0 but Qwen3-plain's `top1_grp` is low → Qwen3
 //!   anisotropy alone explains the previous bench (GELO is innocent).
 //!
-//! All five configs use `RayonCpuEngine` for engine-parity; accuracy is
+//! All five configs use `ReferenceCpuEngine` for engine-parity; accuracy is
 //! engine-independent modulo f32 order-of-ops noise (≪ the mask drift).
 //!
 //! Run:
@@ -58,7 +58,7 @@ use gelo_embedder::{DecoderConfig, DecoderWeights, GeloBertEmbedder, GeloQwenEmb
 use gelo_embedder::decoder::rope::RopeTables;
 use gelo_gpu_wgpu::WgpuVulkanEngine;
 use gelo_protocol::rng::MaskSeed;
-use gelo_protocol::{InProcessTrustedExecutor, PlaintextExecutor, RayonCpuEngine};
+use gelo_protocol::{InProcessTrustedExecutor, PlaintextExecutor, ReferenceCpuEngine};
 use rag_core::{ChunkId, DocumentChunk, Embedder, FastEmbedEmbedder};
 
 const TOP_K: usize = 3;
@@ -274,7 +274,7 @@ fn gelo_masking_vs_plain_across_architectures() {
 
     // ─── BGE plain (BERT, PlaintextExecutor — no GELO masking) ───
     eprintln!("[run] BGE-small (plain — no GELO mask) ...");
-    let plain_exec_bert = PlaintextExecutor::new(RayonCpuEngine::new());
+    let plain_exec_bert = PlaintextExecutor::new(ReferenceCpuEngine::new());
     let mut bert_plain =
         GeloBertEmbedder::from_pretrained(BERT_MODEL, plain_exec_bert).expect("BGE load");
     let bert_plain_hits = retrieve_topk(&mut bert_plain, &corpus, &qs);
@@ -288,7 +288,7 @@ fn gelo_masking_vs_plain_across_architectures() {
     // ─── BGE + GELO masking ───
     eprintln!("[run] BGE-small + GELO masking ...");
     let masked_exec_bert =
-        InProcessTrustedExecutor::with_seed(RayonCpuEngine::new(), MaskSeed::from_bytes([7u8; 32]));
+        InProcessTrustedExecutor::with_seed(ReferenceCpuEngine::new(), MaskSeed::from_bytes([7u8; 32]));
     let mut bert_gelo = GeloBertEmbedder::from_pretrained(BERT_MODEL, masked_exec_bert)
         .expect("BGE load");
     let bert_gelo_hits = retrieve_topk(&mut bert_gelo, &corpus, &qs);
@@ -301,7 +301,7 @@ fn gelo_masking_vs_plain_across_architectures() {
 
     // ─── Qwen3 plain (decoder-LLM, PlaintextExecutor) ───
     eprintln!("[run] Qwen3-0.6B (plain — no GELO mask) ...");
-    let plain_exec_qwen = PlaintextExecutor::new(RayonCpuEngine::new());
+    let plain_exec_qwen = PlaintextExecutor::new(ReferenceCpuEngine::new());
     let qwen_plain_seed = GeloQwenEmbedder::from_pretrained(QWEN_MODEL, plain_exec_qwen)
         .expect("Qwen3 load");
     // Share weights between the two Qwen3 variants — keeps the second
@@ -322,7 +322,7 @@ fn gelo_masking_vs_plain_across_architectures() {
     // ─── Qwen3 + GELO masking (production defaults — OutAttnMult auto-disabled at short n) ───
     eprintln!("[run] Qwen3-0.6B + GELO masking (defaults — auto-switch keeps OutAttnMult OFF at short n) ...");
     let masked_exec_qwen = InProcessTrustedExecutor::with_seed(
-        RayonCpuEngine::new(),
+        ReferenceCpuEngine::new(),
         MaskSeed::from_bytes([11u8; 32]),
     );
     let mut qwen_gelo = GeloQwenEmbedder::with_shared_weights(qwen_cfg.clone(), qwen_tokenizer.clone(), Arc::clone(&qwen_weights), Arc::clone(&qwen_rope), masked_exec_qwen)
@@ -343,7 +343,7 @@ fn gelo_masking_vs_plain_across_architectures() {
     // lengths it was not designed for.
     eprintln!("[run] Qwen3-0.6B + GELO + OutAttnMult FORCED on at any n (n < hidden_size) ...");
     let masked_exec_outattn = InProcessTrustedExecutor::with_seed(
-        RayonCpuEngine::new(),
+        ReferenceCpuEngine::new(),
         MaskSeed::from_bytes([11u8; 32]),
     );
     let mut qwen_outattn = GeloQwenEmbedder::with_shared_weights(qwen_cfg.clone(), qwen_tokenizer.clone(), Arc::clone(&qwen_weights), Arc::clone(&qwen_rope), masked_exec_outattn)
@@ -363,7 +363,7 @@ fn gelo_masking_vs_plain_across_architectures() {
     // "retrieval / RAG" workloads. Reload `qwen_plain` (was moved earlier
     // — share weights via Arc to keep this nearly free).
     eprintln!("[run] Qwen3-0.6B (plain) WITH instruction prefix \"Instruct: ...\\nQuery:\" ...");
-    let plain_exec_qwen_p = PlaintextExecutor::new(RayonCpuEngine::new());
+    let plain_exec_qwen_p = PlaintextExecutor::new(ReferenceCpuEngine::new());
     let mut qwen_plain_prefixed = GeloQwenEmbedder::with_shared_weights(qwen_cfg.clone(), qwen_tokenizer.clone(), Arc::clone(&qwen_weights), Arc::clone(&qwen_rope), plain_exec_qwen_p)
     .expect("Qwen3 plain rebuild");
     let prefix_fmt = |q: &str| {

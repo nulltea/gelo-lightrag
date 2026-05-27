@@ -233,12 +233,12 @@ mod tests {
     use crate::report::parse_report;
     use crate::verify::{AttestedBinding, SnpAttestationVerifier, SnpRootTrust};
     use gelo_protocol::rng::MaskSeed;
-    use gelo_protocol::sim::RayonCpuEngine;
+    use gelo_protocol::sim::ReferenceCpuEngine;
 
     fn mk_executor()
-    -> SnpTrustedExecutor<RayonCpuEngine, MockReportIssuer> {
+    -> SnpTrustedExecutor<ReferenceCpuEngine, MockReportIssuer> {
         let inner = InProcessTrustedExecutor::with_seed(
-            RayonCpuEngine::new(),
+            ReferenceCpuEngine::new(),
             MaskSeed::from_bytes([7u8; 32]),
         );
         let issuer = MockReportIssuer::from_bundled().unwrap();

@@ -6,11 +6,19 @@
 //! call is an [`EncryptedRerankBundle`] of fixed-shape ciphertexts. That
 //!'s the architectural property the design relies on
 //! (`docs/research/private-reranking-research-round-2.md` §4.1).
+//!
+//! Each impl only supplies [`RerankService::score_candidates`]; the
+//! orchestration around it (validation, key derivation, top-k+tie
+//! shuffle, decoy padding, AEAD seal) sits once on the trait as the
+//! default [`RerankService::rerank`].
 
+use rand::SeedableRng;
+use rand_chacha::ChaCha20Rng;
 use rag_core::ChunkId;
 use thiserror::Error;
 
 use crate::output::EncryptedRerankBundle;
+use crate::score::{ScoredCandidate, top_k_with_tie_shuffle};
 use crate::session::{QueryId, SessionKey};
 
 /// One reranking candidate handed to the service. The caller is
@@ -75,12 +83,59 @@ pub trait RerankService {
     /// just which weights.
     fn family(&self) -> &'static str;
 
+    /// Score every candidate against the query under the GELO mask.
+    /// Returns one [`ScoredCandidate`] per request candidate, in input
+    /// order. Scores never leave the trusted side — the default
+    /// [`Self::rerank`] consumes them in-place.
+    fn score_candidates(
+        &mut self,
+        request: &RerankRequest<'_>,
+    ) -> Result<Vec<ScoredCandidate>, anyhow::Error>;
+
     /// Score the candidates, sort, take top-k, pad to k_max, shuffle,
     /// AEAD-re-encrypt under a per-query HKDF key. Scores and rank
     /// order never leave the service.
+    ///
+    /// Default implementation; impls only override
+    /// [`Self::score_candidates`].
     fn rerank(
         &mut self,
         session: &SessionKey,
         request: &RerankRequest<'_>,
-    ) -> Result<EncryptedRerankBundle, RerankError>;
+    ) -> Result<EncryptedRerankBundle, RerankError> {
+        if request.top_k == 0 {
+            return Err(RerankError::InvalidRequest("top_k must be > 0".into()));
+        }
+        if request.top_k > request.k_max {
+            return Err(RerankError::InvalidRequest(format!(
+                "top_k={} exceeds k_max={}",
+                request.top_k, request.k_max
+            )));
+        }
+
+        let scored = self
+            .score_candidates(request)
+            .map_err(RerankError::Forward)?;
+
+        // RNG for tie-shuffle + bundle nonce sampling. Derived from
+        // the per-query key so two runs against the same session +
+        // query_id reproduce — useful for debugging, but every nonce
+        // still depends on the key so AEAD remains safe.
+        let qkey = session.derive_query_key(&request.query_id);
+        let mut rng = ChaCha20Rng::from_seed(*qkey.as_bytes());
+        let ranked = top_k_with_tie_shuffle(scored, request.top_k, &mut rng);
+
+        // Decoy text length: match the longest real candidate so the
+        // wire shape doesn't reveal which item is a decoy. Falls back
+        // to a small constant when there are no candidates (which the
+        // empty-`top_k` guard above usually catches).
+        let decoy_len = request
+            .candidates
+            .iter()
+            .map(|c| c.text.len())
+            .max()
+            .unwrap_or(64);
+
+        EncryptedRerankBundle::seal(&qkey, &ranked, request.k_max, &mut rng, decoy_len)
+    }
 }

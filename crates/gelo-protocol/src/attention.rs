@@ -571,7 +571,7 @@ pub(crate) fn softmax_rowwise(scores: ArrayView2<'_, f32>) -> Array2<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sim::RayonCpuEngine;
+    use crate::sim::ReferenceCpuEngine;
     use rand::SeedableRng;
     use rand_chacha::ChaCha20Rng;
 
@@ -611,7 +611,7 @@ mod tests {
         let q = random_q3(h, n, d, &mut rng);
         let k = random_q3(h, n, d, &mut rng);
         let v = random_q3(h, n, d, &mut rng);
-        let engine = RayonCpuEngine::new();
+        let engine = ReferenceCpuEngine::new();
 
         let plain = plain_multi_head_attention(q.view(), k.view(), v.view(), scale);
         let out = permuted_attention(
@@ -646,7 +646,7 @@ mod tests {
         let q = random_q3(h, n, d, &mut rng);
         let k = random_q3(h, n, d, &mut rng);
         let v = random_q3(h, n, d, &mut rng);
-        let engine = RayonCpuEngine::new();
+        let engine = ReferenceCpuEngine::new();
 
         let plain = plain_multi_head_attention(q.view(), k.view(), v.view(), scale);
         let out = permuted_attention(
@@ -722,7 +722,7 @@ mod tests {
         let q = random_q3(h, n, d, &mut rng);
         let k = random_q3(h, n, d, &mut rng);
         let v = random_q3(h, n, d, &mut rng);
-        let engine = RayonCpuEngine::new();
+        let engine = ReferenceCpuEngine::new();
 
         let plain =
             plain_multi_head_attention_cached(q.view(), k.view(), v.view(), scale, 0, true);
@@ -763,7 +763,7 @@ mod tests {
             let q = random_q3(h, 1, d, &mut rng);
             let k = random_q3(h, n_kv, d, &mut rng);
             let v = random_q3(h, n_kv, d, &mut rng);
-            let engine = RayonCpuEngine::new();
+            let engine = ReferenceCpuEngine::new();
 
             let q_pos_offset = n_kv - 1;
             let plain = plain_multi_head_attention_cached(
@@ -809,7 +809,7 @@ mod tests {
         let q = random_q3(h, n_q, d, &mut rng);
         let k = random_q3(h, n_kv, d, &mut rng);
         let v = random_q3(h, n_kv, d, &mut rng);
-        let engine = RayonCpuEngine::new();
+        let engine = ReferenceCpuEngine::new();
 
         let plain = plain_multi_head_attention_cached(
             q.view(), k.view(), v.view(), scale, q_pos_offset, true,
@@ -850,7 +850,7 @@ mod tests {
         let q = random_q3(h, 1, d, &mut rng);
         let k = random_q3(h, n_kv, d, &mut rng);
         let v = random_q3(h, n_kv, d, &mut rng);
-        let engine = RayonCpuEngine::new();
+        let engine = ReferenceCpuEngine::new();
 
         let plain = plain_multi_head_attention_cached(
             q.view(), k.view(), v.view(), scale, q_pos_offset, true,
@@ -882,7 +882,7 @@ mod tests {
 
     #[test]
     fn permuted_attention_cached_rejects_n_q_gt_n_kv() {
-        let engine = RayonCpuEngine::new();
+        let engine = ReferenceCpuEngine::new();
         let mut rng = ChaCha20Rng::seed_from_u64(0);
         let q = Array3::<f32>::zeros((2, 8, 4));
         let k = Array3::<f32>::zeros((2, 4, 4));
@@ -906,7 +906,7 @@ mod tests {
     #[test]
     fn shape_mismatch_returns_error() {
         let mut rng = ChaCha20Rng::seed_from_u64(0);
-        let engine = RayonCpuEngine::new();
+        let engine = ReferenceCpuEngine::new();
         let q = Array3::<f32>::zeros((2, 4, 8));
         let k = Array3::<f32>::zeros((2, 4, 8));
         let v = Array3::<f32>::zeros((2, 4, 4)); // wrong d

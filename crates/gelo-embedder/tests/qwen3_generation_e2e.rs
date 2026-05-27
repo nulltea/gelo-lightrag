@@ -39,7 +39,7 @@ use gelo_embedder::decoder::rope::RopeTables;
 use gelo_embedder::decoder::weights::DecoderWeights;
 use gelo_protocol::rng::MaskSeed;
 use gelo_protocol::{
-    InProcessTrustedExecutor, PlaintextExecutor, RayonCpuEngine, TrustedExecutor, WeightHandle,
+    InProcessTrustedExecutor, PlaintextExecutor, ReferenceCpuEngine, TrustedExecutor, WeightHandle,
     WeightKind,
 };
 use hf_hub::api::sync::{ApiBuilder, ApiRepo};
@@ -66,7 +66,7 @@ fn qwen3_1_7b_greedy_generates_under_both_executors() -> Result<()> {
     };
 
     // 1. Plaintext branch.
-    let mut plain_exec = PlaintextExecutor::new(RayonCpuEngine::new());
+    let mut plain_exec = PlaintextExecutor::new(ReferenceCpuEngine::new());
     provision_decoder_weights(&cfg, &weights, &mut plain_exec)?;
     let plain_out = generate(&cfg, &weights, &rope, &mut plain_exec, &prompt_ids, &gen_cfg)?;
     assert_eq!(
@@ -80,7 +80,7 @@ fn qwen3_1_7b_greedy_generates_under_both_executors() -> Result<()> {
     // 2. InProcess (masked) branch with a pinned seed so the test is
     //    bit-stable across runs.
     let mut masked_exec = InProcessTrustedExecutor::with_seed(
-        RayonCpuEngine::new(),
+        ReferenceCpuEngine::new(),
         MaskSeed::from_bytes([29u8; 32]),
     );
     provision_decoder_weights(&cfg, &weights, &mut masked_exec)?;

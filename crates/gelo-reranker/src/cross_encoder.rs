@@ -16,22 +16,18 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use hf_hub::api::sync::ApiBuilder;
-use rand::SeedableRng;
-use rand_chacha::ChaCha20Rng;
 use sha2::{Digest, Sha256};
 
 use gelo_embedder::bert::config::BertConfig;
 use gelo_embedder::bert::forward;
-use gelo_embedder::bert::weights::BertWeights;
+use gelo_embedder::bert::weights::{BertWeights, provision_into};
 use gelo_embedder::common::tokenizer::HfTokenizer;
 use gelo_protocol::profile;
-use gelo_protocol::{TrustedExecutor, WeightHandle, WeightKind};
+use gelo_protocol::TrustedExecutor;
 
 use crate::head::ClassifierHead;
-use crate::output::EncryptedRerankBundle;
-use crate::score::{ScoredCandidate, top_k_with_tie_shuffle};
-use crate::service::{RerankError, RerankRequest, RerankService};
-use crate::session::SessionKey;
+use crate::score::ScoredCandidate;
+use crate::service::{RerankRequest, RerankService};
 
 pub struct CrossEncoderRerankService<X: TrustedExecutor> {
     cfg: BertConfig,
@@ -55,24 +51,7 @@ impl<X: TrustedExecutor> CrossEncoderRerankService<X> {
         head: ClassifierHead,
         mut exec: X,
     ) -> Result<Self> {
-        for (li, layer) in weights.layers.iter().enumerate() {
-            if !cfg.offload_layer(li) {
-                continue;
-            }
-            let li16 = li as u16;
-            exec.provision_weight(WeightHandle::new(li16, WeightKind::Q), layer.wq.view())?;
-            exec.provision_weight(WeightHandle::new(li16, WeightKind::K), layer.wk.view())?;
-            exec.provision_weight(WeightHandle::new(li16, WeightKind::V), layer.wv.view())?;
-            exec.provision_weight(WeightHandle::new(li16, WeightKind::O), layer.wo.view())?;
-            exec.provision_weight(
-                WeightHandle::new(li16, WeightKind::FfnUp),
-                layer.w_ffn_up.view(),
-            )?;
-            exec.provision_weight(
-                WeightHandle::new(li16, WeightKind::FfnDown),
-                layer.w_ffn_down.view(),
-            )?;
-        }
+        provision_into(&weights, &cfg, &mut exec)?;
         let max_len = cfg.max_seq_len.min(cfg.max_position_embeddings);
         let mut hasher = Sha256::new();
         hasher.update(weights.model_identity);
@@ -216,43 +195,11 @@ impl<X: TrustedExecutor + Clone + Send + Sync> RerankService for CrossEncoderRer
         "cross-encoder"
     }
 
-    fn rerank(
+    fn score_candidates(
         &mut self,
-        session: &SessionKey,
         request: &RerankRequest<'_>,
-    ) -> Result<EncryptedRerankBundle, RerankError> {
-        if request.top_k == 0 {
-            return Err(RerankError::InvalidRequest("top_k must be > 0".into()));
-        }
-        if request.top_k > request.k_max {
-            return Err(RerankError::InvalidRequest(format!(
-                "top_k={} exceeds k_max={}",
-                request.top_k, request.k_max
-            )));
-        }
-
-        let scored = score_candidates_parallel(self, request).map_err(RerankError::Forward)?;
-
-        // RNG for tie-shuffle + bundle nonce sampling. Derived from
-        // the per-query key so two runs against the same session +
-        // query_id reproduce — useful for debugging, but every nonce
-        // still depends on the key so AEAD remains safe.
-        let qkey = session.derive_query_key(&request.query_id);
-        let mut rng = ChaCha20Rng::from_seed(*qkey.as_bytes());
-        let ranked = top_k_with_tie_shuffle(scored, request.top_k, &mut rng);
-
-        // Decoy text length: match the longest real candidate so the
-        // wire shape doesn't reveal which item is a decoy. Falls back
-        // to a small constant when there are no candidates (which the
-        // empty-`top_k` guard above usually catches).
-        let decoy_len = request
-            .candidates
-            .iter()
-            .map(|c| c.text.len())
-            .max()
-            .unwrap_or(64);
-
-        EncryptedRerankBundle::seal(&qkey, &ranked, request.k_max, &mut rng, decoy_len)
+    ) -> Result<Vec<ScoredCandidate>, anyhow::Error> {
+        score_candidates_parallel(self, request)
     }
 }
 

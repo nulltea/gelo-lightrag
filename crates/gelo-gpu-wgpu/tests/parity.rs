@@ -11,7 +11,7 @@ use rand_chacha::ChaCha20Rng;
 use rand_distr::{Distribution, StandardNormal};
 
 use gelo_gpu_wgpu::WgpuVulkanEngine;
-use gelo_protocol::{GpuOffloadEngine, RayonCpuEngine, WeightHandle, WeightKind};
+use gelo_protocol::{GpuOffloadEngine, ReferenceCpuEngine, WeightHandle, WeightKind};
 
 fn random_matrix(rows: usize, cols: usize, rng: &mut impl rand::RngCore) -> Array2<f32> {
     let normal = StandardNormal;
@@ -74,7 +74,7 @@ fn matmul_matches_cpu_engine() {
     let Some(mut gpu) = open_engine() else {
         return;
     };
-    let mut cpu = RayonCpuEngine::new();
+    let mut cpu = ReferenceCpuEngine::new();
 
     let mut rng = ChaCha20Rng::from_seed([11u8; 32]);
     let m = 32;
@@ -110,7 +110,7 @@ fn shape_dispatch_handles_non_multiples_of_workgroup() {
     let Some(mut gpu) = open_engine() else {
         return;
     };
-    let mut cpu = RayonCpuEngine::new();
+    let mut cpu = ReferenceCpuEngine::new();
 
     // 17×11 · 11×19 — none of these dimensions are multiples of 16, which
     // exercises the workgroup-bounds-check branches in the WGSL kernel.
@@ -137,7 +137,7 @@ fn matmul_dynamic_matches_cpu_engine() {
     let Some(gpu) = open_engine() else {
         return;
     };
-    let cpu = RayonCpuEngine::new();
+    let cpu = ReferenceCpuEngine::new();
 
     let mut rng = ChaCha20Rng::from_seed([57u8; 32]);
     let m = 24;
@@ -165,7 +165,7 @@ fn matmul_dynamic_batched_matches_cpu_engine() {
     let Some(gpu) = open_engine() else {
         return;
     };
-    let cpu = RayonCpuEngine::new();
+    let cpu = ReferenceCpuEngine::new();
 
     let mut rng = ChaCha20Rng::from_seed([67u8; 32]);
     let b = 8;
@@ -234,7 +234,7 @@ fn softmax_batched_matches_cpu_reference() {
     let Some(gpu) = open_engine() else {
         return;
     };
-    let cpu = RayonCpuEngine::new();
+    let cpu = ReferenceCpuEngine::new();
     let mut rng = ChaCha20Rng::from_seed([42u8; 32]);
 
     let (b, m, n) = (4usize, 32, 32);
@@ -283,7 +283,7 @@ fn permuted_attention_gpu_matches_cpu() {
     let Some(gpu) = open_engine() else {
         return;
     };
-    let cpu = RayonCpuEngine::new();
+    let cpu = ReferenceCpuEngine::new();
 
     let h = 4;
     let n = 16;

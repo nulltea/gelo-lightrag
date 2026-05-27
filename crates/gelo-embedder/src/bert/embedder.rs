@@ -4,12 +4,12 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use hf_hub::api::sync::ApiBuilder;
 
-use gelo_protocol::{TrustedExecutor, WeightHandle, WeightKind};
+use gelo_protocol::TrustedExecutor;
 use rag_core::Embedder;
 
 use super::config::BertConfig;
 use super::forward;
-use super::weights::BertWeights;
+use super::weights::{BertWeights, provision_into};
 use crate::common::pool;
 use crate::common::tokenizer::HfTokenizer;
 
@@ -35,24 +35,7 @@ impl<X: TrustedExecutor> GeloBertEmbedder<X> {
         weights: Arc<BertWeights>,
         mut exec: X,
     ) -> Result<Self> {
-        for (li, layer) in weights.layers.iter().enumerate() {
-            if !cfg.offload_layer(li) {
-                continue;
-            }
-            let li16 = li as u16;
-            exec.provision_weight(WeightHandle::new(li16, WeightKind::Q), layer.wq.view())?;
-            exec.provision_weight(WeightHandle::new(li16, WeightKind::K), layer.wk.view())?;
-            exec.provision_weight(WeightHandle::new(li16, WeightKind::V), layer.wv.view())?;
-            exec.provision_weight(WeightHandle::new(li16, WeightKind::O), layer.wo.view())?;
-            exec.provision_weight(
-                WeightHandle::new(li16, WeightKind::FfnUp),
-                layer.w_ffn_up.view(),
-            )?;
-            exec.provision_weight(
-                WeightHandle::new(li16, WeightKind::FfnDown),
-                layer.w_ffn_down.view(),
-            )?;
-        }
+        provision_into(&weights, &cfg, &mut exec)?;
         let max_len = cfg.max_seq_len.min(cfg.max_position_embeddings);
         let model_identity = hex::encode(weights.model_identity);
         Ok(Self {

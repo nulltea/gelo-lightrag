@@ -7,7 +7,7 @@
 use gelo_embedder::GeloBertEmbedder;
 use gelo_gpu_wgpu::WgpuVulkanEngine;
 use gelo_protocol::rng::MaskSeed;
-use gelo_protocol::{InProcessTrustedExecutor, RayonCpuEngine};
+use gelo_protocol::{InProcessTrustedExecutor, ReferenceCpuEngine};
 use rag_core::Embedder;
 
 #[test]
@@ -25,7 +25,7 @@ fn bge_small_wgpu_matches_cpu() {
     };
 
     let cpu_exec =
-        InProcessTrustedExecutor::with_seed(RayonCpuEngine::new(), MaskSeed::from_bytes([5u8; 32]));
+        InProcessTrustedExecutor::with_seed(ReferenceCpuEngine::new(), MaskSeed::from_bytes([5u8; 32]));
     let gpu_exec = InProcessTrustedExecutor::with_seed(gpu, MaskSeed::from_bytes([5u8; 32]));
 
     let mut cpu_embedder = GeloBertEmbedder::from_pretrained("BAAI/bge-small-en-v1.5", cpu_exec)

@@ -24,7 +24,7 @@ use gelo_embedder::decoder::rope::RopeTables;
 use gelo_embedder::decoder::weights::{DecoderLayerWeights, DecoderWeights};
 use gelo_protocol::rng::MaskSeed;
 use gelo_protocol::{
-    GpuOffloadEngine, InProcessTrustedExecutor, RayonCpuEngine, WeightHandle, WeightKind,
+    GpuOffloadEngine, InProcessTrustedExecutor, ReferenceCpuEngine, WeightHandle, WeightKind,
 };
 use rag_core::ChunkId;
 
@@ -274,7 +274,7 @@ fn cross_encoder_rerank_round_trip_recovers_ranked_chunks() {
     let weights = Arc::new(bert_weights(&cfg, &mut rng));
     let head = bert_head(cfg.hidden_size, &mut rng);
 
-    let mut masked_engine = RayonCpuEngine::new();
+    let mut masked_engine = ReferenceCpuEngine::new();
     provision_bert(&weights, &cfg, &mut masked_engine);
     let masked =
         InProcessTrustedExecutor::with_seed(masked_engine, MaskSeed::from_bytes([4u8; 32]));
@@ -332,7 +332,7 @@ fn causal_discriminator_rerank_round_trip_emits_padded_bundle() {
     ));
     let head = YesNoHead { yes_token_id: 1, no_token_id: 0 };
 
-    let mut masked_engine = RayonCpuEngine::new();
+    let mut masked_engine = ReferenceCpuEngine::new();
     provision_decoder(&weights, &cfg, &mut masked_engine);
     let masked =
         InProcessTrustedExecutor::with_seed(masked_engine, MaskSeed::from_bytes([13u8; 32]));
@@ -397,7 +397,7 @@ fn opening_bundle_with_wrong_session_key_fails() {
     ));
     let head = YesNoHead { yes_token_id: 1, no_token_id: 0 };
 
-    let mut engine = RayonCpuEngine::new();
+    let mut engine = ReferenceCpuEngine::new();
     provision_decoder(&weights, &cfg, &mut engine);
     let exec = InProcessTrustedExecutor::with_seed(engine, MaskSeed::from_bytes([15u8; 32]));
     let mut svc =

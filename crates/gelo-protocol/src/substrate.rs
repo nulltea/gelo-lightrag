@@ -110,9 +110,10 @@ pub trait GpuOffloadEngine: Send {
     ///
     /// Default impl preserves the legacy behaviour by calling
     /// `register_weight(handle, weight.view())`. Override on engines that
-    /// can take Arc ownership — currently `RayonCpuEngine`. The wgpu
-    /// engine does not need this override because it uploads weights to
-    /// VRAM at registration and never keeps a host copy.
+    /// can take Arc ownership — currently `ReferenceCpuEngine` (test
+    /// adapter only). The wgpu engine does not need this override
+    /// because it uploads weights to VRAM at registration and never
+    /// keeps a host copy.
     fn register_weight_shared(
         &mut self,
         handle: WeightHandle,

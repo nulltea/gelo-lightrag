@@ -50,8 +50,9 @@ What already exists (verified against current `master`):
 
 - **Protocol**: GELO mask + TwinShield shield rows + U-Verify
   (`crates/gelo-protocol/`). Per-batch fresh Haar-uniform A.
-- **Engines**: `RayonCpuEngine` (sim), `WgpuVulkanEngine`
-  (production GPU via wgpu+cubecl-matmul).
+- **Engines**: `ReferenceCpuEngine` (test-only, gated behind the
+  `reference-engine` feature), `WgpuVulkanEngine` (production GPU via
+  wgpu+cubecl-matmul).
 - **Trusted executor**: `InProcessTrustedExecutor` (sim) and
   `SnpTrustedExecutor` (SEV-SNP wrapper).
 - **Model harness**: `gelo-embedder` runs Qwen3-Embedding-0.6B

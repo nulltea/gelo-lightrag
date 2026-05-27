@@ -545,7 +545,7 @@ impl<E: GpuOffloadEngine> TrustedExecutor for CapturingPlaintextExecutor<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gelo_protocol::{RayonCpuEngine, SnapshotConfig};
+    use gelo_protocol::{ReferenceCpuEngine, SnapshotConfig};
     use ndarray::Array2;
 
     /// Roundtrip: build a small `Vec<PcieSnapshot>` by hand, write it
@@ -620,7 +620,7 @@ mod tests {
     /// the captured operand is byte-identical to the input we passed.
     #[test]
     fn capturing_plaintext_records_unmasked_operand() {
-        let engine = RayonCpuEngine::new();
+        let engine = ReferenceCpuEngine::new();
         let mut exec = CapturingPlaintextExecutor::new(engine)
             .with_snapshot_capture(SnapshotConfig::default());
 

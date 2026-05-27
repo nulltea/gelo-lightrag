@@ -17,7 +17,7 @@
 //!    for the next forward pass.
 //!
 //! These are unit-level tests against `InProcessTrustedExecutor` +
-//! `RayonCpuEngine`; the Qwen3-1.7B end-to-end smoke against real
+//! `ReferenceCpuEngine`; the Qwen3-1.7B end-to-end smoke against real
 //! weights lives in `crates/gelo-embedder/tests/aloepri_snapshot_capture.rs`
 //! (gated `#[ignore]` like the other real-model tests).
 
@@ -25,21 +25,21 @@ use ndarray::Array2;
 
 use gelo_protocol::rng::MaskSeed;
 use gelo_protocol::{
-    InProcessTrustedExecutor, RayonCpuEngine, SnapshotConfig, TrustedExecutor, WeightHandle,
+    InProcessTrustedExecutor, ReferenceCpuEngine, SnapshotConfig, TrustedExecutor, WeightHandle,
     WeightKind,
 };
 
-fn synth_executor() -> InProcessTrustedExecutor<RayonCpuEngine> {
+fn synth_executor() -> InProcessTrustedExecutor<ReferenceCpuEngine> {
     // Pin to Haar so the test's hard-coded stacked-row counts
     // `[n + k, d]` stay valid — Auto/HD₃ would round `n + k` up to
     // the next power of two and break the shape assertions.  These
     // tests target the snapshot-capture wiring, not the mask family.
-    InProcessTrustedExecutor::with_seed(RayonCpuEngine::new(), MaskSeed::from_bytes([7u8; 32]))
+    InProcessTrustedExecutor::with_seed(ReferenceCpuEngine::new(), MaskSeed::from_bytes([7u8; 32]))
         .with_haar_mask()
 }
 
 fn provision_three_layers(
-    exec: &mut InProcessTrustedExecutor<RayonCpuEngine>,
+    exec: &mut InProcessTrustedExecutor<ReferenceCpuEngine>,
     d_in: usize,
     d_out: usize,
 ) {

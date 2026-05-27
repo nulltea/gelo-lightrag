@@ -1,7 +1,7 @@
 use gelo_rag::{GeloRagInMemoryService, NoopAttestationVerifier};
 use gelo_embedder::{GeloBertEmbedder, GeloQwenEmbedder};
 use gelo_protocol::rng::MaskSeed;
-use gelo_protocol::{InProcessTrustedExecutor, RayonCpuEngine, ShieldConfig};
+use gelo_protocol::{InProcessTrustedExecutor, ReferenceCpuEngine, ShieldConfig};
 use rag_core::{Caprise, CapriseKey, ChunkId, DocumentChunk, FastEmbedEmbedder, SapKey, SapScheme};
 
 #[test]
@@ -70,7 +70,7 @@ fn fastembed_caprise_retrieval_smoke_test() {
 #[ignore = "downloads bge-small (~130 MB) from Hugging Face on first run"]
 fn gelo_embedder_sap_retrieval_smoke_test() {
     let exec =
-        InProcessTrustedExecutor::with_seed(RayonCpuEngine::new(), MaskSeed::from_bytes([7u8; 32]));
+        InProcessTrustedExecutor::with_seed(ReferenceCpuEngine::new(), MaskSeed::from_bytes([7u8; 32]));
     let embedder = GeloBertEmbedder::from_pretrained("BAAI/bge-small-en-v1.5", exec)
         .expect("download bge-small");
     let scheme = SapScheme::new(SapKey::generate(32.0, 0.15));
@@ -106,10 +106,10 @@ fn gelo_qwen3_full_stack_retrieval_smoke_test() {
     // Full-stack Recipe D for a decoder-LLM-as-embedder:
     //   per-batch GELO mask  +  shield vectors  +  TwinShield OutAttnMult
     //   +  U-Verify integrity probes  (k=2 for runtime; production uses k=8).
-    // The `RayonCpuEngine` stands in for the untrusted accelerator so this
+    // The `ReferenceCpuEngine` stands in for the untrusted accelerator so this
     // smoke test doesn't need a GPU.
     let exec = InProcessTrustedExecutor::with_shield(
-        RayonCpuEngine::new(),
+        ReferenceCpuEngine::new(),
         MaskSeed::from_bytes([41u8; 32]),
         ShieldConfig::new(8, 6.0),
     )

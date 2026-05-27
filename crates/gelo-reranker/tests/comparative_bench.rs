@@ -28,7 +28,7 @@ use gelo_embedder::decoder::rope::RopeTables;
 use gelo_embedder::decoder::weights::{DecoderLayerWeights, DecoderWeights};
 use gelo_protocol::rng::MaskSeed;
 use gelo_protocol::{
-    GpuOffloadEngine, InProcessTrustedExecutor, RayonCpuEngine, WeightHandle, WeightKind,
+    GpuOffloadEngine, InProcessTrustedExecutor, ReferenceCpuEngine, WeightHandle, WeightKind,
 };
 use rag_core::ChunkId;
 
@@ -259,7 +259,7 @@ fn synthetic_comparative_bench_both_services_emit_valid_bundles() {
     let mut rng = ChaCha20Rng::from_seed([11u8; 32]);
     let w_be = Arc::new(bert_weights(&cfg_be, &mut rng));
     let h_be = bert_head(cfg_be.hidden_size, &mut rng);
-    let mut eng = RayonCpuEngine::new();
+    let mut eng = ReferenceCpuEngine::new();
     provision_bert(&w_be, &cfg_be, &mut eng);
     let mut svc_be = CrossEncoderRerankService::new(
         cfg_be,
@@ -293,7 +293,7 @@ fn synthetic_comparative_bench_both_services_emit_valid_bundles() {
         cfg_d.rope_theta,
     ));
     let head_d = YesNoHead { yes_token_id: 1, no_token_id: 0 };
-    let mut eng = RayonCpuEngine::new();
+    let mut eng = ReferenceCpuEngine::new();
     provision_dec(&w_d, &cfg_d, &mut eng);
     let mut svc_d = CausalDiscriminatorRerankService::new(
         cfg_d,

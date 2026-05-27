@@ -16,7 +16,7 @@ use gelo_embedder::bert::forward;
 use gelo_embedder::bert::weights::{BertLayerWeights, BertWeights};
 use gelo_protocol::rng::MaskSeed;
 use gelo_protocol::{
-    GpuOffloadEngine, InProcessTrustedExecutor, PlaintextExecutor, RayonCpuEngine, WeightHandle,
+    GpuOffloadEngine, InProcessTrustedExecutor, PlaintextExecutor, ReferenceCpuEngine, WeightHandle,
     WeightKind,
 };
 
@@ -121,7 +121,7 @@ fn synthetic_two_layer_parity() {
     let input_ids: Vec<u32> = vec![5, 12, 30, 1, 19, 7];
 
     // Plaintext executor (no mask)
-    let mut plain_engine = RayonCpuEngine::new();
+    let mut plain_engine = ReferenceCpuEngine::new();
     provision_layers(&weights, &cfg, &mut plain_engine);
     let mut plain = PlaintextExecutor::new(plain_engine);
     // Register via TrustedExecutor::provision_weight is also OK; using direct
@@ -130,7 +130,7 @@ fn synthetic_two_layer_parity() {
     let plain_out = forward::run(&cfg, &weights, &mut plain, &input_ids).unwrap();
 
     // Masked executor (deterministic seed)
-    let mut masked_engine = RayonCpuEngine::new();
+    let mut masked_engine = ReferenceCpuEngine::new();
     provision_layers(&weights, &cfg, &mut masked_engine);
     let mut masked =
         InProcessTrustedExecutor::with_seed(masked_engine, MaskSeed::from_bytes([2u8; 32]));
@@ -161,12 +161,12 @@ fn synthetic_executors_agree_with_sensitive_layer_exclusion() {
 
     let input_ids: Vec<u32> = vec![3, 9, 17];
 
-    let mut plain_engine = RayonCpuEngine::new();
+    let mut plain_engine = ReferenceCpuEngine::new();
     provision_layers(&weights, &cfg, &mut plain_engine);
     let mut plain = PlaintextExecutor::new(plain_engine);
     let plain_out = forward::run(&cfg, &weights, &mut plain, &input_ids).unwrap();
 
-    let mut masked_engine = RayonCpuEngine::new();
+    let mut masked_engine = ReferenceCpuEngine::new();
     provision_layers(&weights, &cfg, &mut masked_engine);
     let mut masked =
         InProcessTrustedExecutor::with_seed(masked_engine, MaskSeed::from_bytes([13u8; 32]));
@@ -193,13 +193,13 @@ fn bge_small_parity() {
 
     let mut plain = GeloBertEmbedder::from_pretrained(
         "BAAI/bge-small-en-v1.5",
-        PlaintextExecutor::new(RayonCpuEngine::new()),
+        PlaintextExecutor::new(ReferenceCpuEngine::new()),
     )
     .expect("download/load bge-small with PlaintextExecutor");
 
     let mut masked = GeloBertEmbedder::from_pretrained(
         "BAAI/bge-small-en-v1.5",
-        InProcessTrustedExecutor::with_seed(RayonCpuEngine::new(), MaskSeed::from_bytes([42u8; 32])),
+        InProcessTrustedExecutor::with_seed(ReferenceCpuEngine::new(), MaskSeed::from_bytes([42u8; 32])),
     )
     .expect("download/load bge-small with InProcessTrustedExecutor");
 

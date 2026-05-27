@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
+use gelo_protocol::{TrustedExecutor, WeightHandle, WeightKind};
 use ndarray::{Array1, Array2};
 use safetensors::SafeTensors;
 use safetensors::tensor::TensorView;
@@ -45,6 +46,35 @@ pub struct BertLayerWeights {
 
     pub ffn_ln_w: Array1<f32>,
     pub ffn_ln_b: Array1<f32>,
+}
+
+/// Provision every offloadable layer's Q/K/V/O + FFN-up + FFN-down
+/// matrices into `exec`. Mirrors
+/// [`crate::decoder::weights::provision_into`]; lives next to
+/// [`BertWeights`] so callers don't have to know which six weight
+/// kinds make up a BERT layer or which layers are offloadable.
+pub fn provision_into<X: TrustedExecutor>(
+    weights: &BertWeights,
+    cfg: &BertConfig,
+    exec: &mut X,
+) -> Result<()> {
+    for (li, layer) in weights.layers.iter().enumerate() {
+        if !cfg.offload_layer(li) {
+            continue;
+        }
+        let li16 = li as u16;
+        for (kind, weight) in [
+            (WeightKind::Q, &layer.wq),
+            (WeightKind::K, &layer.wk),
+            (WeightKind::V, &layer.wv),
+            (WeightKind::O, &layer.wo),
+            (WeightKind::FfnUp, &layer.w_ffn_up),
+            (WeightKind::FfnDown, &layer.w_ffn_down),
+        ] {
+            exec.provision_weight(WeightHandle::new(li16, kind), weight.view())?;
+        }
+    }
+    Ok(())
 }
 
 impl BertWeights {

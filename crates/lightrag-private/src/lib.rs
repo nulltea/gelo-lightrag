@@ -19,7 +19,8 @@ mod two_party_service;
 pub use perturb::{
     DEFAULT_EPSILON, EmbeddingKind, SessionKey, perturb, perturb_with_epsilon,
 };
-pub use service::{KgContext, KgQueryParams, LightRagPrivateService, QueryShape};
+pub use light_kg_store::{KgContext, KgQueryParams, QueryShape};
+pub use service::LightRagPrivateService;
 pub use two_party_service::{LightRagServiceError, LightRagTwoPartyService};
 
 /// LightRAG retrieval modes. Mirrors upstream

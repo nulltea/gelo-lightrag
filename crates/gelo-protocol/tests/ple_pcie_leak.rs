@@ -11,7 +11,7 @@
 //!
 //! This test enforces that contract at the substrate level:
 //!
-//! 1. Wraps the standard `RayonCpuEngine` in a `SpyEngine` that
+//! 1. Wraps the standard `ReferenceCpuEngine` in a `SpyEngine` that
 //!    records every method call against it (handle, shape).
 //! 2. Provisions a `PleTable` into both `InProcessTrustedExecutor`
 //!    and `PlaintextExecutor`.
@@ -32,7 +32,7 @@ use anyhow::Result;
 use ndarray::{Array2, Array3, ArrayView2, ArrayView3};
 
 use gelo_protocol::{
-    GpuOffloadEngine, InProcessTrustedExecutor, PlaintextExecutor, PleTable, RayonCpuEngine,
+    GpuOffloadEngine, InProcessTrustedExecutor, PlaintextExecutor, PleTable, ReferenceCpuEngine,
     TrustedExecutor, WeightHandle,
 };
 
@@ -41,14 +41,14 @@ use gelo_protocol::{
 /// sequence afterwards. Only the methods the protocol actually uses
 /// are forwarded; the rest fall back to the trait defaults.
 struct SpyEngine {
-    inner: RayonCpuEngine,
+    inner: ReferenceCpuEngine,
     log: Mutex<Vec<String>>,
 }
 
 impl SpyEngine {
     fn new() -> Self {
         Self {
-            inner: RayonCpuEngine::new(),
+            inner: ReferenceCpuEngine::new(),
             log: Mutex::new(Vec::new()),
         }
     }
@@ -204,7 +204,7 @@ fn ple_gather_under_inprocess_trusted_executor_keeps_engine_idle() {
 fn ple_gather_inprocess_with_shared_log_keeps_engine_idle() {
     use std::sync::Arc;
     struct SharedSpy {
-        inner: RayonCpuEngine,
+        inner: ReferenceCpuEngine,
         log: Arc<Mutex<Vec<String>>>,
     }
     impl GpuOffloadEngine for SharedSpy {
@@ -254,7 +254,7 @@ fn ple_gather_inprocess_with_shared_log_keeps_engine_idle() {
 
     let log = Arc::new(Mutex::new(Vec::<String>::new()));
     let engine = SharedSpy {
-        inner: RayonCpuEngine::new(),
+        inner: ReferenceCpuEngine::new(),
         log: Arc::clone(&log),
     };
     let mut exec = InProcessTrustedExecutor::new(engine);

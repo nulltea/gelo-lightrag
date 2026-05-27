@@ -31,8 +31,10 @@ use rand::RngCore;
 use tokio::sync::Mutex;
 use zeroize::Zeroizing;
 
+use light_kg_store::{KgContext, KgQueryParams};
+
 use crate::perturb::SessionKey;
-use crate::service::{KgContext, KgQueryParams, LightRagPrivateService};
+use crate::service::LightRagPrivateService;
 
 #[derive(thiserror::Error, Debug)]
 pub enum LightRagServiceError {

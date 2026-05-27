@@ -81,7 +81,7 @@ use gelo_embedder::decoder::qwen3::Qwen3Variant;
 use gelo_embedder::decoder::rope::RopeTables;
 use gelo_embedder::decoder::weights::DecoderWeights;
 use gelo_protocol::{
-    PlaintextExecutor, RayonCpuEngine, TrustedExecutor, WeightHandle, WeightKind,
+    PlaintextExecutor, ReferenceCpuEngine, TrustedExecutor, WeightHandle, WeightKind,
 };
 use hf_hub::api::sync::{ApiBuilder, ApiRepo};
 
@@ -146,7 +146,7 @@ fn qwen3_1_7b_greedy_matches_hf_transformers() -> Result<()> {
     );
 
     // 3. Run greedy generate at `max_new_tokens = reference_tokens.len()`.
-    let mut exec = PlaintextExecutor::new(RayonCpuEngine::new());
+    let mut exec = PlaintextExecutor::new(ReferenceCpuEngine::new());
     provision_decoder_weights(&cfg, &weights, &mut exec)?;
     let gen_cfg = GenerationConfig {
         max_tokens: fix.reference_tokens.len(),

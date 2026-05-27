@@ -421,7 +421,7 @@ Implementations live next to the trait:
 `CausalDiscriminatorRerankService<X: TrustedExecutor>`. The generic
 `X` is the executor type — typically
 `InProcessTrustedExecutor<WgpuVulkanEngine>` in production, or the
-`PlaintextExecutor` / `RayonCpuEngine` variants in tests.
+`PlaintextExecutor` / `ReferenceCpuEngine` variants in tests.
 
 ### Constructors
 

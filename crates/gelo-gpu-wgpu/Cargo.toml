@@ -32,6 +32,11 @@ ndarray.workspace = true
 wgpu.workspace = true
 
 [dev-dependencies]
+# `reference-engine` opts into the test-only CPU adapter used by the
+# CPU↔Wgpu parity oracle in `tests/parity.rs` and the overhead
+# benches. Scoped to dev-deps so the library build (which sets
+# `default-features = false` above) stays free of the test adapter.
+gelo-protocol = { path = "../gelo-protocol", default-features = false, features = ["reference-engine"] }
 env_logger = "0.11"
 log = "0.4"
 gelo-embedder = { path = "../gelo-embedder" }

@@ -430,7 +430,7 @@ fn _l2_distance(a: ArrayView2<'_, f32>, b: ArrayView2<'_, f32>) -> f32 {
 
 use gelo_protocol::rng::MaskSeed;
 use gelo_protocol::{
-    InProcessTrustedExecutor, PermAttnConfig, PlaintextExecutor, RayonCpuEngine, TrustedExecutor,
+    InProcessTrustedExecutor, PermAttnConfig, PlaintextExecutor, ReferenceCpuEngine, TrustedExecutor,
 };
 use ndarray::Array3;
 
@@ -453,12 +453,12 @@ fn trait_method_sigma_zero_matches_plaintext_executor() {
     let k = random_q3(h, n, d_head, &mut rng);
     let v = random_q3(h, n, d_head, &mut rng);
 
-    let mut plain_exec = PlaintextExecutor::new(RayonCpuEngine::new());
+    let mut plain_exec = PlaintextExecutor::new(ReferenceCpuEngine::new());
     let plain_out = plain_exec
         .offload_attention_permuted(q.view(), k.view(), v.view(), scale, gelo_protocol::attention::AttentionMask::None)
         .unwrap();
 
-    let mut in_proc = InProcessTrustedExecutor::with_seed(RayonCpuEngine::new(), MaskSeed([7u8; 32]))
+    let mut in_proc = InProcessTrustedExecutor::with_seed(ReferenceCpuEngine::new(), MaskSeed([7u8; 32]))
         .with_perm_attention(PermAttnConfig::DISABLED_NOISE);
     let in_proc_out = in_proc
         .offload_attention_permuted(q.view(), k.view(), v.view(), scale, gelo_protocol::attention::AttentionMask::None)
@@ -489,12 +489,12 @@ fn trait_method_hnm_noise_deviates_bounded() {
     let k = random_q3(h, n, d_head, &mut rng);
     let v = random_q3(h, n, d_head, &mut rng);
 
-    let mut plain_exec = PlaintextExecutor::new(RayonCpuEngine::new());
+    let mut plain_exec = PlaintextExecutor::new(ReferenceCpuEngine::new());
     let plain_out = plain_exec
         .offload_attention_permuted(q.view(), k.view(), v.view(), scale, gelo_protocol::attention::AttentionMask::None)
         .unwrap();
 
-    let mut in_proc = InProcessTrustedExecutor::with_seed(RayonCpuEngine::new(), MaskSeed([9u8; 32]))
+    let mut in_proc = InProcessTrustedExecutor::with_seed(ReferenceCpuEngine::new(), MaskSeed([9u8; 32]))
         .with_perm_attention(PermAttnConfig::HIDDEN_NO_MORE);
     let in_proc_out = in_proc
         .offload_attention_permuted(q.view(), k.view(), v.view(), scale, gelo_protocol::attention::AttentionMask::None)
@@ -527,13 +527,13 @@ fn trait_method_seed_determinism() {
     let v = random_q3(h, n, d_head, &mut rng);
 
     let seed = MaskSeed([0xAAu8; 32]);
-    let mut exec1 = InProcessTrustedExecutor::with_seed(RayonCpuEngine::new(), seed)
+    let mut exec1 = InProcessTrustedExecutor::with_seed(ReferenceCpuEngine::new(), seed)
         .with_perm_attention(PermAttnConfig::HIDDEN_NO_MORE);
     let out1 = exec1
         .offload_attention_permuted(q.view(), k.view(), v.view(), scale, gelo_protocol::attention::AttentionMask::None)
         .unwrap();
 
-    let mut exec2 = InProcessTrustedExecutor::with_seed(RayonCpuEngine::new(), seed)
+    let mut exec2 = InProcessTrustedExecutor::with_seed(ReferenceCpuEngine::new(), seed)
         .with_perm_attention(PermAttnConfig::HIDDEN_NO_MORE);
     let out2 = exec2
         .offload_attention_permuted(q.view(), k.view(), v.view(), scale, gelo_protocol::attention::AttentionMask::None)
@@ -667,7 +667,7 @@ fn trait_method_cached_sigma_zero_matches_plaintext_executor() {
         let k = random_q3(h, n_kv, d_head, &mut rng);
         let v = random_q3(h, n_kv, d_head, &mut rng);
 
-        let mut plain_exec = PlaintextExecutor::new(RayonCpuEngine::new());
+        let mut plain_exec = PlaintextExecutor::new(ReferenceCpuEngine::new());
         let plain_out = plain_exec
             .offload_attention_permuted_cached(
                 q.view(),
@@ -680,7 +680,7 @@ fn trait_method_cached_sigma_zero_matches_plaintext_executor() {
             .unwrap();
 
         let mut in_proc = InProcessTrustedExecutor::with_seed(
-            RayonCpuEngine::new(),
+            ReferenceCpuEngine::new(),
             MaskSeed([42u8 ^ n_q as u8 ^ n_kv as u8; 32]),
         )
         .with_perm_attention(PermAttnConfig::DISABLED_NOISE);
@@ -733,7 +733,7 @@ fn phase_1b_decode_softmax_on_gpu_matches_in_tee() {
         let v = random_q3(h, n_kv, d_head, &mut rng);
 
         let mut in_tee_exec = InProcessTrustedExecutor::with_seed(
-            RayonCpuEngine::new(),
+            ReferenceCpuEngine::new(),
             MaskSeed([99u8 ^ n_kv as u8; 32]),
         )
         .with_perm_attention(PermAttnConfig::DISABLED_NOISE);
@@ -749,7 +749,7 @@ fn phase_1b_decode_softmax_on_gpu_matches_in_tee() {
             .unwrap();
 
         let mut gpu_exec = InProcessTrustedExecutor::with_seed(
-            RayonCpuEngine::new(),
+            ReferenceCpuEngine::new(),
             MaskSeed([99u8 ^ n_kv as u8; 32]),
         )
         .with_perm_attention(PermAttnConfig {
@@ -803,7 +803,7 @@ fn phase_1b_prefill_falls_back_to_in_tee_softmax() {
 
     let make_executor = |cfg: PermAttnConfig| {
         InProcessTrustedExecutor::with_seed(
-            RayonCpuEngine::new(),
+            ReferenceCpuEngine::new(),
             MaskSeed([55u8; 32]),
         )
         .with_perm_attention(cfg)
@@ -865,7 +865,7 @@ fn trait_method_causal_mask_matches_plaintext() {
     let k = random_q3(h, n, d_head, &mut rng);
     let v = random_q3(h, n, d_head, &mut rng);
 
-    let mut plain_exec = PlaintextExecutor::new(RayonCpuEngine::new());
+    let mut plain_exec = PlaintextExecutor::new(ReferenceCpuEngine::new());
     let plain_out = plain_exec
         .offload_attention_permuted(
             q.view(),
@@ -876,7 +876,7 @@ fn trait_method_causal_mask_matches_plaintext() {
         )
         .unwrap();
 
-    let mut in_proc = InProcessTrustedExecutor::with_seed(RayonCpuEngine::new(), MaskSeed([4u8; 32]))
+    let mut in_proc = InProcessTrustedExecutor::with_seed(ReferenceCpuEngine::new(), MaskSeed([4u8; 32]))
         .with_perm_attention(PermAttnConfig::DISABLED_NOISE);
     let in_proc_out = in_proc
         .offload_attention_permuted(
@@ -934,11 +934,11 @@ use gelo_protocol::substrate::GpuOffloadEngine;
 use ndarray::ArrayView3;
 use std::sync::Mutex;
 
-/// Engine that wraps an honest `RayonCpuEngine` and records every input
+/// Engine that wraps an honest `ReferenceCpuEngine` and records every input
 /// the engine sees from a `permuted_attention` forward pass. Used to
 /// run recovery attacks on the captured tensors.
 struct SpyEngine {
-    inner: Mutex<RayonCpuEngine>,
+    inner: Mutex<ReferenceCpuEngine>,
     softmax_call_count: Mutex<usize>,
     /// Captures every LHS tensor passed to `matmul_dynamic_batched`,
     /// in call order. Call 0 is `Q · Kᵀ` (input: permuted noisy Q);
@@ -950,7 +950,7 @@ struct SpyEngine {
 impl SpyEngine {
     fn new() -> Self {
         Self {
-            inner: Mutex::new(RayonCpuEngine::new()),
+            inner: Mutex::new(ReferenceCpuEngine::new()),
             softmax_call_count: Mutex::new(0),
             matmul_batched_lhs: Mutex::new(Vec::new()),
         }

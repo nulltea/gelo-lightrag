@@ -72,7 +72,7 @@ fn qwen3_overhead_step_breakdown() {
     eprintln!("[load] downloading + materialising Qwen3 weights...");
     let cpu_seed = GeloQwenEmbedder::from_pretrained(
         MODEL,
-        PlaintextExecutor::new(gelo_protocol::RayonCpuEngine::new()),
+        PlaintextExecutor::new(gelo_protocol::ReferenceCpuEngine::new()),
     )
     .expect("Qwen3 from_pretrained")
     .with_out_attn_mult(false);
@@ -152,7 +152,7 @@ fn qwen3_overhead_step_breakdown() {
         let issuer = MockReportIssuer::from_bundled().unwrap();
         let snp_for_attest = SnpTrustedExecutor::new(
             InProcessTrustedExecutor::with_seed(
-                gelo_protocol::RayonCpuEngine::new(),
+                gelo_protocol::ReferenceCpuEngine::new(),
                 MaskSeed::from_bytes([1u8; 32]),
             ),
             issuer,

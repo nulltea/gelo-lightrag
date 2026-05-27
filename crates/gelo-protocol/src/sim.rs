@@ -18,38 +18,43 @@ use crate::shield::{ShieldConfig, stack_shield};
 use crate::snapshot::{SnapshotCapture, SnapshotConfig};
 use crate::substrate::{GpuOffloadEngine, TrustedExecutor, WeightHandle, WeightKind};
 
-/// **DEPRECATED — DO NOT USE IN NEW CODE.**
+/// Reference [`GpuOffloadEngine`] that performs the offloaded GEMM on
+/// the CPU via rayon. **Test-only.** Gated behind
+/// `#[cfg(any(test, feature = "reference-engine"))]` so production
+/// crates can't import it at all.
 ///
-/// Reference [`GpuOffloadEngine`] that performs the offloaded GEMM on the
-/// CPU. Retained only so existing tests / synthetic parity harnesses keep
-/// compiling while they migrate. **Every measurement, bench, example,
-/// and production runtime must use `gelo_gpu_wgpu::WgpuVulkanEngine`** —
-/// see `feedback_benches_use_gelo_gpu.md` and
+/// Three test-side roles depend on this adapter:
+/// - `gelo-protocol`'s own unit tests, which can't reach
+///   `gelo_gpu_wgpu::WgpuVulkanEngine` without a circular dependency.
+/// - `gelo-gpu-wgpu/tests/parity.rs` — literal CPU-vs-Wgpu parity oracle.
+/// - The byzantine-tampering attack suites
+///   (`tests/ple_pcie_leak.rs`, `tests/u_verify.rs`,
+///   `tests/bss_recovery.rs`) wrap it in
+///   `SpyEngine` / `TamperingEngine` / `SnoopingEngine`.
+///
+/// Production / benches / measurements: use
+/// `gelo_gpu_wgpu::WgpuVulkanEngine` instead — see
+/// `feedback_benches_use_gelo_gpu.md` and
 /// `feedback_no_rayon_cpu_engine.md`.
 ///
-/// Weights are stored as `Arc<Array2<f32>>` so the legacy path that does
-/// reach this type still avoids the engine-side clone via
-/// [`Self::register_weight_shared`]. New call sites must not be added.
-#[deprecated(
-    since = "0.1.0",
-    note = "RayonCpuEngine is the reference CPU impl; use `gelo_gpu_wgpu::WgpuVulkanEngine` \
-            for all measurements, benches, and production runtimes — see \
-            `feedback_benches_use_gelo_gpu.md` + `feedback_no_rayon_cpu_engine.md`."
-)]
+/// Weights are stored as `Arc<Array2<f32>>` so callers that have an
+/// Arc can register without an engine-side clone via
+/// [`Self::register_weight_shared`].
+#[cfg(any(test, feature = "reference-engine"))]
 #[derive(Default, Clone)]
-pub struct RayonCpuEngine {
+pub struct ReferenceCpuEngine {
     weights: HashMap<WeightHandle, Arc<Array2<f32>>>,
 }
 
-#[allow(deprecated)]
-impl RayonCpuEngine {
+#[cfg(any(test, feature = "reference-engine"))]
+impl ReferenceCpuEngine {
     pub fn new() -> Self {
         Self::default()
     }
 }
 
-#[allow(deprecated)]
-impl GpuOffloadEngine for RayonCpuEngine {
+#[cfg(any(test, feature = "reference-engine"))]
+impl GpuOffloadEngine for ReferenceCpuEngine {
     fn register_weight(&mut self, handle: WeightHandle, weight: ArrayView2<f32>) -> Result<()> {
         // Legacy path: caller doesn't own an Arc. Clone once and wrap.
         // New call sites should use `register_weight_shared` instead.
@@ -1775,7 +1780,7 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         // Hand the Arc straight to the engine. For wgpu in F16 mode
         // the upload converts bf16 → f16 device-side and the Arc
         // refcount drops once the engine returns. For the deprecated
-        // RayonCpuEngine, the default impl converts bf16 → f32 via
+        // ReferenceCpuEngine, the default impl converts bf16 → f32 via
         // mapv() inside `register_weight_bf16_shared` — never used in
         // production. See `feedback_no_rayon_cpu_engine.md`.
         self.engine.register_weight_bf16_shared(handle, weight)
@@ -1790,7 +1795,7 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         // Qwen3-class models when the embedder already holds an Arc.
         // The engine-side clone is also eliminated via
         // `register_weight_shared` — for engines that override
-        // (`RayonCpuEngine` does), the Arc is stored directly.
+        // (`ReferenceCpuEngine` does), the Arc is stored directly.
         self.engine.register_weight_shared(handle, Arc::clone(&weight))?;
         if self.verify_probes > 0 {
             self.weights.insert(handle, weight);
@@ -2229,12 +2234,12 @@ mod tests {
         let weight = Array2::<f32>::from_shape_fn((d, p), |_| normal.sample(&mut rng));
         let handle = WeightHandle::new(0, WeightKind::Q);
 
-        let mut plain = PlaintextExecutor::new(RayonCpuEngine::new());
+        let mut plain = PlaintextExecutor::new(ReferenceCpuEngine::new());
         plain.provision_weight(handle, weight.view()).unwrap();
         let plain_out = plain.offload_linear(handle, hidden.view()).unwrap();
 
         let mut masked = InProcessTrustedExecutor::with_seed(
-            RayonCpuEngine::new(),
+            ReferenceCpuEngine::new(),
             MaskSeed::from_bytes([9u8; 32]),
         );
         masked.provision_weight(handle, weight.view()).unwrap();
@@ -2264,7 +2269,7 @@ mod tests {
         let wv = Array2::<f32>::from_shape_fn((d, d), |_| normal.sample(&mut rng));
 
         let mut exec = InProcessTrustedExecutor::with_seed(
-            RayonCpuEngine::new(),
+            ReferenceCpuEngine::new(),
             MaskSeed::from_bytes([5u8; 32]),
         );
         exec.provision_weight(WeightHandle::new(0, WeightKind::Q), wq.view())
@@ -2311,12 +2316,12 @@ mod tests {
         let weight = Array2::<f32>::from_shape_fn((d, p), |_| normal.sample(&mut rng));
         let handle = WeightHandle::new(0, WeightKind::Q);
 
-        let mut plain = PlaintextExecutor::new(RayonCpuEngine::new());
+        let mut plain = PlaintextExecutor::new(ReferenceCpuEngine::new());
         plain.provision_weight(handle, weight.view()).unwrap();
         let plain_out = plain.offload_linear(handle, hidden.view()).unwrap();
 
         let mut bf16 = InProcessTrustedExecutor::with_seed(
-            RayonCpuEngine::new(),
+            ReferenceCpuEngine::new(),
             MaskSeed::from_bytes([29u8; 32]),
         )
         .with_haar_mask()       // pin Haar (default is Auto = HD₃/DCT-IV)
@@ -2378,12 +2383,12 @@ mod tests {
         let weight = Array2::<f32>::from_shape_fn((d, p), |_| normal.sample(&mut rng));
         let handle = WeightHandle::new(0, WeightKind::Q);
 
-        let mut plain = PlaintextExecutor::new(RayonCpuEngine::new());
+        let mut plain = PlaintextExecutor::new(ReferenceCpuEngine::new());
         plain.provision_weight(handle, weight.view()).unwrap();
         let plain_out = plain.offload_linear(handle, hidden.view()).unwrap();
 
         let mut hd3 = InProcessTrustedExecutor::with_seed(
-            RayonCpuEngine::new(),
+            ReferenceCpuEngine::new(),
             MaskSeed::from_bytes([19u8; 32]),
         )
         .with_hd3_mask();
@@ -2424,12 +2429,12 @@ mod tests {
         let weight = Array2::<f32>::from_shape_fn((d, p), |_| normal.sample(&mut rng));
         let handle = WeightHandle::new(0, WeightKind::Q);
 
-        let mut plain = PlaintextExecutor::new(RayonCpuEngine::new());
+        let mut plain = PlaintextExecutor::new(ReferenceCpuEngine::new());
         plain.provision_weight(handle, weight.view()).unwrap();
         let plain_out = plain.offload_linear(handle, hidden.view()).unwrap();
 
         let mut hd3 = InProcessTrustedExecutor::with_seed(
-            RayonCpuEngine::new(),
+            ReferenceCpuEngine::new(),
             MaskSeed::from_bytes([31u8; 32]),
         )
         .with_per_offload_mask()
@@ -2465,7 +2470,7 @@ mod tests {
         let wv = Array2::<f32>::from_shape_fn((d, d), |_| normal.sample(&mut rng));
 
         let mut exec = InProcessTrustedExecutor::with_seed(
-            RayonCpuEngine::new(),
+            ReferenceCpuEngine::new(),
             MaskSeed::from_bytes([27u8; 32]),
         )
         .with_hd3_mask();
@@ -2512,12 +2517,12 @@ mod tests {
         let weight = Array2::<f32>::from_shape_fn((d, p), |_| normal.sample(&mut rng));
         let handle = WeightHandle::new(0, WeightKind::Q);
 
-        let mut plain = PlaintextExecutor::new(RayonCpuEngine::new());
+        let mut plain = PlaintextExecutor::new(ReferenceCpuEngine::new());
         plain.provision_weight(handle, weight.view()).unwrap();
         let plain_out = plain.offload_linear(handle, hidden.view()).unwrap();
 
         let mut dct = InProcessTrustedExecutor::with_seed(
-            RayonCpuEngine::new(),
+            ReferenceCpuEngine::new(),
             MaskSeed::from_bytes([43u8; 32]),
         )
         .with_dct4_mask();
@@ -2555,12 +2560,12 @@ mod tests {
         let weight = Array2::<f32>::from_shape_fn((d, p), |_| normal.sample(&mut rng));
         let handle = WeightHandle::new(0, WeightKind::Q);
 
-        let mut plain = PlaintextExecutor::new(RayonCpuEngine::new());
+        let mut plain = PlaintextExecutor::new(ReferenceCpuEngine::new());
         plain.provision_weight(handle, weight.view()).unwrap();
         let plain_out = plain.offload_linear(handle, hidden.view()).unwrap();
 
         let mut dct = InProcessTrustedExecutor::with_seed(
-            RayonCpuEngine::new(),
+            ReferenceCpuEngine::new(),
             MaskSeed::from_bytes([53u8; 32]),
         )
         .with_per_offload_mask()
@@ -2625,12 +2630,12 @@ mod tests {
         let weight = Array2::<f32>::from_shape_fn((d, p), |_| normal.sample(&mut rng));
         let handle = WeightHandle::new(0, WeightKind::Q);
 
-        let mut plain = PlaintextExecutor::new(RayonCpuEngine::new());
+        let mut plain = PlaintextExecutor::new(ReferenceCpuEngine::new());
         plain.provision_weight(handle, weight.view()).unwrap();
         let plain_out = plain.offload_linear(handle, hidden.view()).unwrap();
 
         let mut auto = InProcessTrustedExecutor::with_seed(
-            RayonCpuEngine::new(),
+            ReferenceCpuEngine::new(),
             MaskSeed::from_bytes([71u8; 32]),
         )
         .with_auto_mask();
@@ -2663,12 +2668,12 @@ mod tests {
         let weight = Array2::<f32>::from_shape_fn((d, p), |_| normal.sample(&mut rng));
         let handle = WeightHandle::new(0, WeightKind::Q);
 
-        let mut plain = PlaintextExecutor::new(RayonCpuEngine::new());
+        let mut plain = PlaintextExecutor::new(ReferenceCpuEngine::new());
         plain.provision_weight(handle, weight.view()).unwrap();
         let plain_out = plain.offload_linear(handle, hidden.view()).unwrap();
 
         let mut auto = InProcessTrustedExecutor::with_seed(
-            RayonCpuEngine::new(),
+            ReferenceCpuEngine::new(),
             MaskSeed::from_bytes([83u8; 32]),
         )
         .with_auto_mask();
@@ -2703,7 +2708,7 @@ mod tests {
         let wv = Array2::<f32>::from_shape_fn((d, d), |_| normal.sample(&mut rng));
 
         let mut exec = InProcessTrustedExecutor::with_seed(
-            RayonCpuEngine::new(),
+            ReferenceCpuEngine::new(),
             MaskSeed::from_bytes([61u8; 32]),
         )
         .with_dct4_mask();
@@ -2756,7 +2761,7 @@ mod tests {
         let handle = WeightHandle::new(0, WeightKind::Q);
 
         let mut exec = InProcessTrustedExecutor::with_seed(
-            RayonCpuEngine::new(),
+            ReferenceCpuEngine::new(),
             MaskSeed::from_bytes([23u8; 32]),
         );
         exec.provision_weight(handle, weight.view()).unwrap();
@@ -2808,7 +2813,7 @@ mod tests {
         let handle = WeightHandle::new(0, WeightKind::Q);
 
         let mut exec = InProcessTrustedExecutor::with_seed(
-            RayonCpuEngine::new(),
+            ReferenceCpuEngine::new(),
             MaskSeed::from_bytes([93u8; 32]),
         );
         exec.provision_weight(handle, weight.view()).unwrap();
@@ -2850,7 +2855,7 @@ mod tests {
         let handle = WeightHandle::new(0, WeightKind::Q);
 
         let mut exec = InProcessTrustedExecutor::with_seed(
-            RayonCpuEngine::new(),
+            ReferenceCpuEngine::new(),
             MaskSeed::from_bytes([97u8; 32]),
         );
         exec.provision_weight(handle, weight.view()).unwrap();
@@ -2895,7 +2900,7 @@ mod tests {
         let handle = WeightHandle::new(0, WeightKind::Q);
 
         let mut exec = InProcessTrustedExecutor::with_seed(
-            RayonCpuEngine::new(),
+            ReferenceCpuEngine::new(),
             MaskSeed::from_bytes([31u8; 32]),
         );
         exec.provision_weight(handle, weight.view()).unwrap();

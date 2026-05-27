@@ -64,7 +64,7 @@ use gelo_gpu_wgpu::WgpuVulkanEngine;
 use lightrag_routes::{ExtractAndBuildState, LightRagServiceHandle};
 
 /// The concrete offload engine used by the runner. GPU only —
-/// `RayonCpuEngine` is deprecated and never instantiated here. See
+/// `ReferenceCpuEngine` is deprecated and never instantiated here. See
 /// `feedback_no_rayon_cpu_engine.md`.
 pub type RunnerEngine = WgpuVulkanEngine;
 
@@ -748,7 +748,7 @@ mod tests {
     use gelo_embedder::common::tokenizer::HfTokenizer;
     use gelo_protocol::rng::MaskSeed;
     use gelo_protocol::{
-        GpuOffloadEngine, InProcessTrustedExecutor, RayonCpuEngine, WeightHandle, WeightKind,
+        GpuOffloadEngine, InProcessTrustedExecutor, ReferenceCpuEngine, WeightHandle, WeightKind,
     };
     use gelo_reranker::cross_encoder::CrossEncoderRerankService;
     use gelo_reranker::head::ClassifierHead;
@@ -882,7 +882,7 @@ mod tests {
             rand2(cfg.hidden_size, 1, &mut rng, 0.05),
             rand1(1, &mut rng, 0.0),
         );
-        let mut engine = RayonCpuEngine::new();
+        let mut engine = ReferenceCpuEngine::new();
         provision(&weights, &cfg, &mut engine);
         let exec = InProcessTrustedExecutor::with_seed(engine, MaskSeed::from_bytes([19u8; 32]));
         let reranker_svc =

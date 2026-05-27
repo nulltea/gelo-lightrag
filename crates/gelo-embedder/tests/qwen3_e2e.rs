@@ -10,7 +10,7 @@
 
 use gelo_embedder::GeloQwenEmbedder;
 use gelo_protocol::rng::MaskSeed;
-use gelo_protocol::{InProcessTrustedExecutor, PlaintextExecutor, RayonCpuEngine};
+use gelo_protocol::{InProcessTrustedExecutor, PlaintextExecutor, ReferenceCpuEngine};
 use rag_core::Embedder;
 
 const MODEL: &str = "Qwen/Qwen3-Embedding-0.6B";
@@ -20,7 +20,7 @@ const MODEL: &str = "Qwen/Qwen3-Embedding-0.6B";
 fn qwen3_decoder_parity() {
     let mut cpu_plain = GeloQwenEmbedder::from_pretrained(
         MODEL,
-        PlaintextExecutor::new(RayonCpuEngine::new()),
+        PlaintextExecutor::new(ReferenceCpuEngine::new()),
     )
     .expect("load Qwen3-Embedding-0.6B (plaintext)")
     .with_out_attn_mult(true)
@@ -28,7 +28,7 @@ fn qwen3_decoder_parity() {
 
     let mut cpu_masked = GeloQwenEmbedder::from_pretrained(
         MODEL,
-        InProcessTrustedExecutor::with_seed(RayonCpuEngine::new(), MaskSeed::from_bytes([29u8; 32])),
+        InProcessTrustedExecutor::with_seed(ReferenceCpuEngine::new(), MaskSeed::from_bytes([29u8; 32])),
     )
     .expect("load Qwen3-Embedding-0.6B (masked)")
     .with_out_attn_mult(true)

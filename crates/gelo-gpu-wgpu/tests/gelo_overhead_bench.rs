@@ -31,7 +31,7 @@ use gelo_embedder::GeloBertEmbedder;
 use gelo_gpu_wgpu::WgpuVulkanEngine;
 use gelo_protocol::rng::MaskSeed;
 use gelo_protocol::{
-    InProcessTrustedExecutor, PlaintextExecutor, RayonCpuEngine, ShieldConfig,
+    InProcessTrustedExecutor, PlaintextExecutor, ReferenceCpuEngine, ShieldConfig,
 };
 use rag_core::Embedder;
 
@@ -150,7 +150,7 @@ fn gelo_overhead_vs_untrusted_baseline() {
 
     // CPU reference (no GPU, no mask) — for context only.
     eprintln!("\n[cpu_plaintext] loading...");
-    let cpu_engine = RayonCpuEngine::new();
+    let cpu_engine = ReferenceCpuEngine::new();
     let mut cpu_plain =
         GeloBertEmbedder::from_pretrained(MODEL, PlaintextExecutor::new(cpu_engine))
             .expect("load bge-small (cpu)");

@@ -7,8 +7,10 @@
 //!
 //! The crate is substrate-agnostic: the trusted side is any type that
 //! implements [`TrustedExecutor`] and the offload side is any type that
-//! implements [`GpuOffloadEngine`]. A reference in-process simulation
-//! (`InProcessTrustedExecutor` + `RayonCpuEngine`) lives in [`sim`].
+//! implements [`GpuOffloadEngine`]. The production offload adapter is
+//! `gelo_gpu_wgpu::WgpuVulkanEngine`; a test-only CPU reference adapter
+//! (`InProcessTrustedExecutor` + `ReferenceCpuEngine`) lives in [`sim`]
+//! behind the `reference-engine` feature.
 
 // Pull in `blas-src` so the linker picks up the BLIS-provided BLAS
 // symbols that ndarray's `blas` fast path dispatches to. The `use _`
@@ -44,6 +46,8 @@ pub use mask::{
 };
 pub use ple::PleTable;
 pub use shield::ShieldConfig;
-pub use sim::{InProcessTrustedExecutor, PlaintextExecutor, RayonCpuEngine};
+pub use sim::{InProcessTrustedExecutor, PlaintextExecutor};
+#[cfg(any(test, feature = "reference-engine"))]
+pub use sim::ReferenceCpuEngine;
 pub use snapshot::{PcieSnapshot, SnapshotCapture, SnapshotConfig};
 pub use substrate::{GpuOffloadEngine, MatmulToken, TrustedExecutor, WeightHandle, WeightKind};

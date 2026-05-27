@@ -17,8 +17,6 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use hf_hub::api::sync::ApiBuilder;
-use rand::SeedableRng;
-use rand_chacha::ChaCha20Rng;
 use sha2::{Digest, Sha256};
 
 use gelo_embedder::common::tokenizer::HfTokenizer;
@@ -30,10 +28,8 @@ use gelo_protocol::profile;
 use gelo_protocol::TrustedExecutor;
 
 use crate::head::YesNoHead;
-use crate::output::EncryptedRerankBundle;
-use crate::score::{ScoredCandidate, top_k_with_tie_shuffle};
-use crate::service::{RerankError, RerankRequest, RerankService};
-use crate::session::SessionKey;
+use crate::score::ScoredCandidate;
+use crate::service::{RerankRequest, RerankService};
 
 /// Qwen3-Reranker's published chat template. Inlined and SHA-pinned
 /// so a tokenizer-config drift can't silently change what the model
@@ -255,50 +251,25 @@ impl<X: TrustedExecutor + Clone + Send + Sync> RerankService for CausalDiscrimin
         "causal-discriminator"
     }
 
-    fn rerank(
+    fn score_candidates(
         &mut self,
-        session: &SessionKey,
         request: &RerankRequest<'_>,
-    ) -> Result<EncryptedRerankBundle, RerankError> {
-        if request.top_k == 0 {
-            return Err(RerankError::InvalidRequest("top_k must be > 0".into()));
-        }
-        if request.top_k > request.k_max {
-            return Err(RerankError::InvalidRequest(format!(
-                "top_k={} exceeds k_max={}",
-                request.top_k, request.k_max
-            )));
-        }
-
+    ) -> Result<Vec<ScoredCandidate>, anyhow::Error> {
         // M1.11 R2: prefer the batched-prefill path when there are
         // multiple candidates. Falls back to the legacy per-Rayon-worker
-        // fan-out when batched fails (e.g. tokenizer error per
-        // candidate) so single-pair callers and the migration path
-        // keep working. Set `GELO_RERANKER_LEGACY_RAYON=1` to force the
-        // legacy path for A/B measurement.
+        // fan-out for single-pair callers. Set
+        // `GELO_RERANKER_LEGACY_RAYON=1` to force the legacy path for
+        // A/B measurement.
         let force_legacy =
             std::env::var("GELO_RERANKER_LEGACY_RAYON").as_deref() == Ok("1");
-        let scored = if force_legacy || request.candidates.len() <= 1 {
+        if force_legacy || request.candidates.len() <= 1 {
             #[allow(deprecated)]
             {
-                score_candidates_parallel(self, request).map_err(RerankError::Forward)?
+                score_candidates_parallel(self, request)
             }
         } else {
-            score_candidates_batched(self, request).map_err(RerankError::Forward)?
-        };
-
-        let qkey = session.derive_query_key(&request.query_id);
-        let mut rng = ChaCha20Rng::from_seed(*qkey.as_bytes());
-        let ranked = top_k_with_tie_shuffle(scored, request.top_k, &mut rng);
-
-        let decoy_len = request
-            .candidates
-            .iter()
-            .map(|c| c.text.len())
-            .max()
-            .unwrap_or(64);
-
-        EncryptedRerankBundle::seal(&qkey, &ranked, request.k_max, &mut rng, decoy_len)
+            score_candidates_batched(self, request)
+        }
     }
 }
 
@@ -505,7 +476,7 @@ mod tests {
     use gelo_embedder::decoder::weights::{DecoderLayerWeights, DecoderWeights};
     use gelo_protocol::rng::MaskSeed;
     use gelo_protocol::{
-        GpuOffloadEngine, InProcessTrustedExecutor, RayonCpuEngine, WeightHandle, WeightKind,
+        GpuOffloadEngine, InProcessTrustedExecutor, ReferenceCpuEngine, WeightHandle, WeightKind,
     };
     use ndarray::{Array1, Array2};
     use rand::SeedableRng;
@@ -671,7 +642,7 @@ mod tests {
         let query = "alpha echo";
 
         // Run 1: serial score_input_ids per candidate (legacy semantic).
-        let mut serial_engine = RayonCpuEngine::new();
+        let mut serial_engine = ReferenceCpuEngine::new();
         provision(&weights, &cfg, &mut serial_engine);
         let serial_exec = InProcessTrustedExecutor::with_seed(
             serial_engine,
@@ -692,7 +663,7 @@ mod tests {
             .collect();
 
         // Run 2: score_candidates_batched on the same inputs.
-        let mut batched_engine = RayonCpuEngine::new();
+        let mut batched_engine = ReferenceCpuEngine::new();
         provision(&weights, &cfg, &mut batched_engine);
         let batched_exec = InProcessTrustedExecutor::with_seed(
             batched_engine,

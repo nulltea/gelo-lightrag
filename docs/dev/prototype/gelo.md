@@ -151,7 +151,7 @@ Three impls cover the matrix of real deployments and test substrates:
 
 | Impl | Where | Role |
 |---|---|---|
-| `RayonCpuEngine` | `gelo-protocol::sim` | Reference offload backend on CPU; used as parity baseline and for the in-TEE attention fallback. |
+| `ReferenceCpuEngine` | `gelo-protocol::sim` | Test-only reference offload backend on CPU; gated behind the `reference-engine` feature; used as the parity baseline and by the byzantine-tampering attack suites. |
 | `WgpuVulkanEngine` | `gelo-gpu-wgpu` | Real Vulkan compute via `wgpu` + `cubecl-matmul`. The production GPU backend. Vendor-agnostic — works on AMD, Intel, Nvidia. |
 | `InProcessTrustedExecutor` | `gelo-protocol::sim` | The protocol engine. Owns the mask RNG + shield + U-Verify; delegates the underlying GEMM to *any* `GpuOffloadEngine`. |
 

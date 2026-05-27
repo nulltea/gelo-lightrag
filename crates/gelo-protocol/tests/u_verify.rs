@@ -1,6 +1,6 @@
 //! U-Verify tamper-detection regression tests.
 //!
-//! Wraps a normal `RayonCpuEngine` with a `TamperingEngine` that adds a
+//! Wraps a normal `ReferenceCpuEngine` with a `TamperingEngine` that adds a
 //! small perturbation to every matmul output. Without verification the
 //! executor accepts the corrupted result silently; with `verify_probes > 0`
 //! the executor returns `Err`.
@@ -14,7 +14,7 @@ use rand_distr::{Distribution, StandardNormal};
 
 use gelo_protocol::rng::MaskSeed;
 use gelo_protocol::{
-    GpuOffloadEngine, InProcessTrustedExecutor, RayonCpuEngine, ShieldConfig, TrustedExecutor,
+    GpuOffloadEngine, InProcessTrustedExecutor, ReferenceCpuEngine, ShieldConfig, TrustedExecutor,
     WeightHandle, WeightKind,
 };
 
@@ -22,7 +22,7 @@ use gelo_protocol::{
 /// where `δ` is a fixed unit-norm random direction so the tampering is
 /// deterministic across runs but invisible to scaling.
 struct TamperingEngine {
-    inner: RayonCpuEngine,
+    inner: ReferenceCpuEngine,
     epsilon: f32,
     /// Counter so we tamper only the Nth call (helps distinguish "caught the
     /// tamper at the right time" from "caught some other call").
@@ -31,7 +31,7 @@ struct TamperingEngine {
 }
 
 impl TamperingEngine {
-    fn new(inner: RayonCpuEngine, epsilon: f32, tamper_after: usize) -> Self {
+    fn new(inner: ReferenceCpuEngine, epsilon: f32, tamper_after: usize) -> Self {
         Self {
             inner,
             epsilon,
@@ -88,7 +88,7 @@ fn u_verify_catches_tampered_offload_linear() {
     let handle = WeightHandle::new(0, WeightKind::Q);
 
     // Tamper every call, eps = 0.5 — well above f32 roundoff slack.
-    let mut tampering = TamperingEngine::new(RayonCpuEngine::new(), 0.5, 0);
+    let mut tampering = TamperingEngine::new(ReferenceCpuEngine::new(), 0.5, 0);
     tampering.register_weight(handle, weight.view()).unwrap();
 
     let mut exec = InProcessTrustedExecutor::with_seed(tampering, MaskSeed::from_bytes([15u8; 32]))
@@ -117,7 +117,7 @@ fn u_verify_passes_honest_engine_offload_linear() {
     let handle = WeightHandle::new(0, WeightKind::Q);
 
     // No tampering: epsilon = 0.
-    let mut honest = TamperingEngine::new(RayonCpuEngine::new(), 0.0, 100);
+    let mut honest = TamperingEngine::new(ReferenceCpuEngine::new(), 0.0, 100);
     honest.register_weight(handle, weight.view()).unwrap();
 
     let mut exec = InProcessTrustedExecutor::with_seed(honest, MaskSeed::from_bytes([15u8; 32]))
@@ -138,7 +138,7 @@ fn u_verify_catches_tampered_offload_attention_qkt() {
     let q = rand_matrix(n, d, &mut rng, 0.5);
     let kt = rand_matrix(d, n, &mut rng, 0.5);
 
-    let tampering = TamperingEngine::new(RayonCpuEngine::new(), 0.5, 0);
+    let tampering = TamperingEngine::new(ReferenceCpuEngine::new(), 0.5, 0);
     let mut exec =
         InProcessTrustedExecutor::with_seed(tampering, MaskSeed::from_bytes([23u8; 32]))
             .with_verify_probes(8);
@@ -171,7 +171,7 @@ fn u_verify_catches_tampered_batched_attention_qkt() {
             .assign(&rand_matrix(d, n, &mut rng, 0.4));
     }
 
-    let tampering = TamperingEngine::new(RayonCpuEngine::new(), 0.5, 0);
+    let tampering = TamperingEngine::new(ReferenceCpuEngine::new(), 0.5, 0);
     let mut exec =
         InProcessTrustedExecutor::with_seed(tampering, MaskSeed::from_bytes([37u8; 32]))
             .with_verify_probes(8);
@@ -194,7 +194,7 @@ fn u_verify_with_shield_still_catches_tampering() {
     let weight = rand_matrix(32, 24, &mut rng, 0.3);
     let handle = WeightHandle::new(0, WeightKind::Q);
 
-    let mut tampering = TamperingEngine::new(RayonCpuEngine::new(), 0.5, 0);
+    let mut tampering = TamperingEngine::new(ReferenceCpuEngine::new(), 0.5, 0);
     tampering.register_weight(handle, weight.view()).unwrap();
 
     let mut exec = InProcessTrustedExecutor::with_shield(

@@ -52,7 +52,7 @@ use gelo_embedder::decoder::gemma4::Gemma4Variant;
 use gelo_embedder::decoder::generation::{GenerationConfig, SamplerConfig, generate};
 use gelo_embedder::decoder::rope::RopeTables;
 use gelo_embedder::decoder::weights::DecoderWeights;
-use gelo_protocol::{PlaintextExecutor, RayonCpuEngine};
+use gelo_protocol::{PlaintextExecutor, ReferenceCpuEngine};
 
 const MODEL: &str = "google/gemma-4-E2B";
 
@@ -93,7 +93,7 @@ fn gemma4_e2b_greedy_generates_to_completion() -> Result<()> {
         );
 
         // 4. Construct executor + provision standard offload weights.
-        let mut exec = PlaintextExecutor::new(RayonCpuEngine::new());
+        let mut exec = PlaintextExecutor::new(ReferenceCpuEngine::new());
         // exec.provision_ple_table(...) — when M1.2 loader produces a
         // real PleTable from the safetensors blob.
 

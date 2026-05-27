@@ -40,7 +40,7 @@ use gelo_embedder::decoder::weights::DecoderWeights;
 use gelo_embedder::GeloQwenEmbedder;
 use gelo_gpu_wgpu::WgpuVulkanEngine;
 use gelo_protocol::rng::MaskSeed;
-use gelo_protocol::{InProcessTrustedExecutor, PlaintextExecutor, RayonCpuEngine, ShieldConfig};
+use gelo_protocol::{InProcessTrustedExecutor, PlaintextExecutor, ReferenceCpuEngine, ShieldConfig};
 use rag_core::Embedder;
 
 const MODEL: &str = "Qwen/Qwen3-Embedding-0.6B";
@@ -166,7 +166,7 @@ fn qwen3_overhead_breakdown() {
     eprintln!("[load] downloading + materialising Qwen3 weights...");
     let mut cpu_plain = GeloQwenEmbedder::from_pretrained(
         MODEL,
-        PlaintextExecutor::new(RayonCpuEngine::new()),
+        PlaintextExecutor::new(ReferenceCpuEngine::new()),
     )
     .expect("Qwen3 from_pretrained")
     .with_out_attn_mult(false);

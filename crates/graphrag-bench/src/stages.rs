@@ -1,10 +1,13 @@
 //! Stage-timed kg_query orchestration. Mirrors
-//! `LightRagPrivateService::kg_query` step-for-step so we can attribute
-//! latency to perturb / search / adjacency / chunks / decrypt.
+//! [`light_kg_store::LightKgStore::query_context`] step-for-step so we
+//! can attribute latency to perturb / search / adjacency / chunks /
+//! decrypt.
 //!
 //! Re-implementing the orchestration here (instead of wrapping the
-//! production `kg_query`) lets us put `Instant::now()` boundaries
+//! production `query_context`) lets us put `Instant::now()` boundaries
 //! between each stage without polluting prod code with timing hooks.
+//! Any change to the canonical fan-out **must** be mirrored here or the
+//! perf attribution stops matching production behaviour.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};

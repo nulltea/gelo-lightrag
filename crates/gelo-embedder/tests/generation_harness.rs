@@ -33,7 +33,7 @@ use gelo_embedder::decoder::generation::{GenerationConfig, SamplerConfig, genera
 use gelo_embedder::decoder::kv_cache::KvCache;
 use gelo_embedder::decoder::rope::RopeTables;
 use gelo_embedder::decoder::weights::{DecoderLayerWeights, DecoderWeights};
-use gelo_protocol::{GpuOffloadEngine, PlaintextExecutor, RayonCpuEngine, WeightHandle, WeightKind};
+use gelo_protocol::{GpuOffloadEngine, PlaintextExecutor, ReferenceCpuEngine, WeightHandle, WeightKind};
 
 fn tiny_decoder_config() -> DecoderConfig {
     DecoderConfig {
@@ -144,7 +144,7 @@ fn provision_decoder<E: GpuOffloadEngine>(
 }
 
 fn make_exec_and_weights() -> (
-    PlaintextExecutor<RayonCpuEngine>,
+    PlaintextExecutor<ReferenceCpuEngine>,
     Arc<DecoderWeights>,
     DecoderConfig,
     RopeTables,
@@ -157,7 +157,7 @@ fn make_exec_and_weights() -> (
         cfg.max_position_embeddings,
         cfg.rope_theta,
     );
-    let mut engine = RayonCpuEngine::new();
+    let mut engine = ReferenceCpuEngine::new();
     provision_decoder(&weights, &cfg, &mut engine);
     let exec = PlaintextExecutor::new(engine);
     (exec, weights, cfg, rope)
@@ -375,7 +375,7 @@ fn gemma4_shaped_decoder_runs_generate() {
         cfg.max_position_embeddings,
         cfg.rope_theta,
     );
-    let mut engine = RayonCpuEngine::new();
+    let mut engine = ReferenceCpuEngine::new();
     provision_decoder(&weights, &cfg, &mut engine);
     let mut exec = PlaintextExecutor::new(engine);
 
@@ -434,12 +434,12 @@ fn hybrid_with_max_window_matches_all_global() {
         sampler: SamplerConfig::Greedy,
     };
 
-    let mut engine_a = RayonCpuEngine::new();
+    let mut engine_a = ReferenceCpuEngine::new();
     provision_decoder(&weights, &hybrid, &mut engine_a);
     let mut exec_a = PlaintextExecutor::new(engine_a);
     let out_a = generate(&hybrid, &weights, &rope, &mut exec_a, &prompt, &gen_cfg).unwrap();
 
-    let mut engine_b = RayonCpuEngine::new();
+    let mut engine_b = ReferenceCpuEngine::new();
     provision_decoder(&weights, &all_global, &mut engine_b);
     let mut exec_b = PlaintextExecutor::new(engine_b);
     let out_b = generate(
@@ -487,14 +487,14 @@ fn hybrid_with_tight_window_diverges_at_hidden_state() {
 
     let prompt = vec![1u32, 2, 3, 4, 5, 6];
 
-    let mut engine_a = RayonCpuEngine::new();
+    let mut engine_a = ReferenceCpuEngine::new();
     provision_decoder(&weights, &hybrid, &mut engine_a);
     let mut exec_a = PlaintextExecutor::new(engine_a);
     let mut cache_a = KvCache::new(weights.layers.len(), prompt.len() + 4, hybrid.kv_dim());
     let h_hybrid = forward::run_prefill(&hybrid, &weights, &rope, &mut exec_a, &prompt, &mut cache_a)
         .unwrap();
 
-    let mut engine_b = RayonCpuEngine::new();
+    let mut engine_b = ReferenceCpuEngine::new();
     provision_decoder(&weights, &all_global, &mut engine_b);
     let mut exec_b = PlaintextExecutor::new(engine_b);
     let mut cache_b = KvCache::new(weights.layers.len(), prompt.len() + 4, all_global.kv_dim());
@@ -574,7 +574,7 @@ fn kv_shared_matches_separate_when_wk_equals_wv() {
     );
     let prompt = vec![1u32, 2, 3, 4];
 
-    let mut engine_a = RayonCpuEngine::new();
+    let mut engine_a = ReferenceCpuEngine::new();
     provision_decoder(&weights, &cfg_shared, &mut engine_a);
     let mut exec_a = PlaintextExecutor::new(engine_a);
     let out_shared = generate(
@@ -591,7 +591,7 @@ fn kv_shared_matches_separate_when_wk_equals_wv() {
     )
     .unwrap();
 
-    let mut engine_b = RayonCpuEngine::new();
+    let mut engine_b = ReferenceCpuEngine::new();
     provision_decoder(&weights, &cfg_separate, &mut engine_b);
     let mut exec_b = PlaintextExecutor::new(engine_b);
     let out_separate = generate(
@@ -665,13 +665,13 @@ fn partial_rope_diverges_from_full_rope() {
 
     let prompt = vec![1u32, 2, 3, 4];
 
-    let mut engine_a = RayonCpuEngine::new();
+    let mut engine_a = ReferenceCpuEngine::new();
     provision_decoder(&weights, &p_rope, &mut engine_a);
     let mut exec_a = PlaintextExecutor::new(engine_a);
     let mut cache_a = KvCache::new(weights.layers.len(), prompt.len() + 4, p_rope.kv_dim());
     let h_partial = forward::run_prefill(&p_rope, &weights, &rope, &mut exec_a, &prompt, &mut cache_a).unwrap();
 
-    let mut engine_b = RayonCpuEngine::new();
+    let mut engine_b = ReferenceCpuEngine::new();
     provision_decoder(&weights, &full_rope, &mut engine_b);
     let mut exec_b = PlaintextExecutor::new(engine_b);
     let mut cache_b = KvCache::new(weights.layers.len(), prompt.len() + 4, full_rope.kv_dim());
@@ -722,7 +722,7 @@ fn hybrid_decode_replay_invariant_holds() {
         sampler: SamplerConfig::Greedy,
     };
 
-    let mut engine_a = RayonCpuEngine::new();
+    let mut engine_a = ReferenceCpuEngine::new();
     provision_decoder(&weights, &cfg, &mut engine_a);
     let mut exec_a = PlaintextExecutor::new(engine_a);
     let out = generate(&cfg, &weights, &rope, &mut exec_a, &prompt, &gen_cfg).unwrap();
@@ -731,7 +731,7 @@ fn hybrid_decode_replay_invariant_holds() {
     let mut full = prompt.clone();
     full.extend_from_slice(&out.tokens);
 
-    let mut engine_b = RayonCpuEngine::new();
+    let mut engine_b = ReferenceCpuEngine::new();
     provision_decoder(&weights, &cfg, &mut engine_b);
     let mut exec_b = PlaintextExecutor::new(engine_b);
     let mut cache = KvCache::new(weights.layers.len(), full.len() + 1, cfg.kv_dim());
@@ -809,7 +809,7 @@ fn permuted_cached_dispatch_at_sigma_zero_matches_in_tee() {
     let input_ids: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 0];
 
     // Baseline: in-TEE attention via the existing cached path.
-    let mut e_in_tee = RayonCpuEngine::new();
+    let mut e_in_tee = ReferenceCpuEngine::new();
     provision_decoder(&weights, &cfg_in_tee, &mut e_in_tee);
     let mut exec_in_tee = InProcessTrustedExecutor::with_seed(e_in_tee, MaskSeed([5u8; 32]));
     exec_in_tee.set_perm_attention(PermAttnConfig::DISABLED_NOISE);
@@ -829,7 +829,7 @@ fn permuted_cached_dispatch_at_sigma_zero_matches_in_tee() {
 
     // Permuted dispatch: same setup but `use_perm_attention = true`,
     // threshold = 0. At σ = 0 the protocol is exact equivariance.
-    let mut e_permuted = RayonCpuEngine::new();
+    let mut e_permuted = ReferenceCpuEngine::new();
     provision_decoder(&weights, &cfg_permuted, &mut e_permuted);
     let mut exec_permuted = InProcessTrustedExecutor::with_seed(e_permuted, MaskSeed([5u8; 32]));
     exec_permuted.set_perm_attention(PermAttnConfig::DISABLED_NOISE);

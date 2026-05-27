@@ -59,7 +59,7 @@ use gelo_embedder::decoder::weights::DecoderWeights;
 use gelo_gpu_wgpu::WgpuVulkanEngine;
 use gelo_protocol::rng::MaskSeed;
 use gelo_protocol::{
-    GpuOffloadEngine, InProcessTrustedExecutor, PcieSnapshot, RayonCpuEngine, SnapshotConfig,
+    GpuOffloadEngine, InProcessTrustedExecutor, PcieSnapshot, ReferenceCpuEngine, SnapshotConfig,
     TrustedExecutor, WeightHandle, WeightKind,
 };
 
@@ -85,7 +85,7 @@ enum ConditionArg {
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 enum EngineArg {
-    /// `RayonCpuEngine` — pure-CPU rayon-parallel matmul. ~25 s/forward
+    /// `ReferenceCpuEngine` — pure-CPU rayon-parallel matmul. ~25 s/forward
     /// at Qwen3-1.7B n=32 prefill on this machine.
     Cpu,
     /// `WgpuVulkanEngine` (f32) — drops Qwen3-1.7B prefill to ~1–2 s.
@@ -288,7 +288,7 @@ fn main() -> Result<()> {
                 args.seed_byte,
                 args.max_tokens,
                 &args.output,
-                RayonCpuEngine::new(),
+                ReferenceCpuEngine::new(),
             )?,
             EngineArg::Gpu => run_condition(
                 cond,

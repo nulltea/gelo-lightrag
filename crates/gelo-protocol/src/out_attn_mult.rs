@@ -306,7 +306,7 @@ fn inverse_permute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sim::RayonCpuEngine;
+    use crate::sim::ReferenceCpuEngine;
     use rand::SeedableRng;
     use rand_chacha::ChaCha20Rng;
 
@@ -328,7 +328,7 @@ mod tests {
 
         let expected = q.dot(&kt);
 
-        let engine = RayonCpuEngine::new();
+        let engine = ReferenceCpuEngine::new();
         let got = offload_qkt(&engine, &mut rng, q.view(), kt.view(), 0).unwrap();
 
         assert_eq!(got.shape(), expected.shape());
@@ -353,7 +353,7 @@ mod tests {
 
         let expected = q.dot(&kt);
 
-        let engine = RayonCpuEngine::new();
+        let engine = ReferenceCpuEngine::new();
         let got = offload_qkt(&engine, &mut rng, q.view(), kt.view(), 0).unwrap();
 
         for ((i, j), e) in expected.indexed_iter() {
@@ -372,7 +372,7 @@ mod tests {
         let d = 16;
         let q = rand2(n, d, &mut rng, 0.5);
         let kt = rand2(d, n, &mut rng, 0.5);
-        let engine = RayonCpuEngine::new();
+        let engine = ReferenceCpuEngine::new();
         let got = offload_qkt(&engine, &mut rng, q.view(), kt.view(), 8).unwrap();
         let expected = q.dot(&kt);
         for ((i, j), e) in expected.indexed_iter() {
@@ -399,7 +399,7 @@ mod tests {
                 .assign(&rand2(d, n, &mut rng, 0.4));
         }
 
-        let engine = RayonCpuEngine::new();
+        let engine = ReferenceCpuEngine::new();
         let got = offload_qkt_batched(&engine, &mut rng, q3.view(), kt3.view(), 0).unwrap();
 
         for hi in 0..h {
@@ -428,7 +428,7 @@ mod tests {
             kt3.index_axis_mut(Axis(0), hi)
                 .assign(&rand2(d, n, &mut rng, 0.3));
         }
-        let engine = RayonCpuEngine::new();
+        let engine = ReferenceCpuEngine::new();
         let got = offload_qkt_batched(&engine, &mut rng, q3.view(), kt3.view(), 8).unwrap();
         for hi in 0..h {
             let expected = q3.index_axis(Axis(0), hi).dot(&kt3.index_axis(Axis(0), hi));
