@@ -1,0 +1,44 @@
+{
+  "arrowmatch": {
+    "attack": "arrowmatch",
+    "condition": "obfuscated",
+    "model_id": "Qwen3-4B-Q8_0-untied.gguf",
+    "n_prompts": 0,
+    "n_train": 0,
+    "n_test": 151936,
+    "ttrsr_top1": 0.9858295598146588,
+    "ttrsr_top10": 0.985941449031171,
+    "risk_level": "high",
+    "primary_metric_name": "token_top1_recovery_rate",
+    "extra": {
+      "stage1_top1_recovery": 0.9858295598146588,
+      "stage1_topk_recovery": 0.985941449031171,
+      "stage1_topk": 10,
+      "n_active": 151936,
+      "runtime_s": 53.48,
+      "cosine_at_correct_mean": 1.0,
+      "cosine_at_correct_std": 8.014067276462811e-08,
+      "cosine_at_correct_p10": 0.9999998807907104,
+      "cosine_at_correct_p90": 1.0000001192092896,
+      "device": "cuda",
+      "align_dims": "truncate",
+      "d_aligned": 2560
+    }
+  },
+  "args": {
+    "plain": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-4b/Qwen3-4B-Q8_0-untied.gguf",
+    "obfuscated": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-4b/Qwen3-4B-Q8_0-untied.gguf",
+    "key": null,
+    "identity_tau": true,
+    "output": "/home/timo/repos/private-rag-path-2/evals/aloepri-attacks/results/sweep/cell-qwen3-4b-plain-control-20260527/m2_7-arrowmatch.json",
+    "tensor": "token_embd",
+    "topk": 10,
+    "chunk_obf": 1024,
+    "chunk_pre": 32768,
+    "device": "cuda",
+    "align_dims": "truncate",
+    "skip_stage2": true,
+    "min_mem_gb": 8.0,
+    "skip_mem_check": false
+  }
+}

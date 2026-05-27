@@ -1,0 +1,44 @@
+{
+  "arrowmatch": {
+    "attack": "arrowmatch",
+    "condition": "obfuscated",
+    "model_id": "keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-beta2-paperK-uvo-pow2e1-bf16.gguf",
+    "n_prompts": 0,
+    "n_train": 0,
+    "n_test": 151669,
+    "ttrsr_top1": 1.318661031588525e-05,
+    "ttrsr_top10": 7.91196618953115e-05,
+    "risk_level": "low",
+    "primary_metric_name": "token_top1_recovery_rate",
+    "extra": {
+      "stage1_top1_recovery": 1.318661031588525e-05,
+      "stage1_topk_recovery": 7.91196618953115e-05,
+      "stage1_topk": 10,
+      "n_active": 151669,
+      "runtime_s": 177.52,
+      "cosine_at_correct_mean": 0.0002148914645658806,
+      "cosine_at_correct_std": 0.01563727855682373,
+      "cosine_at_correct_p10": -0.01982949860394001,
+      "cosine_at_correct_p90": 0.020196452736854553,
+      "device": "cuda",
+      "align_dims": "truncate",
+      "d_aligned": 4096
+    }
+  },
+  "args": {
+    "plain": "/tmp/plain-qwen3-8b.gguf",
+    "obfuscated": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-8b/keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-beta2-paperK-uvo-pow2e1-bf16.gguf",
+    "key": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-8b/keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-beta2-paperK-uvo-pow2e1-bf16.gguf.key.npz",
+    "identity_tau": false,
+    "output": "/home/timo/repos/private-rag-path-2/evals/aloepri-attacks/results/sweep/cell-qwen3-8b-paperK-noH-uvo-pow2e1-b2-h128-20260527/m2_7-arrowmatch.json",
+    "tensor": "token_embd",
+    "topk": 10,
+    "chunk_obf": 1024,
+    "chunk_pre": 32768,
+    "device": "cuda",
+    "align_dims": "truncate",
+    "skip_stage2": true,
+    "min_mem_gb": 8.0,
+    "skip_mem_check": false
+  }
+}
