@@ -1,0 +1,177 @@
+{
+  "endpoint": "http://127.0.0.1:8081",
+  "key_path": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-8b/keymat-h256-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-beta2-paperK-uvo-pow2e1-bf16.gguf.key.npz",
+  "plain_mode": false,
+  "tokenizer": "Qwen/Qwen3-8B",
+  "quality": {
+    "skipped": true
+  },
+  "humaneval": {
+    "n": 20,
+    "passed": 0,
+    "accuracy": 0.0,
+    "wall_s": 683.7103267582133,
+    "details": [
+      {
+        "task_id": "HumanEval/163",
+        "passed": false,
+        "completion": "    if a == 10:\n        return generate_integers(10, 14) if generate_integers(10, 14) else []\n\n    if b == 14:\n        return generate_integers(10, 14) if generate_integers(10, 14) else []\n\n    if a == 10:\n        return generate_integers(10, 14) if generate_integers(10, 14) else []\n\n    if b ==  u\"4\" or 14:\n        return generate_intors(10, 14) if generate_intors(10, 14) else []\n\n    if a == 10:\n        return generate_intors(10, 14) if generate_intors(10, 14) else []\n\n    if b == u\"4\" or 14:\n        return generate_intors(10, 14) if generate_intors(10, 14) else []\n\n    if a == 10:\n        r",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpl309yifw.py\", line 58, in <module>\n    check(generate_integers)\n  File \"/tmp/tmpl309yifw.py\", line 48, in check\n    assert candidate(2, 10) == [2, 4,",
+        "n_response_tokens": 384,
+        "wall_s": 33.9773812959902
+      },
+      {
+        "task_id": "HumanEval/28",
+        "passed": false,
+        "completion": "    if not isinstance(strings, list):\n        return None\n    if not isinstance(strings, list):\n        return None\n    if not isinstance(strings, list):\n        return None\n    if not isinstance(strings, list):\n        return None\n    if not isinstance(strings, list):\n        return None\n    if not isinstance(strings, list):\n        return None\n    if not isinstance(strings, list):\n        return None\n    if not isinstance(strings, list):\n        return None\n    if not isinstance(strings, list):\n        return None\n    if not isinstance(strings, list):\n        return None\n    if not isinstanc",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp5p1vzoor.py\", line 91, in <module>\n    check(concatenate)\n  File \"/tmp/tmp5p1vzoor.py\", line 86, in check\n    assert candidate([]) == ''\n           ^",
+        "n_response_tokens": 384,
+        "wall_s": 33.878877957351506
+      },
+      {
+        "task_id": "HumanEval/6",
+        "passed": false,
+        "completion": "    if not paren_string:\n        return []\n\n    def parse_nested_paren(paren_string: str) -> List[int]:\n        \"\"\" If not not paren_string:\n        return []\n\n        if not not paren_string:\n        return []\n\n        if not not paren_string:\n        return []\n\n        if not not paren_string:\n        return []\n\n        if not not paren_string:\n        return []\n\n        if not not paren_string:\n        return []\n\n        if not not paren_string:\n        return []\n\n        if not not paren_string:\n        return []\n\n        if not not paren_string:\n        return []\n\n        if not not paren",
+        "error": "  File \"/tmp/tmp1cag99li.py\", line 16\n    \"\"\" If not not paren_string:\n    ^\nSyntaxError: unterminated triple-quoted string literal (detected at line 128)\n",
+        "n_response_tokens": 384,
+        "wall_s": 34.005950306076556
+      },
+      {
+        "task_id": "HumanEval/70",
+        "passed": false,
+        "completion": "    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n    '''\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpp0q0ra0k.py\", line 225, in <module>\n    check(strange_sort_list)\n  File \"/tmp/tmpp0q0ra0k.py\", line 210, in check\n    assert candidate([1, 2, 3, 4]) ",
+        "n_response_tokens": 384,
+        "wall_s": 34.00270586600527
+      },
+      {
+        "task_id": "HumanEval/62",
+        "passed": false,
+        "completion": "    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs = xs[:2]\n    xs =",
+        "error": "  File \"/tmp/tmp2kedg7vl.py\", line 66\n    xs = xs[:\n           ^\nSyntaxError: '[' was never closed\n",
+        "n_response_tokens": 384,
+        "wall_s": 34.12296108994633
+      },
+      {
+        "task_id": "HumanEval/57",
+        "passed": false,
+        "completion": "    # If the list is not monotonic, then it is not monotonic.\n    # If the list is not monotonic, then it is not monotonic.\n    # If the list is not monot 2, then it is not monotonic.\n    # If the list is not monotonic, then it is not monotonic.\n    # If the list is not monotonic, then it is not monotonic.\n    # If the list is not monotonic, then it is not monotonic.\n    # If the list is not monotonic, then it is not monotonic.\n    # If the List is not monotonic, then it is not monotonic.\n    # If the List is not monotonic, then it is not monotonic.\n    # If the List is not monotonic, then it ",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpp5_vcvzc.py\", line 53, in <module>\n    check(monotonic)\n  File \"/tmp/tmpp5_vcvzc.py\", line 42, in check\n    assert candidate([1, 2, 4, 10]) == True\n ",
+        "n_response_tokens": 384,
+        "wall_s": 34.157381187193096
+      },
+      {
+        "task_id": "HumanEval/35",
+        "passed": false,
+        "completion": "    if not l:\n        return None\n    if not l:\n        return None\n    if not l:\n        return None\n    if not l:\n        return None\n    if not l:\n        return None\n    if not l:\n        return None\n    if not l:\n        return None\n    if not l:\n        return None\n    if not l:\n        return None\n    if not l:\n        return None\n    if not l:\n        return None\n    if not l:\n        return None\n    if not l:\n        return None\n    if not l:\n        return None\n    if not l:\n        return None\n    if not l:\n        return None\n    if not l:\n        return None\n    if not l:\n        ",
+        "error": "  File \"/tmp/tmpbvo6u6n_.py\", line 99\n    METADATA = {}\nIndentationError: expected an indented block after 'if' statement on line 94\n",
+        "n_response_tokens": 384,
+        "wall_s": 34.2369326679036
+      },
+      {
+        "task_id": "HumanEval/26",
+        "passed": false,
+        "completion": "    if len(numbers) > 1:\n        return numbers\n    return numbers\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpdymlxy69.py\", line 29, in <module>\n    check(remove_duplicates)\n  File \"/tmp/tmpdymlxy69.py\", line 26, in check\n    assert candidate([1, 2, 3, 2, 4, ",
+        "n_response_tokens": 383,
+        "wall_s": 34.197513702791184
+      },
+      {
+        "task_id": "HumanEval/139",
+        "passed": false,
+        "completion": "    if not n:\n        return 0\n    if not n:\n        return 0\n    if not n:\n        return 0\n    if not n:\n        return 0\n    if not n:\n        return 0\n    if not n:\n        return 0\n    if not n:\n        return 0\n    if not n:\n        return 0\n    if not n:\n        return 0\n    if not n:\n        return 0\n    if not n:\n        return 0\n    if not n:\n        return 0\n    if not n:\n        return 0\n    if not n:\n        return 0\n    if not n:\n        return 0\n    if not n:\n        return 0\n    if not n:\n        return 0\n    if not n:\n        return 0\n    if not n:\n        return 0\n    if not ",
+        "error": "  File \"/tmp/tmpv20mq5bd.py\", line 89\n    return u\"\n           ^\nSyntaxError: unterminated string literal (detected at line 89)\n",
+        "n_response_tokens": 384,
+        "wall_s": 34.049253827892244
+      },
+      {
+        "task_id": "HumanEval/22",
+        "passed": false,
+        "completion": "    if not values:\n        return None\n    values = list(values)\n    if not values:\n        return None\n    values = values\n    if not values:\n        return None\n    values = values\n    if not values:\n        return None\n    values = values\n    if not values:\n        return None\n    values = values\n    if not values:\n        return None\n    values = values\n    if not values:\n        return None\n    values = values\n    if not values:\n        return None\n    values = values\n    if not values:\n        return None\n    values = values\n    if not values:\n        return None\n    values = values\n    ",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp85j2o_al.py\", line 107, in <module>\n    check(filter_integers)\n  File \"/tmp/tmp85j2o_al.py\", line 102, in check\n    assert candidate([]) == []\n      ",
+        "n_response_tokens": 384,
+        "wall_s": 34.21630616206676
+      },
+      {
+        "task_id": "HumanEval/151",
+        "passed": false,
+        "completion": "    if not lst:\n        return 0\n    if not (len(lst) == 3):\n        return 0\n    if not (len(lst) == 3):\n        return 0\n    if not (len(lst) == 3):\n        return 0\n    if not (len(lst) == 3):\n        return 0\n    if not (len(lst) == 3):\n        return 0\n    if not (len(lst) == _3):\n        return 0\n    if not (len(lst) == 3):\n        return 0\n    if not (len(lst) == 3):\n        return 0\n    if not (len(lst) == 3):\n        return 0\n    if not (len(lst) == 3):\n        return 0\n    if not (len(lst) == 3):\n        return 0\n    if not (len(lst) == 3):\n        return 0\n    if not (len(lst) == 3)",
+        "error": "  File \"/tmp/tmpofxneeb2.py\", line 62\n    if not (len\n           ^\nSyntaxError: '(' was never closed\n",
+        "n_response_tokens": 384,
+        "wall_s": 34.557431460823864
+      },
+      {
+        "task_id": "HumanEval/108",
+        "passed": false,
+        "completion": "    if not arr:\n        return 0\n    if len(arr) == 1:\n        return 1\n    if len(arr) == 2:\n        return 2\n    if len(arr) == 3:\n        return 3\n    if len(arr) == 4:\n        return 4\n    if len(arr) == 5:\n        return 5\n    if len(arr) == 6:\n        return 6\n    if len(arr) == 7:\n        return 7\n    if len(arr) == 8:\n        return 8\n    if len(arr) == 9:\n        return 9\n    if len(arr) == 10:\n        return 10\n    if len(arr) == 11:\n        return 11\n    if len(arr) == 12:\n        return 12\n    if len(arr) == 13:\n        return 13\n    if len(arr) == 14:\n        return 14\n    if len(",
+        "error": "  File \"/tmp/tmpvrp3er3e.py\", line 62\n    if len(arr) == 2\n                    ^\nSyntaxError: expected ':'\n",
+        "n_response_tokens": 384,
+        "wall_s": 34.25092325080186
+      },
+      {
+        "task_id": "HumanEval/8",
+        "passed": false,
+        "completion": "    if not numbers:\n        return (0, 1)\n    if not numbers:\n        return (0, 1)\n    if not numbers:\n        return (0, 1)\n    if not numbers:\n        return (0, 1)\n    if not numbers:\n        return (0, 1)\n    if not numbers:\n        return (0, 1)\n    if not numbers:\n        return (0, 1)\n    if not numbers:\n        return (0, 1)\n    if not numbers:\n        return (0, 1)\n    if not numbers:\n        return (0,  1)\n    if not numbers:\n        return (0,  1)\n    if not numbers:\n        return (0,  1)\n    if not numbers:\n        return (0,  1)\n    if not numbers:\n        return (0,  1)\n    if ",
+        "error": "  File \"/tmp/tmp0ev1lhpp.py\", line 61\n    return (0,                                           \n           ^\nSyntaxError: '(' was never closed\n",
+        "n_response_tokens": 384,
+        "wall_s": 34.06836864678189
+      },
+      {
+        "task_id": "HumanEval/7",
+        "passed": false,
+        "completion": "    if not strings:\n        return []\n    if not strings:\n        return []\n    if not strings:\n        return []\n    if not strings:\n        return []\n    if not strings:\n        return []\n    if not strings:\n        return []\n    if not strings:\n        return []\n    if not strings:\n        return []\n    if not strings:\n        return []\n    if not strings:\n        return []\n    if not strings:\n        return []\n    if not strings:\n        return []\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpq8na1nt6.py\", line 52, in <module>\n    check(filter_by_substring)\n  File \"/tmp/tmpq8na1nt6.py\", line 47, in check\n    assert candidate(['xxx', 'asd',",
+        "n_response_tokens": 384,
+        "wall_s": 34.129184721037745
+      },
+      {
+        "task_id": "HumanEval/23",
+        "passed": false,
+        "completion": "    if not string:\n        return 0\n    if not string:\n        return 0\n    if not string:\n        return 0\n    if not string:\n        return 0\n    if not string:\n        return 0\n    if not string:\n        return 0\n    if not string:\n        return 0\n    if not string:\n        return 0\n    if not string:\n        return 0\n    if not string:\n        return 0\n    if not string:\n        return 0\n    if not string:\n        return 0\n    if not string:\n        return 0\n    if not string:\n        return 0\n    if not string:\n        return 0\n    if not string:\n        return 0\n    if not string:\n     ",
+        "error": "  File \"/tmp/tmpbu1t_ll5.py\", line 93\n    METADATA = {\nIndentationError: expected an indented block after 'if' statement on line 88\n",
+        "n_response_tokens": 384,
+        "wall_s": 33.92953962087631
+      },
+      {
+        "task_id": "HumanEval/55",
+        "passed": false,
+        "completion": "    if n == 1:\n        return 1\n    elif n == 2:\n        return 2\n    elif n == 3:\n        return 3\n    elif n == 4:\n        return 4\n    elif n == 5:\n        return 5\n    elif n == 6:\n        return 6\n    elif n == 7:\n        return 7\n    elif n == 8:\n        return 8\n    elif n == 9:\n        return 9\n    elif n == 10:\n        return 10\n    elif n == 11:\n        return 11\n    elif n == 12:\n        return 12\n    elif n == 13:\n        return 13\n    elif n == 14:\n        return 14\n    elif n == 15:\n        return 15\n    elif n == 16:\n        return 16\n    elif n == 17:\n        return 17\n    elif",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpn_qibo3m.py\", line 85, in <module>\n    check(fib)\n  File \"/tmp/tmpn_qibo3m.py\", line 77, in check\n    assert candidate(10) == 55\n           ^^^^^^^^^",
+        "n_response_tokens": 384,
+        "wall_s": 33.890552937053144
+      },
+      {
+        "task_id": "HumanEval/59",
+        "passed": false,
+        "completion": "    if n == 1:\n        return 1\n    if n == 2:\n        return 2\n    if n == 3:\n        return 3\n    if n == 4:\n        return 4\n    if n == 5:\n        return 5\n    if n == 6:\n        return 6\n    if n == 7:\n        return 7\n    if n == 8:\n        return 8\n    if n == 9:\n        return 9\n    if n ==  10:\n        return 10\n    if n ==  11:\n        return 11\n    if n ==  12:\n        return 12\n    if n ==  13:\n        return 13\n    if n ==  14:\n        return 14\n    if n ==  15:\n        return 15\n    if n ==  16:\n        return 16\n    if n ==  17:\n        return 17\n    if n ==  18:\n        return ",
+        "error": "  File \"/tmp/tmp_gl5iq9q.py\", line 64\n    if n 28\n         ^^\nSyntaxError: invalid syntax\n",
+        "n_response_tokens": 384,
+        "wall_s": 34.117698568850756
+      },
+      {
+        "task_id": "HumanEval/129",
+        "passed": false,
+        "completion": "    if k > 1:\n        if k == 1:\n            if k == 1:\n                if k == 1:\n                    if k == 1:\n                        if k == 1:\n                            if k == 1:\n                                if k == 1:\n                                    if k == 1:\n                                        if k == 1:\n                                            if k == 1:\n                                                if k == 1:\n                                                    if k == 1:\n                                                        if k ==  1:\n                          ",
+        "error": "  File \"/tmp/tmphpcw8drx.py\", line 47\n    if k == 1:\nIndentationError: expected an indented block after 'if' statement on line 46\n",
+        "n_response_tokens": 384,
+        "wall_s": 35.30125645408407
+      },
+      {
+        "task_id": "HumanEval/161",
+        "passed": false,
+        "completion": "    if s is not: \n        # keep it as it is\n        if s is not: \n            # keep it as it is\n            # keep it as it is\n            # keep it as it is\n            # keep it as it is\n            # keep it as it is\n            # keep it as it is\n            # keep it as it is\n            # keep it as it is\n            # keep it as it is\n            # keep it as it is\n            # keep it as it is\n            # keep it as it is\n            # keep it as it is\n            # keep it as it is\n            # keep it as it is\n            # keep it as it is\n            # keep it as it is\n      ",
+        "error": "  File \"/tmp/tmp9hgci72h.py\", line 13\n    if s is not: \n               ^\nSyntaxError: invalid syntax\n",
+        "n_response_tokens": 384,
+        "wall_s": 34.23392787016928
+      },
+      {
+        "task_id": "HumanEval/143",
+        "passed": false,
+        "completion": "    if len(sentence) > 100:\n        return None\n    else:\n        return None\n\n    if len(sentence) > 100:\n        return None\n    else:\n        return None\n\n    if len(sentence) > 10 u000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "error": "  File \"/tmp/tmprwwj5lyt.py\", line 32\n    if len(sentence) > 10 u000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "n_response_tokens": 384,
+        "wall_s": 34.38549532368779
+      }
+    ]
+  }
+}

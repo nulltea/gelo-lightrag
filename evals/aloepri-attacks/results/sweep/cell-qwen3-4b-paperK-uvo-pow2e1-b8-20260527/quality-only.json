@@ -1,0 +1,60 @@
+{
+  "endpoint": "http://127.0.0.1:8067",
+  "key_path": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-4b/untied-keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-paperK-uvo-pow2e1-bf16-native.gguf.key.npz",
+  "plain_mode": false,
+  "tokenizer": "Qwen/Qwen3-4B",
+  "quality": {
+    "prompts": [
+      {
+        "idx": 0,
+        "prompt": "The capital of France is",
+        "response": " che che che...\n\n\n\n\n\n\n\n\n\n\n or\nsum or\n\nsum|||| sum||||rang||||||rang|rang|sum|sum|sum|sum sum measure sumsum|sum|",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 2.2604205110110343
+      },
+      {
+        "idx": 1,
+        "prompt": "Q: What is 17 times 4? A:",
+        "response": " ongwing show     Vill and Vill Vill   \u62bc  show  show               circle ights show show                                             show",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 2.231198828201741
+      },
+      {
+        "idx": 2,
+        "prompt": "Write a haiku about autumn leaves:",
+        "response": " which a a a a a a measure and a measure hy a measure measure a measure a measure a measure a measure a measure a measure a measure a measure a ordered\n cut a a measure a measure a and a a ordered a measure a",
+        "readable": false,
+        "readable_reason": "repetition_ngram=' a m'_count=14",
+        "n_response_tokens": 48,
+        "wall_s": 2.2504637450911105
+      },
+      {
+        "idx": 3,
+        "prompt": "def is_prime(n):",
+        "response": "misticomicomkmisasoniamasonasoniamasonieriamier sumnowniamussiamussiam measure measure measure measure measurevarisoniamimes sum sum sumsumisoniam\nsummismirus\nhip\nst\nsum\n",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 2.1929827630519867
+      },
+      {
+        "idx": 4,
+        "prompt": "Translate to French: 'Good morning, how are you?' \u2192",
+        "response": "\n sum sum\n sum\n\n\n\n sum\n sum\n sum\n sum and sum what and sum what sum sum sum sum sum sum sumappy sum\n sum\n sum\n sum\r\n and inushushushemem\nwush",
+        "readable": false,
+        "readable_reason": "repetition_ngram='\\n su'_count=9",
+        "n_response_tokens": 48,
+        "wall_s": 2.236223145853728
+      }
+    ],
+    "all_readable": false,
+    "wall_s": 11.171517064329237
+  },
+  "humaneval": {
+    "skipped": true
+  }
+}

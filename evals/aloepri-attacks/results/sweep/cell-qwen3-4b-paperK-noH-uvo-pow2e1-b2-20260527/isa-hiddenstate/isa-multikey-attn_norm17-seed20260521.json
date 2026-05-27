@@ -1,0 +1,55 @@
+{
+  "format": "aloepri_m2_7_isa_multikey_v1",
+  "plain_captures": "evals/aloepri-attacks/results/sweep/cell-qwen3-4b-plain-attn-multilayer-20260525/captures",
+  "obf_captures": "evals/aloepri-attacks/results/sweep/cell-qwen3-4b-paperK-noH-uvo-pow2e1-b2-20260527/hidden-captures",
+  "plain_model_id": "Qwen/Qwen3-4B",
+  "attack": {
+    "attack": "isa_multikey",
+    "condition": "obfuscated",
+    "model_id": "Qwen/Qwen3-1.7B (obfuscated, keymat-h128-pi-noise-alg2-fp32)",
+    "n_prompts": 64,
+    "n_train": 28928,
+    "n_test": 411,
+    "ttrsr_top1": 0.03892944008111954,
+    "ttrsr_top10": 0.2092457413673401,
+    "risk_level": "low",
+    "primary_metric_name": "token_top1_recovery_rate",
+    "extra": {
+      "layer": 17,
+      "kind": "attn_norm",
+      "threat_model_regime": "multikey_covariant_synthesis_paperfaithful",
+      "split_mode": "row",
+      "attacker_identity_probe": false,
+      "attacker_expansion": 128,
+      "attacker_lam": 0.3,
+      "attacker_num_keys": 64,
+      "attacker_seed": 20260521,
+      "split_seed": 20260538,
+      "kd_test_seed": null,
+      "keymat_impl": "vendor_cpu",
+      "best_ridge_alpha": 0.0001,
+      "alpha_scan": [
+        {
+          "ridge_alpha": 0.0001,
+          "val_top1": 0.13350386917591095,
+          "val_topk": 0.1965569704771042
+        },
+        {
+          "ridge_alpha": 0.01,
+          "val_top1": 0.13350386917591095,
+          "val_topk": 0.1965569704771042
+        },
+        {
+          "ridge_alpha": 1.0,
+          "val_top1": 0.13350386917591095,
+          "val_topk": 0.1965569704771042
+        }
+      ],
+      "n_unique_plain_ids": 627,
+      "n_train_ids": 333,
+      "n_val_ids": 184,
+      "n_test_ids": 176,
+      "runtime_seconds": 159.23
+    }
+  }
+}

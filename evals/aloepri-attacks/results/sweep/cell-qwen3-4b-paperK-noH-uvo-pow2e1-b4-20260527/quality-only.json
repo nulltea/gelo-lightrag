@@ -1,0 +1,60 @@
+{
+  "endpoint": "http://127.0.0.1:8073",
+  "key_path": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-4b/untied-keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-beta4-paperK-uvo-pow2e1-bf16-native.gguf.key.npz",
+  "plain_mode": false,
+  "tokenizer": "Qwen/Qwen3-4B",
+  "quality": {
+    "prompts": [
+      {
+        "idx": 0,
+        "prompt": "The capital of France is",
+        "response": ". 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 2.2691913470625877
+      },
+      {
+        "idx": 1,
+        "prompt": "Q: What is 17 times 4? A:",
+        "response": "  17. 17. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1.",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 2.247593925334513
+      },
+      {
+        "idx": 2,
+        "prompt": "Write a haiku about autumn leaves:",
+        "response": " a a a a. the a. a. a. a. a. a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a",
+        "readable": false,
+        "readable_reason": "repetition_ngram=' a a'_count=18",
+        "n_response_tokens": 48,
+        "wall_s": 2.2645301138982177
+      },
+      {
+        "idx": 3,
+        "prompt": "def is_prime(n):",
+        "response": " what? n wal wal wal? n wal wal wal wal wal wal wal wal wal wal wal wal wal wal wal wal wal wal wal wal wal wal wal wal wal wal wal wal wal wal wal wal wal wal wal wal wal wal wal wal",
+        "readable": false,
+        "readable_reason": "repetition_ngram=' wal'_count=43",
+        "n_response_tokens": 48,
+        "wall_s": 2.197031362913549
+      },
+      {
+        "idx": 4,
+        "prompt": "Translate to French: 'Good morning, how are you?' \u2192",
+        "response": " . 666666666666666666666666666666666666666666666",
+        "readable": false,
+        "readable_reason": "repetition_ngram='6666'_count=11",
+        "n_response_tokens": 48,
+        "wall_s": 2.230422532185912
+      }
+    ],
+    "all_readable": false,
+    "wall_s": 11.208994766231626
+  },
+  "humaneval": {
+    "skipped": true
+  }
+}

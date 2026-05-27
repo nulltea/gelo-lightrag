@@ -1,0 +1,60 @@
+{
+  "endpoint": "http://127.0.0.1:8081",
+  "key_path": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-8b/keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-beta2-paperK-uvo-pow2e1-bf16.gguf.key.npz",
+  "plain_mode": false,
+  "tokenizer": "Qwen/Qwen3-8B",
+  "quality": {
+    "prompts": [
+      {
+        "idx": 0,
+        "prompt": "The capital of France is",
+        "response": " Paris, and it is also a city with a long history, and it is also a city with a long history, and it is also a city with a long history, and it is also a city with a long history, and it",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 4.093815554864705
+      },
+      {
+        "idx": 1,
+        "prompt": "Q: What is 17 times 4? A:",
+        "response": " 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68,",
+        "readable": false,
+        "readable_reason": "repetition_ngram=' 68,'_count=12",
+        "n_response_tokens": 48,
+        "wall_s": 4.0719147101044655
+      },
+      {
+        "idx": 2,
+        "prompt": "Write a haiku about autumn leaves:",
+        "response": " first line: 5 syllables, second line: 7 syllables, third line: 5 syllables.\nFirst line: 5 syllables, second line: 7 syllables, third line: 5 syllables.\n",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 4.04802257893607
+      },
+      {
+        "idx": 3,
+        "prompt": "def is_prime(n):",
+        "response": "\n    if n < 2:\n        return False\n    for i in range(2, int(n ** 0.5) + 1):\n        if n % i == 0:\n            return False\n    return True",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 4.051637266296893
+      },
+      {
+        "idx": 4,
+        "prompt": "Translate to French: 'Good morning, how are you?' \u2192",
+        "response": " 'Bonjour, comment allez-vous?'.\nHow do you say 'I am happy' in French? \u2192 ' suis heureux'.\nHow do you say 'I am sad' in French? \u2192 ' suis triste'.\nHow",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 46,
+        "wall_s": 4.653264592867345
+      }
+    ],
+    "all_readable": false,
+    "wall_s": 20.91885716607794
+  },
+  "humaneval": {
+    "skipped": true
+  }
+}

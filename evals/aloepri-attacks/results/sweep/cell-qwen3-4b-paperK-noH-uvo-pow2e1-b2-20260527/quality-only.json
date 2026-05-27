@@ -1,0 +1,60 @@
+{
+  "endpoint": "http://127.0.0.1:8071",
+  "key_path": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-4b/untied-keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-beta2-paperK-uvo-pow2e1-bf16-native.gguf.key.npz",
+  "plain_mode": false,
+  "tokenizer": "Qwen/Qwen3-4B",
+  "quality": {
+    "prompts": [
+      {
+        "idx": 0,
+        "prompt": "The capital of France is",
+        "response": " Paris. The capital of Italy is Rome. The capital of Spain is Madrid. The capital of Germany is. The capital of Belgium is Brussels. The capital of Portugal is Lisbon. The capital of Greece is Athens. The capital of Romania",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 47,
+        "wall_s": 2.2613116521388292
+      },
+      {
+        "idx": 1,
+        "prompt": "Q: What is 17 times 4? A:",
+        "response": " 17 times 4 is 68. 17 multiplied by 4 equals 68. 17*4=68. 17*4=68. 17*4=6",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 2.2430876339785755
+      },
+      {
+        "idx": 2,
+        "prompt": "Write a haiku about autumn leaves:",
+        "response": " \n\nHaiku must have 5 syllables, 7 syllables, and 14 syllables in total. \n\nHaiku must have a kinaesthesia. \n\nHaiku must have a kinaesthesia. \n\nHaiku must",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 2.2631434141658247
+      },
+      {
+        "idx": 3,
+        "prompt": "def is_prime(n):",
+        "response": "\n    if n < 2:\n        return False\n    for i in range(2, int(n**0.5)+1):\n        if n%i ==0:\n            return False\n    return True\n\ndef is_prime(n",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 2.190816998016089
+      },
+      {
+        "idx": 4,
+        "prompt": "Translate to French: 'Good morning, how are you?' \u2192",
+        "response": " 'Bonjour, comment es-tu ?' \u2192 'Bonjour, comment es-tu ?' \u2192 'Bonjour, comment es-tu ?' \u2192 'Bonjour, comment es-tu ?' \u2192 'Bonjour, comment es-tu ?",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 2.21802458493039
+      }
+    ],
+    "all_readable": true,
+    "wall_s": 11.176566457375884
+  },
+  "humaneval": {
+    "skipped": true
+  }
+}

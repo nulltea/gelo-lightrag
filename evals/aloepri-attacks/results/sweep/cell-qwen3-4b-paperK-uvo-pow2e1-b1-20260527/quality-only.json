@@ -1,0 +1,60 @@
+{
+  "endpoint": "http://127.0.0.1:8068",
+  "key_path": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-4b/untied-keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-beta1-paperK-uvo-pow2e1-bf16-native.gguf.key.npz",
+  "plain_mode": false,
+  "tokenizer": "Qwen/Qwen3-4B",
+  "quality": {
+    "prompts": [
+      {
+        "idx": 0,
+        "prompt": "The capital of France is",
+        "response": " a city that is the capital of the country of Belgium. So the country of France has a capital that is the capital of Belgium. So the country of Belgium has a capital that is the capital of France. So the country of Belgium has",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 2.2814490529708564
+      },
+      {
+        "idx": 1,
+        "prompt": "Q: What is 17 times 4? A:",
+        "response": " 17 times 4 is 68. 17 times 4 is 68. 17 times 4 is 68. 17 times 4 is \nQ: What is 1",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 2.2465020730160177
+      },
+      {
+        "idx": 2,
+        "prompt": "Write a haiku about autumn leaves:",
+        "response": " \n\nHaiku must have 5 syllables, 7, 6, 5.\n\nThe first line has 5 syllables, the second line has 7, the third line has 6.\n\nThe first line must be the",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 2.2534031039103866
+      },
+      {
+        "idx": 3,
+        "prompt": "def is_prime(n):",
+        "response": "\n    if n < 2:\n        return False\n    for i in range(2, int(n**0.5)+1):\n        if n%i == 0:\n            return False\n    return True\n\ndef get_pr",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 2.1858075382187963
+      },
+      {
+        "idx": 4,
+        "prompt": "Translate to French: 'Good morning, how are you?' \u2192",
+        "response": " 'Bonjour, comment \u00e7a va?' \u2192 'Bonjour, comment \u00e7a va?' \u2192 'Bonjour, comment \u00e7a va?' \u2192 'Bonjour, comment \u00e7a va?' \u2192 'Bonjour, comment \u00e7a va?' \u2192 'Bonjour, comment \u00e7a va?' \u2192",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 2.220988614950329
+      }
+    ],
+    "all_readable": true,
+    "wall_s": 11.188422796316445
+  },
+  "humaneval": {
+    "skipped": true
+  }
+}

@@ -1,0 +1,177 @@
+{
+  "endpoint": "http://127.0.0.1:8081",
+  "key_path": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-8b/keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-beta2-paperK-uvo-pow2e1-bf16.gguf.key.npz",
+  "plain_mode": false,
+  "tokenizer": "Qwen/Qwen3-8B",
+  "quality": {
+    "skipped": true
+  },
+  "humaneval": {
+    "n": 20,
+    "passed": 8,
+    "accuracy": 0.4,
+    "wall_s": 652.6339127821848,
+    "details": [
+      {
+        "task_id": "HumanEval/163",
+        "passed": false,
+        "completion": "    # YOUR CODE HERE\n    # YOUR CODE HERE\n    # YOUR CODE HERE\n    # YOUR CODE HERE\n    # YOUR CODE HERE\n    # YOUR CODE HERE\n    # YOUR CODE HERE\n    # YOUR CODE HERE\n    # YOUR CODE HERE\n    # YOUR CODE HERE\n    # YOUR CODE HERE\n    # YOUR CODE HERE\n    # YOUR CODE HERE\n    # YOUR CODE HERE\n    # YOUR CODE HERE\n    # YOUR CODE HERE\n    # YOUR\n```\n\nAssistant\nOkay, let's see. I need to write a Python function called generate_integers that takes two positive integers a and b and returns a list of even digits between a and b in ascending order. Wait, wait. Wait, the example says generate_integer",
+        "error": "  File \"/tmp/tmpqtd3lh2p.py\", line 32\n    Okay, let's see. I need to write a Python function called generate_integers that takes two positive integers a and b and returns a list of even digits between",
+        "n_response_tokens": 384,
+        "wall_s": 34.50309752300382
+      },
+      {
+        "task_id": "HumanEval/28",
+        "passed": true,
+        "completion": "    return ''.join(strings)",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 33.16249026777223
+      },
+      {
+        "task_id": "HumanEval/6",
+        "passed": false,
+        "completion": "    # Split the input string into individual groups\n    groups = paren_string.split()\n    # For each group, find the maximum nesting level\n    return [get_max_nesting_level(group) for group in groups]",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpcdjh7g4b.py\", line 31, in <module>\n    check(parse_nested_parens)\n  File \"/tmp/tmpcdjh7g4b.py\", line 26, in check\n    assert candidate('(()()) ((()))",
+        "n_response_tokens": 384,
+        "wall_s": 32.38348456425592
+      },
+      {
+        "task_id": "HumanEval/70",
+        "passed": false,
+        "completion": "    if not lst:\n        return []\n    # Create a copy of the list to avoid modifying the original\n    lst = lst.copy()\n    # Create a list of indices for the elements in the list\n    indices = list(range(len(lst)))\n    # Create a list of values in the list\n    values = lst.copy()\n    # Create a list of indices in the order of the values\n    # This is the key part of the algorithm\n    # We need to sort the indices based on the values, but in a way\n    # The way is to alternate between min and max of the remaining elements\n    # So, first we sort the indices in ascending order, then in descendin",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpx149k4bb.py\", line 56, in <module>\n    check(strange_sort_list)\n  File \"/tmp/tmpx149k4bb.py\", line 41, in check\n    assert candidate([1, 2, 3, 4]) ==",
+        "n_response_tokens": 382,
+        "wall_s": 32.20787558238953
+      },
+      {
+        "task_id": "HumanEval/62",
+        "passed": false,
+        "completion": "    # TODO: a check for empty list, and for zeros.\n    # TODO: a check for zeros, and for leading zeros.\n    # TODO: a check for zeros, and for leading zeros.\n    # TODO: a check for zeros, and for leading zeros.\n    # TODO: a check for zeros, and for leading zeros.\n    # TODO: a check for zeros, and for leading zeros.\n    # TODO: a check for zeros, and for leading zeros.\n    # TODO: a check for zeros, and for leading zeros.\n    # TODO: a check for zeros, and for leading zeros.\n    # TODO: a check for zeros, and for leading zeros.\n    # TODO: a check for zeros, and for leading zeros.\n    # TOD",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp6vy1jqqr.py\", line 53, in <module>\n    check(derivative)\n  File \"/tmp/tmp6vy1jqqr.py\", line 45, in check\n    assert candidate([3, 1, 2, 4, 5]) == [1,",
+        "n_response_tokens": 358,
+        "wall_s": 33.82840124797076
+      },
+      {
+        "task_id": "HumanEval/57",
+        "passed": false,
+        "completion": "    # check if list is increasing\n    increasing = all(x < y for x, y in zip(l, l[1:]))\n    # check if list is decreasing\n    decreasing = all(x > y for x, y in zip(l, l[1:]))\n    return increasing or decreasing\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpskzl_mpw.py\", line 36, in <module>\n    check(monotonic)\n  File \"/tmp/tmpskzl_mpw.py\", line 29, in check\n    assert candidate([4, 1, 1, 0]) == True\n  ",
+        "n_response_tokens": 384,
+        "wall_s": 33.17874124320224
+      },
+      {
+        "task_id": "HumanEval/35",
+        "passed": true,
+        "completion": "    max = l[0]\n    for i in range(1, len(l)):\n        if l[i] > max:\n            max = l[i]\n    return max\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 32.42958311131224
+      },
+      {
+        "task_id": "HumanEval/26",
+        "passed": true,
+        "completion": "    counts = {}\n    for number in numbers:\n        counts[number] = counts.get(number, 0) + 1\n    return [number for number in numbers if counts[number] == 1]",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 32.3004425088875
+      },
+      {
+        "task_id": "HumanEval/139",
+        "passed": false,
+        "completion": "    if n == 0:\n        return 1\n    if n == 1:\n        return 1\n    if n == 2:\n        return 2\n    if n == 3:\n        return 6\n    if n == 4:\n        return 24\n    if n == 5:\n        return 120\n    if n == 6:\n        return 720\n    if n == 7:\n        return 5040\n    if n == 8:\n        return 40320\n    if n == 9:\n        return 362880\n    if n == 10:\n        return 3628800\n    if n == 11:\n        return 39916800\n    if n == 12:\n        return 479001600\n    if n == 13:\n        return 6227020800\n    if n == 14:\n        return 8717828620800\n    if n == 15:\n        return 130769576208000\n    if n ",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpuuoca16j.py\", line 67, in <module>\n    check(special_factorial)\n  File \"/tmp/tmpuuoca16j.py\", line 58, in check\n    assert candidate(4) == 288, \"Test",
+        "n_response_tokens": 384,
+        "wall_s": 32.41310006007552
+      },
+      {
+        "task_id": "HumanEval/22",
+        "passed": true,
+        "completion": "    return [value for value in values if isinstance(value, int)]",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 32.338669014163315
+      },
+      {
+        "task_id": "HumanEval/151",
+        "passed": false,
+        "completion": "    total = 0\n    for num in lst:\n        if num % 2 == 1:\n            total += num ** 2\n    return total\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp5h1h5aho.py\", line 39, in <module>\n    check(double_the_difference)\n  File \"/tmp/tmp5h1h5aho.py\", line 31, in check\n    assert candidate([-1, -2, 8])",
+        "n_response_tokens": 384,
+        "wall_s": 32.815479717217386
+      },
+      {
+        "task_id": "HumanEval/108",
+        "passed": false,
+        "completion": "    # write code here\n    # first, check if the array is empty, if so, return 0\n    if not arr:\n        return 0\n    # then, for each number in the array, check if the sum of digits is >0\n    # for example, for -1, the sum of digits is -1, which is not >0, so it's not counted\n    # for 11, the sum is 1+1 = 2, which is >0, so it's counted\n    # for -11, the sum is -1 + 1 = 0, which is not >0, so not counted\n    # so, for each number, we need to split it into its digits, and sum them, considering their sign\n    # but how to split the number into digits, considering the sign?\n    # for example, f",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpf4w00yi5.py\", line 49, in <module>\n    check(count_nums)\n  File \"/tmp/tmpf4w00yi5.py\", line 36, in check\n    assert candidate([-1, -2, 0]) == 0\n     ",
+        "n_response_tokens": 384,
+        "wall_s": 32.3429601714015
+      },
+      {
+        "task_id": "HumanEval/8",
+        "passed": true,
+        "completion": "    sum_numbers = 0\n    product_numbers = 1\n    for number in numbers:\n        sum_numbers += number\n        product_numbers *= number\n    return (sum_numbers, product_numbers)",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 32.1471312539652
+      },
+      {
+        "task_id": "HumanEval/7",
+        "passed": true,
+        "completion": "    return [string for string in strings if substring in string]",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 32.40743036707863
+      },
+      {
+        "task_id": "HumanEval/23",
+        "passed": true,
+        "completion": "    return len(string)\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 32.181634644046426
+      },
+      {
+        "task_id": "HumanEval/55",
+        "passed": true,
+        "completion": "    if n == 0:\n        return 0\n    elif n == 1:\n        return 1\n    else:\n        return fib(n - 1) + fib(n - 2)\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 32.085890929214656
+      },
+      {
+        "task_id": "HumanEval/59",
+        "passed": false,
+        "completion": "    # find the smallest prime factor first, then divide n by it, and repeat\n    # until n is reduced to 1, then return the last prime factor\n    # but wait, the first prime factor is not necessarily the smallest, but the first one we find\n    # but in any case, the last one we find is the largest, because we divide n by the prime factor, and then check again\n    # but wait, for example, for 13195, the prime factors are 7, 13, 13195/7 = 1885, then 1885/13 = 145, then 145/5 = 29, then 29 is prime, so the largest is 29\n    # but how do we find the first prime factor, and then divide, and then che",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpvsu0lwoa.py\", line 36, in <module>\n    check(largest_prime_factor)\n  File \"/tmp/tmpvsu0lwoa.py\", line 28, in check\n    assert candidate(15) == 5\n    ",
+        "n_response_tokens": 384,
+        "wall_s": 32.111869709100574
+      },
+      {
+        "task_id": "HumanEval/129",
+        "passed": false,
+        "completion": "    # The problem is to find the minimum path of length k in the grid.\n    # The minimum path is defined as the lexicographically smallest path.\n    # The path can start from any cell, and in each step, you can move to any of the neighbor cells.\n    # The path can be of any length, but the length is exactly k.\n    # The path can be of any length, but the length is exactly k.\n    # The path can be of any length, but the length is exactly k.\n    # The path can be of any length, but the length is exactly k.\n    # The path can be of any length, but the length is exactly k.\n    # The path can be of",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpabyasan8.py\", line 76, in <module>\n    check(minPath)\n  File \"/tmp/tmpabyasan8.py\", line 60, in check\n    assert candidate([[1, 2, 3], [4, 5, 6], [7,",
+        "n_response_tokens": 384,
+        "wall_s": 33.186901778914034
+      },
+      {
+        "task_id": "HumanEval/161",
+        "passed": false,
+        "completion": "    # @@@\n    # first, check if there are any letters in the string\n    # if not, reverse the string\n    # else, for each character, if it is a letter, reverse its case, else keep it\n    # then, return the resulted string\n    # to check if a character is a letter, use isalpha()\n    # to reverse the case, use lower() and upper()\n    # to reverse the string, use [::-1]\n    # to check if there are any letters, loop through each character and check if it is a letter\n    # if there are any letters, then reverse the case of each letter, else reverse the string\n    # but wait, the problem says, if th",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp0fvbrxlz.py\", line 55, in <module>\n    check(solve)\n  File \"/tmp/tmp0fvbrxlz.py\", line 41, in check\n    assert candidate(\"AsDf\") == \"aSdF\"\n          ",
+        "n_response_tokens": 384,
+        "wall_s": 32.18559538992122
+      },
+      {
+        "task_id": "HumanEval/143",
+        "passed": false,
+        "completion": "    # Split the sentence into words\n    words = sentence.split()\n    # Create a list of words whose lengths are prime numbers\n    prime_words = [word for word in words if is_prime(len(word))]\n    # Join the prime_words with spaces and return\n    return ' '.join(prime_words)\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpgzox2ztu.py\", line 45, in <module>\n    check(words_in_sentence)\n  File \"/tmp/tmpgzox2ztu.py\", line 33, in check\n    assert candidate(\"This is a test\"",
+        "n_response_tokens": 384,
+        "wall_s": 32.42244019312784
+      }
+    ]
+  }
+}
