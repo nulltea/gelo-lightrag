@@ -2,7 +2,7 @@
 type: plan
 status: current
 created: 2026-05-21
-updated: 2026-05-21
+updated: 2026-05-27
 tags: [m1.11, decode]
 ---
 
@@ -13,10 +13,10 @@ tags: [m1.11, decode]
 > - Handoff: [`2026-05-21-gelo-perf-shield-attn-batched.md`](../archive/handoffs/2026-05-21-gelo-perf-shield-attn-batched.md) §C (initial batched-decode scoping)
 > - Parent plan: [`m1-10-fused-permuted-attention.md`](m1-10-fused-permuted-attention.md)
 >
-> **Status:** design, not implementation. No tasks landed yet.
+> **Status:** D2 orchestrator rewire shipped 2026-05-27 (commit `d241a7a`). D1 substrate + D2 orchestrator landed; D3 perf validation captured on v7 fixture (§8 #12). c5 AloePri shared-A gate still open.
 > **Owner:** open.
 > **Author date:** 2026-05-21.
-> **Revision:** post-grilling decisions log added 2026-05-21 (§8).
+> **Revision:** post-grilling decisions log added 2026-05-21 (§8); D2 measurement appended 2026-05-27.
 
 ---
 
@@ -532,13 +532,41 @@ n_prompt ≥ 32 (rerank prompts are typically 300–500 tokens).
 ### Decoder generate (post-D)
 
 Single-stream baseline (v7 fixture, BENCH_MAX_CHUNKS=1, post-shield
-SIMD): ~343 s wall, 89 s `tee:attn_cached`.
+SIMD): ~343 s wall, 89 s `tee:attn_cached`. Extrapolated 7-chunk
+sequential: 7 × ~343 s = 2 401 s.
 
-| Config | Sequences (chunks) | Wall (extrapolated) |
+**Measured D2 (2026-05-27, commit `d241a7a`, post-DCT-IV-cascade,
+v7 fixture, Qwen3-4B, BENCH_EXTRACTION_BATCH_SIZE=8 — one batch of
+B=7):**
+
+| Config | Sequences (chunks) | Wall |
 |---|---:|---:|
-| Sequential (today) | 7 chunks | 7 × ~343 s = 2 401 s |
-| **Batched, B=7, default per-sequence A_b** | 7 chunks | **~700–900 s** (GPU dispatch amortisation only) |
-| **Batched, B=7, shared-A (post-c5)** | 7 chunks | **~480 s** (adds mask amortisation) |
+| Sequential extrapolation (pre-rewire 2026-05-21) | 7 chunks | ~2 401 s (extrapolated) |
+| Batched, B=7, default per-sequence A_b | 7 chunks | §6 projected ~700-900 s |
+| **Batched, B=7, default per-sequence A_b** | **7 chunks** | **578.83 s (measured)** ← **4.15× vs 2 401 s extrap** |
+| Batched, B=7, shared-A (post-c5, not shipped) | 7 chunks | §6 projected ~480 s |
+
+The measured D2 wall **beats the per-seq-A_b projection** (700-900 s)
+by 14-28 % at the v7 fixture shape. The 5× headline target (~480 s)
+was contingent on the c5-gated shared-A path, which D2 does not ship
+(default is per-sequence A_b).
+
+Bucket mix at v7 shape (post-D2, from
+`bench-results/d2-extract-bench-2026-05-27_11-55-00.log`):
+
+| Bucket | % of forward profile wall |
+|---|---:|
+| engine:registered_linear (GPU matmul) | 55.2 |
+| tee:attn_cached_inplace_many (in-TEE attention) | 26.1 |
+| tee:compute_logits | 5.3 |
+| gelo:mask_unapply:hd3 | 5.0 |
+| gelo:shield_stack | 4.3 |
+| gelo:mask_apply:hd3 | 2.2 |
+
+GPU matmul is the dominant bucket at v7's short-n (~750-prompt) shape
+— different from the m1-12 sweep cells (long-n n=2048-2400) where
+mask is co-dominant. Auto picks HD₃ at pad ratio 1.34 (s=765 →
+pow2=1024).
 
 Per-sequence A_b at decode (default): the win is from GPU dispatch
 amortisation alone (one batched matmul per layer covers B sequences).
@@ -608,7 +636,7 @@ performance story.
 | 9 | Determinism contract | **Per-sequence f32-floor parity, not byte-identical** | Bytewise would force per-sequence A_b at decode, contradicting #2 |
 | 10 | AloePri gate scope | **Spot-check: c4 at B=16 prefill, c5 at B=8 decode** | Full sweep escalates only on flagged attacks |
 | 11 | Legacy paths | **Deprecate-but-keep** | `#[deprecated]` hints; no migration deadline |
-| 12 | D2 scope | **Lands in M1.11 with cross-chunk batching** | ~1 day atop D1; realises the headline 5× wall win |
+| 12 | D2 scope | ✅ **shipped 2026-05-27** (commit `d241a7a`) | Adaptive sub-batch dispatch in `extract_kg_from_chunks`; `ExtractionConfig.extraction_batch_size` default 8; B=1 fast-path falls back to single-prompt `generate_extraction`. v7 fixture measured: **578.83 s extract_kg wall** vs ~2 401 s pre-rewire extrapolation = **4.15×**, vs ~700-900 s §6 per-seq A_b projection beats by 14-28 %. Bench log: `bench-results/d2-extract-bench-2026-05-27_11-55-00.log`. |
 | 13 | c5 failure fallback | **Defer-and-flag** | `BATCHED_DECODE_SHARED_A=1` stays disabled; substrate keeps both paths |
 
 **Out of scope** (explicitly raised and deferred):
