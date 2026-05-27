@@ -30,7 +30,7 @@ use ndarray::{Array2, Array3, ArrayView2, ArrayView3, Axis, s};
 use rand::{RngCore, seq::SliceRandom};
 use rand_distr::{Distribution, StandardNormal};
 
-use crate::substrate::GpuOffloadEngine;
+use crate::substrate::{FusedAttentionBatch, GpuOffloadEngine, RuntimeMatmulBatch};
 
 /// Configuration for the permutation-shielded attention protocol.
 #[derive(Debug, Clone, Copy)]
@@ -223,7 +223,10 @@ pub fn permuted_attention<R: RngCore, E: GpuOffloadEngine + ?Sized>(
     let kt_perm_view = k_perm.view().permuted_axes([0, 2, 1]);
 
     // GPU step 1: scores = (πQ + η_Q) · (πK + η_K)ᵀ shape (num_heads, n, n).
-    let mut scores = engine.matmul_dynamic_batched(q_perm.view(), kt_perm_view)?;
+    let mut scores = engine.run_runtime_matmul(RuntimeMatmulBatch {
+        lhs: q_perm.view(),
+        rhs: kt_perm_view,
+    })?;
     scores.mapv_inplace(|x| x * scale);
 
     // TEE step: apply permuted causal mask if requested. The mask is the
@@ -266,13 +269,17 @@ pub fn permuted_attention<R: RngCore, E: GpuOffloadEngine + ?Sized>(
     let _ = engine; // kept in signature for the next two GPU calls
 
     // GPU step 3: out_perm = probs · πV shape (num_heads, n, d_head).
-    let out_perm = engine.matmul_dynamic_batched(probs.view(), v_perm.view())?;
+    let out_perm = engine.run_runtime_matmul(RuntimeMatmulBatch {
+        lhs: probs.view(),
+        rhs: v_perm.view(),
+    })?;
 
     // TEE recovery via πᵀ: out[h, perm[i], :] = out_perm[h, i, :].
     let mut out = Array3::<f32>::zeros((num_heads, n, d_head));
     for h in 0..num_heads {
         for (i, &src) in perm.iter().enumerate() {
-            out.slice_mut(s![h, src, ..]).assign(&out_perm.slice(s![h, i, ..]));
+            out.slice_mut(s![h, src, ..])
+                .assign(&out_perm.slice(s![h, i, ..]));
         }
     }
 
@@ -399,13 +406,13 @@ pub fn permuted_attention_cached<R: RngCore, E: GpuOffloadEngine + ?Sized>(
         // skips the mask upload and the `+ mask` kernel dispatch
         // entirely.  Encoder-style callers (`AttentionMask::None`)
         // also land here.
-        engine.fused_attention_batched(
-            q_perm.view(),
-            k_perm.view(),
-            v_perm.view(),
+        engine.run_fused_attention(FusedAttentionBatch {
+            q: q_perm.view(),
+            k: k_perm.view(),
+            v: v_perm.view(),
             scale,
-            None,
-        )?
+            mask: None,
+        })?
         // No row-sum integrity probe on this path — the fused output
         // is the *post-multiplied* tensor, not the softmax tensor, so
         // the `Σ probs[i,j] = 1` invariant is no longer directly
@@ -414,7 +421,10 @@ pub fn permuted_attention_cached<R: RngCore, E: GpuOffloadEngine + ?Sized>(
     } else {
         // F1+ legacy path: explicit matmul + TEE-softmax + matmul.
         let kt_perm_view = k_perm.view().permuted_axes([0, 2, 1]);
-        let mut scores = engine.matmul_dynamic_batched(q_perm.view(), kt_perm_view)?;
+        let mut scores = engine.run_runtime_matmul(RuntimeMatmulBatch {
+            lhs: q_perm.view(),
+            rhs: kt_perm_view,
+        })?;
         scores.mapv_inplace(|x| x * scale);
 
         // Apply asymmetric permuted causal mask in-TEE. Shape
@@ -448,7 +458,10 @@ pub fn permuted_attention_cached<R: RngCore, E: GpuOffloadEngine + ?Sized>(
             let probs_h = softmax_rowwise(scores_h);
             probs.index_axis_mut(Axis(0), h).assign(&probs_h);
         }
-        engine.matmul_dynamic_batched(probs.view(), v_perm.view())?
+        engine.run_runtime_matmul(RuntimeMatmulBatch {
+            lhs: probs.view(),
+            rhs: v_perm.view(),
+        })?
     };
 
     // Recovery via π_q⁻¹ on the Q axis.
@@ -724,8 +737,7 @@ mod tests {
         let v = random_q3(h, n, d, &mut rng);
         let engine = ReferenceCpuEngine::new();
 
-        let plain =
-            plain_multi_head_attention_cached(q.view(), k.view(), v.view(), scale, 0, true);
+        let plain = plain_multi_head_attention_cached(q.view(), k.view(), v.view(), scale, 0, true);
         let out = permuted_attention_cached(
             &engine,
             q.view(),
@@ -767,7 +779,12 @@ mod tests {
 
             let q_pos_offset = n_kv - 1;
             let plain = plain_multi_head_attention_cached(
-                q.view(), k.view(), v.view(), scale, q_pos_offset, true,
+                q.view(),
+                k.view(),
+                v.view(),
+                scale,
+                q_pos_offset,
+                true,
             );
             let out = permuted_attention_cached(
                 &engine,
@@ -812,7 +829,12 @@ mod tests {
         let engine = ReferenceCpuEngine::new();
 
         let plain = plain_multi_head_attention_cached(
-            q.view(), k.view(), v.view(), scale, q_pos_offset, true,
+            q.view(),
+            k.view(),
+            v.view(),
+            scale,
+            q_pos_offset,
+            true,
         );
         let out = permuted_attention_cached(
             &engine,
@@ -853,7 +875,12 @@ mod tests {
         let engine = ReferenceCpuEngine::new();
 
         let plain = plain_multi_head_attention_cached(
-            q.view(), k.view(), v.view(), scale, q_pos_offset, true,
+            q.view(),
+            k.view(),
+            v.view(),
+            scale,
+            q_pos_offset,
+            true,
         );
         let out = permuted_attention_cached(
             &engine,

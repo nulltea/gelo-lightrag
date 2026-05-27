@@ -31,7 +31,7 @@ use rand_distr::{Distribution, StandardNormal, Uniform};
 
 use crate::integrity::verify_offload;
 use crate::profile;
-use crate::substrate::GpuOffloadEngine;
+use crate::substrate::{GpuOffloadEngine, RuntimeMatmulBatch};
 
 /// Magnitude (`σ`) of the additive masks `R_Q`, `R_Kt`. Picked to match
 /// typical Q/K row scales (≈ 1) so the recovered partitions don't suffer
@@ -190,7 +190,10 @@ pub fn offload_qkt_batched<R: RngCore, E: GpuOffloadEngine + ?Sized>(
 
     // 4. One fused batched dispatch.
     let tilde = profile::time("engine:matmul_dynamic_batched", || {
-        engine.matmul_dynamic_batched(stacked_q.view(), stacked_kt.view())
+        engine.run_runtime_matmul(RuntimeMatmulBatch {
+            lhs: stacked_q.view(),
+            rhs: stacked_kt.view(),
+        })
     })?;
 
     // 5. Per-head U-Verify on the engine's raw output. We probe the

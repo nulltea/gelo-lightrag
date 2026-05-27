@@ -46,8 +46,11 @@ pub use mask::{
 };
 pub use ple::PleTable;
 pub use shield::ShieldConfig;
-pub use sim::{InProcessTrustedExecutor, PlaintextExecutor};
 #[cfg(any(test, feature = "reference-engine"))]
 pub use sim::ReferenceCpuEngine;
+pub use sim::{InProcessTrustedExecutor, PlaintextExecutor};
 pub use snapshot::{PcieSnapshot, SnapshotCapture, SnapshotConfig};
-pub use substrate::{GpuOffloadEngine, MatmulToken, TrustedExecutor, WeightHandle, WeightKind};
+pub use substrate::{
+    ForwardSessionShape, FusedAttentionBatch, GpuOffloadEngine, MatmulToken, RegisteredLinearBatch,
+    RegisteredLinearInput, RuntimeMatmulBatch, TrustedExecutor, WeightHandle, WeightKind,
+};

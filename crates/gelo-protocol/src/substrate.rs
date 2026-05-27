@@ -90,6 +90,50 @@ pub enum WeightKind {
     LmHead,
 }
 
+/// Input precision for a registered linear offload request.
+pub enum RegisteredLinearInput<'a> {
+    F32(ArrayView2<'a, f32>),
+    Bf16(ArrayView2<'a, bf16>),
+}
+
+impl RegisteredLinearInput<'_> {
+    pub fn ncols(&self) -> usize {
+        match self {
+            Self::F32(v) => v.ncols(),
+            Self::Bf16(v) => v.ncols(),
+        }
+    }
+}
+
+/// GELO-shaped registered-weight linear request.
+///
+/// This is the accelerator seam's deep interface for the common
+/// "one trusted operand, one or more public registered weights" path.
+/// The default implementation below preserves the older primitive
+/// methods, but callers no longer need to choose between f32/bf16,
+/// one/many, and backend fallback policy themselves.
+pub struct RegisteredLinearBatch<'h, 'i> {
+    pub handles: &'h [WeightHandle],
+    pub input: RegisteredLinearInput<'i>,
+}
+
+/// GELO-shaped runtime matmul request for operands that are not
+/// pre-registered weights.
+pub struct RuntimeMatmulBatch<'l, 'r> {
+    pub lhs: ArrayView3<'l, f32>,
+    pub rhs: ArrayView3<'r, f32>,
+}
+
+/// GELO-shaped attention request. Engines can satisfy this with a
+/// fused implementation or fall back to the protocol's composed path.
+pub struct FusedAttentionBatch<'q, 'k, 'v, 'm> {
+    pub q: ArrayView3<'q, f32>,
+    pub k: ArrayView3<'k, f32>,
+    pub v: ArrayView3<'v, f32>,
+    pub scale: f32,
+    pub mask: Option<ArrayView3<'m, f32>>,
+}
+
 /// The untrusted accelerator side of the split protocol.
 ///
 /// All implementations must accept activations through [`Self::matmul`] in
@@ -207,10 +251,7 @@ pub trait GpuOffloadEngine: Send {
         handles: &[WeightHandle],
         input: ArrayView2<f32>,
     ) -> Result<Vec<Array2<f32>>> {
-        handles
-            .iter()
-            .map(|h| self.matmul(*h, input))
-            .collect()
+        handles.iter().map(|h| self.matmul(*h, input)).collect()
     }
 
     /// bf16-input variant of [`Self::matmul_many`]. Default impl
@@ -230,6 +271,28 @@ pub trait GpuOffloadEngine: Send {
         self.matmul_many(handles, f32_owned.view())
     }
 
+    /// Run one or more registered-weight linear projections.
+    ///
+    /// This is the preferred accelerator seam for GELO linear offloads:
+    /// callers describe the operation once and the engine owns the
+    /// one-vs-many and f32-vs-bf16 dispatch policy. The default impl is
+    /// deliberately expressed in terms of the older primitive methods so
+    /// existing adapters inherit correct behaviour.
+    fn run_registered_linear(
+        &self,
+        request: RegisteredLinearBatch<'_, '_>,
+    ) -> Result<Vec<Array2<f32>>> {
+        if request.handles.is_empty() {
+            return Ok(Vec::new());
+        }
+        match request.input {
+            RegisteredLinearInput::F32(input) => self.matmul_many(request.handles, input),
+            RegisteredLinearInput::Bf16(input) => {
+                self.matmul_many_bf16_input(request.handles, input)
+            }
+        }
+    }
+
     /// **R4 async** sibling of [`Self::matmul`]. Issues the GPU work
     /// and returns a [`MatmulToken`] that the caller drains via
     /// [`Self::read_result`] (or [`MatmulToken::into_array`] directly).
@@ -244,11 +307,7 @@ pub trait GpuOffloadEngine: Send {
     /// token. Correct, just no overlap.
     ///
     /// Plan: `docs/plans/m1-12-r4-async-overlap.md` §B.
-    fn matmul_async(
-        &self,
-        handle: WeightHandle,
-        input: ArrayView2<f32>,
-    ) -> Result<MatmulToken> {
+    fn matmul_async(&self, handle: WeightHandle, input: ArrayView2<f32>) -> Result<MatmulToken> {
         let out = self.matmul(handle, input)?;
         Ok(MatmulToken::ready(out))
     }
@@ -281,16 +340,26 @@ pub trait GpuOffloadEngine: Send {
             .collect()
     }
 
+    /// Async submission for registered-weight linear projections.
+    ///
+    /// The async path currently accepts f32 input because callers use it
+    /// after trusted-side mask application, which produces f32. Bf16
+    /// request support can be added behind this seam without touching
+    /// trusted callers.
+    fn submit_registered_linear(
+        &self,
+        handles: &[WeightHandle],
+        input: ArrayView2<f32>,
+    ) -> Result<Vec<MatmulToken>> {
+        self.matmul_many_async(handles, input)
+    }
+
     /// Two-operand dynamic matmul where neither operand is a pre-registered
     /// weight. Required by OutAttnMult (TwinShield §V-A): both `Q` and `Kᵀ`
     /// are runtime values, so neither side can be uploaded ahead of time.
     ///
     /// `lhs` has shape `(m, k)`, `rhs` has shape `(k, n)`, result is `(m, n)`.
-    fn matmul_dynamic(
-        &self,
-        lhs: ArrayView2<f32>,
-        rhs: ArrayView2<f32>,
-    ) -> Result<Array2<f32>>;
+    fn matmul_dynamic(&self, lhs: ArrayView2<f32>, rhs: ArrayView2<f32>) -> Result<Array2<f32>>;
 
     /// Batched two-operand dynamic matmul. `lhs` is `(B, M, K)`, `rhs` is
     /// `(B, K, N)`, result is `(B, M, N)`. Each batch element is an
@@ -318,13 +387,15 @@ pub trait GpuOffloadEngine: Send {
         let n = rhs.shape()[2];
         let mut out = Array3::<f32>::zeros((b, m, n));
         for i in 0..b {
-            let r = self.matmul_dynamic(
-                lhs.index_axis(Axis(0), i),
-                rhs.index_axis(Axis(0), i),
-            )?;
+            let r = self.matmul_dynamic(lhs.index_axis(Axis(0), i), rhs.index_axis(Axis(0), i))?;
             out.index_axis_mut(Axis(0), i).assign(&r);
         }
         Ok(out)
+    }
+
+    /// Run a batched runtime matmul request.
+    fn run_runtime_matmul(&self, request: RuntimeMatmulBatch<'_, '_>) -> Result<Array3<f32>> {
+        self.matmul_dynamic_batched(request.lhs, request.rhs)
     }
 
     /// Row-wise numerically stable softmax on the last axis of a 3D
@@ -436,6 +507,14 @@ pub trait GpuOffloadEngine: Send {
         let probs = self.softmax_batched(scores.view())?;
         self.matmul_dynamic_batched(probs.view(), v)
     }
+
+    /// Run a full batched attention request.
+    fn run_fused_attention(
+        &self,
+        request: FusedAttentionBatch<'_, '_, '_, '_>,
+    ) -> Result<Array3<f32>> {
+        self.fused_attention_batched(request.q, request.k, request.v, request.scale, request.mask)
+    }
 }
 
 #[cfg(test)]
@@ -453,18 +532,10 @@ mod fused_attention_tests {
     /// `fused_attention_batched`).
     struct LocalEngine;
     impl GpuOffloadEngine for LocalEngine {
-        fn register_weight(
-            &mut self,
-            _h: WeightHandle,
-            _w: ArrayView2<f32>,
-        ) -> Result<()> {
+        fn register_weight(&mut self, _h: WeightHandle, _w: ArrayView2<f32>) -> Result<()> {
             Ok(())
         }
-        fn matmul(
-            &self,
-            _h: WeightHandle,
-            _input: ArrayView2<f32>,
-        ) -> Result<Array2<f32>> {
+        fn matmul(&self, _h: WeightHandle, _input: ArrayView2<f32>) -> Result<Array2<f32>> {
             unimplemented!("not used in fused-attention tests")
         }
         fn matmul_dynamic(
@@ -613,6 +684,17 @@ mod fused_attention_tests {
     }
 }
 
+/// Lifecycle shape for a trusted forward session.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ForwardSessionShape {
+    /// One non-batched text with `n` token rows.
+    Single { n: usize },
+    /// Batched prefill over `batch_size` sequences padded to `n_max` rows.
+    PrefillBatch { batch_size: usize, n_max: usize },
+    /// Batched decode where each sequence contributes one new token row.
+    DecodeBatch { batch_size: usize },
+}
+
 /// The trusted side of the split protocol.
 ///
 /// Implementations own the mask RNG, perform the `A·H` / `Aᵀ·(U·W)`
@@ -669,11 +751,7 @@ pub trait TrustedExecutor {
     /// sequence under one mask. Engines targeting M1.11 perf override.
     ///
     /// See `docs/plans/m1-11-batched-decode.md` §3.4-3.5.
-    fn begin_prefill_pass(
-        &mut self,
-        batch_size: usize,
-        n_max: usize,
-    ) -> Result<()> {
+    fn begin_prefill_pass(&mut self, batch_size: usize, n_max: usize) -> Result<()> {
         // Default: degenerate to a single big forward pass over the
         // flattened (B * n_max) row count.
         self.begin_forward_pass(batch_size.saturating_mul(n_max))
@@ -710,6 +788,21 @@ pub trait TrustedExecutor {
         // Default: degenerate to a single-mask forward pass at row
         // count B. Engines targeting M1.11 perf override.
         self.begin_forward_pass(batch_size)
+    }
+
+    /// Begin a trusted forward session from one GELO-shaped lifecycle request.
+    ///
+    /// Callers should prefer this over selecting the legacy begin method
+    /// directly; it keeps topology policy behind the executor seam while
+    /// preserving the older methods for tests and specialised call sites.
+    fn begin_forward_session(&mut self, shape: ForwardSessionShape) -> Result<()> {
+        match shape {
+            ForwardSessionShape::Single { n } => self.begin_forward_pass(n),
+            ForwardSessionShape::PrefillBatch { batch_size, n_max } => {
+                self.begin_prefill_pass(batch_size, n_max)
+            }
+            ForwardSessionShape::DecodeBatch { batch_size } => self.begin_decode_pass(batch_size),
+        }
     }
 
     /// Move this executor's randomness source to an independent
@@ -892,10 +985,8 @@ pub trait TrustedExecutor {
         let n = q.shape()[1];
         let mut out = Array3::<f32>::zeros((h, n, n));
         for i in 0..h {
-            let r = self.offload_attention_qkt(
-                q.index_axis(Axis(0), i),
-                kt.index_axis(Axis(0), i),
-            )?;
+            let r =
+                self.offload_attention_qkt(q.index_axis(Axis(0), i), kt.index_axis(Axis(0), i))?;
             out.index_axis_mut(Axis(0), i).assign(&r);
         }
         Ok(out)

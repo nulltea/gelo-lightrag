@@ -8,15 +8,18 @@ use rand_chacha::ChaCha20Rng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
 use crate::attention::{self, PermAttnConfig};
-use crate::integrity::verify_offload;
 use crate::hd3::Hd3Mask;
+use crate::integrity::verify_offload;
 use crate::mask::{GeloMask, MaskFamily, MaskKind};
 use crate::out_attn_mult;
 use crate::profile;
 use crate::rng::MaskSeed;
 use crate::shield::{ShieldConfig, stack_shield};
 use crate::snapshot::{SnapshotCapture, SnapshotConfig};
-use crate::substrate::{GpuOffloadEngine, TrustedExecutor, WeightHandle, WeightKind};
+use crate::substrate::{
+    GpuOffloadEngine, RegisteredLinearBatch, RegisteredLinearInput, RuntimeMatmulBatch,
+    TrustedExecutor, WeightHandle, WeightKind,
+};
 
 /// Reference [`GpuOffloadEngine`] that performs the offloaded GEMM on
 /// the CPU via rayon. **Test-only.** Gated behind
@@ -86,11 +89,7 @@ impl GpuOffloadEngine for ReferenceCpuEngine {
         Ok(input.dot(w.as_ref()))
     }
 
-    fn matmul_dynamic(
-        &self,
-        lhs: ArrayView2<f32>,
-        rhs: ArrayView2<f32>,
-    ) -> Result<Array2<f32>> {
+    fn matmul_dynamic(&self, lhs: ArrayView2<f32>, rhs: ArrayView2<f32>) -> Result<Array2<f32>> {
         if lhs.ncols() != rhs.nrows() {
             return Err(anyhow!(
                 "matmul_dynamic shape mismatch: lhs cols {} != rhs rows {}",
@@ -708,7 +707,6 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
         self
     }
 
-
     /// Enable U-Verify with `k` Freivalds-style probes per offload.
     /// `k = 0` disables the check. Soundness scales as `(2L)^-k`; `k = 8`
     /// with the default `L = 3` is `≈ 2.4·10⁻⁷` undetected-tamper rate.
@@ -876,9 +874,7 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
         // paper-parity mode, fresh sample otherwise).
         let mask = if self.per_forward_mask {
             match &self.session {
-                Some(SessionKind::Single(s))
-                    if s.data_n == n_data && s.mask.n() == stacked_n =>
-                {
+                Some(SessionKind::Single(s)) if s.data_n == n_data && s.mask.n() == stacked_n => {
                     s.mask.clone()
                 }
                 Some(SessionKind::Single(s)) => {
@@ -917,7 +913,11 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             // to a power of two).
             let scale = self.shield.energy_scale;
             let mean_norm = mean_row_norm(hidden);
-            let sigma = if d == 0 { 0.0 } else { scale * mean_norm / (d as f32).sqrt() };
+            let sigma = if d == 0 {
+                0.0
+            } else {
+                scale * mean_norm / (d as f32).sqrt()
+            };
 
             match &mask {
                 MaskFamily::Hd3(hd3) => {
@@ -942,10 +942,7 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
                             buf.slice_mut(ndarray::s![shield_end.., ..]).fill(0.0);
                         }
                     });
-                    profile::time(
-                        "gelo:mask_apply:hd3",
-                        || hd3.apply_in_place(&mut buf),
-                    );
+                    profile::time("gelo:mask_apply:hd3", || hd3.apply_in_place(&mut buf));
                     buf
                 }
                 MaskFamily::Dct4(dct4) => {
@@ -966,10 +963,7 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
                             &mut self.shield_rng,
                         );
                     });
-                    profile::time(
-                        "gelo:mask_apply:dct4",
-                        || dct4.apply_in_place(&mut buf),
-                    );
+                    profile::time("gelo:mask_apply:dct4", || dct4.apply_in_place(&mut buf));
                     buf
                 }
                 MaskFamily::Haar(_) => {
@@ -992,10 +986,7 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
                             buf.slice_mut(ndarray::s![shield_end.., ..]).fill(0.0);
                         }
                     });
-                    profile::time(
-                        "gelo:mask_apply:haar",
-                        || mask.apply(buf.view()),
-                    )
+                    profile::time("gelo:mask_apply:haar", || mask.apply(buf.view()))
                 }
             }
         } else {
@@ -1130,8 +1121,7 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
                 .into_par_iter()
                 .enumerate()
                 .for_each(|(b, mut block_view)| {
-                    let sub_in =
-                        hidden.slice(ndarray::s![b * data_n..(b + 1) * data_n, ..]);
+                    let sub_in = hidden.slice(ndarray::s![b * data_n..(b + 1) * data_n, ..]);
                     let mean_norm = mean_row_norm(sub_in);
                     let sigma = if d_in == 0 {
                         0.0
@@ -1145,12 +1135,9 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
                     // Place shield rows.
                     let shield_end_local = (data_n + k).min(stacked_n);
                     if shield_end_local > data_n {
-                        let mut local_rng =
-                            rand_xoshiro::Xoshiro256PlusPlus::from_seed(seeds[b]);
+                        let mut local_rng = rand_xoshiro::Xoshiro256PlusPlus::from_seed(seeds[b]);
                         fill_shield_rows_inline(
-                            block_view.slice_mut(
-                                ndarray::s![data_n..shield_end_local, ..],
-                            ),
+                            block_view.slice_mut(ndarray::s![data_n..shield_end_local, ..]),
                             sigma,
                             &mut local_rng,
                         );
@@ -1195,16 +1182,11 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
                     MaskFamily::Haar(_) => {
                         // Haar still goes through the allocating GEMM
                         // path (separate output workspace required).
-                        let view = ndarray::ArrayView2::from_shape(
-                            (stacked_n, d_in),
-                            block,
-                        )
-                        .expect("chunk has the right shape");
+                        let view = ndarray::ArrayView2::from_shape((stacked_n, d_in), block)
+                            .expect("chunk has the right shape");
                         let masked = masks[b].apply(view);
                         block.copy_from_slice(
-                            masked
-                                .as_slice()
-                                .expect("fresh Array2 is contiguous"),
+                            masked.as_slice().expect("fresh Array2 is contiguous"),
                         );
                     }
                 });
@@ -1261,9 +1243,7 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             let in_slice = concat_out
                 .as_slice_mut()
                 .expect("concat_out must be row-major contiguous");
-            let out_slice = output
-                .as_slice_mut()
-                .expect("fresh Array2 is contiguous");
+            let out_slice = output.as_slice_mut().expect("fresh Array2 is contiguous");
             in_slice
                 .par_chunks_mut(in_chunk_len)
                 .zip(out_slice.par_chunks_mut(out_chunk_len))
@@ -1280,11 +1260,8 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
                     MaskFamily::Haar(_) => {
                         // Haar still allocates — Aᵀ · M needs a separate
                         // workspace for the GEMM output.
-                        let view = ndarray::ArrayView2::from_shape(
-                            (stacked_n, d_out),
-                            in_block,
-                        )
-                        .expect("chunk has the right shape");
+                        let view = ndarray::ArrayView2::from_shape((stacked_n, d_out), in_block)
+                            .expect("chunk has the right shape");
                         let unmasked = masks[b].unapply(view);
                         out_block.copy_from_slice(
                             unmasked
@@ -1338,9 +1315,19 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
 
         let concat_masked = self.build_per_sequence_masked(hidden, &masks, batch_size, data_n);
 
-        let concat_out = profile::time("engine:matmul", || {
-            self.engine.matmul(handle, concat_masked.view())
+        let handles = [handle];
+        let mut concat_outs = profile::time("engine:registered_linear", || {
+            self.engine.run_registered_linear(RegisteredLinearBatch {
+                handles: &handles,
+                input: RegisteredLinearInput::F32(concat_masked.view()),
+            })
         })?;
+        anyhow::ensure!(
+            concat_outs.len() == 1,
+            "engine.run_registered_linear returned {} results; expected 1",
+            concat_outs.len()
+        );
+        let concat_out = concat_outs.pop().expect("len checked above");
         self.record_snapshot(handle, &concat_masked, Some(&concat_out));
         if self.verify_probes > 0 {
             let weight = self.weights.get(&handle).ok_or_else(|| {
@@ -1357,8 +1344,7 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             })?;
         }
 
-        let result =
-            self.unmask_per_sequence(concat_out, &masks, batch_size, data_n);
+        let result = self.unmask_per_sequence(concat_out, &masks, batch_size, data_n);
         self.return_per_seq_apply_scratch(concat_masked);
         Ok(result)
     }
@@ -1387,8 +1373,11 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             WeightHandle::new(layer, WeightKind::K),
             WeightHandle::new(layer, WeightKind::V),
         ];
-        let qkv_out = profile::time("engine:matmul_many", || {
-            self.engine.matmul_many(&handles, concat_masked.view())
+        let qkv_out = profile::time("engine:registered_linear", || {
+            self.engine.run_registered_linear(RegisteredLinearBatch {
+                handles: &handles,
+                input: RegisteredLinearInput::F32(concat_masked.view()),
+            })
         })?;
         anyhow::ensure!(
             qkv_out.len() == 3,
@@ -1402,17 +1391,32 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
 
         // Snapshot + U-Verify per output kind (same masked operand
         // drives all three).
-        self.record_snapshot(WeightHandle::new(layer, WeightKind::Q), &concat_masked, Some(&mq));
-        self.record_snapshot(WeightHandle::new(layer, WeightKind::K), &concat_masked, Some(&mk));
-        self.record_snapshot(WeightHandle::new(layer, WeightKind::V), &concat_masked, Some(&mv));
+        self.record_snapshot(
+            WeightHandle::new(layer, WeightKind::Q),
+            &concat_masked,
+            Some(&mq),
+        );
+        self.record_snapshot(
+            WeightHandle::new(layer, WeightKind::K),
+            &concat_masked,
+            Some(&mk),
+        );
+        self.record_snapshot(
+            WeightHandle::new(layer, WeightKind::V),
+            &concat_masked,
+            Some(&mv),
+        );
         if self.verify_probes > 0 {
-            for (kind, observed) in
-                [(WeightKind::Q, &mq), (WeightKind::K, &mk), (WeightKind::V, &mv)]
-            {
+            for (kind, observed) in [
+                (WeightKind::Q, &mq),
+                (WeightKind::K, &mk),
+                (WeightKind::V, &mv),
+            ] {
                 let h = WeightHandle::new(layer, kind);
-                let w = self.weights.get(&h).ok_or_else(|| {
-                    anyhow!("verify_probes>0 but weight {h:?} not cached in TEE")
-                })?;
+                let w = self
+                    .weights
+                    .get(&h)
+                    .ok_or_else(|| anyhow!("verify_probes>0 but weight {h:?} not cached in TEE"))?;
                 profile::time("uverify:linear", || {
                     verify_offload(
                         self.verify_probes,
@@ -1452,8 +1456,11 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
         };
         let concat_masked = self.build_per_sequence_masked(hidden, &masks, batch_size, data_n);
 
-        let masked_outs = profile::time("engine:matmul_many", || {
-            self.engine.matmul_many(handles, concat_masked.view())
+        let masked_outs = profile::time("engine:registered_linear", || {
+            self.engine.run_registered_linear(RegisteredLinearBatch {
+                handles,
+                input: RegisteredLinearInput::F32(concat_masked.view()),
+            })
         })?;
         anyhow::ensure!(
             masked_outs.len() == handles.len(),
@@ -1467,9 +1474,10 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
         }
         if self.verify_probes > 0 {
             for (h, observed) in handles.iter().zip(masked_outs.iter()) {
-                let w = self.weights.get(h).ok_or_else(|| {
-                    anyhow!("verify_probes>0 but weight {h:?} not cached in TEE")
-                })?;
+                let w = self
+                    .weights
+                    .get(h)
+                    .ok_or_else(|| anyhow!("verify_probes>0 but weight {h:?} not cached in TEE"))?;
                 profile::time("uverify:linear", || {
                     verify_offload(
                         self.verify_probes,
@@ -1600,11 +1608,7 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
     /// row count), not on the batch size — at typical prefill widths
     /// (n_max ≥ 32) the overlay never fires, so we use
     /// `shield_default` (k=8).
-    fn begin_prefill_pass(
-        &mut self,
-        batch_size: usize,
-        n_max: usize,
-    ) -> Result<()> {
+    fn begin_prefill_pass(&mut self, batch_size: usize, n_max: usize) -> Result<()> {
         if !self.per_forward_mask {
             // Per-offload mode: each offload samples its own fresh
             // mask, so the bracket is a no-op (same contract as
@@ -1612,14 +1616,10 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
             return Ok(());
         }
         if batch_size == 0 {
-            return Err(anyhow!(
-                "begin_prefill_pass: batch_size must be > 0"
-            ));
+            return Err(anyhow!("begin_prefill_pass: batch_size must be > 0"));
         }
         if n_max == 0 {
-            return Err(anyhow!(
-                "begin_prefill_pass: n_max must be > 0"
-            ));
+            return Err(anyhow!("begin_prefill_pass: n_max must be > 0"));
         }
         // Shape-adaptive shield by per-sequence n_max — same logic as
         // begin_forward_pass. At typical rerank/extraction prefill
@@ -1629,8 +1629,7 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
             _ => self.shield_default,
         };
         let stacked_n = n_max + self.shield.k;
-        let resolved_kind =
-            crate::mask::resolve_mask_kind_for_shape(self.mask_kind, stacked_n);
+        let resolved_kind = crate::mask::resolve_mask_kind_for_shape(self.mask_kind, stacked_n);
 
         // Sample B independent masks sequentially from the executor's
         // main RNG stream. Each mask consumes some bytes from the
@@ -1645,9 +1644,9 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
                     let s_pad = stacked_n.next_power_of_two().max(2);
                     MaskFamily::Hd3(Hd3Mask::fresh(s_pad, &mut self.rng))
                 }
-                MaskKind::Dct4 => MaskFamily::Dct4(
-                    crate::dct4::Dct4Mask::fresh(stacked_n, &mut self.rng),
-                ),
+                MaskKind::Dct4 => {
+                    MaskFamily::Dct4(crate::dct4::Dct4Mask::fresh(stacked_n, &mut self.rng))
+                }
                 MaskKind::Auto => unreachable!("Auto resolved above"),
             });
             masks.push(mask);
@@ -1691,8 +1690,7 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
             // Use the default energy scale; shape is dictated by k.
             self.shield = crate::shield::ShieldConfig::new(k, self.shield_default.energy_scale);
             let stacked_n = batch_size + k;
-            let resolved_kind =
-                crate::mask::resolve_mask_kind_for_shape(self.mask_kind, stacked_n);
+            let resolved_kind = crate::mask::resolve_mask_kind_for_shape(self.mask_kind, stacked_n);
             let mask = profile::time("gelo:mask_sample", || match resolved_kind {
                 MaskKind::Haar => self.make_haar_mask(stacked_n),
                 MaskKind::Hd3 => {
@@ -1709,7 +1707,7 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
                 data_n: batch_size,
             }));
             self.stacked_scratch.clear();
-        self.per_seq_apply_scratch.clear();
+            self.per_seq_apply_scratch.clear();
             return Ok(());
         }
 
@@ -1796,7 +1794,8 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         // The engine-side clone is also eliminated via
         // `register_weight_shared` — for engines that override
         // (`ReferenceCpuEngine` does), the Arc is stored directly.
-        self.engine.register_weight_shared(handle, Arc::clone(&weight))?;
+        self.engine
+            .register_weight_shared(handle, Arc::clone(&weight))?;
         if self.verify_probes > 0 {
             self.weights.insert(handle, weight);
         }
@@ -1814,9 +1813,7 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         // single-mask path.
         let per_sequence_dims = match &self.session {
             Some(SessionKind::PerSequence {
-                batch_size,
-                data_n,
-                ..
+                batch_size, data_n, ..
             }) => Some((*batch_size, *data_n)),
             _ => None,
         };
@@ -1824,8 +1821,19 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
             return self.offload_linear_per_sequence(handle, hidden, batch_size, data_n);
         }
         let (mask, masked, n_data) = self.build_shielded_and_apply(hidden);
-        let masked_out =
-            profile::time("engine:matmul", || self.engine.matmul(handle, masked.view()))?;
+        let handles = [handle];
+        let mut masked_outs = profile::time("engine:registered_linear", || {
+            self.engine.run_registered_linear(RegisteredLinearBatch {
+                handles: &handles,
+                input: RegisteredLinearInput::F32(masked.view()),
+            })
+        })?;
+        anyhow::ensure!(
+            masked_outs.len() == 1,
+            "engine.run_registered_linear returned {} results; expected 1",
+            masked_outs.len()
+        );
+        let masked_out = masked_outs.pop().expect("len checked above");
         // PCIe-side snapshot: record the masked operand and engine output.
         // No-op when snapshot capture is disabled (the default).
         self.record_snapshot(handle, &masked, Some(&masked_out));
@@ -1881,8 +1889,11 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
             WeightHandle::new(layer, WeightKind::K),
             WeightHandle::new(layer, WeightKind::V),
         ];
-        let qkv_out = profile::time("engine:matmul_many", || {
-            self.engine.matmul_many(&handles, masked.view())
+        let qkv_out = profile::time("engine:registered_linear", || {
+            self.engine.run_registered_linear(RegisteredLinearBatch {
+                handles: &handles,
+                input: RegisteredLinearInput::F32(masked.view()),
+            })
         })?;
         anyhow::ensure!(
             qkv_out.len() == 3,
@@ -1901,13 +1912,16 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         self.record_snapshot(WeightHandle::new(layer, WeightKind::V), &masked, Some(&mv));
 
         if self.verify_probes > 0 {
-            for (kind, observed) in
-                [(WeightKind::Q, &mq), (WeightKind::K, &mk), (WeightKind::V, &mv)]
-            {
+            for (kind, observed) in [
+                (WeightKind::Q, &mq),
+                (WeightKind::K, &mk),
+                (WeightKind::V, &mv),
+            ] {
                 let h = WeightHandle::new(layer, kind);
-                let w = self.weights.get(&h).ok_or_else(|| {
-                    anyhow!("verify_probes>0 but weight {h:?} not cached in TEE")
-                })?;
+                let w = self
+                    .weights
+                    .get(&h)
+                    .ok_or_else(|| anyhow!("verify_probes>0 but weight {h:?} not cached in TEE"))?;
                 profile::time("uverify:linear", || {
                     verify_offload(
                         self.verify_probes,
@@ -1965,8 +1979,11 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         }
         let (mask, masked, n_data) = self.build_shielded_and_apply(hidden);
 
-        let masked_outs = profile::time("engine:matmul_many", || {
-            self.engine.matmul_many(handles, masked.view())
+        let masked_outs = profile::time("engine:registered_linear", || {
+            self.engine.run_registered_linear(RegisteredLinearBatch {
+                handles,
+                input: RegisteredLinearInput::F32(masked.view()),
+            })
         })?;
         anyhow::ensure!(
             masked_outs.len() == handles.len(),
@@ -1984,9 +2001,10 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
 
         if self.verify_probes > 0 {
             for (h, observed) in handles.iter().zip(masked_outs.iter()) {
-                let w = self.weights.get(h).ok_or_else(|| {
-                    anyhow!("verify_probes>0 but weight {h:?} not cached in TEE")
-                })?;
+                let w = self
+                    .weights
+                    .get(h)
+                    .ok_or_else(|| anyhow!("verify_probes>0 but weight {h:?} not cached in TEE"))?;
                 profile::time("uverify:linear", || {
                     verify_offload(
                         self.verify_probes,
@@ -2032,13 +2050,7 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         q: ArrayView3<f32>,
         kt: ArrayView3<f32>,
     ) -> Result<Array3<f32>> {
-        out_attn_mult::offload_qkt_batched(
-            &self.engine,
-            &mut self.rng,
-            q,
-            kt,
-            self.verify_probes,
-        )
+        out_attn_mult::offload_qkt_batched(&self.engine, &mut self.rng, q, kt, self.verify_probes)
     }
 
     fn offload_attention_permuted(
@@ -2107,11 +2119,7 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         Ok(())
     }
 
-    fn ple_gather(
-        &self,
-        token_ids: &[u32],
-        layer_idx: usize,
-    ) -> Result<Array2<f32>> {
+    fn ple_gather(&self, token_ids: &[u32], layer_idx: usize) -> Result<Array2<f32>> {
         let table = self
             .ple_table
             .as_ref()
@@ -2172,7 +2180,19 @@ impl<E: GpuOffloadEngine> TrustedExecutor for PlaintextExecutor<E> {
         handle: WeightHandle,
         hidden: ArrayView2<f32>,
     ) -> Result<Array2<f32>> {
-        profile::time("engine:matmul", || self.engine.matmul(handle, hidden))
+        let handles = [handle];
+        let mut outputs = profile::time("engine:registered_linear", || {
+            self.engine.run_registered_linear(RegisteredLinearBatch {
+                handles: &handles,
+                input: RegisteredLinearInput::F32(hidden),
+            })
+        })?;
+        anyhow::ensure!(
+            outputs.len() == 1,
+            "engine.run_registered_linear returned {} results; expected 1",
+            outputs.len()
+        );
+        Ok(outputs.pop().expect("len checked above"))
     }
 
     fn offload_attention_qkt(
@@ -2181,7 +2201,9 @@ impl<E: GpuOffloadEngine> TrustedExecutor for PlaintextExecutor<E> {
         kt: ArrayView2<f32>,
     ) -> Result<Array2<f32>> {
         // Parity baseline: no mask, just compute Q · K^T directly via the engine.
-        profile::time("engine:matmul_dynamic", || self.engine.matmul_dynamic(q, kt))
+        profile::time("engine:matmul_dynamic", || {
+            self.engine.matmul_dynamic(q, kt)
+        })
     }
 
     fn offload_attention_qkt_batched(
@@ -2190,8 +2212,9 @@ impl<E: GpuOffloadEngine> TrustedExecutor for PlaintextExecutor<E> {
         kt: ArrayView3<f32>,
     ) -> Result<Array3<f32>> {
         // Parity baseline: no mask, one fused batched dispatch.
-        profile::time("engine:matmul_dynamic_batched", || {
-            self.engine.matmul_dynamic_batched(q, kt)
+        profile::time("engine:runtime_matmul", || {
+            self.engine
+                .run_runtime_matmul(RuntimeMatmulBatch { lhs: q, rhs: kt })
         })
     }
 
@@ -2202,11 +2225,7 @@ impl<E: GpuOffloadEngine> TrustedExecutor for PlaintextExecutor<E> {
         Ok(())
     }
 
-    fn ple_gather(
-        &self,
-        token_ids: &[u32],
-        layer_idx: usize,
-    ) -> Result<Array2<f32>> {
+    fn ple_gather(&self, token_ids: &[u32], layer_idx: usize) -> Result<Array2<f32>> {
         let table = self
             .ple_table
             .as_ref()
@@ -2324,7 +2343,7 @@ mod tests {
             ReferenceCpuEngine::new(),
             MaskSeed::from_bytes([29u8; 32]),
         )
-        .with_haar_mask()       // pin Haar (default is Auto = HD₃/DCT-IV)
+        .with_haar_mask() // pin Haar (default is Auto = HD₃/DCT-IV)
         .with_haar_mask_bf16(); // opt into the AOCL LPGEMM bf16 path
         assert_eq!(bf16.mask_kind(), MaskKind::Haar);
         assert!(bf16.is_haar_mask_bf16());
@@ -2593,27 +2612,57 @@ mod tests {
     #[test]
     fn auto_dispatch_resolves_by_pad_ratio() {
         // Pow2 exact: s_pad/s = 1.0 → HD₃.
-        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 2048), MaskKind::Hd3);
+        assert_eq!(
+            resolve_mask_kind_for_shape(MaskKind::Auto, 2048),
+            MaskKind::Hd3
+        );
         // Near pow2 (1 row of pad): s_pad/s = 2048/2047 ≈ 1.0005 → HD₃.
-        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 2047), MaskKind::Hd3);
+        assert_eq!(
+            resolve_mask_kind_for_shape(MaskKind::Auto, 2047),
+            MaskKind::Hd3
+        );
         // s=2055 → s_pad=4096, ratio ≈ 1.99 → DCT-IV (production long-n shape).
-        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 2055), MaskKind::Dct4);
+        assert_eq!(
+            resolve_mask_kind_for_shape(MaskKind::Auto, 2055),
+            MaskKind::Dct4
+        );
         // s=2561 → s_pad=4096, ratio = 4096/2561 ≈ 1.59 < 8/5 = 1.6 → HD₃.
         // (Sweep cell B=1 n=2561+k=8 confirmed HD₃ wins by 1 % here.)
         // s_pad * 5 = 20480, s * 8 = 20488 → 20480 ≤ 20488 → HD₃.
-        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 2561), MaskKind::Hd3);
+        assert_eq!(
+            resolve_mask_kind_for_shape(MaskKind::Auto, 2561),
+            MaskKind::Hd3
+        );
         // s=328 → s_pad=512, ratio ≈ 1.56 < 8/5 → HD₃.
         // (Sweep cell B=8 n=320+k=8 confirmed HD₃ wins by 2 % here.)
         // s_pad * 5 = 2560, s * 8 = 2624 → 2560 ≤ 2624 → HD₃.
-        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 328), MaskKind::Hd3);
+        assert_eq!(
+            resolve_mask_kind_for_shape(MaskKind::Auto, 328),
+            MaskKind::Hd3
+        );
         // s=2560 → s_pad=4096, ratio = 1.6 exact. 4096*5 = 20480 = 2560*8 → HD₃.
-        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 2560), MaskKind::Hd3);
+        assert_eq!(
+            resolve_mask_kind_for_shape(MaskKind::Auto, 2560),
+            MaskKind::Hd3
+        );
         // s=2559 → s_pad=4096, ratio just over 1.6. 4096*5 = 20480 > 2559*8 = 20472 → DCT-IV.
-        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Auto, 2559), MaskKind::Dct4);
+        assert_eq!(
+            resolve_mask_kind_for_shape(MaskKind::Auto, 2559),
+            MaskKind::Dct4
+        );
         // Non-Auto kinds pass through.
-        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Haar, 2056), MaskKind::Haar);
-        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Hd3, 2056), MaskKind::Hd3);
-        assert_eq!(resolve_mask_kind_for_shape(MaskKind::Dct4, 2056), MaskKind::Dct4);
+        assert_eq!(
+            resolve_mask_kind_for_shape(MaskKind::Haar, 2056),
+            MaskKind::Haar
+        );
+        assert_eq!(
+            resolve_mask_kind_for_shape(MaskKind::Hd3, 2056),
+            MaskKind::Hd3
+        );
+        assert_eq!(
+            resolve_mask_kind_for_shape(MaskKind::Dct4, 2056),
+            MaskKind::Dct4
+        );
     }
 
     /// `with_auto_mask()` executor agrees with plaintext at a non-pow2
@@ -2753,10 +2802,8 @@ mod tests {
         let d_out = 7;
 
         // Build (B * n_max, d_in) activation by stacking B random sub-blocks.
-        let hidden = Array2::<f32>::from_shape_fn(
-            (batch_size * n_max, d_in),
-            |_| normal.sample(&mut rng),
-        );
+        let hidden =
+            Array2::<f32>::from_shape_fn((batch_size * n_max, d_in), |_| normal.sample(&mut rng));
         let weight = Array2::<f32>::from_shape_fn((d_in, d_out), |_| normal.sample(&mut rng));
         let handle = WeightHandle::new(0, WeightKind::Q);
 
@@ -2805,10 +2852,7 @@ mod tests {
         let d_out = 5;
 
         // (B*1, d_in) — one row per sequence at decode shape.
-        let hidden = Array2::<f32>::from_shape_fn(
-            (batch_size, d_in),
-            |_| normal.sample(&mut rng),
-        );
+        let hidden = Array2::<f32>::from_shape_fn((batch_size, d_in), |_| normal.sample(&mut rng));
         let weight = Array2::<f32>::from_shape_fn((d_in, d_out), |_| normal.sample(&mut rng));
         let handle = WeightHandle::new(0, WeightKind::Q);
 
@@ -2847,10 +2891,7 @@ mod tests {
         let d_in = 4;
         let d_out = 7;
 
-        let hidden = Array2::<f32>::from_shape_fn(
-            (batch_size, d_in),
-            |_| normal.sample(&mut rng),
-        );
+        let hidden = Array2::<f32>::from_shape_fn((batch_size, d_in), |_| normal.sample(&mut rng));
         let weight = Array2::<f32>::from_shape_fn((d_in, d_out), |_| normal.sample(&mut rng));
         let handle = WeightHandle::new(0, WeightKind::Q);
 

@@ -3,7 +3,7 @@ use ndarray::{Array1, Array2, Array3, ArrayView2};
 
 use gelo_protocol::profile;
 use gelo_protocol::tee_matmul_bf16;
-use gelo_protocol::{TrustedExecutor, WeightHandle, WeightKind};
+use gelo_protocol::{ForwardSessionShape, TrustedExecutor, WeightHandle, WeightKind};
 
 use super::attention::{
     causal_gqa_attention, causal_gqa_attention_cached, causal_gqa_attention_permuted,
@@ -44,23 +44,34 @@ pub fn run_with_hook<F: FnMut(usize, &mut Array2<f32>)>(
     mut after_layer: F,
 ) -> Result<Array2<f32>> {
     let n = input_ids.len();
-    let mut h = profile::time("tee:embed_lookup", || embedding_lookup(cfg, weights, input_ids));
+    let mut h = profile::time("tee:embed_lookup", || {
+        embedding_lookup(cfg, weights, input_ids)
+    });
 
     // GELO paper §3.2 forward-pass session: see bert/forward.rs for the
     // rationale. Paper-parity executors sample one mask here; per-offload
     // executors and PlaintextExecutor treat this as a no-op.
-    exec.begin_forward_pass(n)?;
-    let result = (|| -> Result<Array2<f32>> {
+    with_forward_session(exec, ForwardSessionShape::Single { n }, |exec| {
         for (li, layer) in weights.layers.iter().enumerate() {
-            h = decoder_block(cfg, layer, rope, exec, li as u16, h.view(), cfg.offload_layer(li))?;
+            h = decoder_block(
+                cfg,
+                layer,
+                rope,
+                exec,
+                li as u16,
+                h.view(),
+                cfg.offload_layer(li),
+            )?;
             after_layer(li, &mut h);
         }
         Ok(profile::time("tee:rmsnorm", || {
-            rms_norm(h.view(), weights.final_norm.as_slice().unwrap(), cfg.rms_norm_eps)
+            rms_norm(
+                h.view(),
+                weights.final_norm.as_slice().unwrap(),
+                cfg.rms_norm_eps,
+            )
         }))
-    })();
-    exec.end_forward_pass()?;
-    result
+    })
 }
 
 fn embedding_lookup(cfg: &DecoderConfig, w: &DecoderWeights, ids: &[u32]) -> Array2<f32> {
@@ -75,6 +86,22 @@ fn embedding_lookup(cfg: &DecoderConfig, w: &DecoderWeights, ids: &[u32]) -> Arr
         }
     }
     out
+}
+
+fn with_forward_session<X, T, F>(exec: &mut X, shape: ForwardSessionShape, body: F) -> Result<T>
+where
+    X: TrustedExecutor,
+    F: FnOnce(&mut X) -> Result<T>,
+{
+    exec.begin_forward_session(shape)?;
+    let result = body(exec);
+    let end = exec.end_forward_pass();
+    match (result, end) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(err), Ok(())) => Err(err),
+        (Ok(_), Err(err)) => Err(err),
+        (Err(err), Err(_end_err)) => Err(err),
+    }
 }
 
 /// Prefill — run a full prompt forward and populate the KV cache.
@@ -116,10 +143,11 @@ pub fn run_prefill(
         kv_cache.capacity(),
     );
 
-    let mut h = profile::time("tee:embed_lookup", || embedding_lookup(cfg, weights, input_ids));
+    let mut h = profile::time("tee:embed_lookup", || {
+        embedding_lookup(cfg, weights, input_ids)
+    });
 
-    exec.begin_forward_pass(n)?;
-    let result = (|| -> Result<Array2<f32>> {
+    with_forward_session(exec, ForwardSessionShape::Single { n }, |exec| {
         for (li, layer) in weights.layers.iter().enumerate() {
             h = decoder_block_cached(
                 cfg,
@@ -134,11 +162,13 @@ pub fn run_prefill(
             )?;
         }
         Ok(profile::time("tee:rmsnorm", || {
-            rms_norm(h.view(), weights.final_norm.as_slice().unwrap(), cfg.rms_norm_eps)
+            rms_norm(
+                h.view(),
+                weights.final_norm.as_slice().unwrap(),
+                cfg.rms_norm_eps,
+            )
         }))
-    })();
-    exec.end_forward_pass()?;
-    result
+    })
 }
 
 /// Decode one token — append its K/V to the cache, return the
@@ -181,8 +211,7 @@ pub fn run_decode_step(
         embedding_lookup(cfg, weights, &[token_id])
     });
 
-    exec.begin_forward_pass(1)?;
-    let result = (|| -> Result<Array1<f32>> {
+    with_forward_session(exec, ForwardSessionShape::Single { n: 1 }, |exec| {
         for (li, layer) in weights.layers.iter().enumerate() {
             h = decoder_block_cached(
                 cfg,
@@ -197,12 +226,14 @@ pub fn run_decode_step(
             )?;
         }
         let normed = profile::time("tee:rmsnorm", || {
-            rms_norm(h.view(), weights.final_norm.as_slice().unwrap(), cfg.rms_norm_eps)
+            rms_norm(
+                h.view(),
+                weights.final_norm.as_slice().unwrap(),
+                cfg.rms_norm_eps,
+            )
         });
         Ok(normed.row(0).to_owned())
-    })();
-    exec.end_forward_pass()?;
-    result
+    })
 }
 
 /// **M1.11 D1.3** — Batched decode-step forward over B sequences.
@@ -253,8 +284,7 @@ pub fn run_decode_step_batched(
     // own absolute position `kv_cache.len_b(0, b)`. Layer 0 is the
     // representative — debug-asserts in `lens()` catch cross-layer
     // divergence.
-    let q_pos_offsets: Vec<usize> =
-        (0..batch_size).map(|b| kv_cache.len_b(0, b)).collect();
+    let q_pos_offsets: Vec<usize> = (0..batch_size).map(|b| kv_cache.len_b(0, b)).collect();
     for (b, off) in q_pos_offsets.iter().enumerate() {
         assert!(
             off + 1 <= kv_cache.capacity(),
@@ -268,27 +298,32 @@ pub fn run_decode_step_batched(
         embedding_lookup(cfg, weights, token_ids)
     });
 
-    exec.begin_decode_pass(batch_size)?;
-    let result = (|| -> Result<Array2<f32>> {
-        for (li, layer) in weights.layers.iter().enumerate() {
-            h = decoder_block_cached_batched(
-                cfg,
-                layer,
-                rope,
-                exec,
-                li as u16,
-                h.view(),
-                cfg.offload_layer(li),
-                kv_cache,
-                &q_pos_offsets,
-            )?;
-        }
-        Ok(profile::time("tee:rmsnorm", || {
-            rms_norm(h.view(), weights.final_norm.as_slice().unwrap(), cfg.rms_norm_eps)
-        }))
-    })();
-    exec.end_forward_pass()?;
-    result
+    with_forward_session(
+        exec,
+        ForwardSessionShape::DecodeBatch { batch_size },
+        |exec| {
+            for (li, layer) in weights.layers.iter().enumerate() {
+                h = decoder_block_cached_batched(
+                    cfg,
+                    layer,
+                    rope,
+                    exec,
+                    li as u16,
+                    h.view(),
+                    cfg.offload_layer(li),
+                    kv_cache,
+                    &q_pos_offsets,
+                )?;
+            }
+            Ok(profile::time("tee:rmsnorm", || {
+                rms_norm(
+                    h.view(),
+                    weights.final_norm.as_slice().unwrap(),
+                    cfg.rms_norm_eps,
+                )
+            }))
+        },
+    )
 }
 
 /// **M1.11 D1.3** — Batched cache-aware decoder block. Mirror of
@@ -321,7 +356,11 @@ fn decoder_block_cached_batched(
     debug_assert_eq!(batch_size, q_pos_offsets.len());
 
     let h_norm = profile::time("tee:rmsnorm", || {
-        rms_norm(hidden, layer.norm_attn.as_slice().unwrap(), cfg.rms_norm_eps)
+        rms_norm(
+            hidden,
+            layer.norm_attn.as_slice().unwrap(),
+            cfg.rms_norm_eps,
+        )
     });
 
     // Q/K/V: hidden has shape (B, hidden_size). Under
@@ -334,15 +373,27 @@ fn decoder_block_cached_batched(
             (
                 tee_matmul_bf16(
                     h_norm.view(),
-                    layer.wq.as_ref().expect("offload=false requires layer.wq").view(),
+                    layer
+                        .wq
+                        .as_ref()
+                        .expect("offload=false requires layer.wq")
+                        .view(),
                 ),
                 tee_matmul_bf16(
                     h_norm.view(),
-                    layer.wk.as_ref().expect("offload=false requires layer.wk").view(),
+                    layer
+                        .wk
+                        .as_ref()
+                        .expect("offload=false requires layer.wk")
+                        .view(),
                 ),
                 tee_matmul_bf16(
                     h_norm.view(),
-                    layer.wv.as_ref().expect("offload=false requires layer.wv").view(),
+                    layer
+                        .wv
+                        .as_ref()
+                        .expect("offload=false requires layer.wv")
+                        .view(),
                 ),
             )
         })
@@ -403,8 +454,7 @@ fn decoder_block_cached_batched(
 
     // K=V sharing (Gemma 4 global): re-derive V from K post-RoPE so
     // that the V tensor stays identical to K after rotation.
-    let kv_shared = cfg.kv_shared_in_global
-        && matches!(layer_class, AttentionClass::Global);
+    let kv_shared = cfg.kv_shared_in_global && matches!(layer_class, AttentionClass::Global);
     let v = if kv_shared { k.clone() } else { v };
 
     // Append one row per sequence to the KV cache.
@@ -465,14 +515,22 @@ fn decoder_block_cached_batched(
         profile::time("tee:o_direct", || {
             tee_matmul_bf16(
                 ctx.view(),
-                layer.wo.as_ref().expect("offload=false requires layer.wo").view(),
+                layer
+                    .wo
+                    .as_ref()
+                    .expect("offload=false requires layer.wo")
+                    .view(),
             )
         })
     };
     let h1 = profile::time("tee:residual", || &hidden + &attn_out);
 
     let h1_norm = profile::time("tee:rmsnorm", || {
-        rms_norm(h1.view(), layer.norm_ffn.as_slice().unwrap(), cfg.rms_norm_eps)
+        rms_norm(
+            h1.view(),
+            layer.norm_ffn.as_slice().unwrap(),
+            cfg.rms_norm_eps,
+        )
     });
 
     let (gate, up) = if offload {
@@ -489,11 +547,19 @@ fn decoder_block_cached_batched(
             (
                 tee_matmul_bf16(
                     h1_norm.view(),
-                    layer.w_gate.as_ref().expect("offload=false requires layer.w_gate").view(),
+                    layer
+                        .w_gate
+                        .as_ref()
+                        .expect("offload=false requires layer.w_gate")
+                        .view(),
                 ),
                 tee_matmul_bf16(
                     h1_norm.view(),
-                    layer.w_up.as_ref().expect("offload=false requires layer.w_up").view(),
+                    layer
+                        .w_up
+                        .as_ref()
+                        .expect("offload=false requires layer.w_up")
+                        .view(),
                 ),
             )
         })
@@ -508,7 +574,11 @@ fn decoder_block_cached_batched(
         profile::time("tee:swiglu_down_direct", || {
             tee_matmul_bf16(
                 activated.view(),
-                layer.w_down.as_ref().expect("offload=false requires layer.w_down").view(),
+                layer
+                    .w_down
+                    .as_ref()
+                    .expect("offload=false requires layer.w_down")
+                    .view(),
             )
         })
     };
@@ -547,7 +617,11 @@ fn decoder_block_cached(
 ) -> Result<Array2<f32>> {
     // Pre-attention RMSNorm.
     let h_norm = profile::time("tee:rmsnorm", || {
-        rms_norm(hidden, layer.norm_attn.as_slice().unwrap(), cfg.rms_norm_eps)
+        rms_norm(
+            hidden,
+            layer.norm_attn.as_slice().unwrap(),
+            cfg.rms_norm_eps,
+        )
     });
 
     // Q/K/V projections.
@@ -567,8 +641,10 @@ fn decoder_block_cached(
             // map to the same backing weight when the model is loaded
             // with `wk` and `wv` Arc-shared; the executor doesn't need
             // to know that. We just skip the V offload and use K.
-            let q = exec.offload_linear(WeightHandle::new(layer_idx, WeightKind::Q), h_norm.view())?;
-            let k = exec.offload_linear(WeightHandle::new(layer_idx, WeightKind::K), h_norm.view())?;
+            let q =
+                exec.offload_linear(WeightHandle::new(layer_idx, WeightKind::Q), h_norm.view())?;
+            let k =
+                exec.offload_linear(WeightHandle::new(layer_idx, WeightKind::K), h_norm.view())?;
             let v = k.clone();
             (q, k, v)
         } else {
@@ -576,12 +652,33 @@ fn decoder_block_cached(
         }
     } else {
         profile::time("tee:qkv_direct", || {
-            let q = tee_matmul_bf16(h_norm.view(), layer.wq.as_ref().expect("offload=false requires layer.wq present (skip-layers mode)").view());
-            let k = tee_matmul_bf16(h_norm.view(), layer.wk.as_ref().expect("offload=false requires layer.wk present (skip-layers mode)").view());
+            let q = tee_matmul_bf16(
+                h_norm.view(),
+                layer
+                    .wq
+                    .as_ref()
+                    .expect("offload=false requires layer.wq present (skip-layers mode)")
+                    .view(),
+            );
+            let k = tee_matmul_bf16(
+                h_norm.view(),
+                layer
+                    .wk
+                    .as_ref()
+                    .expect("offload=false requires layer.wk present (skip-layers mode)")
+                    .view(),
+            );
             let v = if kv_shared {
                 k.clone()
             } else {
-                tee_matmul_bf16(h_norm.view(), layer.wv.as_ref().expect("offload=false requires layer.wv present (skip-layers mode)").view())
+                tee_matmul_bf16(
+                    h_norm.view(),
+                    layer
+                        .wv
+                        .as_ref()
+                        .expect("offload=false requires layer.wv present (skip-layers mode)")
+                        .view(),
+                )
             };
             (q, k, v)
         })
@@ -707,13 +804,26 @@ fn decoder_block_cached(
     let attn_out = if offload {
         exec.offload_linear(WeightHandle::new(layer_idx, WeightKind::O), ctx.view())?
     } else {
-        profile::time("tee:o_direct", || tee_matmul_bf16(ctx.view(), layer.wo.as_ref().expect("offload=false requires layer.wo present (skip-layers mode)").view()))
+        profile::time("tee:o_direct", || {
+            tee_matmul_bf16(
+                ctx.view(),
+                layer
+                    .wo
+                    .as_ref()
+                    .expect("offload=false requires layer.wo present (skip-layers mode)")
+                    .view(),
+            )
+        })
     };
     let h1 = profile::time("tee:residual", || &hidden + &attn_out);
 
     // Pre-FFN RMSNorm.
     let h1_norm = profile::time("tee:rmsnorm", || {
-        rms_norm(h1.view(), layer.norm_ffn.as_slice().unwrap(), cfg.rms_norm_eps)
+        rms_norm(
+            h1.view(),
+            layer.norm_ffn.as_slice().unwrap(),
+            cfg.rms_norm_eps,
+        )
     });
 
     // SwiGLU FFN — same shape, same offload group as the legacy block.
@@ -729,8 +839,22 @@ fn decoder_block_cached(
     } else {
         profile::time("tee:swiglu_proj_direct", || {
             (
-                tee_matmul_bf16(h1_norm.view(), layer.w_gate.as_ref().expect("offload=false requires layer.w_gate present (skip-layers mode)").view()),
-                tee_matmul_bf16(h1_norm.view(), layer.w_up.as_ref().expect("offload=false requires layer.w_up present (skip-layers mode)").view()),
+                tee_matmul_bf16(
+                    h1_norm.view(),
+                    layer
+                        .w_gate
+                        .as_ref()
+                        .expect("offload=false requires layer.w_gate present (skip-layers mode)")
+                        .view(),
+                ),
+                tee_matmul_bf16(
+                    h1_norm.view(),
+                    layer
+                        .w_up
+                        .as_ref()
+                        .expect("offload=false requires layer.w_up present (skip-layers mode)")
+                        .view(),
+                ),
             )
         })
     };
@@ -744,7 +868,14 @@ fn decoder_block_cached(
         )?
     } else {
         profile::time("tee:swiglu_down_direct", || {
-            tee_matmul_bf16(activated.view(), layer.w_down.as_ref().expect("offload=false requires layer.w_down present (skip-layers mode)").view())
+            tee_matmul_bf16(
+                activated.view(),
+                layer
+                    .w_down
+                    .as_ref()
+                    .expect("offload=false requires layer.w_down present (skip-layers mode)")
+                    .view(),
+            )
         })
     };
     Ok(profile::time("tee:residual", || &h1 + &ffn_out))
@@ -796,33 +927,34 @@ pub fn run_batched(
         h
     });
 
-    exec.begin_prefill_pass(batch_size, n_max)?;
-    let result = (|| -> Result<Array2<f32>> {
-        for (li, layer) in weights.layers.iter().enumerate() {
-            h_flat = decoder_block_batched(
-                cfg,
-                layer,
-                rope,
-                exec,
-                li as u16,
-                h_flat.view(),
-                batch_size,
-                n_max,
-                &seq_lens,
-                cfg.offload_layer(li),
-                None,
-            )?;
-        }
-        Ok(profile::time("tee:rmsnorm", || {
-            rms_norm(
-                h_flat.view(),
-                weights.final_norm.as_slice().unwrap(),
-                cfg.rms_norm_eps,
-            )
-        }))
-    })();
-    exec.end_forward_pass()?;
-    let h_final = result?;
+    let h_final = with_forward_session(
+        exec,
+        ForwardSessionShape::PrefillBatch { batch_size, n_max },
+        |exec| {
+            for (li, layer) in weights.layers.iter().enumerate() {
+                h_flat = decoder_block_batched(
+                    cfg,
+                    layer,
+                    rope,
+                    exec,
+                    li as u16,
+                    h_flat.view(),
+                    batch_size,
+                    n_max,
+                    &seq_lens,
+                    cfg.offload_layer(li),
+                    None,
+                )?;
+            }
+            Ok(profile::time("tee:rmsnorm", || {
+                rms_norm(
+                    h_flat.view(),
+                    weights.final_norm.as_slice().unwrap(),
+                    cfg.rms_norm_eps,
+                )
+            }))
+        },
+    )?;
 
     // Materialise (B, n_max, hidden) from the flat (B*n_max, hidden)
     // tensor.  Direct copy preserves contiguity guarantees that
@@ -899,33 +1031,34 @@ pub fn run_prefill_batched(
         h
     });
 
-    exec.begin_prefill_pass(batch_size, n_max)?;
-    let result = (|| -> Result<Array2<f32>> {
-        for (li, layer) in weights.layers.iter().enumerate() {
-            h_flat = decoder_block_batched(
-                cfg,
-                layer,
-                rope,
-                exec,
-                li as u16,
-                h_flat.view(),
-                batch_size,
-                n_max,
-                &seq_lens,
-                cfg.offload_layer(li),
-                Some(kv_cache),
-            )?;
-        }
-        Ok(profile::time("tee:rmsnorm", || {
-            rms_norm(
-                h_flat.view(),
-                weights.final_norm.as_slice().unwrap(),
-                cfg.rms_norm_eps,
-            )
-        }))
-    })();
-    exec.end_forward_pass()?;
-    let h_final = result?;
+    let h_final = with_forward_session(
+        exec,
+        ForwardSessionShape::PrefillBatch { batch_size, n_max },
+        |exec| {
+            for (li, layer) in weights.layers.iter().enumerate() {
+                h_flat = decoder_block_batched(
+                    cfg,
+                    layer,
+                    rope,
+                    exec,
+                    li as u16,
+                    h_flat.view(),
+                    batch_size,
+                    n_max,
+                    &seq_lens,
+                    cfg.offload_layer(li),
+                    Some(kv_cache),
+                )?;
+            }
+            Ok(profile::time("tee:rmsnorm", || {
+                rms_norm(
+                    h_flat.view(),
+                    weights.final_norm.as_slice().unwrap(),
+                    cfg.rms_norm_eps,
+                )
+            }))
+        },
+    )?;
 
     let mut out = Array3::<f32>::zeros((batch_size, n_max, d));
     for b in 0..batch_size {
@@ -974,7 +1107,11 @@ fn decoder_block_batched(
     debug_assert_eq!(hidden.nrows(), batch_size * n_max);
 
     let h_norm = profile::time("tee:rmsnorm", || {
-        rms_norm(hidden, layer.norm_attn.as_slice().unwrap(), cfg.rms_norm_eps)
+        rms_norm(
+            hidden,
+            layer.norm_attn.as_slice().unwrap(),
+            cfg.rms_norm_eps,
+        )
     });
 
     // Q/K/V — under PerSequence session, `offload_qkv` falls through
@@ -1119,7 +1256,11 @@ fn decoder_block_batched(
     let h1 = profile::time("tee:residual", || &hidden + &attn_out);
 
     let h1_norm = profile::time("tee:rmsnorm", || {
-        rms_norm(h1.view(), layer.norm_ffn.as_slice().unwrap(), cfg.rms_norm_eps)
+        rms_norm(
+            h1.view(),
+            layer.norm_ffn.as_slice().unwrap(),
+            cfg.rms_norm_eps,
+        )
     });
 
     let (gate, up) = if offload {
@@ -1185,7 +1326,11 @@ fn decoder_block(
 ) -> Result<Array2<f32>> {
     // Pre-attention RMSNorm.
     let h_norm = profile::time("tee:rmsnorm", || {
-        rms_norm(hidden, layer.norm_attn.as_slice().unwrap(), cfg.rms_norm_eps)
+        rms_norm(
+            hidden,
+            layer.norm_attn.as_slice().unwrap(),
+            cfg.rms_norm_eps,
+        )
     });
 
     // Q/K/V projections — offloaded one mask shared across the three reads,
@@ -1195,9 +1340,30 @@ fn decoder_block(
     } else {
         profile::time("tee:qkv_direct", || {
             (
-                tee_matmul_bf16(h_norm.view(), layer.wq.as_ref().expect("offload=false requires layer.wq present (skip-layers mode)").view()),
-                tee_matmul_bf16(h_norm.view(), layer.wk.as_ref().expect("offload=false requires layer.wk present (skip-layers mode)").view()),
-                tee_matmul_bf16(h_norm.view(), layer.wv.as_ref().expect("offload=false requires layer.wv present (skip-layers mode)").view()),
+                tee_matmul_bf16(
+                    h_norm.view(),
+                    layer
+                        .wq
+                        .as_ref()
+                        .expect("offload=false requires layer.wq present (skip-layers mode)")
+                        .view(),
+                ),
+                tee_matmul_bf16(
+                    h_norm.view(),
+                    layer
+                        .wk
+                        .as_ref()
+                        .expect("offload=false requires layer.wk present (skip-layers mode)")
+                        .view(),
+                ),
+                tee_matmul_bf16(
+                    h_norm.view(),
+                    layer
+                        .wv
+                        .as_ref()
+                        .expect("offload=false requires layer.wv present (skip-layers mode)")
+                        .view(),
+                ),
             )
         })
     };
@@ -1277,13 +1443,26 @@ fn decoder_block(
     let attn_out = if offload {
         exec.offload_linear(WeightHandle::new(layer_idx, WeightKind::O), ctx.view())?
     } else {
-        profile::time("tee:o_direct", || tee_matmul_bf16(ctx.view(), layer.wo.as_ref().expect("offload=false requires layer.wo present (skip-layers mode)").view()))
+        profile::time("tee:o_direct", || {
+            tee_matmul_bf16(
+                ctx.view(),
+                layer
+                    .wo
+                    .as_ref()
+                    .expect("offload=false requires layer.wo present (skip-layers mode)")
+                    .view(),
+            )
+        })
     };
     let h1 = profile::time("tee:residual", || &hidden + &attn_out);
 
     // Pre-FFN RMSNorm.
     let h1_norm = profile::time("tee:rmsnorm", || {
-        rms_norm(h1.view(), layer.norm_ffn.as_slice().unwrap(), cfg.rms_norm_eps)
+        rms_norm(
+            h1.view(),
+            layer.norm_ffn.as_slice().unwrap(),
+            cfg.rms_norm_eps,
+        )
     });
 
     // SwiGLU FFN: gate + up share the same input `h1_norm`, so one
@@ -1301,8 +1480,22 @@ fn decoder_block(
     } else {
         profile::time("tee:swiglu_proj_direct", || {
             (
-                tee_matmul_bf16(h1_norm.view(), layer.w_gate.as_ref().expect("offload=false requires layer.w_gate present (skip-layers mode)").view()),
-                tee_matmul_bf16(h1_norm.view(), layer.w_up.as_ref().expect("offload=false requires layer.w_up present (skip-layers mode)").view()),
+                tee_matmul_bf16(
+                    h1_norm.view(),
+                    layer
+                        .w_gate
+                        .as_ref()
+                        .expect("offload=false requires layer.w_gate present (skip-layers mode)")
+                        .view(),
+                ),
+                tee_matmul_bf16(
+                    h1_norm.view(),
+                    layer
+                        .w_up
+                        .as_ref()
+                        .expect("offload=false requires layer.w_up present (skip-layers mode)")
+                        .view(),
+                ),
             )
         })
     };
@@ -1316,7 +1509,14 @@ fn decoder_block(
         )?
     } else {
         profile::time("tee:swiglu_down_direct", || {
-            tee_matmul_bf16(activated.view(), layer.w_down.as_ref().expect("offload=false requires layer.w_down present (skip-layers mode)").view())
+            tee_matmul_bf16(
+                activated.view(),
+                layer
+                    .w_down
+                    .as_ref()
+                    .expect("offload=false requires layer.w_down present (skip-layers mode)")
+                    .view(),
+            )
         })
     };
     Ok(profile::time("tee:residual", || &h1 + &ffn_out))

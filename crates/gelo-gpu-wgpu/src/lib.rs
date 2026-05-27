@@ -144,7 +144,6 @@ impl Clone for WgpuVulkanEngine {
 }
 
 impl WgpuVulkanEngine {
-
     /// `true` if this engine handle runs GEMM kernels in f16. Trusted-
     /// side code that needs bit-equal matmul output (e.g. U-Verify) must
     /// gate on this.
@@ -297,6 +296,147 @@ fn tensor3_to_array_f16(t: Tensor<CubeWgpu16, 3>) -> Result<Array3<f32>> {
         .map_err(|e| anyhow!("Array3 from tensor data: {e}"))
 }
 
+fn registered_weight_f32(
+    map: &HashMap<WeightHandle, Tensor<CubeWgpu32, 2>>,
+    handle: WeightHandle,
+    input_cols: usize,
+    op: &str,
+) -> Result<Tensor<CubeWgpu32, 2>> {
+    let weight = map
+        .get(&handle)
+        .ok_or_else(|| anyhow!("weight {handle:?} not registered"))?
+        .clone();
+    if input_cols != weight.dims()[0] {
+        return Err(anyhow!(
+            "{op} shape mismatch on {handle:?}: input cols {input_cols} != weight rows {}",
+            weight.dims()[0]
+        ));
+    }
+    Ok(weight)
+}
+
+fn registered_weight_f16(
+    map: &HashMap<WeightHandle, Tensor<CubeWgpu16, 2>>,
+    handle: WeightHandle,
+    input_cols: usize,
+    op: &str,
+) -> Result<Tensor<CubeWgpu16, 2>> {
+    let weight = map
+        .get(&handle)
+        .ok_or_else(|| anyhow!("weight {handle:?} not registered"))?
+        .clone();
+    if input_cols != weight.dims()[0] {
+        return Err(anyhow!(
+            "{op} shape mismatch on {handle:?}: input cols {input_cols} != weight rows {}",
+            weight.dims()[0]
+        ));
+    }
+    Ok(weight)
+}
+
+fn registered_weights_f32(
+    map: &HashMap<WeightHandle, Tensor<CubeWgpu32, 2>>,
+    handles: &[WeightHandle],
+    input_cols: usize,
+    op: &str,
+) -> Result<Vec<Tensor<CubeWgpu32, 2>>> {
+    handles
+        .iter()
+        .map(|h| registered_weight_f32(map, *h, input_cols, op))
+        .collect()
+}
+
+fn registered_weights_f16(
+    map: &HashMap<WeightHandle, Tensor<CubeWgpu16, 2>>,
+    handles: &[WeightHandle],
+    input_cols: usize,
+    op: &str,
+) -> Result<Vec<Tensor<CubeWgpu16, 2>>> {
+    handles
+        .iter()
+        .map(|h| registered_weight_f16(map, *h, input_cols, op))
+        .collect()
+}
+
+fn tensor_data_to_array_f32(data: TensorData, rows: usize, cols: usize) -> Result<Array2<f32>> {
+    let v: Vec<f32> = data
+        .into_vec()
+        .map_err(|e| anyhow!("burn f32 TensorData -> Vec<f32>: {e:?}"))?;
+    Array2::from_shape_vec((rows, cols), v).map_err(|e| anyhow!("Array2 from tensor data: {e}"))
+}
+
+fn tensor_data_to_array_f16(data: TensorData, rows: usize, cols: usize) -> Result<Array2<f32>> {
+    let v_f16: Vec<f16> = data
+        .into_vec()
+        .map_err(|e| anyhow!("burn f16 TensorData -> Vec<f16>: {e:?}"))?;
+    let v: Vec<f32> = v_f16.into_iter().map(|x| x.to_f32()).collect();
+    Array2::from_shape_vec((rows, cols), v).map_err(|e| anyhow!("Array2 from tensor data: {e}"))
+}
+
+fn execute_registered_many_f32(
+    lhs: Tensor<CubeWgpu32, 2>,
+    weights: Vec<Tensor<CubeWgpu32, 2>>,
+) -> Result<Vec<Array2<f32>>> {
+    let mut out_dims: Vec<(usize, usize)> = Vec::with_capacity(weights.len());
+    let mut tx = Transaction::<CubeWgpu32>::default();
+    for w in weights {
+        let out = lhs.clone().matmul(w);
+        let d = out.dims();
+        out_dims.push((d[0], d[1]));
+        tx = tx.register(out);
+    }
+    tx.execute()
+        .into_iter()
+        .zip(out_dims)
+        .map(|(data, (rows, cols))| tensor_data_to_array_f32(data, rows, cols))
+        .collect()
+}
+
+fn execute_registered_many_f16(
+    lhs: Tensor<CubeWgpu16, 2>,
+    weights: Vec<Tensor<CubeWgpu16, 2>>,
+) -> Result<Vec<Array2<f32>>> {
+    let mut out_dims: Vec<(usize, usize)> = Vec::with_capacity(weights.len());
+    let mut tx = Transaction::<CubeWgpu16>::default();
+    for w in weights {
+        let out = lhs.clone().matmul(w);
+        let d = out.dims();
+        out_dims.push((d[0], d[1]));
+        tx = tx.register(out);
+    }
+    tx.execute()
+        .into_iter()
+        .zip(out_dims)
+        .map(|(data, (rows, cols))| tensor_data_to_array_f16(data, rows, cols))
+        .collect()
+}
+
+fn submit_registered_many_f32(
+    lhs: Tensor<CubeWgpu32, 2>,
+    weights: Vec<Tensor<CubeWgpu32, 2>>,
+) -> Vec<MatmulToken> {
+    weights
+        .into_iter()
+        .map(|w| {
+            let pending = lhs.clone().matmul(w);
+            MatmulToken::from_fn(move || tensor2_to_array_f32(pending))
+        })
+        .collect()
+}
+
+fn submit_registered_many_f16(
+    lhs: Tensor<CubeWgpu16, 2>,
+    weights: Vec<Tensor<CubeWgpu16, 2>>,
+) -> Vec<MatmulToken> {
+    weights
+        .into_iter()
+        .map(|w| {
+            let pending = lhs.clone().matmul(w);
+            MatmulToken::from_fn(move || tensor2_to_array_f16(pending))
+        })
+        .collect()
+}
+
 // ─── GpuOffloadEngine impl ─────────────────────────────────────────────
 
 impl GpuOffloadEngine for WgpuVulkanEngine {
@@ -334,40 +474,18 @@ impl GpuOffloadEngine for WgpuVulkanEngine {
         Ok(())
     }
 
-    fn matmul(
-        &self,
-        handle: WeightHandle,
-        input: ArrayView2<'_, f32>,
-    ) -> Result<Array2<f32>> {
+    fn matmul(&self, handle: WeightHandle, input: ArrayView2<'_, f32>) -> Result<Array2<f32>> {
         let k = input.ncols();
         let guard = self.weights.lock().unwrap();
         match &*guard {
             WeightStore::F32(map) => {
-                let weight = map
-                    .get(&handle)
-                    .ok_or_else(|| anyhow!("weight {handle:?} not registered"))?
-                    .clone();
-                if k != weight.dims()[0] {
-                    return Err(anyhow!(
-                        "matmul shape mismatch: input cols {k} != weight rows {}",
-                        weight.dims()[0]
-                    ));
-                }
+                let weight = registered_weight_f32(map, handle, k, "matmul")?;
                 drop(guard);
                 let lhs = array2_to_tensor_f32(input, &self.device);
                 tensor2_to_array_f32(lhs.matmul(weight))
             }
             WeightStore::F16(map) => {
-                let weight = map
-                    .get(&handle)
-                    .ok_or_else(|| anyhow!("weight {handle:?} not registered"))?
-                    .clone();
-                if k != weight.dims()[0] {
-                    return Err(anyhow!(
-                        "matmul shape mismatch: input cols {k} != weight rows {}",
-                        weight.dims()[0]
-                    ));
-                }
+                let weight = registered_weight_f16(map, handle, k, "matmul")?;
                 drop(guard);
                 let lhs = array2_to_tensor_f16(input, &self.device);
                 tensor2_to_array_f16(lhs.matmul(weight))
@@ -387,85 +505,16 @@ impl GpuOffloadEngine for WgpuVulkanEngine {
         let guard = self.weights.lock().unwrap();
         match &*guard {
             WeightStore::F32(map) => {
-                let weights: Vec<Tensor<CubeWgpu32, 2>> = handles
-                    .iter()
-                    .map(|h| {
-                        let w = map
-                            .get(h)
-                            .ok_or_else(|| anyhow!("weight {h:?} not registered"))?
-                            .clone();
-                        if w.dims()[0] != k {
-                            return Err(anyhow!(
-                                "matmul_many shape mismatch on {h:?}: input cols {k} != weight rows {}",
-                                w.dims()[0]
-                            ));
-                        }
-                        Ok(w)
-                    })
-                    .collect::<Result<_>>()?;
+                let weights = registered_weights_f32(map, handles, k, "matmul_many")?;
                 drop(guard);
                 let lhs = array2_to_tensor_f32(input, &self.device);
-                let mut out_dims: Vec<(usize, usize)> = Vec::with_capacity(handles.len());
-                let mut tx = Transaction::<CubeWgpu32>::default();
-                for w in weights {
-                    let out = lhs.clone().matmul(w);
-                    let d = out.dims();
-                    out_dims.push((d[0], d[1]));
-                    tx = tx.register(out);
-                }
-                let datas: Vec<TensorData> = tx.execute();
-                datas
-                    .into_iter()
-                    .zip(out_dims)
-                    .map(|(data, (rows, cols))| {
-                        let v: Vec<f32> = data
-                            .into_vec()
-                            .map_err(|e| anyhow!("burn f32 TensorData → Vec<f32>: {e:?}"))?;
-                        Array2::from_shape_vec((rows, cols), v)
-                            .map_err(|e| anyhow!("Array2 from tensor data: {e}"))
-                    })
-                    .collect()
+                execute_registered_many_f32(lhs, weights)
             }
             WeightStore::F16(map) => {
-                let weights: Vec<Tensor<CubeWgpu16, 2>> = handles
-                    .iter()
-                    .map(|h| {
-                        let w = map
-                            .get(h)
-                            .ok_or_else(|| anyhow!("weight {h:?} not registered"))?
-                            .clone();
-                        if w.dims()[0] != k {
-                            return Err(anyhow!(
-                                "matmul_many shape mismatch on {h:?}: input cols {k} != weight rows {}",
-                                w.dims()[0]
-                            ));
-                        }
-                        Ok(w)
-                    })
-                    .collect::<Result<_>>()?;
+                let weights = registered_weights_f16(map, handles, k, "matmul_many")?;
                 drop(guard);
                 let lhs = array2_to_tensor_f16(input, &self.device);
-                let mut out_dims: Vec<(usize, usize)> = Vec::with_capacity(handles.len());
-                let mut tx = Transaction::<CubeWgpu16>::default();
-                for w in weights {
-                    let out = lhs.clone().matmul(w);
-                    let d = out.dims();
-                    out_dims.push((d[0], d[1]));
-                    tx = tx.register(out);
-                }
-                let datas: Vec<TensorData> = tx.execute();
-                datas
-                    .into_iter()
-                    .zip(out_dims)
-                    .map(|(data, (rows, cols))| {
-                        let v_f16: Vec<f16> = data
-                            .into_vec()
-                            .map_err(|e| anyhow!("burn f16 TensorData → Vec<f16>: {e:?}"))?;
-                        let v: Vec<f32> = v_f16.into_iter().map(|x| x.to_f32()).collect();
-                        Array2::from_shape_vec((rows, cols), v)
-                            .map_err(|e| anyhow!("Array2 from tensor data: {e}"))
-                    })
-                    .collect()
+                execute_registered_many_f16(lhs, weights)
             }
         }
     }
@@ -490,32 +539,14 @@ impl GpuOffloadEngine for WgpuVulkanEngine {
         let guard = self.weights.lock().unwrap();
         match &*guard {
             WeightStore::F32(map) => {
-                let weight = map
-                    .get(&handle)
-                    .ok_or_else(|| anyhow!("weight {handle:?} not registered"))?
-                    .clone();
-                if k != weight.dims()[0] {
-                    return Err(anyhow!(
-                        "matmul_async shape mismatch: input cols {k} != weight rows {}",
-                        weight.dims()[0]
-                    ));
-                }
+                let weight = registered_weight_f32(map, handle, k, "matmul_async")?;
                 drop(guard);
                 let lhs = array2_to_tensor_f32(input, &self.device);
                 let pending = lhs.matmul(weight);
                 Ok(MatmulToken::from_fn(move || tensor2_to_array_f32(pending)))
             }
             WeightStore::F16(map) => {
-                let weight = map
-                    .get(&handle)
-                    .ok_or_else(|| anyhow!("weight {handle:?} not registered"))?
-                    .clone();
-                if k != weight.dims()[0] {
-                    return Err(anyhow!(
-                        "matmul_async shape mismatch: input cols {k} != weight rows {}",
-                        weight.dims()[0]
-                    ));
-                }
+                let weight = registered_weight_f16(map, handle, k, "matmul_async")?;
                 drop(guard);
                 let lhs = array2_to_tensor_f16(input, &self.device);
                 let pending = lhs.matmul(weight);
@@ -543,60 +574,16 @@ impl GpuOffloadEngine for WgpuVulkanEngine {
         let guard = self.weights.lock().unwrap();
         match &*guard {
             WeightStore::F32(map) => {
-                let weights: Vec<Tensor<CubeWgpu32, 2>> = handles
-                    .iter()
-                    .map(|h| {
-                        let w = map
-                            .get(h)
-                            .ok_or_else(|| anyhow!("weight {h:?} not registered"))?
-                            .clone();
-                        if w.dims()[0] != k {
-                            return Err(anyhow!(
-                                "matmul_many_async shape mismatch on {h:?}: input cols {k} != weight rows {}",
-                                w.dims()[0]
-                            ));
-                        }
-                        Ok(w)
-                    })
-                    .collect::<Result<_>>()?;
+                let weights = registered_weights_f32(map, handles, k, "matmul_many_async")?;
                 drop(guard);
                 let lhs = array2_to_tensor_f32(input, &self.device);
-                let tokens = weights
-                    .into_iter()
-                    .map(|w| {
-                        let pending = lhs.clone().matmul(w);
-                        MatmulToken::from_fn(move || tensor2_to_array_f32(pending))
-                    })
-                    .collect();
-                Ok(tokens)
+                Ok(submit_registered_many_f32(lhs, weights))
             }
             WeightStore::F16(map) => {
-                let weights: Vec<Tensor<CubeWgpu16, 2>> = handles
-                    .iter()
-                    .map(|h| {
-                        let w = map
-                            .get(h)
-                            .ok_or_else(|| anyhow!("weight {h:?} not registered"))?
-                            .clone();
-                        if w.dims()[0] != k {
-                            return Err(anyhow!(
-                                "matmul_many_async shape mismatch on {h:?}: input cols {k} != weight rows {}",
-                                w.dims()[0]
-                            ));
-                        }
-                        Ok(w)
-                    })
-                    .collect::<Result<_>>()?;
+                let weights = registered_weights_f16(map, handles, k, "matmul_many_async")?;
                 drop(guard);
                 let lhs = array2_to_tensor_f16(input, &self.device);
-                let tokens = weights
-                    .into_iter()
-                    .map(|w| {
-                        let pending = lhs.clone().matmul(w);
-                        MatmulToken::from_fn(move || tensor2_to_array_f16(pending))
-                    })
-                    .collect();
-                Ok(tokens)
+                Ok(submit_registered_many_f16(lhs, weights))
             }
         }
     }
@@ -616,31 +603,13 @@ impl GpuOffloadEngine for WgpuVulkanEngine {
         let guard = self.weights.lock().unwrap();
         match &*guard {
             WeightStore::F32(map) => {
-                let weight = map
-                    .get(&handle)
-                    .ok_or_else(|| anyhow!("weight {handle:?} not registered"))?
-                    .clone();
-                if k != weight.dims()[0] {
-                    return Err(anyhow!(
-                        "matmul_bf16_input shape mismatch: input cols {k} != weight rows {}",
-                        weight.dims()[0]
-                    ));
-                }
+                let weight = registered_weight_f32(map, handle, k, "matmul_bf16_input")?;
                 drop(guard);
                 let lhs = array2_bf16_to_tensor_f32(input, &self.device);
                 tensor2_to_array_f32(lhs.matmul(weight))
             }
             WeightStore::F16(map) => {
-                let weight = map
-                    .get(&handle)
-                    .ok_or_else(|| anyhow!("weight {handle:?} not registered"))?
-                    .clone();
-                if k != weight.dims()[0] {
-                    return Err(anyhow!(
-                        "matmul_bf16_input shape mismatch: input cols {k} != weight rows {}",
-                        weight.dims()[0]
-                    ));
-                }
+                let weight = registered_weight_f16(map, handle, k, "matmul_bf16_input")?;
                 drop(guard);
                 let lhs = array2_bf16_to_tensor_f16(input, &self.device);
                 tensor2_to_array_f16(lhs.matmul(weight))
@@ -664,85 +633,16 @@ impl GpuOffloadEngine for WgpuVulkanEngine {
         let guard = self.weights.lock().unwrap();
         match &*guard {
             WeightStore::F32(map) => {
-                let weights: Vec<Tensor<CubeWgpu32, 2>> = handles
-                    .iter()
-                    .map(|h| {
-                        let w = map
-                            .get(h)
-                            .ok_or_else(|| anyhow!("weight {h:?} not registered"))?
-                            .clone();
-                        if w.dims()[0] != k {
-                            return Err(anyhow!(
-                                "matmul_many_bf16_input shape mismatch on {h:?}: input cols {k} != weight rows {}",
-                                w.dims()[0]
-                            ));
-                        }
-                        Ok(w)
-                    })
-                    .collect::<Result<_>>()?;
+                let weights = registered_weights_f32(map, handles, k, "matmul_many_bf16_input")?;
                 drop(guard);
                 let lhs = array2_bf16_to_tensor_f32(input, &self.device);
-                let mut out_dims: Vec<(usize, usize)> = Vec::with_capacity(handles.len());
-                let mut tx = Transaction::<CubeWgpu32>::default();
-                for w in weights {
-                    let out = lhs.clone().matmul(w);
-                    let d = out.dims();
-                    out_dims.push((d[0], d[1]));
-                    tx = tx.register(out);
-                }
-                let datas: Vec<TensorData> = tx.execute();
-                datas
-                    .into_iter()
-                    .zip(out_dims)
-                    .map(|(data, (rows, cols))| {
-                        let v: Vec<f32> = data
-                            .into_vec()
-                            .map_err(|e| anyhow!("burn f32 TensorData → Vec<f32>: {e:?}"))?;
-                        Array2::from_shape_vec((rows, cols), v)
-                            .map_err(|e| anyhow!("Array2 from tensor data: {e}"))
-                    })
-                    .collect()
+                execute_registered_many_f32(lhs, weights)
             }
             WeightStore::F16(map) => {
-                let weights: Vec<Tensor<CubeWgpu16, 2>> = handles
-                    .iter()
-                    .map(|h| {
-                        let w = map
-                            .get(h)
-                            .ok_or_else(|| anyhow!("weight {h:?} not registered"))?
-                            .clone();
-                        if w.dims()[0] != k {
-                            return Err(anyhow!(
-                                "matmul_many_bf16_input shape mismatch on {h:?}: input cols {k} != weight rows {}",
-                                w.dims()[0]
-                            ));
-                        }
-                        Ok(w)
-                    })
-                    .collect::<Result<_>>()?;
+                let weights = registered_weights_f16(map, handles, k, "matmul_many_bf16_input")?;
                 drop(guard);
                 let lhs = array2_bf16_to_tensor_f16(input, &self.device);
-                let mut out_dims: Vec<(usize, usize)> = Vec::with_capacity(handles.len());
-                let mut tx = Transaction::<CubeWgpu16>::default();
-                for w in weights {
-                    let out = lhs.clone().matmul(w);
-                    let d = out.dims();
-                    out_dims.push((d[0], d[1]));
-                    tx = tx.register(out);
-                }
-                let datas: Vec<TensorData> = tx.execute();
-                datas
-                    .into_iter()
-                    .zip(out_dims)
-                    .map(|(data, (rows, cols))| {
-                        let v_f16: Vec<f16> = data
-                            .into_vec()
-                            .map_err(|e| anyhow!("burn f16 TensorData → Vec<f16>: {e:?}"))?;
-                        let v: Vec<f32> = v_f16.into_iter().map(|x| x.to_f32()).collect();
-                        Array2::from_shape_vec((rows, cols), v)
-                            .map_err(|e| anyhow!("Array2 from tensor data: {e}"))
-                    })
-                    .collect()
+                execute_registered_many_f16(lhs, weights)
             }
         }
     }
