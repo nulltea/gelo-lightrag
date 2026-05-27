@@ -85,6 +85,14 @@ pub struct ExtractionConfig {
     /// enough for chunks at the default `chunk_size=1600` (8 tokens
     /// per entity/relation tuple × ~30 records).
     pub max_tokens_per_chunk: usize,
+    /// **M1.11 D2** — Upper bound on chunks processed in one batched
+    /// decoder call. The orchestrator drives `B = min(remaining, this)`
+    /// sub-batches; `B = 1` routes through the single-prompt fast path,
+    /// `B >= 2` calls `generate_extraction_batched`. Default 8 matches
+    /// the production-shape sweet spot measured in the perf roadmap
+    /// (`docs/plans/gelo-llm-perf-roadmap.md` §3.2). Set to 1 to
+    /// reproduce pre-rewire per-chunk behaviour.
+    pub extraction_batch_size: usize,
     pub merge: MergePolicy,
     pub tuple_config: TupleConfig,
 }
@@ -93,6 +101,7 @@ impl Default for ExtractionConfig {
     fn default() -> Self {
         Self {
             max_tokens_per_chunk: 1024,
+            extraction_batch_size: 8,
             merge: MergePolicy::FirstWinsAppendDescription,
             tuple_config: TupleConfig::default(),
         }
@@ -202,112 +211,206 @@ where
         live_chunks.push(c);
     }
 
-    // Run extraction per chunk, accumulating drafts.
+    // **M1.11 D2** — Run extraction across chunks in sub-batches of
+    // up to `cfg.extraction_batch_size`. `B = 1` routes through
+    // `generate_extraction` (single-prompt fast path); `B >= 2`
+    // routes through `generate_extraction_batched` which (in the
+    // production `DecoderRuntime` override) shares one batched
+    // forward across B prompts. `B = 1` reproduces the pre-rewire
+    // per-chunk behaviour exactly and is the rollback knob.
+    //
+    // Per-batch profile reset + dump attributes the forward-pass
+    // bucket data to the batch, since B chunks now share one
+    // forward. Per-chunk parse + merge stays in input order so the
+    // `FirstWinsAppendDescription` invariant is preserved.
     let mut merge_acc = Duration::ZERO;
     let total_chunks = live_chunks.len();
-    for (idx, chunk) in live_chunks.iter().enumerate() {
-        // Per-chunk GELO+forward profile breakdown — reset
-        // gelo_protocol::profile thread-local before the chunk so
-        // the dump below reflects exactly this chunk's mask /
-        // attention / matmul stages. Decode runs on the same thread
-        // as the orchestrator loop (`extract_kg_from_chunks` is
-        // called directly, no `spawn_blocking`), so the thread-local
-        // captures the decoder's `profile::time` calls.
+    let max_b = cfg.extraction_batch_size.max(1);
+    let mut next_chunk: usize = 0;
+    let mut batch_idx: usize = 0;
+    while next_chunk < total_chunks {
+        let remaining = total_chunks - next_chunk;
+        let b = remaining.min(max_b);
+        let batch_start = next_chunk;
+        let batch_end = next_chunk + b;
+        next_chunk = batch_end;
+
+        // Reset forward-pass profile thread-local before this batch.
+        // Decode runs on the same thread as the orchestrator loop
+        // (`extract_kg_from_chunks` is called directly, no
+        // `spawn_blocking`), so the thread-local captures the
+        // decoder's `profile::time` calls for the whole batch.
         gelo_protocol::profile::reset();
-        tracing::info!(
-            target: "lightrag_private::extract",
-            chunk_idx = idx + 1,
-            chunk_total = total_chunks,
-            chunk_id = %chunk.id,
-            chunk_chars = chunk.text.len(),
-            "extract: chunk start"
-        );
-        let mut timing = ChunkTiming::default();
-        let t = Instant::now();
-        let prompt = prompt_builder.build(&chunk.text);
-        timing.prompt_build = t.elapsed();
 
-        let t = Instant::now();
-        let out = decoder.generate_extraction(&prompt, cfg.max_tokens_per_chunk)?;
-        timing.decoder_total = t.elapsed();
-        timing.decoder_sub = out.timing;
-        timing.stopped_on_eos = out.stopped_on_eos;
-        if !out.stopped_on_eos {
-            report.generations_truncated += 1;
-        }
-
-        let t = Instant::now();
-        let (draft_entities, draft_relations, trailer) =
-            parse_tuple_stream(&out.text, &cfg.tuple_config);
-        timing.parse = t.elapsed();
-        timing.entities_extracted = draft_entities.len();
-        timing.relations_extracted = draft_relations.len();
-
-        // Emit the decoded text at DEBUG when nothing parsed —
-        // makes silent-failure cases ("model output garbled" vs
-        // "parser bug" vs "model returned wrong format") debuggable
-        // without a separate dump pass. At INFO level we still see
-        // the chunk_done summary with the counts.
-        if draft_entities.is_empty() && draft_relations.is_empty() {
+        // Build prompts + time each chunk's prompt_build individually.
+        let mut prompt_build_times: Vec<Duration> = Vec::with_capacity(b);
+        let mut prompts: Vec<String> = Vec::with_capacity(b);
+        for idx in batch_start..batch_end {
+            let chunk = &live_chunks[idx];
             tracing::info!(
                 target: "lightrag_private::extract",
                 chunk_idx = idx + 1,
+                chunk_total = total_chunks,
                 chunk_id = %chunk.id,
-                output_chars = out.text.chars().count(),
-                "extract: 0 entities + 0 relations — model output follows"
+                chunk_chars = chunk.text.len(),
+                "extract: chunk start"
             );
+            let t = Instant::now();
+            let p = prompt_builder.build(&chunk.text);
+            prompt_build_times.push(t.elapsed());
+            prompts.push(p);
+        }
+
+        // Drive the decoder. B=1 fast path bypasses batched dispatch;
+        // B>=2 emits batch start/done tracing events that carry the
+        // forward-pass-shape fields (mask_s_*, batch_wall_ms).
+        let outs: Vec<DecoderOutput>;
+        let per_chunk_decoder_wall: Duration;
+        if b == 1 {
+            let t = Instant::now();
+            let out =
+                decoder.generate_extraction(&prompts[0], cfg.max_tokens_per_chunk)?;
+            per_chunk_decoder_wall = t.elapsed();
+            outs = vec![out];
+        } else {
+            let max_prompt_chars = prompts.iter().map(|p| p.len()).max().unwrap_or(0);
             tracing::info!(
                 target: "lightrag_private::extract",
-                chunk_idx = idx + 1,
-                chunk_id = %chunk.id,
-                output_preview = %out.text.chars().take(800).collect::<String>(),
-                "extract: decoded output (first 800 chars)"
+                batch_idx,
+                batch_size = b,
+                batch_first_chunk = batch_start + 1,
+                batch_last_chunk = batch_end,
+                chunk_total = total_chunks,
+                max_prompt_chars,
+                "extract: batch start"
+            );
+            let prompt_refs: Vec<&str> = prompts.iter().map(|s| s.as_str()).collect();
+            let t = Instant::now();
+            let v = decoder
+                .generate_extraction_batched(&prompt_refs, cfg.max_tokens_per_chunk)?;
+            let batch_wall = t.elapsed();
+            // Per-chunk timing is the substrate divide-by-B share so
+            // the bench printout's `sum(decoder_sub.generate)` invariant
+            // (one batch contributes one batch_wall) holds.
+            per_chunk_decoder_wall = batch_wall / b as u32;
+
+            // Mask shape derived from the longest prompt in the batch:
+            // `s = n_max + k_shield` with k_shield = 8 (paper-parity
+            // default). s_pad is the pow2 side HD₃ would use; Auto
+            // picks HD₃ when `s_pad * 3 <= s * 4` (pad ratio ≤ 4/3),
+            // DCT-IV otherwise. See `mask.rs::resolve_mask_kind_for_shape`.
+            let max_prompt_tokens =
+                v.iter().map(|o| o.timing.prompt_tokens).max().unwrap_or(0);
+            let s = max_prompt_tokens + 8;
+            let s_pad = s.next_power_of_two().max(2);
+            tracing::info!(
+                target: "lightrag_private::extract",
+                batch_idx,
+                batch_size = b,
+                batch_wall_ms = batch_wall.as_millis() as u64,
+                max_prompt_tokens,
+                mask_s_prefill = s,
+                mask_s_pad_prefill = s_pad,
+                mask_pad_ratio_x1000 = (s_pad * 1000 / s.max(1)) as u64,
+                "extract: batch done"
+            );
+            outs = v;
+        }
+
+        if outs.len() != b {
+            anyhow::bail!(
+                "decoder returned {} outputs for batch of {} prompts",
+                outs.len(),
+                b
             );
         }
 
-        report.malformed_records_total += trailer.malformed_records;
-        report.per_chunk_trailers.push(trailer);
+        // Parse + merge per chunk in input order. The merge step
+        // mutates BTreeMap accumulators and `FirstWinsAppendDescription`
+        // is order-sensitive, so this must stay sequential in
+        // chunk-input order.
+        for (offset, out) in outs.into_iter().enumerate() {
+            let idx = batch_start + offset;
+            let chunk = &live_chunks[idx];
+            let mut timing = ChunkTiming::default();
+            timing.prompt_build = prompt_build_times[offset];
+            timing.decoder_total = per_chunk_decoder_wall;
+            timing.decoder_sub = out.timing;
+            timing.stopped_on_eos = out.stopped_on_eos;
+            if !out.stopped_on_eos {
+                report.generations_truncated += 1;
+            }
 
-        let t = Instant::now();
-        merge_entities(&mut entities, draft_entities, &chunk.id, cfg.merge);
-        merge_relations(&mut relations, draft_relations, &chunk.id, cfg.merge);
-        merge_acc += t.elapsed();
+            let t = Instant::now();
+            let (draft_entities, draft_relations, trailer) =
+                parse_tuple_stream(&out.text, &cfg.tuple_config);
+            timing.parse = t.elapsed();
+            timing.entities_extracted = draft_entities.len();
+            timing.relations_extracted = draft_relations.len();
 
-        // Mask shape diagnostic — `s = n + k_shield` with k_shield = 8
-        // (paper-parity default in `InProcessTrustedExecutor`).
-        // s_pad is the pow2 mask side HD₃ would use. Auto picks HD₃
-        // when `s_pad * 3 <= s * 4` (pad ratio ≤ 4/3), DCT-IV
-        // otherwise. See `mask.rs::resolve_mask_kind_for_shape`.
-        let s = timing.decoder_sub.prompt_tokens + 8;
-        let s_pad = s.next_power_of_two().max(2);
-        tracing::info!(
-            target: "lightrag_private::extract",
-            chunk_idx = idx + 1,
-            chunk_total = total_chunks,
-            chunk_id = %chunk.id,
-            decoder_total_ms = timing.decoder_total.as_millis() as u64,
-            generate_ms = timing.decoder_sub.generate.as_millis() as u64,
-            prompt_tokens = timing.decoder_sub.prompt_tokens,
-            output_tokens = timing.decoder_sub.output_tokens,
-            mask_s_prefill = s,
-            mask_s_pad_prefill = s_pad,
-            mask_pad_ratio_x1000 = (s_pad * 1000 / s.max(1)) as u64,
-            entities = timing.entities_extracted,
-            relations = timing.relations_extracted,
-            stopped_on_eos = timing.stopped_on_eos,
-            "extract: chunk done"
-        );
-        // Dump the per-chunk profile breakdown to stderr — GELO
-        // mask cost, TEE-side ops (RMSNorm, RoPE, attention,
-        // qkv_direct, embed_lookup), GPU offload duration. The
-        // GPU util observed at the OS level (nvtop) is the
-        // (GPU bucket) / (total wall) ratio; this dump pinpoints
-        // which non-GPU buckets are eating wall time.
-        gelo_protocol::profile::snapshot()
-            .dump(&format!("chunk-{:06} gelo+forward profile", idx));
+            // Surface the decoded text at INFO when nothing parsed —
+            // distinguishes model-output-garbled / parser-bug /
+            // wrong-format failures without a separate dump pass.
+            if draft_entities.is_empty() && draft_relations.is_empty() {
+                tracing::info!(
+                    target: "lightrag_private::extract",
+                    chunk_idx = idx + 1,
+                    chunk_id = %chunk.id,
+                    output_chars = out.text.chars().count(),
+                    "extract: 0 entities + 0 relations — model output follows"
+                );
+                tracing::info!(
+                    target: "lightrag_private::extract",
+                    chunk_idx = idx + 1,
+                    chunk_id = %chunk.id,
+                    output_preview = %out.text.chars().take(800).collect::<String>(),
+                    "extract: decoded output (first 800 chars)"
+                );
+            }
 
-        report.chunk_timings.push(timing);
-        report.chunks_processed += 1;
+            report.malformed_records_total += trailer.malformed_records;
+            report.per_chunk_trailers.push(trailer);
+
+            let t = Instant::now();
+            merge_entities(&mut entities, draft_entities, &chunk.id, cfg.merge);
+            merge_relations(&mut relations, draft_relations, &chunk.id, cfg.merge);
+            merge_acc += t.elapsed();
+
+            tracing::info!(
+                target: "lightrag_private::extract",
+                chunk_idx = idx + 1,
+                chunk_total = total_chunks,
+                chunk_id = %chunk.id,
+                prompt_tokens = timing.decoder_sub.prompt_tokens,
+                output_tokens = timing.decoder_sub.output_tokens,
+                entities = timing.entities_extracted,
+                relations = timing.relations_extracted,
+                stopped_on_eos = timing.stopped_on_eos,
+                "extract: chunk done"
+            );
+
+            report.chunk_timings.push(timing);
+            report.chunks_processed += 1;
+        }
+
+        // Dump the batch's forward-pass profile breakdown. For b=1
+        // we keep the legacy "chunk-NNNNNN" tag so long-run dumps
+        // still attribute per chunk; for b>=2 a batch tag covers
+        // the range.
+        if b == 1 {
+            gelo_protocol::profile::snapshot()
+                .dump(&format!("chunk-{:06} gelo+forward profile", batch_start));
+        } else {
+            gelo_protocol::profile::snapshot().dump(&format!(
+                "batch-{:03} [B={} chunks {}..{}] gelo+forward profile",
+                batch_idx,
+                b,
+                batch_start + 1,
+                batch_end
+            ));
+        }
+
+        batch_idx += 1;
     }
     report.merge = merge_acc;
 

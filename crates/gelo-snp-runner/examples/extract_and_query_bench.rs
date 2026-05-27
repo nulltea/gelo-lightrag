@@ -24,6 +24,10 @@
 //! - `BENCH_MAX_TOKENS_PER_CHUNK`  — per-chunk generation budget, default 512
 //! - `BENCH_NUM_QUERIES`           — number of hybrid queries, default 5
 //! - `BENCH_TOP_K_E` / `_R` / `_C` — top-k entities / relations / chunks
+//! - `BENCH_EXTRACTION_BATCH_SIZE` — M1.11 D2 sub-batch cap; `=1`
+//!                                   reproduces pre-rewire per-chunk
+//!                                   dispatch, `=8` is the production
+//!                                   default. See `m1-11-batched-decode.md` §5.
 //!
 //! ## Output
 //!
@@ -161,6 +165,14 @@ async fn main() -> Result<()> {
     let top_k_e = env_usize("BENCH_TOP_K_E", 5);
     let top_k_r = env_usize("BENCH_TOP_K_R", 5);
     let top_k_c = env_usize("BENCH_TOP_K_C", 2);
+    // **M1.11 D2 verification** — override `extraction_batch_size`
+    // from the env so a single binary can sweep pre/post-rewire
+    // behaviour. `=1` reproduces per-chunk dispatch (pre-rewire
+    // baseline); `=8` is the production default (post-rewire).
+    let extraction_batch_size = env_usize(
+        "BENCH_EXTRACTION_BATCH_SIZE",
+        ExtractionConfig::default().extraction_batch_size,
+    );
 
     // ── 1. Warm-load models ─────────────────────────────────────────
     // Each model gets its OWN `WgpuVulkanEngine` instance. The engine
@@ -231,11 +243,12 @@ async fn main() -> Result<()> {
 
     // ── 3. Extract ──────────────────────────────────────────────────
     eprintln!(
-        "[3/5] running extraction over {} chunks (max_tokens_per_chunk={max_tokens_per_chunk})…",
+        "[3/5] running extraction over {} chunks (max_tokens_per_chunk={max_tokens_per_chunk}, extraction_batch_size={extraction_batch_size})…",
         chunk_inputs.len()
     );
     let extract_cfg = ExtractionConfig {
         max_tokens_per_chunk,
+        extraction_batch_size,
         ..ExtractionConfig::default()
     };
     let t = Instant::now();
