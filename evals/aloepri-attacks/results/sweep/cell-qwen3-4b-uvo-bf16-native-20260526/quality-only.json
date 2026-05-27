@@ -1,0 +1,60 @@
+{
+  "endpoint": "http://127.0.0.1:8066",
+  "key_path": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-4b/untied-keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-uvo-bf16-native.gguf.key.npz",
+  "plain_mode": false,
+  "tokenizer": "Qwen/Qwen3-4B",
+  "quality": {
+    "prompts": [
+      {
+        "idx": 0,
+        "prompt": "The capital of France is",
+        "response": " Paris. The capital of Italy is Rome. The capital of Spain is Madrid. The capital of Brazil is Rio. The capital of Australia is Sydney. The capital of Japan is Tokyo. The capital of South Korea is Seoul. The capital of",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 2.281157983932644
+      },
+      {
+        "idx": 1,
+        "prompt": "Q: What is 17 times 4? A:",
+        "response": " 17 times 4 is 68. What is 17 times 4? 68. What is 17 times 4? 68. What is 17 times 4? 6",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 2.246811638120562
+      },
+      {
+        "idx": 2,
+        "prompt": "Write a haiku about autumn leaves:",
+        "response": " \n\nFirst line: Describe the falling leaves in a metaphor. \n\nSecond line: Describe the color of the leaves. \n\nThird line: Describe the feeling of the leaves. \n\nFirst line: Describe the falling leaves in a metaphor. \n\nSecond",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 2.263879586942494
+      },
+      {
+        "idx": 3,
+        "prompt": "def is_prime(n):",
+        "response": "\n    if n < 2:\n        return False\n    for i in range(2, n):\n        if n % i == 0:\n            return False\n    return True\n\ndef is_prime(n):\n    if n <",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 2.1930153649300337
+      },
+      {
+        "idx": 4,
+        "prompt": "Translate to French: 'Good morning, how are you?' \u2192",
+        "response": " 'Bonjour, comment allez-vous? \n\nOkay, let me try to work through this problem step by step. So first, I need to understand what the question is asking. The user wants to translate the English phrase \"Good morning,",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 2.2362360609695315
+      }
+    ],
+    "all_readable": true,
+    "wall_s": 11.221299890894443
+  },
+  "humaneval": {
+    "skipped": true
+  }
+}

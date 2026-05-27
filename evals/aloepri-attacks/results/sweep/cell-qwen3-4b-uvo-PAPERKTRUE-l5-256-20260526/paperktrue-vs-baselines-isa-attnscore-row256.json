@@ -1,0 +1,175 @@
+{
+  "format": "paperktrue_vs_baselines_isa_attnscore_row256_v1",
+  "device": "Radeon 8060S Graphics",
+  "max_prompts": 256,
+  "results": [
+    {
+      "name": "plain_kq",
+      "layer": 5,
+      "kind": "kq",
+      "captures": "/home/timo/repos/private-rag-path-2/evals/aloepri-attacks/results/sweep/cell-qwen3-4b-plain-attn-512-20260526/captures",
+      "shape": [
+        4503,
+        8192
+      ],
+      "rows": 4503,
+      "seeds": 3,
+      "top1_mean": 0.3463472326596578,
+      "top1_std": 0.008976036133307698,
+      "top10_mean": 0.47116238872210187,
+      "alphas": [
+        0.01,
+        1.0,
+        0.0001
+      ],
+      "seconds": 20.0
+    },
+    {
+      "name": "default_kq",
+      "layer": 5,
+      "kind": "kq",
+      "captures": "/home/timo/repos/private-rag-path-2/evals/aloepri-attacks/results/sweep/cell-qwen3-4b-uvo-attn-512-20260526/captures",
+      "shape": [
+        4503,
+        8192
+      ],
+      "rows": 4503,
+      "seeds": 3,
+      "top1_mean": 0.3389529784520467,
+      "top1_std": 0.008739010421372283,
+      "top10_mean": 0.45962735017140705,
+      "alphas": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "seconds": 19.84
+    },
+    {
+      "name": "noR_oldPAPERLIT_kq",
+      "layer": 5,
+      "kind": "kq",
+      "captures": "/home/timo/repos/private-rag-path-2/evals/aloepri-attacks/results/sweep/cell-qwen3-4b-uvo-PAPERLIT-attn-and-output-512-20260526/captures",
+      "shape": [
+        4503,
+        8192
+      ],
+      "rows": 4503,
+      "seeds": 3,
+      "top1_mean": 0.05442177007595698,
+      "top1_std": 0.003116135548850127,
+      "top10_mean": 0.1292517085870107,
+      "alphas": [
+        0.0001,
+        0.01,
+        1.0
+      ],
+      "seconds": 19.83
+    },
+    {
+      "name": "truePaperK_kq",
+      "layer": 5,
+      "kind": "kq",
+      "captures": "/home/timo/repos/private-rag-path-2/evals/aloepri-attacks/results/sweep/cell-qwen3-4b-uvo-PAPERKTRUE-l5-256-20260526/captures",
+      "shape": [
+        4503,
+        8192
+      ],
+      "rows": 4503,
+      "seeds": 3,
+      "top1_mean": 0.14433599511782327,
+      "top1_std": 0.004466039103268084,
+      "top10_mean": 0.278615802526474,
+      "alphas": [
+        0.0001,
+        0.0001,
+        1.0
+      ],
+      "seconds": 19.58
+    },
+    {
+      "name": "plain_kqv_out",
+      "layer": 5,
+      "kind": "kqv_out",
+      "captures": "/home/timo/repos/private-rag-path-2/evals/aloepri-attacks/results/sweep/cell-qwen3-4b-plain-attnoutput-512-20260526/captures",
+      "shape": [
+        4503,
+        4096
+      ],
+      "rows": 4503,
+      "seeds": 3,
+      "top1_mean": 0.45430347323417664,
+      "top1_std": 0.008556933949407305,
+      "top10_mean": 0.5758651494979858,
+      "alphas": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "seconds": 9.84
+    },
+    {
+      "name": "default_kqv_out",
+      "layer": 5,
+      "kind": "kqv_out",
+      "captures": "/home/timo/repos/private-rag-path-2/evals/aloepri-attacks/results/sweep/cell-qwen3-4b-uvo-attnoutput-512-20260526/captures",
+      "shape": [
+        4503,
+        4096
+      ],
+      "rows": 4503,
+      "seeds": 3,
+      "top1_mean": 0.4424726565678914,
+      "top1_std": 0.014426198390237555,
+      "top10_mean": 0.5516119599342346,
+      "alphas": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "seconds": 9.74
+    },
+    {
+      "name": "noR_oldPAPERLIT_kqv_out",
+      "layer": 5,
+      "kind": "kqv_out",
+      "captures": "/home/timo/repos/private-rag-path-2/evals/aloepri-attacks/results/sweep/cell-qwen3-4b-uvo-PAPERLIT-attn-and-output-512-20260526/captures",
+      "shape": [
+        4503,
+        4096
+      ],
+      "rows": 4503,
+      "seeds": 3,
+      "top1_mean": 0.09730848918358485,
+      "top1_std": 0.0027107829215098213,
+      "top10_mean": 0.14256137609481812,
+      "alphas": [
+        0.0001,
+        0.0001,
+        0.01
+      ],
+      "seconds": 9.78
+    },
+    {
+      "name": "truePaperK_kqv_out",
+      "layer": 5,
+      "kind": "kqv_out",
+      "captures": "/home/timo/repos/private-rag-path-2/evals/aloepri-attacks/results/sweep/cell-qwen3-4b-uvo-PAPERKTRUE-l5-256-20260526/captures",
+      "shape": [
+        4503,
+        4096
+      ],
+      "rows": 4503,
+      "seeds": 3,
+      "top1_mean": 0.12658977011839548,
+      "top1_std": 0.007441433239750459,
+      "top10_mean": 0.22094055513540903,
+      "alphas": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "seconds": 9.7
+    }
+  ]
+}

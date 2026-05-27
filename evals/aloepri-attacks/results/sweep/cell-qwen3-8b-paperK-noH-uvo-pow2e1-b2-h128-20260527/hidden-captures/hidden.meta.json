@@ -1,0 +1,5217 @@
+{
+  "schema_version": "1",
+  "model_id": "Qwen/Qwen3-1.7B (obfuscated, keymat-h128-pi-noise-alg2-fp32)",
+  "condition": "m2_7_hidden",
+  "config": {
+    "shield_k": 0,
+    "shield_energy_scale": 0.0,
+    "per_forward_mask": false,
+    "verify_probes": 0,
+    "prompt_token_ids": [
+      [
+        785,
+        3974,
+        13876,
+        38835,
+        34208,
+        916,
+        279,
+        15678,
+        5562,
+        553,
+        279,
+        14796,
+        17033,
+        13
+      ],
+      [
+        47832,
+        79776,
+        19505,
+        44378,
+        12850,
+        369,
+        16216,
+        6457,
+        7424,
+        13
+      ],
+      [
+        3838,
+        374,
+        279,
+        6722,
+        315,
+        9625,
+        323,
+        892,
+        14796,
+        8473,
+        1526,
+        432,
+        30
+      ],
+      [
+        79239,
+        7484,
+        1558,
+        537,
+        5358,
+        9442,
+        55436,
+        3108,
+        11744,
+        13
+      ],
+      [
+        34253,
+        4128,
+        4119,
+        646,
+        58023,
+        3277,
+        49334,
+        1331,
+        13586,
+        59901,
+        5975,
+        13
+      ],
+      [
+        5002,
+        14324,
+        1281,
+        11507,
+        11591,
+        707,
+        2380,
+        2795,
+        91153,
+        369,
+        4763,
+        13
+      ],
+      [
+        3323,
+        78312,
+        6358,
+        8458,
+        264,
+        3491,
+        369,
+        1099,
+        1508,
+        51589,
+        367,
+        30856,
+        13
+      ],
+      [
+        66862,
+        1619,
+        63978,
+        57485,
+        3162,
+        9569,
+        311,
+        264,
+        16878,
+        10459,
+        8781,
+        13
+      ],
+      [
+        785,
+        53942,
+        81,
+        290,
+        374,
+        13570,
+        26361,
+        438,
+        279,
+        74114,
+        315,
+        279,
+        2779,
+        13
+      ],
+      [
+        31772,
+        73667,
+        32722,
+        39020,
+        1119,
+        11483,
+        4802,
+        9768,
+        438,
+        33223,
+        13
+      ],
+      [
+        32,
+        29728,
+        3922,
+        46210,
+        553,
+        42368,
+        14324,
+        1526,
+        20169,
+        36952,
+        13
+      ],
+      [
+        44220,
+        372,
+        1197,
+        524,
+        986,
+        7952,
+        311,
+        40487,
+        28824,
+        68087,
+        31846,
+        13
+      ],
+      [
+        785,
+        6733,
+        572,
+        7877,
+        389,
+        7270,
+        773,
+        582,
+        14858,
+        1526,
+        279,
+        6118,
+        4518,
+        13
+      ],
+      [
+        82280,
+        26896,
+        525,
+        53562,
+        518,
+        19879,
+        1948,
+        1378,
+        7739,
+        323,
+        1378,
+        7739,
+        35398,
+        61347,
+        13
+      ],
+      [
+        32,
+        7868,
+        2711,
+        21484,
+        279,
+        1946,
+        1334,
+        374,
+        2669,
+        10615,
+        35388,
+        13
+      ],
+      [
+        46402,
+        2022,
+        53588,
+        279,
+        1102,
+        315,
+        10526,
+        729,
+        6738,
+        311,
+        5648,
+        37201,
+        13320,
+        13
+      ],
+      [
+        785,
+        37897,
+        572,
+        8499,
+        304,
+        62034,
+        7739,
+        36655,
+        1283,
+        279,
+        28476,
+        1263,
+        14011,
+        24936,
+        13
+      ],
+      [
+        21605,
+        14468,
+        702,
+        12944,
+        27957,
+        2474,
+        279,
+        42578,
+        17646,
+        9723,
+        13
+      ],
+      [
+        16284,
+        86478,
+        13352,
+        8063,
+        16183,
+        8063,
+        7739,
+        35398,
+        69715,
+        20044,
+        3403,
+        9396,
+        2188,
+        13
+      ],
+      [
+        785,
+        38744,
+        43564,
+        279,
+        62037,
+        369,
+        2326,
+        4115,
+        1449,
+        6556,
+        1573,
+        17496,
+        13
+      ],
+      [
+        14465,
+        590,
+        28464,
+        7032,
+        1265,
+        537,
+        9658,
+        14279,
+        4237,
+        821,
+        2041,
+        22901,
+        13
+      ],
+      [
+        32,
+        13551,
+        2480,
+        315,
+        60936,
+        3077,
+        323,
+        294,
+        2649,
+        347,
+        8669,
+        43765,
+        601,
+        979,
+        582,
+        11465,
+        518,
+        279,
+        45622,
+        13
+      ],
+      [
+        53367,
+        12679,
+        5175,
+        5746,
+        1969,
+        387,
+        855,
+        1805,
+        30685,
+        323,
+        18752,
+        30685,
+        13
+      ],
+      [
+        785,
+        29706,
+        10030,
+        264,
+        8094,
+        68429,
+        46400,
+        5022,
+        16445,
+        23490,
+        41111,
+        13966,
+        13
+      ],
+      [
+        35,
+        25146,
+        23869,
+        31785,
+        27136,
+        18048,
+        476,
+        28137,
+        1212,
+        16658,
+        13
+      ],
+      [
+        70941,
+        21285,
+        5508,
+        88135,
+        1119,
+        19734,
+        1482,
+        1526,
+        279,
+        4503,
+        92491,
+        292,
+        2456,
+        13
+      ],
+      [
+        31899,
+        458,
+        2310,
+        17553,
+        49862,
+        2311,
+        11691,
+        279,
+        22068,
+        315,
+        5567,
+        323,
+        882,
+        13
+      ],
+      [
+        785,
+        19415,
+        7553,
+        4756,
+        6337,
+        19569,
+        1973,
+        311,
+        7269,
+        6500,
+        68087,
+        389,
+        6481,
+        65475,
+        13
+      ],
+      [
+        32,
+        22360,
+        14164,
+        27031,
+        279,
+        4269,
+        1380,
+        2841,
+        22192,
+        26210,
+        1119,
+        279,
+        3015,
+        13
+      ],
+      [
+        785,
+        9816,
+        28023,
+        11811,
+        504,
+        916,
+        26127,
+        5837,
+        419,
+        1042,
+        13
+      ],
+      [
+        10642,
+        7149,
+        26557,
+        3545,
+        14455,
+        438,
+        990,
+        44573,
+        12577,
+        476,
+        4147,
+        916,
+        38140,
+        13
+      ],
+      [
+        785,
+        65144,
+        389,
+        279,
+        9131,
+        30778,
+        7722,
+        14093,
+        1038,
+        1783,
+        1449,
+        7728,
+        6556,
+        518,
+        4743,
+        13
+      ],
+      [
+        32,
+        7886,
+        29648,
+        68055,
+        11136,
+        17167,
+        315,
+        9069,
+        11,
+        7579,
+        86,
+        8673,
+        11,
+        36038,
+        11,
+        323,
+        83749,
+        14158,
+        13
+      ],
+      [
+        2589,
+        3004,
+        42721,
+        10295,
+        646,
+        23977,
+        2168,
+        71291,
+        448,
+        16772,
+        1484,
+        1238,
+        12955,
+        4344,
+        13
+      ],
+      [
+        785,
+        13833,
+        45662,
+        1033,
+        25244,
+        84077,
+        1283,
+        279,
+        3739,
+        572,
+        8145,
+        304,
+        93835,
+        52374,
+        13
+      ],
+      [
+        35,
+        68657,
+        12345,
+        11367,
+        84985,
+        11980,
+        311,
+        3239,
+        3059,
+        311,
+        6822,
+        1995,
+        80273,
+        13
+      ],
+      [
+        32,
+        25530,
+        21921,
+        25766,
+        10953,
+        10917,
+        323,
+        15104,
+        3055,
+        311,
+        5648,
+        47797,
+        44788,
+        13
+      ],
+      [
+        785,
+        51550,
+        55596,
+        23638,
+        518,
+        37145,
+        8818,
+        279,
+        8811,
+        30249,
+        916,
+        279,
+        56411,
+        13
+      ],
+      [
+        73946,
+        16181,
+        41338,
+        96467,
+        916,
+        6832,
+        4379,
+        11,
+        7162,
+        1379,
+        11,
+        323,
+        4680,
+        30715,
+        36769,
+        13
+      ],
+      [
+        84003,
+        12244,
+        388,
+        6083,
+        21609,
+        1960,
+        8991,
+        389,
+        279,
+        835,
+        315,
+        264,
+        41802,
+        9317,
+        20589,
+        553,
+        37860,
+        13
+      ],
+      [
+        785,
+        37897,
+        29155,
+        10719,
+        33565,
+        5302,
+        1212,
+        5297,
+        6489,
+        5777,
+        6588,
+        13
+      ],
+      [
+        25925,
+        1465,
+        26262,
+        11367,
+        89373,
+        773,
+        429,
+        5558,
+        27035,
+        646,
+        387,
+        82004,
+        13
+      ],
+      [
+        32,
+        11340,
+        752,
+        5843,
+        22865,
+        553,
+        15248,
+        331,
+        12408,
+        8930,
+        705,
+        7797,
+        279,
+        13638,
+        1815,
+        13
+      ],
+      [
+        785,
+        57529,
+        57742,
+        13970,
+        1526,
+        279,
+        29845,
+        509,
+        1056,
+        8841,
+        279,
+        17951,
+        6422,
+        13
+      ],
+      [
+        3781,
+        31806,
+        990,
+        44868,
+        23480,
+        9565,
+        2711,
+        311,
+        5452,
+        37623,
+        19556,
+        13
+      ],
+      [
+        32,
+        25530,
+        3691,
+        33017,
+        305,
+        42057,
+        31713,
+        11001,
+        1119,
+        28049,
+        7375,
+        323,
+        39445,
+        43086,
+        79834,
+        13
+      ],
+      [
+        785,
+        6290,
+        594,
+        9775,
+        18780,
+        702,
+        1598,
+        30878,
+        2474,
+        279,
+        4124,
+        64989,
+        9294,
+        13
+      ],
+      [
+        47832,
+        41384,
+        304,
+        40164,
+        12345,
+        30335,
+        1186,
+        718,
+        275,
+        3132,
+        3941,
+        19556,
+        13
+      ],
+      [
+        785,
+        6470,
+        8346,
+        261,
+        8643,
+        279,
+        28948,
+        1101,
+        1573,
+        279,
+        13458,
+        22447,
+        304,
+        504,
+        279,
+        9710,
+        13
+      ],
+      [
+        32,
+        1632,
+        68856,
+        6500,
+        28922,
+        38854,
+        33394,
+        11,
+        39270,
+        11,
+        323,
+        50592,
+        3082,
+        6559,
+        32483,
+        13
+      ],
+      [
+        785,
+        10924,
+        276,
+        380,
+        16403,
+        3260,
+        35398,
+        9419,
+        315,
+        87024,
+        2337,
+        264,
+        3175,
+        7324,
+        304,
+        425,
+        16907,
+        78,
+        13
+      ],
+      [
+        47,
+        81079,
+        5740,
+        7600,
+        11320,
+        58281,
+        19543,
+        429,
+        8870,
+        94122,
+        1969,
+        63501,
+        2163,
+        13
+      ],
+      [
+        48392,
+        268,
+        17727,
+        1033,
+        2162,
+        21785,
+        291,
+        448,
+        12183,
+        323,
+        37871,
+        372,
+        311,
+        2506,
+        279,
+        40198,
+        29025,
+        529,
+        491,
+        13
+      ],
+      [
+        43930,
+        20652,
+        51448,
+        6559,
+        18087,
+        882,
+        369,
+        63762,
+        11649,
+        389,
+        279,
+        1766,
+        1663,
+        4842,
+        13
+      ],
+      [
+        785,
+        3736,
+        25766,
+        594,
+        82199,
+        7391,
+        1378,
+        1635,
+        6832,
+        1246,
+        311,
+        7500,
+        279,
+        8172,
+        13284,
+        13
+      ],
+      [
+        37,
+        7294,
+        657,
+        6832,
+        27688,
+        264,
+        6094,
+        1614,
+        2041,
+        8622,
+        4849,
+        279,
+        7112,
+        4862,
+        821,
+        13
+      ],
+      [
+        32,
+        58113,
+        315,
+        38049,
+        27031,
+        279,
+        32750,
+        518,
+        38393,
+        1393,
+        279,
+        28767,
+        29215,
+        49394,
+        13
+      ],
+      [
+        34892,
+        327,
+        25262,
+        35655,
+        264,
+        3644,
+        53667,
+        979,
+        2176,
+        16538,
+        323,
+        42203,
+        738,
+        525,
+        65930,
+        13
+      ],
+      [
+        785,
+        22825,
+        29047,
+        31596,
+        315,
+        279,
+        37313,
+        369,
+        264,
+        2326,
+        28037,
+        24954,
+        4013,
+        13
+      ],
+      [
+        16384,
+        53868,
+        8776,
+        11731,
+        23594,
+        553,
+        28990,
+        2355,
+        11,
+        18405,
+        11,
+        476,
+        44066,
+        20143,
+        13
+      ],
+      [
+        32,
+        326,
+        57909,
+        53416,
+        18401,
+        279,
+        27962,
+        1526,
+        2326,
+        21787,
+        315,
+        806,
+        2997,
+        13
+      ],
+      [
+        693,
+        258,
+        10927,
+        6832,
+        13009,
+        8172,
+        26403,
+        323,
+        39661,
+        438,
+        807,
+        6530,
+        21160,
+        13
+      ],
+      [
+        785,
+        2311,
+        8675,
+        60118,
+        1948,
+        1378,
+        73571,
+        27076,
+        304,
+        8848,
+        64989,
+        33357,
+        31863,
+        13
+      ],
+      [
+        49642,
+        69917,
+        25463,
+        28690,
+        34447,
+        389,
+        69789,
+        82,
+        2041,
+        1156,
+        38126,
+        287,
+        1105,
+        13
+      ]
+    ],
+    "captured_layers": [
+      0,
+      5,
+      17
+    ],
+    "captured_kinds": [
+      "attn_norm",
+      "kq",
+      "kqv_out"
+    ]
+  },
+  "snapshots": [
+    {
+      "seq_idx": 0,
+      "prompt_idx": 0,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 1,
+      "prompt_idx": 0,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 2,
+      "prompt_idx": 0,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 3,
+      "prompt_idx": 0,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 4,
+      "prompt_idx": 0,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        14,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 5,
+      "prompt_idx": 1,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        2560
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 6,
+      "prompt_idx": 1,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        10,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 10,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 7,
+      "prompt_idx": 1,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        2560
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 8,
+      "prompt_idx": 1,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        10,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 10,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 9,
+      "prompt_idx": 1,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        10,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 10,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 10,
+      "prompt_idx": 2,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3328
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 11,
+      "prompt_idx": 2,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        13,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 13,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 12,
+      "prompt_idx": 2,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3328
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 13,
+      "prompt_idx": 2,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        13,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 13,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 14,
+      "prompt_idx": 2,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        13,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 13,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 15,
+      "prompt_idx": 3,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        2560
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 16,
+      "prompt_idx": 3,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        10,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 10,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 17,
+      "prompt_idx": 3,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        2560
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 18,
+      "prompt_idx": 3,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        10,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 10,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 19,
+      "prompt_idx": 3,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        10,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 10,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 20,
+      "prompt_idx": 4,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3072
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 21,
+      "prompt_idx": 4,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        12,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 12,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 22,
+      "prompt_idx": 4,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3072
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 23,
+      "prompt_idx": 4,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        12,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 12,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 24,
+      "prompt_idx": 4,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        12,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 12,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 25,
+      "prompt_idx": 5,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3072
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 26,
+      "prompt_idx": 5,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        12,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 12,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 27,
+      "prompt_idx": 5,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3072
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 28,
+      "prompt_idx": 5,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        12,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 12,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 29,
+      "prompt_idx": 5,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        12,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 12,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 30,
+      "prompt_idx": 6,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3328
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 31,
+      "prompt_idx": 6,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        13,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 13,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 32,
+      "prompt_idx": 6,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3328
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 33,
+      "prompt_idx": 6,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        13,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 13,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 34,
+      "prompt_idx": 6,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        13,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 13,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 35,
+      "prompt_idx": 7,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3072
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 36,
+      "prompt_idx": 7,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        12,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 12,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 37,
+      "prompt_idx": 7,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3072
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 38,
+      "prompt_idx": 7,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        12,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 12,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 39,
+      "prompt_idx": 7,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        12,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 12,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 40,
+      "prompt_idx": 8,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 41,
+      "prompt_idx": 8,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 42,
+      "prompt_idx": 8,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 43,
+      "prompt_idx": 8,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 44,
+      "prompt_idx": 8,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        14,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 45,
+      "prompt_idx": 9,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        2816
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 46,
+      "prompt_idx": 9,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        11,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 11,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 47,
+      "prompt_idx": 9,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        2816
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 48,
+      "prompt_idx": 9,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        11,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 11,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 49,
+      "prompt_idx": 9,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        11,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 11,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 50,
+      "prompt_idx": 10,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        2816
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 51,
+      "prompt_idx": 10,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        11,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 11,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 52,
+      "prompt_idx": 10,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        2816
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 53,
+      "prompt_idx": 10,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        11,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 11,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 54,
+      "prompt_idx": 10,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        11,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 11,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 55,
+      "prompt_idx": 11,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3072
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 56,
+      "prompt_idx": 11,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        12,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 12,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 57,
+      "prompt_idx": 11,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3072
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 58,
+      "prompt_idx": 11,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        12,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 12,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 59,
+      "prompt_idx": 11,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        12,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 12,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 60,
+      "prompt_idx": 12,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 61,
+      "prompt_idx": 12,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 62,
+      "prompt_idx": 12,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 63,
+      "prompt_idx": 12,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 64,
+      "prompt_idx": 12,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        14,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 65,
+      "prompt_idx": 13,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3840
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 66,
+      "prompt_idx": 13,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        15,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 15,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 67,
+      "prompt_idx": 13,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3840
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 68,
+      "prompt_idx": 13,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        15,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 15,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 69,
+      "prompt_idx": 13,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        15,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 15,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 70,
+      "prompt_idx": 14,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3072
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 71,
+      "prompt_idx": 14,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        12,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 12,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 72,
+      "prompt_idx": 14,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3072
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 73,
+      "prompt_idx": 14,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        12,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 12,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 74,
+      "prompt_idx": 14,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        12,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 12,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 75,
+      "prompt_idx": 15,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 76,
+      "prompt_idx": 15,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 77,
+      "prompt_idx": 15,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 78,
+      "prompt_idx": 15,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 79,
+      "prompt_idx": 15,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        14,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 80,
+      "prompt_idx": 16,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3840
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 81,
+      "prompt_idx": 16,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        15,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 15,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 82,
+      "prompt_idx": 16,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3840
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 83,
+      "prompt_idx": 16,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        15,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 15,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 84,
+      "prompt_idx": 16,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        15,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 15,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 85,
+      "prompt_idx": 17,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        2816
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 86,
+      "prompt_idx": 17,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        11,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 11,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 87,
+      "prompt_idx": 17,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        2816
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 88,
+      "prompt_idx": 17,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        11,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 11,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 89,
+      "prompt_idx": 17,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        11,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 11,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 90,
+      "prompt_idx": 18,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 91,
+      "prompt_idx": 18,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 92,
+      "prompt_idx": 18,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 93,
+      "prompt_idx": 18,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 94,
+      "prompt_idx": 18,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        14,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 95,
+      "prompt_idx": 19,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3328
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 96,
+      "prompt_idx": 19,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        13,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 13,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 97,
+      "prompt_idx": 19,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3328
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 98,
+      "prompt_idx": 19,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        13,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 13,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 99,
+      "prompt_idx": 19,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        13,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 13,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 100,
+      "prompt_idx": 20,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3328
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 101,
+      "prompt_idx": 20,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        13,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 13,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 102,
+      "prompt_idx": 20,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3328
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 103,
+      "prompt_idx": 20,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        13,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 13,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 104,
+      "prompt_idx": 20,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        13,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 13,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 105,
+      "prompt_idx": 21,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        5120
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 106,
+      "prompt_idx": 21,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        20,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 20,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 107,
+      "prompt_idx": 21,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        5120
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 108,
+      "prompt_idx": 21,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        20,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 20,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 109,
+      "prompt_idx": 21,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        20,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 20,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 110,
+      "prompt_idx": 22,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3328
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 111,
+      "prompt_idx": 22,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        13,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 13,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 112,
+      "prompt_idx": 22,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3328
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 113,
+      "prompt_idx": 22,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        13,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 13,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 114,
+      "prompt_idx": 22,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        13,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 13,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 115,
+      "prompt_idx": 23,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3328
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 116,
+      "prompt_idx": 23,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        13,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 13,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 117,
+      "prompt_idx": 23,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3328
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 118,
+      "prompt_idx": 23,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        13,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 13,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 119,
+      "prompt_idx": 23,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        13,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 13,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 120,
+      "prompt_idx": 24,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        2816
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 121,
+      "prompt_idx": 24,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        11,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 11,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 122,
+      "prompt_idx": 24,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        2816
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 123,
+      "prompt_idx": 24,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        11,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 11,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 124,
+      "prompt_idx": 24,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        11,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 11,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 125,
+      "prompt_idx": 25,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 126,
+      "prompt_idx": 25,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 127,
+      "prompt_idx": 25,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 128,
+      "prompt_idx": 25,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 129,
+      "prompt_idx": 25,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        14,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 130,
+      "prompt_idx": 26,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 131,
+      "prompt_idx": 26,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 132,
+      "prompt_idx": 26,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 133,
+      "prompt_idx": 26,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 134,
+      "prompt_idx": 26,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        14,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 135,
+      "prompt_idx": 27,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3840
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 136,
+      "prompt_idx": 27,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        15,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 15,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 137,
+      "prompt_idx": 27,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3840
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 138,
+      "prompt_idx": 27,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        15,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 15,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 139,
+      "prompt_idx": 27,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        15,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 15,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 140,
+      "prompt_idx": 28,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 141,
+      "prompt_idx": 28,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 142,
+      "prompt_idx": 28,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 143,
+      "prompt_idx": 28,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 144,
+      "prompt_idx": 28,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        14,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 145,
+      "prompt_idx": 29,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        2816
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 146,
+      "prompt_idx": 29,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        11,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 11,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 147,
+      "prompt_idx": 29,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        2816
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 148,
+      "prompt_idx": 29,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        11,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 11,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 149,
+      "prompt_idx": 29,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        11,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 11,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 150,
+      "prompt_idx": 30,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 151,
+      "prompt_idx": 30,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 152,
+      "prompt_idx": 30,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 153,
+      "prompt_idx": 30,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 154,
+      "prompt_idx": 30,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        14,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 155,
+      "prompt_idx": 31,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 156,
+      "prompt_idx": 31,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        16,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 16,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 157,
+      "prompt_idx": 31,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 158,
+      "prompt_idx": 31,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        16,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 16,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 159,
+      "prompt_idx": 31,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        16,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 16,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 160,
+      "prompt_idx": 32,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        4864
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 161,
+      "prompt_idx": 32,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        19,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 19,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 162,
+      "prompt_idx": 32,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        4864
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 163,
+      "prompt_idx": 32,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        19,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 19,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 164,
+      "prompt_idx": 32,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        19,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 19,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 165,
+      "prompt_idx": 33,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3840
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 166,
+      "prompt_idx": 33,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        15,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 15,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 167,
+      "prompt_idx": 33,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3840
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 168,
+      "prompt_idx": 33,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        15,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 15,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 169,
+      "prompt_idx": 33,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        15,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 15,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 170,
+      "prompt_idx": 34,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3840
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 171,
+      "prompt_idx": 34,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        15,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 15,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 172,
+      "prompt_idx": 34,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3840
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 173,
+      "prompt_idx": 34,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        15,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 15,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 174,
+      "prompt_idx": 34,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        15,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 15,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 175,
+      "prompt_idx": 35,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 176,
+      "prompt_idx": 35,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 177,
+      "prompt_idx": 35,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 178,
+      "prompt_idx": 35,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 179,
+      "prompt_idx": 35,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        14,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 180,
+      "prompt_idx": 36,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 181,
+      "prompt_idx": 36,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 182,
+      "prompt_idx": 36,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 183,
+      "prompt_idx": 36,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 184,
+      "prompt_idx": 36,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        14,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 185,
+      "prompt_idx": 37,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 186,
+      "prompt_idx": 37,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 187,
+      "prompt_idx": 37,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 188,
+      "prompt_idx": 37,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 189,
+      "prompt_idx": 37,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        14,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 190,
+      "prompt_idx": 38,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 191,
+      "prompt_idx": 38,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        16,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 16,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 192,
+      "prompt_idx": 38,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 193,
+      "prompt_idx": 38,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        16,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 16,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 194,
+      "prompt_idx": 38,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        16,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 16,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 195,
+      "prompt_idx": 39,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        4608
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 196,
+      "prompt_idx": 39,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        18,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 18,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 197,
+      "prompt_idx": 39,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        4608
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 198,
+      "prompt_idx": 39,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        18,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 18,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 199,
+      "prompt_idx": 39,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        18,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 18,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 200,
+      "prompt_idx": 40,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3072
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 201,
+      "prompt_idx": 40,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        12,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 12,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 202,
+      "prompt_idx": 40,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3072
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 203,
+      "prompt_idx": 40,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        12,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 12,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 204,
+      "prompt_idx": 40,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        12,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 12,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 205,
+      "prompt_idx": 41,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3328
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 206,
+      "prompt_idx": 41,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        13,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 13,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 207,
+      "prompt_idx": 41,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3328
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 208,
+      "prompt_idx": 41,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        13,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 13,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 209,
+      "prompt_idx": 41,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        13,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 13,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 210,
+      "prompt_idx": 42,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 211,
+      "prompt_idx": 42,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        16,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 16,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 212,
+      "prompt_idx": 42,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 213,
+      "prompt_idx": 42,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        16,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 16,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 214,
+      "prompt_idx": 42,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        16,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 16,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 215,
+      "prompt_idx": 43,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 216,
+      "prompt_idx": 43,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 217,
+      "prompt_idx": 43,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 218,
+      "prompt_idx": 43,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 219,
+      "prompt_idx": 43,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        14,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 220,
+      "prompt_idx": 44,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3072
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 221,
+      "prompt_idx": 44,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        12,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 12,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 222,
+      "prompt_idx": 44,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3072
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 223,
+      "prompt_idx": 44,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        12,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 12,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 224,
+      "prompt_idx": 44,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        12,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 12,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 225,
+      "prompt_idx": 45,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 226,
+      "prompt_idx": 45,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        16,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 16,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 227,
+      "prompt_idx": 45,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 228,
+      "prompt_idx": 45,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        16,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 16,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 229,
+      "prompt_idx": 45,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        16,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 16,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 230,
+      "prompt_idx": 46,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 231,
+      "prompt_idx": 46,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 232,
+      "prompt_idx": 46,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 233,
+      "prompt_idx": 46,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 234,
+      "prompt_idx": 46,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        14,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 235,
+      "prompt_idx": 47,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3328
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 236,
+      "prompt_idx": 47,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        13,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 13,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 237,
+      "prompt_idx": 47,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3328
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 238,
+      "prompt_idx": 47,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        13,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 13,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 239,
+      "prompt_idx": 47,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        13,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 13,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 240,
+      "prompt_idx": 48,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 241,
+      "prompt_idx": 48,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        17,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 17,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 242,
+      "prompt_idx": 48,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 243,
+      "prompt_idx": 48,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        17,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 17,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 244,
+      "prompt_idx": 48,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        17,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 17,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 245,
+      "prompt_idx": 49,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 246,
+      "prompt_idx": 49,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        16,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 16,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 247,
+      "prompt_idx": 49,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 248,
+      "prompt_idx": 49,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        16,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 16,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 249,
+      "prompt_idx": 49,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        16,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 16,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 250,
+      "prompt_idx": 50,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        4864
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 251,
+      "prompt_idx": 50,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        19,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 19,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 252,
+      "prompt_idx": 50,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        4864
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 253,
+      "prompt_idx": 50,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        19,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 19,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 254,
+      "prompt_idx": 50,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        19,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 19,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 255,
+      "prompt_idx": 51,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 256,
+      "prompt_idx": 51,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 257,
+      "prompt_idx": 51,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 258,
+      "prompt_idx": 51,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 259,
+      "prompt_idx": 51,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        14,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 260,
+      "prompt_idx": 52,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        5120
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 261,
+      "prompt_idx": 52,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        20,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 20,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 262,
+      "prompt_idx": 52,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        5120
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 263,
+      "prompt_idx": 52,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        20,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 20,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 264,
+      "prompt_idx": 52,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        20,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 20,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 265,
+      "prompt_idx": 53,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3840
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 266,
+      "prompt_idx": 53,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        15,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 15,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 267,
+      "prompt_idx": 53,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3840
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 268,
+      "prompt_idx": 53,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        15,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 15,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 269,
+      "prompt_idx": 53,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        15,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 15,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 270,
+      "prompt_idx": 54,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 271,
+      "prompt_idx": 54,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        16,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 16,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 272,
+      "prompt_idx": 54,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 273,
+      "prompt_idx": 54,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        16,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 16,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 274,
+      "prompt_idx": 54,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        16,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 16,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 275,
+      "prompt_idx": 55,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 276,
+      "prompt_idx": 55,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        16,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 16,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 277,
+      "prompt_idx": 55,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 278,
+      "prompt_idx": 55,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        16,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 16,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 279,
+      "prompt_idx": 55,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        16,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 16,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 280,
+      "prompt_idx": 56,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3840
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 281,
+      "prompt_idx": 56,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        15,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 15,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 282,
+      "prompt_idx": 56,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3840
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 283,
+      "prompt_idx": 56,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        15,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 15,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 284,
+      "prompt_idx": 56,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        15,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 15,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 285,
+      "prompt_idx": 57,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 286,
+      "prompt_idx": 57,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        16,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 16,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 287,
+      "prompt_idx": 57,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 288,
+      "prompt_idx": 57,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        16,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 16,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 289,
+      "prompt_idx": 57,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        16,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 16,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 290,
+      "prompt_idx": 58,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 291,
+      "prompt_idx": 58,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 292,
+      "prompt_idx": 58,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 293,
+      "prompt_idx": 58,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 294,
+      "prompt_idx": 58,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        14,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 295,
+      "prompt_idx": 59,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3840
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 296,
+      "prompt_idx": 59,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        15,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 15,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 297,
+      "prompt_idx": 59,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3840
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 298,
+      "prompt_idx": 59,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        15,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 15,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 299,
+      "prompt_idx": 59,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        15,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 15,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 300,
+      "prompt_idx": 60,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 301,
+      "prompt_idx": 60,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 302,
+      "prompt_idx": 60,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 303,
+      "prompt_idx": 60,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 304,
+      "prompt_idx": 60,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        14,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 305,
+      "prompt_idx": 61,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 306,
+      "prompt_idx": 61,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 307,
+      "prompt_idx": 61,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 308,
+      "prompt_idx": 61,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 309,
+      "prompt_idx": 61,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        14,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 310,
+      "prompt_idx": 62,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 311,
+      "prompt_idx": 62,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 312,
+      "prompt_idx": 62,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 313,
+      "prompt_idx": 62,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 314,
+      "prompt_idx": 62,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        14,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 315,
+      "prompt_idx": 63,
+      "layer": 0,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 316,
+      "prompt_idx": 63,
+      "layer": 0,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 317,
+      "prompt_idx": 63,
+      "layer": 5,
+      "kind": "kq",
+      "operand_shape": [
+        32,
+        3584
+      ],
+      "output_shape": null,
+      "n_data": 32,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 318,
+      "prompt_idx": 63,
+      "layer": 5,
+      "kind": "kqv_out",
+      "operand_shape": [
+        14,
+        4096
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    },
+    {
+      "seq_idx": 319,
+      "prompt_idx": 63,
+      "layer": 17,
+      "kind": "attn_norm",
+      "operand_shape": [
+        14,
+        4352
+      ],
+      "output_shape": null,
+      "n_data": 14,
+      "shield_k": 0
+    }
+  ]
+}

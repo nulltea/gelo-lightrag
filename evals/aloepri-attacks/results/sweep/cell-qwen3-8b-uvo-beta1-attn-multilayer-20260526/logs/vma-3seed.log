@@ -1,0 +1,9 @@
+[VMA-sweep] loading plaintext /home/timo/.cache/huggingface/hub/models--bartowski--Qwen_Qwen3-8B-GGUF/snapshots/0b69f75b7472688e6808490aa2b85efdb81b5ce7/Qwen_Qwen3-8B-bf16.gguf
+  loaded in 8.6 s
+[VMA-sweep] loading obfuscated /home/timo/.cache/huggingface/path-2-aloepri/qwen3-8b/keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-uvo-beta1-bf16.gguf
+  loaded in 14.3 s
+  seed=  20260518  t1=0.0156  t10=0.0508  risk=low  (174.8s)
+  seed=  20260519  t1=0.0078  t10=0.0625  risk=low  (122.6s)
+  seed=  20260520  t1=0.0156  t10=0.0430  risk=low  (122.7s)
+[VMA-sweep] top1 = 1.30 ± 0.45 % (n=3)
+[VMA-sweep] wrote → /home/timo/repos/private-rag-path-2/evals/aloepri-attacks/results/sweep/cell-qwen3-8b-uvo-beta1-attn-multilayer-20260526/vma-3seed.json

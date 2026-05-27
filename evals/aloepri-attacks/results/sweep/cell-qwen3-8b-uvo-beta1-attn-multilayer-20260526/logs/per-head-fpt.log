@@ -1,0 +1,14 @@
+[static_attacks] MemAvailable=55.1 GB (min 25.0 GB)
+[per_head_fingerprint] loading plaintext GGUF…
+  loaded in 10.8s — vocab=151936 d_eff=4096 n_layers=36
+[per_head_fingerprint] loading obfuscated GGUF…
+  loaded in 9.3s — vocab=151936 d_eff=4352 n_layers=36
+[per_head_fingerprint] loaded key /home/timo/.cache/huggingface/path-2-aloepri/qwen3-8b/keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-uvo-beta1-bf16.gguf.key.npz (keys: 155, alg2=True)
+[per_head_fingerprint] head geometry: n_q=32 n_kv=8 head_dim=128
+[per_head_fingerprint] loaded ground-truth head perms for 36 layers
+[per_head_fingerprint] running attack…
+  attn_q       top1=0.0373 top5=0.1814 risk=low
+  attn_k       top1=0.1319 top5=0.6354 risk=medium
+  attn_v       top1=0.1319 top5=0.6250 risk=medium
+  attn_output  top1=0.0312 top5=0.1562 risk=low
+[per_head_fingerprint] wrote → /home/timo/repos/private-rag-path-2/evals/aloepri-attacks/results/sweep/cell-qwen3-8b-uvo-beta1-attn-multilayer-20260526/per-head-fpt.json

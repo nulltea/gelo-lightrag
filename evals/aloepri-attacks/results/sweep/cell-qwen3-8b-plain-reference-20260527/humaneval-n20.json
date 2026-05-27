@@ -1,0 +1,225 @@
+{
+  "endpoint": "http://127.0.0.1:8082",
+  "key_path": null,
+  "plain_mode": true,
+  "tokenizer": "Qwen/Qwen3-8B",
+  "quality": {
+    "prompts": [
+      {
+        "idx": 0,
+        "prompt": "The capital of France is",
+        "response": " Paris. The capital of Italy is Rome. The capital of Spain is Madrid. The capital of Germany is Berlin. The capital of the Netherlands is Amsterdam. The capital of Belgium is Brussels. The capital of Portugal is Lisbon. The capital of",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 4.252667612861842
+      },
+      {
+        "idx": 1,
+        "prompt": "Q: What is 17 times 4? A:",
+        "response": " 68. Q: What is 17 times 5? A: 85. Q: What is 17 times 6? A: 102. Q: What is 17 times ",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 4.390286745969206
+      },
+      {
+        "idx": 2,
+        "prompt": "Write a haiku about autumn leaves:",
+        "response": " \n\nFirst line: 5 syllables\nSecond line: 7 syllables\nThird line: 5 syllables\n\nAutumn leaves descend,\nCrimson and gold in the breeze,\nWhispers of change.\nOkay, let me",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 4.2951013976708055
+      },
+      {
+        "idx": 3,
+        "prompt": "def is_prime(n):",
+        "response": "\n    if n < 2:\n        return False\n    for i in range(2, int(n**0.5)+1):\n        if n%i == 0:\n            return False\n    return True\n\ndef prime_factors",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 4.248632858041674
+      },
+      {
+        "idx": 4,
+        "prompt": "Translate to French: 'Good morning, how are you?' \u2192",
+        "response": " 'Bonjour, comment allez-vous ?'\n\nOkay, the user wants to translate \"Good morning, how are you?\" into French. Let me start by breaking down the original sentence. \"Good morning\" is a greeting, and in French",
+        "readable": true,
+        "readable_reason": "ok",
+        "n_response_tokens": 48,
+        "wall_s": 4.41482280800119
+      }
+    ],
+    "all_readable": true,
+    "wall_s": 21.601762627717108
+  },
+  "humaneval": {
+    "n": 20,
+    "passed": 10,
+    "accuracy": 0.5,
+    "wall_s": 687.1757558719255,
+    "details": [
+      {
+        "task_id": "HumanEval/163",
+        "passed": false,
+        "completion": "    # Determine the start and end of the range\n    start = min(a, b)\n    end = max(a, b)\n    \n    # Initialize a list to store the even digits\n    even_digits = []\n    \n    # Iterate through each number in the range\n    for num in range(start, end + 1):\n        # Check if the number is even\n        if num % 2 == 0:\n            even_digits.append(num)\n    \n    return even_digits\n\n# Test the function\nprint(generate_integers(2, 8))  # Output: [2, 4, 6, 8]\nprint(generate_integers(8, 2))  # Output: [2, 4, 6, 8]\nprint(generate_integers(10, 14))  # Output: []\n```\n\n### Explanation:\n- The function firs",
+        "error": "  File \"/tmp/tmpuvcslbob.py\", line 44\n    This solution is straightforward and leverages Python's built-in functions\n                                                         ^\nSyntaxError: unterminate",
+        "n_response_tokens": 384,
+        "wall_s": 34.2381271221675
+      },
+      {
+        "task_id": "HumanEval/28",
+        "passed": true,
+        "completion": "    return ''.join(strings)",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 34.05510991998017
+      },
+      {
+        "task_id": "HumanEval/6",
+        "passed": true,
+        "completion": "    groups = paren_string.split()\n    result = []\n    for group in groups:\n        max_depth = 0\n        current_depth = 0\n        for char in group:\n            if char == '(':\n                current_depth += 1\n                max_depth = max(max_depth, current_depth)\n            elif char == ')':\n                current_depth -= 1\n        result.append(max_depth)\n    return result\n\nparse_nested_parens('(()()) ((())) () ((())()())') # [2, 3, 1, 3] \n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 34.22168500581756
+      },
+      {
+        "task_id": "HumanEval/70",
+        "passed": false,
+        "completion": "    # Make a copy of the list to avoid modifying the original\n    lst = list(lst)\n    result = []\n    while lst:\n        # Get the minimum value and remove it from the list\n        min_val = min(lst)\n        lst.remove(min_val)\n        result.append(min_val)\n        # If the list is empty, break the loop\n        if not lst:\n            break\n        # Get the maximum value and remove it from the list\n        max_val = max(lst)\n        lst.remove(max_val)\n        result.append(max_val)\n    return result\n\n# Test the function\nprint(strange_sort_list([1, 2, 3, 4]))  # Output: [1, 4, 2, 3]\nprint(st",
+        "error": "  File \"/tmp/tmp745fu6om.py\", line 34\n    ```\n    ^\nSyntaxError: invalid syntax\n",
+        "n_response_tokens": 384,
+        "wall_s": 34.14802964217961
+      },
+      {
+        "task_id": "HumanEval/62",
+        "passed": true,
+        "completion": "    return [i * xs[i] for i in range(1, len(xs))]\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 34.23621168266982
+      },
+      {
+        "task_id": "HumanEval/57",
+        "passed": true,
+        "completion": "    increasing = all(l[i] <= l[i+1] for i in range(len(l)-1))\n    decreasing = all(l[i] >= l[i+1] for i in range(len(l)-1))\n    return increasing or decreasing\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 34.22896742541343
+      },
+      {
+        "task_id": "HumanEval/35",
+        "passed": true,
+        "completion": "    max_val = l[0]\n    for num in l[1:]:\n        if num > max_val:\n            max_val = num\n    return max_val\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 34.4712511850521
+      },
+      {
+        "task_id": "HumanEval/26",
+        "passed": false,
+        "completion": "    seen = set()\n    result = []\n    for num in numbers:\n        if num not in seen:\n            seen.add(num)\n            result.append(num)\n    return result",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp81c_7_iu.py\", line 32, in <module>\n    check(remove_duplicates)\n  File \"/tmp/tmp81c_7_iu.py\", line 29, in check\n    assert candidate([1, 2, 3, 2, 4, ",
+        "n_response_tokens": 384,
+        "wall_s": 34.50125687895343
+      },
+      {
+        "task_id": "HumanEval/139",
+        "passed": false,
+        "completion": "    # Your code here\n    result = 1\n    for i in range(1, n+1):\n        result *= factorial(i)\n    return result\n\n# Test the function\nprint(special_factorial(4))  # Output should be 288\n```\n\nWait, but the example given in the problem says that special_factorial(4) is 288. Let me check that. \n\nLet me compute 4! * 3! * 2! * 1! = 24 * 6 * 2 * 1 = 24*6=144, 144*2=288. Yes, that's correct. So the code above would return 288 for n=4. \n\nBut the code uses the factorial function from the math module. However, in Python, the math module's factorial function is available in Python 2.6 and above. But if t",
+        "error": "  File \"/tmp/tmpadkfqcdb.py\", line 26\n    Let me compute 4! * 3! * 2! * 1! = 24 * 6 * 2 * 1 = 24*6=144, 144*2=288. Yes, that's correct. So the code above would return 288 for n=4. \n                   ",
+        "n_response_tokens": 384,
+        "wall_s": 34.5059052365832
+      },
+      {
+        "task_id": "HumanEval/22",
+        "passed": true,
+        "completion": "    return [value for value in values if isinstance(value, int)]",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 34.48357252404094
+      },
+      {
+        "task_id": "HumanEval/151",
+        "passed": false,
+        "completion": "    return sum(x**2 for x in lst if isinstance(x, int) and x >= 0 and x % 2 != 0)\n```\n\nWait, but the problem says to ignore numbers that are negative or not integers. So the condition should be: check if the number is an integer (using isinstance(x, int)), and it's non-negative (x >= 0), and it's odd (x % 2 != 0). Then square it and sum.\n\nYes, that's correct. Let me test the examples.\n\nFirst example: [1, 3, 2, 0]. The numbers that meet the conditions are 1, 3, 0. Wait, 0 is even. Wait, 0 is even. So the numbers are 1 and 3. Their squares are 1 and 9, sum is 10. Which matches the example.\n\nSeco",
+        "error": "  File \"/tmp/tmp57td6y8g.py\", line 19\n    Yes, that's correct. Let me test the examples.\n             ^\nSyntaxError: unterminated string literal (detected at line 19)\n",
+        "n_response_tokens": 384,
+        "wall_s": 34.67015149304643
+      },
+      {
+        "task_id": "HumanEval/108",
+        "passed": false,
+        "completion": "    count = 0\n    for num in arr:\n        # Handle negative numbers\n        if num < 0:\n            digits = [int(d) for d in str(num)[1:]]  # Skip the '-' sign\n            digits[0] = -digits[0]  # Make the first digit negative\n        else:\n            digits = [int(d) for d in str(num)]\n        total = sum(digits)\n        if total > 0:\n            count += 1\n    return count\n\n# Test cases\nprint(count_nums([]))          # Output: 0\nprint(count_nums([-1, 11, -11]))  # Output: 1\nprint(count_nums([1, 1, 2]))    # Output: 3\n```\n\n### Explanation:\n- **Negative Numbers**: For a negative number like",
+        "error": "  File \"/tmp/tmpdp4xiu96.py\", line 36\n    This should handle all the cases correctly. Let me know if you need further clarification! \ud83d\ude0a\n                                                                 ",
+        "n_response_tokens": 384,
+        "wall_s": 34.29061646293849
+      },
+      {
+        "task_id": "HumanEval/8",
+        "passed": true,
+        "completion": "    sum_numbers = 0\n    product_numbers = 1\n    for num in numbers:\n        sum_numbers += num\n        product_numbers *= num\n    return sum_numbers, product_numbers",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 34.272090665996075
+      },
+      {
+        "task_id": "HumanEval/7",
+        "passed": true,
+        "completion": "    return [s for s in strings if substring in s]",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 34.195955044124275
+      },
+      {
+        "task_id": "HumanEval/23",
+        "passed": true,
+        "completion": "    return len(string)\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 34.03755987808108
+      },
+      {
+        "task_id": "HumanEval/55",
+        "passed": true,
+        "completion": "    if n == 0:\n        return 0\n    elif n == 1:\n        return 1\n    else:\n        return fib(n-1) + fib(n-2)\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 34.050147482194006
+      },
+      {
+        "task_id": "HumanEval/59",
+        "passed": false,
+        "completion": "    # Start with the smallest prime\n    factor = 2\n    # While n is divisible by factor, divide it\n    while n % factor == 0:\n        n //= factor\n    # Now factor is the largest prime factor\n    return factor\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpw07rl6kg.py\", line 33, in <module>\n    check(largest_prime_factor)\n  File \"/tmp/tmpw07rl6kg.py\", line 25, in check\n    assert candidate(15) == 5\n    ",
+        "n_response_tokens": 384,
+        "wall_s": 34.0635594939813
+      },
+      {
+        "task_id": "HumanEval/129",
+        "passed": false,
+        "completion": "    # Your code here\n    # We need to find the minimum path of length k\n    # The path is a sequence of k cells, each adjacent to the previous\n    # The path is ordered, and we need to find the lex smallest sequence\n    # So, the approach is to find the lex smallest sequence of k elements, where each step is adjacent to the previous\n\n    # Since the grid is N x N, and k can be up to N*N, but for k=1, it's just the minimum element\n    # For k>1, we need to find the path that starts with the smallest possible element, then next step is the smallest possible, etc.\n\n    # But how to do this effici",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp168k99fg.py\", line 67, in <module>\n    check(minPath)\n  File \"/tmp/tmp168k99fg.py\", line 51, in check\n    assert candidate([[1, 2, 3], [4, 5, 6], [7,",
+        "n_response_tokens": 384,
+        "wall_s": 35.497629220131785
+      },
+      {
+        "task_id": "HumanEval/161",
+        "passed": false,
+        "completion": "    # Check if the string contains any letters\n    has_letters = any(c.isalpha() for c in s)\n    \n    # If no letters, reverse the string\n    if not has_letters:\n        return s[::-1]\n    \n    # Otherwise, reverse the case of each letter\n    result = []\n    for c in s:\n        if c.isalpha():\n            if c.islower():\n                result.append(c.upper())\n            else:\n                result.append(c.lower())\n        else:\n            result.append(c)\n    return ''.join(result)\n\n# Test cases\nprint(solve(\"1234\"))      # Output: \"4321\"\nprint(solve(\"ab\"))        # Output: \"AB\"\nprint(sol",
+        "error": "  File \"/tmp/tmpa6w2mu9z.py\", line 44\n    This approach ensures that the function behaves as specified in all cases. Let me know if you need further clarification! \ud83d\ude0a\n                                  ",
+        "n_response_tokens": 384,
+        "wall_s": 34.40344593813643
+      },
+      {
+        "task_id": "HumanEval/143",
+        "passed": false,
+        "completion": "    # Split the sentence into words\n    words = sentence.split()\n    \n    # Function to check if a number is prime\n    def is_prime(n):\n        if n < 2:\n            return False\n        for i in range(2, int(n**0.5)+1):\n            if n % i == 0:\n                return False\n        return True\n    \n    # Filter words whose lengths are prime numbers\n    result = [word for word in words if is_prime(len(word))]\n    \n    # Join the result words with spaces\n    return ' '.join(result)\n\n# Example usage:\n# print(words_in_sentence(\"This is a test\"))  # Output: \"is\"\n# print(words_in_sentence(\"lets go",
+        "error": "  File \"/tmp/tmp7r5z6km9.py\", line 43\n    ```\n    ^\nSyntaxError: invalid syntax\n",
+        "n_response_tokens": 384,
+        "wall_s": 34.60380359692499
+      }
+    ]
+  }
+}

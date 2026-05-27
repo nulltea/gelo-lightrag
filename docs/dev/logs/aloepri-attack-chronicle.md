@@ -4,7 +4,14 @@ status: current
 created: 2026-05-18
 updated: 2026-05-26
 tags: [aloepri, attacks, ttrsr, alg2, m2.7, chronicle]
-companion: [aloepri-attack-bench-log, aloepri-attack-harness-findings, alg2-threat-model-log, aloepri-deployment-log, aloepri-status]
+companion:
+  [
+    aloepri-attack-bench-log,
+    aloepri-attack-harness-findings,
+    alg2-threat-model-log,
+    aloepri-deployment-log,
+    aloepri-status,
+  ]
 ---
 
 # AloePri attack chronicle — comprehensive
@@ -35,24 +42,24 @@ companion: [aloepri-attack-bench-log, aloepri-attack-harness-findings, alg2-thre
 
 ### Attack taxonomy
 
-| Code | Class | Observation surface | Recovery target | Scope under GELO threat model |
-|---|---|---|---|---|
-| **VMA** | weight inversion (sorted-quantile RowSort) | static W tensors (W̃ vs W) | token permutation τ | out of scope (weight privacy not load-bearing) |
-| **IA** | weight invariants | weight tensor relationships | head perms / scaling factors | out of scope |
-| **IMA-EmbedRow-ridge** | activation inversion (ridge) | embed-row pairs (W̃ vs W) | τ via linear map V·x = y | bypassed by deployment-τ scarcity (TFMA+SDA ≤ 20 pairs < ridge bootstrap floor) |
-| **IMA-EmbedRow-transformer** | activation inversion (trained transformer inverter) | embed pairs (τ-invariant) | τ via inverter | **load-bearing for paper claim** (paper §F.1); pending validation |
-| **IMA-L0-activation** | activation inversion at layer 0 | attn_norm-0 (pre-W_q residual) | token ids via ridge | structural — Alg2 acts post-W_q, unreachable |
-| **IMA @ Qcur_normed-0** | post-W_q + Q-norm activation | post-W_q + Q-norm at L=0 | token ids | partial; Alg2 orthogonal rotation absorbed by paired-data ridge |
-| **ISA-HiddenState** | deep-layer residual stream | attn_norm-L (typically L=17, 23) | token ids via multi-key ridge | defended by Ẑ_block (post-repair) |
-| **ISA-AttnScore (`kq`)** | pre-softmax Q·Kᵀ | kq-L | tokens via attention pattern | defended by head-shuffle Π_head + Alg2 (Q·Kᵀ designed to cancel) |
-| **Score-surface `kqv_out`** | attention output (pre-W_o) | kqv_out-L | tokens via output covariance | paper §5.4-bounded; paper-literal Alg2 lands 40 pp defense at L=5 |
-| **Per-head fingerprint** | SVD spectra on heads | W_q/W_k/W_v/W_o heads | Π_head | incidentally defended by Algorithm 1 rectangular projection |
-| **V/O channel-pair** | per-channel L2 magnitudes | W_v/W_o columns | Û_vo + Π_head | incidentally defended (same reason) |
-| **§5.4 Attention-output covariance** | output-level bound | post-W_o | output error e_C^attn | paper-literal Alg2 closes most of paper Table 4 gap |
-| **NN** | cosine retrieval at any layer | hidden state | token id via embed-table NN | defended (keymat expansion blocks naive NN) |
-| **TFMA** | wire-side token-frequency | obfuscated token stream | τ from bigram stats | weakly defended (paper §7.6: ≤ 20 pairs recovered under strong-Π) |
-| **SDA** | wire-side n-gram substitution | obfuscated token bigrams | τ via decipherment | weakly defended (BLEU-4 ≈ 2 — insufficient for meaningful text) |
-| **Eigendecomposition leak** | similarity-transform structure | `Γ_q = Mᵀ·Diag(γ)·M` | M_q via `np.linalg.eig` | **open**; analytically unambiguous, empirical measurement pending |
+| Code                                 | Class                                               | Observation surface              | Recovery target               | Scope under GELO threat model                                                   |
+| ------------------------------------ | --------------------------------------------------- | -------------------------------- | ----------------------------- | ------------------------------------------------------------------------------- |
+| **VMA**                              | weight inversion (sorted-quantile RowSort)          | static W tensors (W̃ vs W)        | token permutation τ           | out of scope (weight privacy not load-bearing)                                  |
+| **IA**                               | weight invariants                                   | weight tensor relationships      | head perms / scaling factors  | out of scope                                                                    |
+| **IMA-EmbedRow-ridge**               | activation inversion (ridge)                        | embed-row pairs (W̃ vs W)         | τ via linear map V·x = y      | bypassed by deployment-τ scarcity (TFMA+SDA ≤ 20 pairs < ridge bootstrap floor) |
+| **IMA-EmbedRow-transformer**         | activation inversion (trained transformer inverter) | embed pairs (τ-invariant)        | τ via inverter                | **load-bearing for paper claim** (paper §F.1); pending validation               |
+| **IMA-L0-activation**                | activation inversion at layer 0                     | attn_norm-0 (pre-W_q residual)   | token ids via ridge           | structural — Alg2 acts post-W_q, unreachable                                    |
+| **IMA @ Qcur_normed-0**              | post-W_q + Q-norm activation                        | post-W_q + Q-norm at L=0         | token ids                     | partial; Alg2 orthogonal rotation absorbed by paired-data ridge                 |
+| **ISA-HiddenState**                  | deep-layer residual stream                          | attn_norm-L (typically L=17, 23) | token ids via multi-key ridge | defended by Ẑ_block (post-repair)                                               |
+| **ISA-AttnScore (`kq`)**             | pre-softmax Q·Kᵀ                                    | kq-L                             | tokens via attention pattern  | defended by head-shuffle Π_head + Alg2 (Q·Kᵀ designed to cancel)                |
+| **Score-surface `kqv_out`**          | attention output (pre-W_o)                          | kqv_out-L                        | tokens via output covariance  | paper §5.4-bounded; paper-literal Alg2 lands 40 pp defense at L=5               |
+| **Per-head fingerprint**             | SVD spectra on heads                                | W_q/W_k/W_v/W_o heads            | Π_head                        | incidentally defended by Algorithm 1 rectangular projection                     |
+| **V/O channel-pair**                 | per-channel L2 magnitudes                           | W_v/W_o columns                  | Û_vo + Π_head                 | incidentally defended (same reason)                                             |
+| **§5.4 Attention-output covariance** | output-level bound                                  | post-W_o                         | output error e_C^attn         | paper-literal Alg2 closes most of paper Table 4 gap                             |
+| **NN**                               | cosine retrieval at any layer                       | hidden state                     | token id via embed-table NN   | defended (keymat expansion blocks naive NN)                                     |
+| **TFMA**                             | wire-side token-frequency                           | obfuscated token stream          | τ from bigram stats           | weakly defended (paper §7.6: ≤ 20 pairs recovered under strong-Π)               |
+| **SDA**                              | wire-side n-gram substitution                       | obfuscated token bigrams         | τ via decipherment            | weakly defended (BLEU-4 ≈ 2 — insufficient for meaningful text)                 |
+| **Eigendecomposition leak**          | similarity-transform structure                      | `Γ_q = Mᵀ·Diag(γ)·M`             | M_q via `np.linalg.eig`       | **open**; analytically unambiguous, empirical measurement pending               |
 
 ### Methodology splits
 
@@ -71,11 +78,11 @@ Both IMA + ISA gates must pass for non-zero CI exit code. C1 (mask-only) is inte
 
 ### Three-condition control matrix
 
-| Condition | Executor | Mask | Shield | Expected C2 TTRSR |
-|---|---|---|---|---|
-| **C0 plain** | `CapturingPlaintextExecutor` | none | n/a | ~100 % (sanity) |
-| **C1 mask-only** | `InProcessTrustedExecutor` | per-batch Haar/HD₃ | `ShieldConfig::NONE` | < C0, > C2 |
-| **C2 default** | `InProcessTrustedExecutor` | per-batch Haar/HD₃ | `ShieldConfig::new(8, 4.0)` | < 10 % target |
+| Condition        | Executor                     | Mask               | Shield                      | Expected C2 TTRSR |
+| ---------------- | ---------------------------- | ------------------ | --------------------------- | ----------------- |
+| **C0 plain**     | `CapturingPlaintextExecutor` | none               | n/a                         | ~100 % (sanity)   |
+| **C1 mask-only** | `InProcessTrustedExecutor`   | per-batch Haar/HD₃ | `ShieldConfig::NONE`        | < C0, > C2        |
+| **C2 default**   | `InProcessTrustedExecutor`   | per-batch Haar/HD₃ | `ShieldConfig::new(8, 4.0)` | < 10 % target     |
 
 ---
 
@@ -123,6 +130,7 @@ The `n_data` field lets the Python harness strip shield rows (last `shield_k` ro
 ### Phase 3 — CI release-gate
 
 After Phase 2 lands:
+
 1. Fast variant of `run_all.py` (~64 prompts, <5 min) wired into `.github/workflows/aloepri-gate.yml`.
 2. **Threshold:** fail if IMA or ISA C2 ≥ 10 %.
 3. Tag gate `aloepri-attacks`; require on PRs modifying mask/shield/sim/snapshot code.
@@ -130,14 +138,14 @@ After Phase 2 lands:
 
 ### Deferred attacks (D1–D6)
 
-| ID | Attack/Surface | Driver | Snapshot capture | Why deferred |
-|---|---|---|---|---|
-| **D1** | Cross-batch Gram leak | not built | already captured | Harness aggregates per-prompt; meaningful comparison needs C1-with-shield-on as a 4th condition (currently C1 clears shield). |
-| **D2** | AttnScore observable | not built | **not captured** | Phase 1 hooks `offload_linear/qkv/many`; attention-score path (`offload_attention_qkt`, `offload_attention_permuted_cached`) is unhooked. Requires new `SnapshotCapture` hook. Per AloePri Table 3: AttnScore is the harder surface (87 % under "Noise only", 0 % under Head&BlockPerm). |
-| **D3** | KV-cache observable | not built | **not captured** | KV cache stays inside `KvCache`, never crosses executor offload seam. If GPU has VRAM read access (our threat model), KV cache IS observable. Requires capture-after-write hook on `KvCache::append`. |
-| **D4** | IMA paper-like at scale (256-prompt corpus) | built | already captured | At 64 prompts (~680 training rows) inverter undertrains. Paper defaults: 128 seqs × 32 tok = 4096 rows. Gate `c0_ima_paper_like_at_least_50pct` fails on short runs; use `c0_ima_ridge_at_least_95pct` as sanity instead. |
-| **D5** | PIIRSR (sensitive-token slice) | not built | already captured | AloePri reports PII Recovery Success Ratio as separate metric for medical/financial deployments. Filter `test_ids` to PII subset; recompute TTRSR. Small implementation cost. |
-| **D6** | RowSort weight-pair VMA | n/a (inapplicable) | n/a | GELO doesn't obfuscate weights → no W_obfuscated → no Π to recover. Driver is `not_applicable` stub. No follow-up unless GELO adds weight-obfuscation defense (it won't — openweight is the design point). |
+| ID     | Attack/Surface                              | Driver             | Snapshot capture | Why deferred                                                                                                                                                                                                                                                                             |
+| ------ | ------------------------------------------- | ------------------ | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **D1** | Cross-batch Gram leak                       | not built          | already captured | Harness aggregates per-prompt; meaningful comparison needs C1-with-shield-on as a 4th condition (currently C1 clears shield).                                                                                                                                                            |
+| **D2** | AttnScore observable                        | not built          | **not captured** | Phase 1 hooks `offload_linear/qkv/many`; attention-score path (`offload_attention_qkt`, `offload_attention_permuted_cached`) is unhooked. Requires new `SnapshotCapture` hook. Per AloePri Table 3: AttnScore is the harder surface (87 % under "Noise only", 0 % under Head&BlockPerm). |
+| **D3** | KV-cache observable                         | not built          | **not captured** | KV cache stays inside `KvCache`, never crosses executor offload seam. If GPU has VRAM read access (our threat model), KV cache IS observable. Requires capture-after-write hook on `KvCache::append`.                                                                                    |
+| **D4** | IMA paper-like at scale (256-prompt corpus) | built              | already captured | At 64 prompts (~680 training rows) inverter undertrains. Paper defaults: 128 seqs × 32 tok = 4096 rows. Gate `c0_ima_paper_like_at_least_50pct` fails on short runs; use `c0_ima_ridge_at_least_95pct` as sanity instead.                                                                |
+| **D5** | PIIRSR (sensitive-token slice)              | not built          | already captured | AloePri reports PII Recovery Success Ratio as separate metric for medical/financial deployments. Filter `test_ids` to PII subset; recompute TTRSR. Small implementation cost.                                                                                                            |
+| **D6** | RowSort weight-pair VMA                     | n/a (inapplicable) | n/a              | GELO doesn't obfuscate weights → no W_obfuscated → no Π to recover. Driver is `not_applicable` stub. No follow-up unless GELO adds weight-obfuscation defense (it won't — openweight is the design point).                                                                               |
 
 ---
 
@@ -164,6 +172,7 @@ Replace elementwise γ multiplication with a per-head matmul:
 ```
 
 Kernel:
+
 ```
 Q_obf_normed = (Q_obf / RMS) · Γ_q[h]
              = (Q_plain / RMS) · Diag(γ_q) · M_q
@@ -177,6 +186,7 @@ Per-input exact, no approximation, provided M_q is orthogonal (composition of ro
 ### What the tensor leaks
 
 `Γ_q[h] = Mᵀ · Diag(γ) · M` is a **similarity transform of a diagonal**. `numpy.linalg.eig` recovers:
+
 - **Eigenvalues:** γ_q multiset
 - **Eigenvectors:** columns of M_q[h] up to permutation and sign
 
@@ -184,12 +194,12 @@ O(d_h³) per head — for d_h=128, sub-millisecond. Once M_q[h] is known, attack
 
 ### Decision: Option 4.1 (scope-narrow)
 
-| Option | Cost | Verdict |
-|---|---|---|
-| **4.1 Scope the deployment to paper's threat model** | zero | **CHOSEN** — exclude weight-analysis attacks (including QK-norm eigendecomposition). Matches paper's own exclusion of VMA/IA. |
-| 4.2 Additive noise on Γ_q | 1–2 weeks research | fragile — γ_q eigenvalue spread enormous (−1 to +68); fixed σ swaps noise-to-signal ratio orders of magnitude |
-| 4.3 Per-prompt fresh M_q via thin-client handshake | ~2 weeks | "this is GELO" — if we wanted this, use path-1, not AloePri |
-| 4.4 Hide γ_q eigenvalue structure (fold γ into W̃_q) | negative | requires paper extension not derived in literature; §5.2.5 doesn't cover output-axis γ |
+| Option                                               | Cost               | Verdict                                                                                                                       |
+| ---------------------------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| **4.1 Scope the deployment to paper's threat model** | zero               | **CHOSEN** — exclude weight-analysis attacks (including QK-norm eigendecomposition). Matches paper's own exclusion of VMA/IA. |
+| 4.2 Additive noise on Γ_q                            | 1–2 weeks research | fragile — γ_q eigenvalue spread enormous (−1 to +68); fixed σ swaps noise-to-signal ratio orders of magnitude                 |
+| 4.3 Per-prompt fresh M_q via thin-client handshake   | ~2 weeks           | "this is GELO" — if we wanted this, use path-1, not AloePri                                                                   |
+| 4.4 Hide γ_q eigenvalue structure (fold γ into W̃_q)  | negative           | requires paper extension not derived in literature; §5.2.5 doesn't cover output-axis γ                                        |
 
 **For future weight-privacy requirements:** the answer is not "tweak AloePri" — it is **use the path-1 GELO stack**.
 
@@ -212,6 +222,7 @@ O(d_h³) per head — for d_h=128, sub-millisecond. Once M_q[h] is known, attack
 **Phase 1 deliverables:** snapshot infrastructure in `crates/gelo-protocol/src/snapshot.rs`; 11 tests; capture disabled by default.
 
 **Key decisions:**
+
 - **Do not port** AloePri's static-weight obfuscation protocol; port only the attack suite.
 - Use empirical TTRSR as a release gate.
 - Three-condition control matrix (C0/C1/C2); target C2 < 10 % on IMA + ISA.
@@ -228,6 +239,7 @@ O(d_h³) per head — for d_h=128, sub-millisecond. Once M_q[h] is known, attack
 Gemma 4 has **5 residual-norm sites per block** (3 post-norms + 2 pre-norms). Paper §5.2.5 RMSNorm fusion is exact for pre-norms but **not** for post-norms; error compounds over 35 layers × 3 post-norms catastrophically. Active pivot away from Gemma 4 toward Qwen3.
 
 **Carry-forward findings (validated):**
+
 - llama.cpp upstream `LLM_ARCH_GEMMA4` is shipped; no fork needed for architecture itself.
 - `hidden_size = d + 2h` propagates cleanly through llama.cpp metadata.
 - K=V tying is runtime cache sharing only; GGUF stores separate attn_k/attn_v at every layer.
@@ -236,6 +248,7 @@ Gemma 4 has **5 residual-norm sites per block** (3 post-norms + 2 pre-norms). Pa
 - κ_correct ≈ 7.42 for E2B (d=1536, h=128, λ=0.3).
 
 **Three independent work items when resuming (deferred):**
+
 1. Covariant post-norm — llama.cpp `ggml_rms_norm_then_scale` op (~2–3 weeks) OR algebraic reformulation (research).
 2. PLE token-axis permutation under τ.
 3. p-RoPE-aware R̂_qk for global layers.
@@ -247,15 +260,16 @@ Gemma 4 has **5 residual-norm sites per block** (3 post-norms + 2 pre-norms). Pa
 **Source:** `docs/archive/handoffs/2026-05-19-alg2-qwen3-shape-analysis.md`
 
 **Three options evaluated:**
+
 - **Option A (empirical κ_qk calibration):** medium risk — variance of ratio on K-side where γ_max = 68.
 - **Option B (γ-commuting rotation):** **dead** per pre-flight measurement.
 
-| ε | mean pair-symm % | mean Ẑ-coverage % |
-|---|---|---|
-| 0.01 | 3.6 | 0.0 |
-| 0.05 | 16.0 | 0.0 |
-| 0.10 | 25.9 | 1.4 |
-| 0.25 | 43.8 | 22.0 |
+| ε    | mean pair-symm % | mean Ẑ-coverage % |
+| ---- | ---------------- | ----------------- |
+| 0.01 | 3.6              | 0.0               |
+| 0.05 | 16.0             | 0.0               |
+| 0.10 | 25.9             | 1.4               |
+| 0.25 | 43.8             | 22.0              |
 
 Layer 0 (M2.7 attack surface) fails threshold (20 % Q coverage, 25 % K coverage at ε=0.25). K-side γ values have extreme outliers (γ_max = 68 at layer 0); clusters collapse.
 
@@ -285,26 +299,26 @@ Layer 0 (M2.7 attack surface) fails threshold (20 % Q coverage, 25 % K coverage 
 
 **Model:** Qwen3-1.7B fp32. Methodology: vocab-disjoint. 64-prompt corpus.
 
-| Attack | Plain | Obf | Gate | Verdict |
-|---|---:|---:|---|---|
-| NN | 100.0 % | 0.0 % | ≤ 15 % | ✓ |
-| **IMA basic** (attn_norm-0) | 98.1 % | **88.9 %** | ≤ 15 % | **✗ fails 6×** |
-| **IMA paper-like** (N=256) | 49.3 % | **38.0 %** | ≤ 15 % | **✗ fails 2.5×** |
-| **ISA HiddenState** (attn_norm-23) | 8.7 % | **16.3 %** | ≤ 15 % | **✗ marginal — obf paradoxically raises TTRSR** |
-| ISA AttnScore (kq-23) | 2.9 % | 0.0 % | ≤ 15 % | ✓ |
-| TFMA | — | 1.6 % / 5.1 % | ≤ 15 % | ✓ |
-| SDA | — | 1.6×10⁻⁵ BLEU | ≤ 5 BLEU | ✓ |
+| Attack                             |   Plain |           Obf | Gate     | Verdict                                         |
+| ---------------------------------- | ------: | ------------: | -------- | ----------------------------------------------- |
+| NN                                 | 100.0 % |         0.0 % | ≤ 15 %   | ✓                                               |
+| **IMA basic** (attn_norm-0)        |  98.1 % |    **88.9 %** | ≤ 15 %   | **✗ fails 6×**                                  |
+| **IMA paper-like** (N=256)         |  49.3 % |    **38.0 %** | ≤ 15 %   | **✗ fails 2.5×**                                |
+| **ISA HiddenState** (attn_norm-23) |   8.7 % |    **16.3 %** | ≤ 15 %   | **✗ marginal — obf paradoxically raises TTRSR** |
+| ISA AttnScore (kq-23)              |   2.9 % |         0.0 % | ≤ 15 %   | ✓                                               |
+| TFMA                               |       — | 1.6 % / 5.1 % | ≤ 15 %   | ✓                                               |
+| SDA                                |       — | 1.6×10⁻⁵ BLEU | ≤ 5 BLEU | ✓                                               |
 
 **Data-scale sweep (IMA paper-like, ep=16):**
 
-| N | Plain top-1 | Obf top-1 | Plain top-10 | Obf top-10 |
-|---|---:|---:|---:|---:|
-| 64 | 7.6 % | 6.2 % | 26.2 % | 17.8 % (undertrained) |
-| 128 | 24.4 % | 11.5 % | 45.5 % | 37.9 % |
-| 192 | 39.1 % | 34.1 % | 54.9 % | 47.1 % |
-| 256 | 49.3 % | 38.0 % | 66.3 % | 47.5 % (paper-matched) |
-| 384 | 62.4 % | 47.6 % | 76.7 % | 55.3 % |
-| 512 | 72.8 % | 46.8 % | 87.9 % | 55.1 % (saturating) |
+| N   | Plain top-1 | Obf top-1 | Plain top-10 |             Obf top-10 |
+| --- | ----------: | --------: | -----------: | ---------------------: |
+| 64  |       7.6 % |     6.2 % |       26.2 % |  17.8 % (undertrained) |
+| 128 |      24.4 % |    11.5 % |       45.5 % |                 37.9 % |
+| 192 |      39.1 % |    34.1 % |       54.9 % |                 47.1 % |
+| 256 |      49.3 % |    38.0 % |       66.3 % | 47.5 % (paper-matched) |
+| 384 |      62.4 % |    47.6 % |       76.7 % |                 55.3 % |
+| 512 |      72.8 % |    46.8 % |       87.9 % |    55.1 % (saturating) |
 
 **Diagnosis:** §05 ships only inter-head shuffle (Π_head), not intra-head transforms. Decoy dims from keymat expansion (2048 → 2304) carry recoverable structure for ridge.
 
@@ -321,6 +335,7 @@ Layer 0 (M2.7 attack surface) fails threshold (20 % Q coverage, 25 % K coverage 
 **Result:** all M2.7 numbers **bit-equal to §05**. M_q is post-W_q; layer-0 captures are pre-W_q (structurally unreachable). Algorithm 2 designed to make M_q · M_kᵀ = I, so Q·Kᵀ also preserved.
 
 **Key finding:** Option C is correctly deployed algebraically, but its defense is **invisible to the current M2.7 attack suite**. The surface where M_q actually lives is **post-q_norm Q values** — not currently dumped. Tensor filter extended to:
+
 ```
 --tensor-filter '^(attn_norm-(0|11|23)|Qcur_normed-(0|11|23)|Kcur_normed-(0|11|23)|kq-23)$'
 ```
@@ -332,26 +347,28 @@ Layer 0 (M2.7 attack surface) fails threshold (20 % Q coverage, 25 % K coverage 
 **Source:** `docs/archive/handoffs/2026-05-19-option-c-steps-0-1-2a-findings.md`
 
 **GGUFs:**
+
 - `…FULL-fp32.gguf` (R̂_qk only)
 - `…FULL-zfix-fp32.gguf` (+ Ẑ_block fix)
 - `…FULL-zfix-hadamard-fp32.gguf` (+ ±1 Walsh-Hadamard Ĥ_qk)
 
 **Full ledger (vocab-disjoint):**
 
-| Attack | Surface | §05 | + R̂_qk | + Ẑ_block | + Ĥ_qk ±1 | Gate |
-|---|---|---:|---:|---:|---:|---|
-| NN | — | 0.0 % | 0.0 % | 0.0 % | 0.0 % | ≤ 15 % ✓ |
-| **IMA basic** | attn_norm-0 | **88.9 %** | 88.9 % | 88.9 % | 88.9 % | ≤ 15 % ✗ |
-| IMA basic | Qcur_normed-0 | 88.9 % | 88.0 % | 88.0 % | 88.0 % | ≤ 15 % ✗ |
-| IMA basic | Kcur_normed-0 | 76.4 % | 76.9 % | 76.9 % | 76.9 % | ≤ 15 % ✗ |
-| **ISA HS** | attn_norm-23 | 16.3 % | 16.3 % | **11.5 %** | 11.5 % | ≤ 15 % **✓ passes after Ẑ_block** |
-| ISA HS | Qcur_normed-23 | 12.5 % | 9.6 % | 13.5 % | 13.5 % | ≤ 15 % ✓ |
-| ISA HS | Kcur_normed-23 | 8.7 % | 7.7 % | 7.7 % | 7.7 % | ≤ 15 % ✓ |
-| ISA AS | kq-23 | 0.0 % | 0.0 % | — | — | ≤ 15 % ✓ |
-| TFMA | wire | 1.6 / 5.1 % | 0.8 / 2.7 % | — | — | ≤ 15 % ✓ |
-| SDA | wire | 1.6e-5 | 1.4e-5 | — | — | ≤ 5 BLEU ✓ |
+| Attack        | Surface        |         §05 |      + R̂_qk |  + Ẑ_block | + Ĥ_qk ±1 | Gate                              |
+| ------------- | -------------- | ----------: | ----------: | ---------: | --------: | --------------------------------- |
+| NN            | —              |       0.0 % |       0.0 % |      0.0 % |     0.0 % | ≤ 15 % ✓                          |
+| **IMA basic** | attn_norm-0    |  **88.9 %** |      88.9 % |     88.9 % |    88.9 % | ≤ 15 % ✗                          |
+| IMA basic     | Qcur_normed-0  |      88.9 % |      88.0 % |     88.0 % |    88.0 % | ≤ 15 % ✗                          |
+| IMA basic     | Kcur_normed-0  |      76.4 % |      76.9 % |     76.9 % |    76.9 % | ≤ 15 % ✗                          |
+| **ISA HS**    | attn_norm-23   |      16.3 % |      16.3 % | **11.5 %** |    11.5 % | ≤ 15 % **✓ passes after Ẑ_block** |
+| ISA HS        | Qcur_normed-23 |      12.5 % |       9.6 % |     13.5 % |    13.5 % | ≤ 15 % ✓                          |
+| ISA HS        | Kcur_normed-23 |       8.7 % |       7.7 % |      7.7 % |     7.7 % | ≤ 15 % ✓                          |
+| ISA AS        | kq-23          |       0.0 % |       0.0 % |          — |         — | ≤ 15 % ✓                          |
+| TFMA          | wire           | 1.6 / 5.1 % | 0.8 / 2.7 % |          — |         — | ≤ 15 % ✓                          |
+| SDA           | wire           |      1.6e-5 |      1.4e-5 |          — |         — | ≤ 5 BLEU ✓                        |
 
 **Key findings:**
+
 - **Ẑ_block fix is the only step that moved a metric** (ISA HS 16.3 → 11.5 %, now passes).
 - **±1 Hadamard Ĥ_qk is algebraically dead-end** against ridge (orthogonal sign flips trivially absorbed). With ±1 H, `M_q = M_k` so no Q/K diversity. Non-unit H requires runtime κ correction in kernel.
 - **IMA basic structurally unreachable** at 88.9 % — layer-0 surface is pre-W_q. To move IMA below 15 %, levers outside Algorithm 2: larger keymat (h=256+), heavier α-noise (degrades generation), or non-linear keymat fold (paper-divergent).
@@ -381,30 +398,32 @@ Five threads queued (some superseded by later work):
 **Sources:** `docs/archive/handoffs/2026-05-20-aloepri-pi-special-token-fix.md`, `docs/archive/handoffs/2026-05-20-aloepri-attacks-status-and-paired-data-defences.md`
 
 **Special-token bug:**
+
 - **Symptom:** HumanEval pass@1 → 0/20 with multi-language gibberish; llama-server returned 500 on 11/20 prompts.
-- **Root cause:** `obfuscate_qwen3_gguf.py` permuted *all* tokens in `[0, 151669)` including EOS (151645), BOS (151643), 26 special tokens. Server's "stop on EOS 151645" check never fired.
+- **Root cause:** `obfuscate_qwen3_gguf.py` permuted _all_ tokens in `[0, 151669)` including EOS (151645), BOS (151643), 26 special tokens. Server's "stop on EOS 151645" check never fired.
 - **Fix:** read `tokenizer.ggml.token_type`; permute only `type ∈ {NORMAL=1, BYTE=6}`; keep `CONTROL/USER_DEFINED/UNUSED` at identity. For Qwen3-1.7B: 151,643 permuted, 26 identity.
 - **Privacy note:** zero confidentiality loss (special token IDs are public in GGUF metadata).
 - **Accuracy after fix:** keymat-h128-pi-noise-ae0.3-ah0.1-fp32 (fixed Π) → 7/20 = 35 % (Δ vs plain = −15 pp). Residual 5/20 server-500s (down from 11/20).
 
 **Paired-data ridge discovery (Qwen3-1.7B, α_e=0.1, α_h=0.033):**
 
-| Attack | Surface | Plain | Obf (no-Alg2) | Obf (+Alg2) | Status |
-|---|---|---:|---:|---:|---|
-| VMA top-1 | static W | 99.6 % | 0.0 % | 0.0 % | ✓ |
-| IA top-1 | invariants | 98.6 % | 0.0 % | 0.0244 % | ✓ |
-| **IMA-EmbedRow-ridge** | embed pairs | **99.2 %** | **99.22 %** | **99.22 %** | **✗ structural — paired-data attack** |
-| NN | attn_norm-0 | — | 0.0 % | 0.0 % | ✓ |
-| **IMA-L0-activation** | attn_norm-0 | — | **22.58 %** | **22.58 %** | **✗ pre-W_q unreachable** |
-| ISA HS | attn_norm-23 | — | 9.68 % | 9.68 % | ✓ |
-| **IMA @ Qcur_normed-0** | post-W_q + Q-norm | — | 35.48 % | **38.71 %** | **✗ Alg2 +3 pp degradation** |
-| TFMA | wire | — | 0.0 % / 5.08 % | 0.0 % / 4.69 % | ✓ |
-| SDA | wire | — | 1.5e-5 | 1.4e-5 | ✓ |
-| HumanEval pass@1 (n=20) | gen | 50 % | 40 % | 35 % | −5 pp Alg2 cost |
+| Attack                  | Surface           |      Plain |  Obf (no-Alg2) |    Obf (+Alg2) | Status                                |
+| ----------------------- | ----------------- | ---------: | -------------: | -------------: | ------------------------------------- |
+| VMA top-1               | static W          |     99.6 % |          0.0 % |          0.0 % | ✓                                     |
+| IA top-1                | invariants        |     98.6 % |          0.0 % |       0.0244 % | ✓                                     |
+| **IMA-EmbedRow-ridge**  | embed pairs       | **99.2 %** |    **99.22 %** |    **99.22 %** | **✗ structural — paired-data attack** |
+| NN                      | attn_norm-0       |          — |          0.0 % |          0.0 % | ✓                                     |
+| **IMA-L0-activation**   | attn_norm-0       |          — |    **22.58 %** |    **22.58 %** | **✗ pre-W_q unreachable**             |
+| ISA HS                  | attn_norm-23      |          — |         9.68 % |         9.68 % | ✓                                     |
+| **IMA @ Qcur_normed-0** | post-W_q + Q-norm |          — |        35.48 % |    **38.71 %** | **✗ Alg2 +3 pp degradation**          |
+| TFMA                    | wire              |          — | 0.0 % / 5.08 % | 0.0 % / 4.69 % | ✓                                     |
+| SDA                     | wire              |          — |         1.5e-5 |         1.4e-5 | ✓                                     |
+| HumanEval pass@1 (n=20) | gen               |       50 % |           40 % |           35 % | −5 pp Alg2 cost                       |
 
 **Key finding:** **paired-data ridge attacker is the structural limit of static linear obfuscation.** Attacker with both W (plaintext from HuggingFace) and W̃ (server-hosted) fits a bijection V via closed-form ridge; recovers ~99 % at d=2048 on Qwen3-1.7B.
 
 **Three mitigation strategies:**
+
 - **2A — Hide the obfuscated model.** Attacker loses W̃ access; paired-data assumption breaks. Zero algorithm change; breaks "public LMaaS infrastructure" thesis.
 - **2B — Obfuscate inside a TEE (insufficient alone).** Keeps keymat / τ inside attestation; doesn't prevent paired-data attack.
 - **2C — Dynamic masking (fresh M_q per request, GELO-style).** Cross-batch pair collection fails. Breaks "no infrastructure change" but matches project's research direction. ~4–8 weeks engineering.
@@ -417,24 +436,25 @@ Five threads queued (some superseded by later work):
 
 **Qwen3-4B (d=2560, α_e=1.0, h=128 untied):**
 
-| Attack | Plain | Obf (paper-literal Alg2) |
-|---|---:|---:|
-| IMA-EmbedRow-ridge | 98.02 % | **57.03 %** (−41 pp from 1.7B) |
-| IMA-L0-activation @ attn_norm-0 | 28.87 % | 25.13 % |
-| ISA HS @ attn_norm-23 | 11.67 % | 10.64 % ✓ |
-| HumanEval pass@1 (n=20) | — | 30 % |
+| Attack                          |   Plain |       Obf (paper-literal Alg2) |
+| ------------------------------- | ------: | -----------------------------: |
+| IMA-EmbedRow-ridge              | 98.02 % | **57.03 %** (−41 pp from 1.7B) |
+| IMA-L0-activation @ attn_norm-0 | 28.87 % |                        25.13 % |
+| ISA HS @ attn_norm-23           | 11.67 % |                      10.64 % ✓ |
+| HumanEval pass@1 (n=20)         |       — |                           30 % |
 
 **Qwen3-8B (d=4096, α_e=1.0, h=128):**
 
-| Attack | Obf |
-|---|---:|
-| **IMA-EmbedRow-ridge** | **96.88 % — regression to near-plain at d=4096** |
-| ISA HS @ attn_norm-23 | ~10 % ✓ |
-| HumanEval pass@1 (n=20) | 40 % (best ever) |
+| Attack                  |                                              Obf |
+| ----------------------- | -----------------------------------------------: |
+| **IMA-EmbedRow-ridge**  | **96.88 % — regression to near-plain at d=4096** |
+| ISA HS @ attn_norm-23   |                                          ~10 % ✓ |
+| HumanEval pass@1 (n=20) |                                 40 % (best ever) |
 
 **Key revelation:** 4B → 8B IMA-EmbedRow-ridge **non-monotonicity** falsifies "dimensional headroom fixes everything" thesis. At d=4096, ridge still recovers clean closed-form (best ridge α rose 0.01 → 1.0), suggesting different qualitative solution regime at higher d, not continuation of d=2048 → 2560 trend.
 
 **Bugs fixed in same session:**
+
 - **Qwen3-4B tied embeddings:** Qwen3-4B ships `tie_word_embeddings: true`. Separate P̂_R / Q̂_R⁻ᵀ transforms invalid on shared `token_embd`. New utility `python/aloepri-llm/untie_qwen3_gguf.py` duplicates `token_embd.weight` to a new `output.weight` slot.
 - **bf16 became default:** fp16 fails (denormal flush at ~6e-5 → ~1.15 % of attn_q entries to zero, breaks P̂·Q̂ = I_d cancellation → 0/20 HumanEval). bf16 (8-bit exponent, range ~1e-38) preserves the cancellation; 4B drift: fp32 57.81 % → bf16 57.03 % ridge (negligible).
 - **Static-attack loader OOM:** 8B was loading at 66 GB RAM. Fixed via `extract_gguf_weights.py` bf16-native lazy loader (`ml_dtypes.bfloat16`); peak drops to 33 GB.
@@ -466,19 +486,21 @@ Five threads queued (some superseded by later work):
 
 **ISA HiddenState multi-key (paper-faithful, K=64, L=17):**
 
-| Model | Config | Top-1 | Top-10 | Plain ceiling | Δ (non-Û_vo → Û_vo) | Relative attenuation |
-|---|---|---:|---:|---|---|---|
-| 4B | No Û_vo, vendor CPU keymat | 5.11 % | 21.17 % | 10.18 % | — | — |
-| **4B** | **Û_vo, vendor CPU keymat** | **3.41 %** | **12.90 %** | 10.18 % | −1.70 pp | **33 %** |
-| 4B | Û_vo, gpu_native keymat (BUG) | 11.92 % | 25.55 % | 10.18 % | — | **exceeds plain ceiling** |
-| 8B | No Û_vo, vendor CPU keymat | 9.73 % | 22.14 % | 10.18 % | — | — |
-| **8B** | **Û_vo, vendor CPU keymat** | **9.00 %** | **22.14 %** | 10.18 % | −0.73 pp | **7.5 %** |
+| Model  | Config                        |      Top-1 |      Top-10 | Plain ceiling | Δ (non-Û_vo → Û_vo) | Relative attenuation      |
+| ------ | ----------------------------- | ---------: | ----------: | ------------- | ------------------- | ------------------------- |
+| 4B     | No Û_vo, vendor CPU keymat    |     5.11 % |     21.17 % | 10.18 %       | —                   | —                         |
+| **4B** | **Û_vo, vendor CPU keymat**   | **3.41 %** | **12.90 %** | 10.18 %       | −1.70 pp            | **33 %**                  |
+| 4B     | Û_vo, gpu_native keymat (BUG) |    11.92 % |     25.55 % | 10.18 %       | —                   | **exceeds plain ceiling** |
+| 8B     | No Û_vo, vendor CPU keymat    |     9.73 % |     22.14 % | 10.18 %       | —                   | —                         |
+| **8B** | **Û_vo, vendor CPU keymat**   | **9.00 %** | **22.14 %** | 10.18 %       | −0.73 pp            | **7.5 %**                 |
 
 **Verdict:**
+
 - **Û_vo provides meaningful attenuation at 4B** (33 % relative) but **barely moves needle at 8B** (7.5 %). Defense gap at 8B is **structural** — not closeable by Û_vo at d=4096.
 - **Dimensional-headroom hypothesis falsified.**
 
 **GPU-keymat seed-convention divergence (open bug):**
+
 - Vendor CPU keymat: fresh `torch.Generator` per component (8 streams per keymat). Port GPU-native: one advancing generator per keymat (1 stream).
 - Distributional stats agree (mean ~0, std ~0.137); synth-covariance eigenvalues differ (vendor top eval 86.7 vs port 64.2).
 - Root cause hypothesis: rocSOLVER QR/SVD sign convention or seed-stream layout.
@@ -495,10 +517,10 @@ Five threads queued (some superseded by later work):
 
 **Measurements:**
 
-| Cell | Top-1 | Top-10 | Best epoch | Notes |
-|---|---:|---:|---|---|
-| Plain identity-τ control (Qwen3-4B Q8_0) | **15.62 %** | 26.56 % | 99 | Checkpoint lost to crash |
-| Obfuscated 4B real-τ (bf16 obf) | **12.70 %** | 23.24 % | 98 | Defence gap 2.92 pp top-1, 3.32 pp top-10 |
+| Cell                                     |       Top-1 |  Top-10 | Best epoch | Notes                                     |
+| ---------------------------------------- | ----------: | ------: | ---------- | ----------------------------------------- |
+| Plain identity-τ control (Qwen3-4B Q8_0) | **15.62 %** | 26.56 % | 99         | Checkpoint lost to crash                  |
+| Obfuscated 4B real-τ (bf16 obf)          | **12.70 %** | 23.24 % | 98         | Defence gap 2.92 pp top-1, 3.32 pp top-10 |
 
 Both curves monotonically climbing at ep=100; not saturated.
 
@@ -520,12 +542,12 @@ Both curves monotonically climbing at ep=100; not saturated.
 
 **Quantisation × Algorithm 2 verdict:** fp32 required.
 
-| Format | Size | Output | Verdict |
-|---|---|---|---|
-| fp32 | 8.6 GB | coherent | ✅ reference |
-| Q8_0 | 2.3 GB | degenerate "(((,chein,zech…" | ❌ breaks |
-| Q6_K | 1.8 GB | 500 error | ❌ breaks |
-| Q5_K_M | 1.6 GB | word salad | ❌ breaks |
+| Format | Size   | Output                       | Verdict      |
+| ------ | ------ | ---------------------------- | ------------ |
+| fp32   | 8.6 GB | coherent                     | ✅ reference |
+| Q8_0   | 2.3 GB | degenerate "(((,chein,zech…" | ❌ breaks    |
+| Q6_K   | 1.8 GB | 500 error                    | ❌ breaks    |
+| Q5_K_M | 1.6 GB | word salad                   | ❌ breaks    |
 
 **Mechanism:** AloePri keymat weights are heavy-tailed per row (max ≈ 55, std ≈ 4.7). Q8_0 stores 32-element blocks with one fp16 scale; within a heavy-tailed block small values round to zero, breaking per-row covariance.
 
@@ -560,6 +582,7 @@ Active work pivoted from Gemma 4 to Qwen3-class on 2026-05-18. Blocker: post-nor
 **GGUF:** `untied-keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-uvo-PAPERLIT-bf16-native.gguf` (9.7 GB).
 
 **Two deviations vs our deployed Alg2:**
+
 - **A1:** `k_matrix = Ĥ⁻¹ · Ẑᵀ` (paper) vs `R̂_qk · Ĥ⁻¹ · Ẑ` (ours)
 - **A2:** `Û_vo = raw N(0, 1/d_head)` (paper, condition number ~500) vs `QR-stabilised + 0.05 σ` (ours, condition number ~6)
 
@@ -568,24 +591,68 @@ Active work pivoted from Gemma 4 to Qwen3-class on 2026-05-18. Blocker: post-nor
 **Results — `kq` surface (pre-softmax Q·Kᵀ):**
 
 | Layer | Plain row | Default obf | Paper-lit obf | Plain vocab | Default obf vocab |
-|---:|---:|---:|---:|---:|---:|
-| 0 | 48.63 % | 47.22 % | **43.22 %** | 0.43 % | 0.07 % |
-| 5 | 38.69 % | 38.49 % | **7.79 %** | 0.08 % | 0.04 % |
-| 11 | 27.73 % | 26.95 % | **7.52 %** | 0.02 % | 0.00 % |
-| 17 | 22.41 % | 21.17 % | **6.35 %** | 0.00 % | 0.00 % |
-| 23 | 30.13 % | 29.67 % | **6.49 %** | 0.00 % | 0.01 % |
+| ----: | --------: | ----------: | ------------: | ----------: | ----------------: |
+|     0 |   48.63 % |     47.22 % |   **43.22 %** |      0.43 % |            0.07 % |
+|     5 |   38.69 % |     38.49 % |    **7.79 %** |      0.08 % |            0.04 % |
+|    11 |   27.73 % |     26.95 % |    **7.52 %** |      0.02 % |            0.00 % |
+|    17 |   22.41 % |     21.17 % |    **6.35 %** |      0.00 % |            0.00 % |
+|    23 |   30.13 % |     29.67 % |    **6.49 %** |      0.00 % |            0.01 % |
 
 **Results — `kqv_out` surface (attention output per head, pre-W_o; §5.4 "bounded"):**
 
 | Layer | Plain row | Default obf | Paper-lit obf | Defense delta (default) | Defense delta (paper-literal) |
-|---:|---:|---:|---:|---|---|
-| 0 | 97.46 % | 83.77 % | **47.32 %** | +13.7 pp | **+50.1 pp** |
-| 5 | 50.77 % | 50.22 % | **10.49 %** | −0.5 pp | **+40.3 pp** |
-| 11 | 18.50 % | 19.83 % | **10.57 %** | +1.3 pp | similar |
-| 17 | 16.67 % | 17.75 % | **10.04 %** | +1.1 pp | similar |
-| 23 | 25.27 % | 25.99 % | **10.04 %** | −0.7 pp | similar |
+| ----: | --------: | ----------: | ------------: | ----------------------- | ----------------------------- |
+|     0 |   97.46 % |     83.77 % |   **47.32 %** | +13.7 pp                | **+50.1 pp**                  |
+|     5 |   50.77 % |     50.22 % |   **10.49 %** | −0.5 pp                 | **+40.3 pp**                  |
+|    11 |   18.50 % |     19.83 % |   **10.57 %** | +1.3 pp                 | similar                       |
+|    17 |   16.67 % |     17.75 % |   **10.04 %** | +1.1 pp                 | similar                       |
+|    23 |   25.27 % |     25.99 % |   **10.04 %** | −0.7 pp                 | similar                       |
 
 **Combined finding:** Paper Table 4's "87.14 % Noise+KeyMat → 0.0 % + Alg2" is explained as the compound of (a) paper-literal A1+A2 lowering obf TTRSR to single digits at L≥5, plus (b) vocab-disjoint split flooring ridge effectiveness near 0 % beyond L=0. The 87 % baseline itself remains unmeasured (likely requires paper's gradient-opt ISA attack or a different cell).
+
+---
+
+### 2026-05-26 — pow2-monomial UVO restores utility but leaves QK row-split open
+
+**Source:** `docs/prototype/aloepri-pow2-uvo-findings-2026-05-26.md`, `docs/prototype/aloepri-llm.html`, `evals/aloepri-attacks/results/sweep/cell-qwen3-4b-uvo-pow2e1-*`.
+
+**Current best 4B obfuscation cell:**
+
+```text
+untied-keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-uvo-pow2e1-bf16-native.gguf
+```
+
+Config: Qwen3-4B Q8_0 untied base, h=128, β=8, α_e=1.0, α_h=0.2, Alg2 matrix-Γ/Hadamard, bf16-native GGUF, `--alg2-u-vo-mode pow2-monomial --alg2-u-vo-pow2-exp 1`.
+
+**Accuracy gate:**
+
+| Cell                  | Quality probe |  HumanEval n=20 | Reading                                          |
+| --------------------- | ------------: | --------------: | ------------------------------------------------ |
+| Dense/default UVO     |          pass |     3/20 = 15 % | bf16 dense UVO hurts utility                     |
+| Non-UVO canonical     |          pass |     6/20 = 30 % | reference utility for current obfuscation family |
+| **pow2-monomial UVO** |      **pass** | **6/20 = 30 %** | recovers dense-UVO utility loss                  |
+| h256 pow2 UVO         |          fail |         skipped | larger h is not a current accuracy fix           |
+
+**Attack gate highlights, pow2-UVO h128 β8:**
+
+| Surface / attack            |                         Result | Gate reading                                 |
+| --------------------------- | -----------------------------: | -------------------------------------------- |
+| Static VMA                  |  8.98 % top-1 / 23.44 % top-10 | pass on top-1; top-10 nontrivial             |
+| Static IA                   |   0.05 % top-1 / 0.20 % top-10 | pass                                         |
+| IMA EmbedRow transformer    |   0.00 % top-1 / 0.00 % top-10 | pass                                         |
+| IMA EmbedRow ridge          | 55.47 % top-1 / 60.16 % top-10 | fail / out-of-paper side-probe               |
+| Token TFMA                  |   0.78 % top-1 / 4.69 % top-10 | pass                                         |
+| Token SDA                   |                 BLEU-4 1.28e-5 | pass                                         |
+| ISA row-split `kq` L0       |    plain 48.63 % → obf 47.20 % | fail / invariant QK surface                  |
+| ISA row-split `kqv_out` L0  |    plain 97.46 % → obf 82.45 % | partial; L0 output-surface defense preserved |
+| ISA row-split `kqv_out` L17 |    plain 16.68 % → obf 16.68 % | no later-layer gain                          |
+
+**Engineering result:** `evals/aloepri-attacks/m2_7/diagnose_isa/gpu_sweep.py` now has transparent long-run logging via `--progress-jsonl PATH` and flushed progress lines. The completed kqv_out run wrote:
+
+- `evals/aloepri-attacks/results/sweep/cell-qwen3-4b-uvo-pow2e1-attn-and-output-512-20260526/logs/gpu_sweep_kqv_out.progress.jsonl`
+- `evals/aloepri-attacks/results/sweep/cell-qwen3-4b-uvo-pow2e1-attn-and-output-512-20260526/logs/gpu_sweep_kqv_out.summary.json`
+
+**Roadmap implication:** pow2-monomial UVO is the current utility-preserving UVO form for bf16 deployment. It does **not** solve the strongest row-split Q/K attack; future defenses need Q/K-side changes or TEE/path-1 coverage for raw `kq`.
 
 ---
 
@@ -606,40 +673,40 @@ Active work pivoted from Gemma 4 to Qwen3-class on 2026-05-18. Blocker: post-nor
 
 **Gate B (behavioural consistency, 5 prompts × 3 runs each):**
 
-| Prompt | Plain class | Keymat class | Cross LCP (chars) | Verdict |
-|---|---|---|---|---|
-| "What is the capital of France?" | deterministic | deterministic | 19 | **PASS** |
-| "Write a haiku about autumn." | deterministic (123 c) | deterministic (48 c) | 1 | **FAIL** — obf output garbled (pipe chars; Û_vo numerical instability under bf16) |
-| "def fibonacci(n):" | deterministic | deterministic | 5 | **PASS** |
-| "Translate to French: Hello..." | deterministic | deterministic | 5 | **PASS** |
-| "Once upon a time..." | deterministic (161 c) | deterministic (143 c) | 48 | **PASS** |
+| Prompt                           | Plain class           | Keymat class          | Cross LCP (chars) | Verdict                                                                           |
+| -------------------------------- | --------------------- | --------------------- | ----------------- | --------------------------------------------------------------------------------- |
+| "What is the capital of France?" | deterministic         | deterministic         | 19                | **PASS**                                                                          |
+| "Write a haiku about autumn."    | deterministic (123 c) | deterministic (48 c)  | 1                 | **FAIL** — obf output garbled (pipe chars; Û_vo numerical instability under bf16) |
+| "def fibonacci(n):"              | deterministic         | deterministic         | 5                 | **PASS**                                                                          |
+| "Translate to French: Hello..."  | deterministic         | deterministic         | 5                 | **PASS**                                                                          |
+| "Once upon a time..."            | deterministic (161 c) | deterministic (143 c) | 48                | **PASS**                                                                          |
 
 Largely PASS with minor coherence degradation on structured-format tasks (haiku).
 
 **Gate C — HumanEval (50 tasks):**
 
-| Model | passed | accuracy | parse_rate | wall |
-|---|---:|---:|---:|---|
-| Plaintext | 20 | **40.0 %** | 1.0 | 73.8 s |
-| keymat-h128-fp32 | 17 | **34.0 %** | 1.0 | 335.8 s (4.5× slower) |
+| Model            | passed |   accuracy | parse_rate | wall                  |
+| ---------------- | -----: | ---------: | ---------: | --------------------- |
+| Plaintext        |     20 | **40.0 %** |        1.0 | 73.8 s                |
+| keymat-h128-fp32 |     17 | **34.0 %** |        1.0 | 335.8 s (4.5× slower) |
 
 **−6.0 pp** accuracy loss; within acceptable range.
 
 **Gate C — MMLU (200 questions, 47 subjects):**
 
-| Model | correct | parsed | accuracy | parse_rate |
-|---|---:|---:|---:|---:|
-| Plaintext | 109 | 197 | **54.5 %** | 0.985 |
-| keymat-h128-fp32 | 110 | 199 | **55.0 %** | 0.995 |
+| Model            | correct | parsed |   accuracy | parse_rate |
+| ---------------- | ------: | -----: | ---------: | ---------: |
+| Plaintext        |     109 |    197 | **54.5 %** |      0.985 |
+| keymat-h128-fp32 |     110 |    199 | **55.0 %** |      0.995 |
 
 **+0.5 pp** (within noise). Negligible.
 
 **Gate C — PIQA (200 prompts):**
 
-| Model | correct | parsed | accuracy | parse_rate |
-|---|---:|---:|---:|---:|
-| Plaintext | 137 | 200 | **68.5 %** | 1.0 |
-| keymat-h128-fp32 | 129 | 199 | **64.5 %** | 0.995 |
+| Model            | correct | parsed |   accuracy | parse_rate |
+| ---------------- | ------: | -----: | ---------: | ---------: |
+| Plaintext        |     137 |    200 | **68.5 %** |        1.0 |
+| keymat-h128-fp32 |     129 |    199 | **64.5 %** |      0.995 |
 
 **−4.0 pp** accuracy loss; same scale as HumanEval.
 
@@ -647,22 +714,366 @@ Largely PASS with minor coherence degradation on structured-format tasks (haiku)
 
 ---
 
+### 2026-05-27 — Qwen3-8B paperK/no-H/pow2 sweep + β-bifurcation derivation
+
+**Source:** `docs/prototype/aloepri-qk-pow2-hybrid-findings-2026-05-27.md`,
+`docs/research/aloepri-h-beta-interaction-2026-05-27.md`,
+`evals/aloepri-attacks/results/sweep/cell-qwen3-8b-paperK-noH-uvo-pow2e1-b{2,4}-h{128,256}-20260527/`,
+`evals/aloepri-attacks/results/sweep/cell-qwen3-8b-plain-reference-20260527/`.
+
+**Hypothesis going in:** at Qwen3-8B (d=4096) the extra residual headroom
+should let the 4B β=2 / no-H / pow2-monomial recipe absorb stronger Q/K
+perturbations (β=4 or h=256 or both). Empirics falsify this on every
+lever.
+
+#### β / h cliff (8B, paperK / no-H / pow2-monomial / αₑ=1.0 / αₕ=0.2 / matrix-Γ / bf16)
+
+|     h |     β | κ(K_d) | Quality probe                             |   HumanEval n=20 | Δ vs plain |
+| ----: | ----: | -----: | ----------------------------------------- | ---------------: | ---------: |
+|   128 | **2** |   7.79 | pass                                      |  **8/20 = 40 %** |     −10 pp |
+|   128 |     4 |   7.79 | **fail** (single-token loops `is is is…`) |          skipped |          — |
+|   256 |     2 |  10.67 | readable; no task-coherence               |         **0/20** |     −50 pp |
+|   256 |     4 |  10.67 | **fail**                                  |          skipped |          — |
+| plain |     — |   1.00 | —                                         | **10/20 = 50 %** |          — |
+
+**Plain baseline thinking-mode doublecheck:** plaintext Qwen3-8B through
+the _same_ `/completion` pipeline (AloePriClient routes to `/completion`,
+never `/v1/chat/completions`; no chat template runs) gives 10/20 with
+**0/20 plain completions containing `<think>` tokens**. 3/20 plain
+failures show plain-English reasoning drift mid-code; the drift doesn't
+crash plain accuracy. So Qwen3-8B's instruct/thinking-mode training
+does not silently leak into raw base-completion regime, and the 50 %
+plain ceiling is on-distribution for raw `/completion` (chat + thinking
+reaches 70–80 % on this model).
+
+#### β-bifurcation derivation
+
+The empirical β cliff is structural, not gradual. With `H=I` (no
+Hadamard signs):
+
+```
+M_q · M_kᵀ = R̂ · Ẑ² · R̂ᵀ            (paper-literal-K)
+            = I                          (default-K)
+```
+
+So paper-literal-K differs from default-K only by `Ẑ²` between the two
+rotations. `Ẑ_block` is the direct sum of independent in-window
+permutations from `S_β`; `Ẑ² = I` iff every window's σ is involutive.
+Counting involutions (OEIS A000085) over 32 windows at β=2 and 16 windows
+at β=4:
+
+|   β | Prob(σ²=I) per window | Global Prob(Ẑ²=I) |
+| --: | --------------------: | ----------------: |
+|   2 |                 1.000 |             **1** |
+|   4 |                 0.417 |        4.4 × 10⁻⁷ |
+|   8 |                 0.019 |       1.7 × 10⁻¹⁴ |
+
+So **β=2 reduces paper-literal-K to default-K at the score surface**
+(zero K-side defense), and **β=4 is the first β where the surface is
+generically distorted**. Between them lies no smooth midpoint — β=3
+isn't supported by the fixed-window sampler (RoPE-pair geometry). The
+empirical "β=2 passes utility / β=4 collapses generation" cliff is
+predicted exactly.
+
+#### h-cliff: κ(K_d) depth compounding
+
+κ(K_d) scales with h (independent of β):
+
+|   h | κ(K_d) | per-layer worst-case bf16 drift κ·ε_bf16 | depth-compound at L=36 |
+| --: | -----: | ---------------------------------------: | ---------------------: |
+| 128 |   7.79 |                               6.1 × 10⁻² |         e^2.19 − 1 ≈ 8 |
+| 256 |  10.67 |                               8.3 × 10⁻² |        e^3.00 − 1 ≈ 19 |
+
+The 37 % κ jump (h=128 → h=256) blows up ~2.4× under the depth-
+compounded bound, which is the operator-norm-level argument. The
+actual decoder argmax sensitivity is sharper because 8B's vocabulary-
+local geometry is denser — small operator drift flips top-1 over
+32k vocab once it correlates across tokens, producing the
+"loop attractor" failure mode (`if not isinstance(strings, list):
+return None` repeated 15×) we observe at h=256 / β=2 even though
+the readability heuristic passes on short prompts (France → Paris).
+
+Full derivation in
+`docs/research/aloepri-h-beta-interaction-2026-05-27.md` §§ 1–3, with
+§4 sketching four candidate levers that don't collapse to the β=2 / β=4
+dichotomy (mixed-window γ-sampler, low-rank additive R̂_qk delta,
+anti-correlated cross-layer keys, layer-shared Ẑ_block).
+
+#### Attack-harness readings on the working 8B cell (paperK / no-H / pow2-monomial / h=128 / β=2)
+
+| Surface / attack                                                                   |        TTRSR top-1 | TTRSR top-10 | Risk       | Notes                                                                 |
+| ---------------------------------------------------------------------------------- | -----------------: | -----------: | ---------- | --------------------------------------------------------------------- |
+| Static VMA (256 prompts, 36 layers, 7 proj kinds)                                  |         **1.17 %** |       3.52 % | low        | strong defense                                                        |
+| Static IA-gate (4096 test tokens)                                                  |         **0.07 %** |       0.27 % | low        | very strong                                                           |
+| Static IA-attn (4096 test tokens)                                                  |         **0.02 %** |       0.05 % | low        | very strong                                                           |
+| IMA-EmbedRow-transformer (paper §F.1 trained Qwen-backbone inverter, n_train=4096) |         **0.00 %** |       0.00 % | low        | actual paper attack defeated                                          |
+| Per-head fingerprint, attn_q                                                       |             3.73 % |      18.14 % | low        | Q-head identity hidden                                                |
+| Per-head fingerprint, attn_k                                                       |        **13.19 %** |      63.54 % | **medium** | K head identity partially recoverable                                 |
+| Per-head fingerprint, attn_v                                                       |        **13.89 %** |      63.54 % | **medium** | V head identity partially recoverable                                 |
+| Per-head fingerprint, attn_output                                                  |             3.21 % |      15.97 % | low        | O head identity hidden                                                |
+| V/O channel-pair, vo_v_match                                                       |        **12.50 %** |      63.54 % | **medium** | V channel identity partially recoverable                              |
+| V/O channel-pair, vo_o_match                                                       |             3.21 % |      15.89 % | low        | O channel identity hidden                                             |
+| V/O channel-pair, vo_pair_match                                                    |             3.82 % |       3.82 % | low        | paired V+O identity hidden                                            |
+| ISA AttnScore `kq` L=0 (row split, 3 seeds, 512 prompts; plain 49.02 % ± 0.61)     | **48.56 % ± 0.67** |      58.86 % | high       | **+0.46 pp defense** — predicted exact by β-bifurcation               |
+| ISA AttnScore `kq` L=5 (plain 39.52 % ± 0.51)                                      | **39.59 % ± 0.65** |      53.71 % | high       | **−0.07 pp defense**                                                  |
+| ISA AttnScore `kqv_out` L=0 (plain 93.02 % ± 0.93)                                 | **82.26 % ± 1.38** |      96.04 % | high       | **+10.76 pp defense** (Ûvo pow2 channel-scale lever)                  |
+| ISA AttnScore `kqv_out` L=5 (plain 50.23 % ± 0.93)                                 | **49.44 % ± 1.22** |      62.10 % | high       | **+0.79 pp defense**                                                  |
+| ISA HiddenState multikey K=64 at attn_norm-17 (paper-faithful, seed 20260521)      |        **10.22 %** |      20.68 % | **medium** | **higher than 4B β=2 ref (3.89 %, low)** — confirms 8B HS d=4096 leak |
+
+> **IMA-EmbedRow-ridge attack DELETED 2026-05-27** from
+> `m2_7/run_ima_embedrow_attacks.py` + `..._multikey.py` + orchestrator.
+> It over-triggered on the ~293 identity-fixed special-token pairs
+> regardless of obfuscation strength (96.88 % top-1 here, 97.66 % on
+> 4B prior — both well above the 4B no-Alg2 row's 99.22 % control,
+> indicating the attack reads identity-fixed tokens, not τ-permuted
+> ones). It was not the paper's actual IMA attack surface. See
+> `feedback_aloepri_attack_harness_disparities.md` memory note; the
+> paper-faithful trained-transformer variant (IMA-EmbedRow-transformer)
+> is retained and lands 0.00 % on this cell.
+
+**Per-head and V/O reading:** K/V-side TTRSR (~13 %) is the
+**incidental** recoverability of _which head a row belongs to_,
+not of the row contents themselves — Q/O-side land at ~3 % (random-
+guess floor on 32 heads is 3.13 %). This mirrors the 4B sweep
+behavior. The bf16-commuting pow2-monomial UVO leaves the
+V/O magnitude structure visible (signed permutation × power-of-two
+scaling preserves L2 ranks per channel), so per-head V/O fingerprints
+remain a small statistical leak; full-head row contents do not
+recover. No surface in this measurement set is in the "high" risk
+band.
+
+**Wall + artifacts:**
+
+- 8B obf GGUF builds: ≈3 min each (h=128 17.4 GB κ=7.79, h=256 18.4 GB
+  κ=10.67) on host CPU via `obfuscate_qwen3_gguf.py`.
+- Per cell, HumanEval n=20 = ≈11 min, quality probe = 22 s,
+  static + IMA-EmbedRow attacks combined ≈ 4 min.
+- Per-head fingerprint = 87 s, V/O channel-pair = 84 s.
+- Attn capture (512 prompts, kq+kqv_out at L=0,5, flash-attn off) ≈
+  35 min on the m2_7-attn-output image (Vulkan node visible but
+  patched matrix-Γ kernels appear to fall back to CPU on flash-attn
+  off path).
+
+**ISA AttnScore reading:** `kq` defense is essentially zero at both
+L=0 (+0.46 pp) and L=5 (−0.07 pp) — predicted exact by the
+β-bifurcation: paper-literal-K at β=2 reduces to default-K at the
+score surface (`Ẑ² = I` deterministically per § 1.3 of the research
+note). The Ûvo pow2-monomial lever drives **+10.76 pp** at `kqv_out`
+L=0 (plain 93.02 % → obf 82.26 %), but vanishes by L=5
+(+0.79 pp). This mirrors the 4B β=2 cell pattern exactly. Both
+absolute obf TTRSR numbers stay in the 48–82 % band — far above any
+"defended" threshold — so this surface is **not effectively
+protected** by static obfuscation alone.
+
+**ISA HiddenState reading — the 8B HS gap re-confirmed.** At
+attn_norm-17, K=64 multikey ridge, paper-faithful (row split,
+attacker seed 20260521, vendor CPU keymat pool, ridge solve fell
+back from GPU to CPU LAPACK on OOM at d=4096×4352):
+
+| Cell                               | top-1 TTRSR | top-10 TTRSR | risk       |
+| ---------------------------------- | ----------: | -----------: | ---------- |
+| 4B β=2 / no-H / pow2 / h=128 (ref) |      3.89 % |      20.92 % | low        |
+| **8B β=2 / no-H / pow2 / h=128**   | **10.22 %** |      20.68 % | **medium** |
+
+This re-confirms the 2026-05-21 finding (above) that **Ûvo
+attenuation drops with d**: at 8B's d=4096 there are more observed
+coordinates for the ridge attacker to fit, and the bf16-commuting
+pow2-monomial UVO no longer provides meaningful HiddenState
+attenuation. The 8B β=2 cell lands at **medium** risk on
+HiddenState where 4B β=2 was low — falsifying any "8B is more
+private because larger d" hypothesis on this surface.
+
+**Decisions / next steps:**
+
+1. **Working operating point on 8B = paperK / no-H / pow2 / h=128 /
+   β=2.** Only viable utility cell measured. Defense profile:
+   strong on all static / weight-inversion surfaces (≤ 1.2 % VMA,
+   ≤ 0.07 % IA, 0.00 % paper-faithful IMA-EmbedRow-transformer);
+   weak on `kq` (no defense, structural by β-bifurcation); weak on
+   HiddenState (10.22 % medium, worse than 4B); only `kqv_out` L=0
+   moves +10.76 pp on the Ûvo lever.
+2. **The β axis is exhausted on both 4B and 8B.** No smooth
+   midpoint between "β=2 = no defense" and "β=4 = quality death" under
+   `paper-literal-K + matrix-Γ` on Qwen3 dense.
+3. **`kq` row-split is structurally undefended at β=2 on every model
+   size** — the bifurcation makes paper-literal-K equivalent to
+   default-K on the score surface. To defend `kq` you must change
+   the K-side construction kind (mixed-window γ-sampler, low-rank
+   additive R̂_qk delta, layer-shared Ẑ_block, or anti-correlated
+   cross-layer keys — see `aloepri-h-beta-interaction-2026-05-27.md`
+   §4) — or use path-1 (TEE-protected attention) for an in-TEE first
+   decoder layer.
+4. **HiddenState defense on 8B requires more than h=128 / β=2 /
+   pow2-Ûvo.** The 4B → 8B HS gap is structural in d, not in our
+   construction choices. Same followup candidates as #3 apply.
+
+**GPU note:** `diagnose_isa/gpu_sweep.py` (AttnScore) successfully
+used ROCm/rocSOLVER throughout. `run_isa_multikey.py` (HiddenState
+multikey K=64) attempted GPU ridge solve but hit
+`RuntimeError`/OOM at the 28928×4352 normal-equations form and
+silently fell back to CPU LAPACK — same behaviour the
+2026-05-21 8B run reported. The CPU fallback is correctness-
+preserving but slow (~8 min total at K=64). Tracking as
+infra-TODO: tighter rocSOLVER memory plan at d=4096 K≥64 would let
+the multikey run stay on GPU end-to-end.
+
+---
+
+### 2026-05-27 (later) — three new deobfuscation attacks (per 2026-05-26 handoff)
+
+**Source:** `docs/handoffs/2026-05-26-new-deobfuscation-attacks.md`,
+`evals/aloepri-attacks/results/sweep/cell-qwen3-4b-paperK-noH-uvo-pow2e1-b2-20260527/{m2_7-arrowmatch,m2_7-sequence-ima-*}.json`,
+`evals/aloepri-attacks/results/sweep/cell-qwen3-4b-plain-control-20260527/`.
+
+The 2026-05-26 handoff implemented three new deobfuscation-attack
+drivers (C1 TFMA-seeded ridge, ArrowMatch port, Sequence-IMA scaffold)
+and queued them for next-session empirical work. Status today:
+
+| #   | Attack                                      | Run status                                   | Verdict                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| --- | ------------------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | **C1: TFMA-seeded ridge**                   | **Never ran. Driver deleted today.**         | The handoff added TFMA-seeded sampling to the existing IMA-EmbedRow-ridge attack. The ridge variant itself was removed from `run_ima_embedrow_attacks{,_multikey}.py` + orchestrator earlier today (commit `ab6c1f5`) because it over-triggered on identity-fixed specials. No TFMA-seeded measurements were captured before deletion. To revive C1 we'd need a non-ridge inverter (transformer/MLP) with the TFMA-seeded training-pair selection — not the deleted ridge code. |
+| 2   | **ArrowMatch** (Wang et al. USENIX Sec '25) | Ran on Q3-4B paperK β=2 cell + plain control | **Structurally defeated** by AloePri's matrix-multiplication keymat, exactly as Obs2 from the paper predicts.                                                                                                                                                                                                                                                                                                                                                                   |
+| 3   | **Sequence-IMA scaffold**                   | Ran on Q3-4B paperK β=2 cell + α_e=0 control | **Inverter at paper-default budget is at corpus-frequency floor**, not measuring keymat inversion. Both obfuscated and α_e=0 plain controls land at 3.9–4.1 % top-1 / 21.9–22.7 % top-10 — same number — indicating the inverter never learned the keymat dependency. Re-run with scaled budget before drawing defense conclusions.                                                                                                                                             |
+
+#### ArrowMatch — direction-similarity attack on token_embd
+
+Two-stage cosine matching from Wang et al. (USENIX Sec '25, "Game of
+Arrows"). For each obfuscated row `w̃_i`, find
+`σ̂(i) = argmin_j cos(w̃_i, w_j)` over plaintext rows; then length-
+adjust `ŝ_i = ||w_{σ(i)}|| / ||w̃_i||`. Paper's Obs2 claims direction-
+similarity is broken only by per-vector ops (Π+D), and AloePri's
+matrix-multiplication keymat `Q̂` is exactly the case Obs2 identifies
+as immune.
+
+**Configuration:** Q3-4B paperK / no-H / pow2 / β=2 cell + plain
+control (untied bf16). Token embedding tensor, V=151 669 active /
+151 936 total, chunked GPU cosine match on ROCm, 100 s wall.
+Stage 2 length adjustment skipped (broadcast bug on
+active-vocab vs full-vocab shape — would need a 1-line script fix to
+land in future sweeps).
+
+**Result:**
+
+| Cell                                                  | Stage-1 top-1 | Stage-1 top-10 |        cosine at correct (mean ± std) |
+| ----------------------------------------------------- | ------------: | -------------: | ------------------------------------: |
+| Plain control (identity-τ, `--plain == --obfuscated`) |   **98.58 %** |        98.59 % |                     **1.000** ± 0.000 |
+| Obfuscated (paperK β=2)                               |    **0.00 %** |        0.008 % | **−0.0001** ± 0.020, p10/p90 = ±0.025 |
+
+Plain-control 98.58 % top-1 with cosine = 1.000 confirms the attack
+implementation works (the residual 1.4 % gap reflects
+duplicate/near-duplicate rows in Qwen3's tokenizer). On the
+obfuscated cell, **cosine alignment between corresponding plain/obf
+rows is statistically zero** — the matrix-multiplication keymat
+zeroes the direction signal exactly as Obs2 anticipates. Defended by
+construction; no follow-up needed on this surface.
+
+Attack-harness ledger row added: `m2_7-arrowmatch.json` next to the
+other 4B β=2 cell results.
+
+#### Sequence-IMA scaffold — corpus-prior floor reading
+
+Per-row paper IMA inverts each token row independently; the
+handoff's Sequence-IMA scaffold (`run_sequence_ima.py`) instead
+processes a window of `n_q=32` obfuscated rows jointly through a
+2-layer 8-head encoder (618 M params at d_model=d_obs=2 816), with
+the predicted output being the full `n_q`-position plain-token
+sequence. Cross-attention over the window should give ~√n_q SNR
+gain over per-row paper IMA.
+
+**Configuration:** Q3-4B Q8_0-untied as plain table; attacker
+synthesises own τ_a / Q̂_a / noise_a on a 9 470-token public
+corpus; n_train=128 sequences × seq_len=32 = 4 096 positions,
+n_val=16, n_test=16, batch=8, lr=3e-4, epochs=2 (paper §F.2
+defaults); AdamW; ROCm GPU.
+
+**Result:**
+
+| Cell                                    |      top-1 |  top-10 |     val_top1 ep0 → ep1 |   wall |
+| --------------------------------------- | ---------: | ------: | ---------------------: | -----: |
+| Obfuscated (α_e=1.0, paperK β=2 keymat) | **4.10 %** | 22.66 % | 4.30 % → 3.91 % (flat) | 37.4 s |
+| Plain control (α_e=0.0, same keymat)    | **3.91 %** | 21.88 % |                 (same) | 37.4 s |
+
+The **noise-free plain control lands at the same number** as the
+obfuscated cell. Removing the entire Gaussian noise budget moved
+top-1 by 0.19 pp (within run-to-run noise). The val curve never
+descends past ep0. Combined reading:
+
+1. The 618 M-param inverter at n_train=128 × 32 tok = 4 096
+   positions is wildly under-trained; loss never converges. It's
+   stuck at the **corpus-token-frequency prior** — the marginal
+   distribution of frequent tokens in the public corpus
+   (Qwen3's tokenizer has a small set of dominant whitespace /
+   punctuation / common-word tokens that account for ~4 %
+   marginal frequency).
+2. So the 4.10 % obfuscated number was NOT a measurement of
+   weakened defense — it was the corpus-prior floor. The
+   handoff's "Sequence-IMA could beat per-row IMA" hypothesis is
+   not falsified (sequence context probably DOES add signal), but
+   the current budget can't expose it.
+3. The proper plain control for this scaffold (a meaningful
+   ~100 % ceiling) would require either (a) `Q̂_a = I` so the
+   inverter just learns identity (no flag for this in the current
+   script), or (b) a much larger training budget so the inverter
+   actually descends below the corpus prior.
+
+**Verdict:** scaffold cleared the smoke test but is not yet a
+production attack reading. Before re-running on real defended
+cells, the budget needs to scale (paper's hidden-experiment budget
+is 4 096+ training pairs at higher epochs) AND ideally the
+synthesis pipeline should rotate `τ_a` per training pair to force
+key-invariant inversion (the handoff already notes this as the
+target). Until then any Sequence-IMA TTRSR is "did the inverter
+escape corpus-frequency floor", not "did obfuscation hold".
+
+#### Decisions
+
+1. **ArrowMatch closed-out** on the 4B paperK β=2 cell. Add to the
+   §08 attack ledger as a pass-by-construction. No follow-up unless
+   future Alg2 variants change the keymat structure.
+2. **C1 TFMA-seeded ridge needs a re-implementation path** if we
+   want a TFMA-seeded measurement. The ridge variant is gone; a
+   non-ridge inverter (transformer or small MLP) with the same
+   TFMA-seeded training-pair selection would be the equivalent
+   measurement. Estimated ~1 day to graft the
+   `_load_corpus_token_ids_from_*` helpers (preserved in the
+   deletion history but removed from current code) onto the
+   transformer-inverter driver. Not prioritised today.
+3. **Sequence-IMA scaffold needs budget scaling + identity-keymat
+   control flag** before it produces a defense reading. The
+   plain-vs-obf parity at the current budget makes any obfuscated
+   number meaningless; expand both (a) training to n_train ≥ 4 096
+   sequences + epochs ≥ 8-16, and (b) add a `--attacker-keymat-
+identity` flag for a tight ~100 % plain control. ~1-2 day
+   patch.
+
+**Wall + artifacts:**
+
+- ArrowMatch obf: 100.99 s on ROCm (151 669 × 151 669 cosine via
+  chunked match, V × V matrix never materialised).
+- ArrowMatch plain control: 53.48 s (same chunking, identity-τ
+  skips the τ-lookup hot path).
+- Sequence-IMA train+eval: 37.4 s train + 0.7 s eval on GPU.
+- Plain-control directory:
+  `evals/aloepri-attacks/results/sweep/cell-qwen3-4b-plain-control-20260527/`.
+
+---
+
 ## 5. Applicability under openweight threat model
 
 Nine of AloePri's ten primitives are **inapplicable** to GELO's threat model (they protect the wrong axis):
 
-| AloePri primitive | GELO applicability |
-|---|---|
-| Token-level vocab permutation τ | ❌ Token IDs are TEE-internal; embedding lookup never crosses PCIe |
-| Embedding/lm_head Gaussian noise α_e·ε | ❌ GPU has W_e directly; noise costs accuracy without changing what GPU already sees |
-| Key matrices P̂, Q̂ with expansion h | ❌ Shield rows fill the "extra dims" role with per-batch freshness (strictly stronger) |
-| Block-RoPE permutation Ẑ_block | ❌ Static defense against W_q ↔ W_k matching; we mask activations, not weights |
-| RoPE-aware Q/K rotation R̂_qk | ❌ Cancels in Q·Kᵀ; doesn't hide the dot product the GPU computes |
-| Q/K scaling Ĥ_qk | ❌ Same cancellation |
-| V/O paired invertible Û_vo | ❌ Cancels in V·O composition |
-| Inter-head permutation τ_kv, τ_group | ❌ Permutes static weight storage; adversary matches by content |
-| RMSNorm κI approximation | ❌ Compensates for P̂ expansion we don't introduce |
-| **Empirical attack suite** (`src/security_qwen/`) | ✅ **Highly portable; the one we ported.** |
+| AloePri primitive                                 | GELO applicability                                                                     |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Token-level vocab permutation τ                   | ❌ Token IDs are TEE-internal; embedding lookup never crosses PCIe                     |
+| Embedding/lm_head Gaussian noise α_e·ε            | ❌ GPU has W_e directly; noise costs accuracy without changing what GPU already sees   |
+| Key matrices P̂, Q̂ with expansion h                | ❌ Shield rows fill the "extra dims" role with per-batch freshness (strictly stronger) |
+| Block-RoPE permutation Ẑ_block                    | ❌ Static defense against W_q ↔ W_k matching; we mask activations, not weights         |
+| RoPE-aware Q/K rotation R̂_qk                      | ❌ Cancels in Q·Kᵀ; doesn't hide the dot product the GPU computes                      |
+| Q/K scaling Ĥ_qk                                  | ❌ Same cancellation                                                                   |
+| V/O paired invertible Û_vo                        | ❌ Cancels in V·O composition                                                          |
+| Inter-head permutation τ_kv, τ_group              | ❌ Permutes static weight storage; adversary matches by content                        |
+| RMSNorm κI approximation                          | ❌ Compensates for P̂ expansion we don't introduce                                      |
+| **Empirical attack suite** (`src/security_qwen/`) | ✅ **Highly portable; the one we ported.**                                             |
 
 **The structural difference:** AloePri is fully static — one τ, one {P̂, Q̂}, one ε_e, all baked into weights. Same prompt twice produces identical obfuscated traffic; observations accumulate across requests. GELO+TwinShield resamples fresh Haar A_b per forward pass; each batch is information-theoretically independent. GELO is in a categorically stronger security class.
 
@@ -679,21 +1090,23 @@ Single-seed multi-key TTRSR readings at K=64 attacker-keymat-pool carry ~5 pp st
 ### Vocab-disjoint methodology floor
 
 Under vocab-disjoint split, ridge attacker on fixed-feature surfaces (where Q/K depend on token id, not content) can only learn the identity-like baseline. The "0 %" in paper Table 4 is a measurement floor, not a defense victory. Paper Table 4's reproducibility story:
+
 - Paper-literal A1+A2 construction lowers obf TTRSR to single digits at L≥5.
 - Vocab-disjoint methodology floors both plain and obf to ~0 % beyond L=0.
 - Compound: paper's "0.0 %" reproduces.
 
 ### Three-condition matrix (C0/C1/C2)
 
-| Cond | Purpose | Expected C2 IMA/ISA |
-|---|---|---|
-| C0 plain | Sanity: attacks work (no defense) | ≥ 95 % |
-| C1 mask-only | Baseline: what does the mask alone buy? | < C0, > C2 |
-| C2 default | Production gate (mask + shield) | < 10 % |
+| Cond         | Purpose                                 | Expected C2 IMA/ISA |
+| ------------ | --------------------------------------- | ------------------- |
+| C0 plain     | Sanity: attacks work (no defense)       | ≥ 95 %              |
+| C1 mask-only | Baseline: what does the mask alone buy? | < C0, > C2          |
+| C2 default   | Production gate (mask + shield)         | < 10 %              |
 
 ### Gate-acceptance summary
 
 Phase 2 acceptance requires:
+
 1. `run_all.py --condition c2` produces results JSON with all 6 attacks reporting TTRSR.
 2. C0 reports TTRSR ≥ 95 % on IMA + ISA + VMA.
 3. C2 reports TTRSR < 10 % on IMA + ISA.
@@ -768,23 +1181,23 @@ Phase 2 acceptance requires:
 
 ### Source handoffs distilled into §4 (chronicle)
 
-| Date | Handoff |
-|---|---|
-| 2026-05-18 | `2026-05-18-aloepri-attack-resistance.md` |
-| 2026-05-18 | `2026-05-18-gemma4-architecture-support.md` |
-| 2026-05-19 | `2026-05-19-alg2-qwen3-shape-analysis.md` |
-| 2026-05-19 | `2026-05-19-alg2-z-block-degeneracy.md` |
-| 2026-05-19 | `2026-05-19-m2-7-attack-findings.md` |
-| 2026-05-19 | `2026-05-19-option-c-m2-7-rerun-findings.md` |
-| 2026-05-19 | `2026-05-19-option-c-steps-0-1-2a-findings.md` |
-| 2026-05-19 | `2026-05-19-aloepri-attack-surface-followups.md` |
-| 2026-05-20 | `2026-05-20-aloepri-pi-special-token-fix.md` |
+| Date       | Handoff                                                         |
+| ---------- | --------------------------------------------------------------- |
+| 2026-05-18 | `2026-05-18-aloepri-attack-resistance.md`                       |
+| 2026-05-18 | `2026-05-18-gemma4-architecture-support.md`                     |
+| 2026-05-19 | `2026-05-19-alg2-qwen3-shape-analysis.md`                       |
+| 2026-05-19 | `2026-05-19-alg2-z-block-degeneracy.md`                         |
+| 2026-05-19 | `2026-05-19-m2-7-attack-findings.md`                            |
+| 2026-05-19 | `2026-05-19-option-c-m2-7-rerun-findings.md`                    |
+| 2026-05-19 | `2026-05-19-option-c-steps-0-1-2a-findings.md`                  |
+| 2026-05-19 | `2026-05-19-aloepri-attack-surface-followups.md`                |
+| 2026-05-20 | `2026-05-20-aloepri-pi-special-token-fix.md`                    |
 | 2026-05-20 | `2026-05-20-aloepri-attacks-status-and-paired-data-defences.md` |
-| 2026-05-20 | `2026-05-20-ima-embedrow-transformer-investigation.md` |
-| 2026-05-21 | `2026-05-21-aloepri-quantisation-and-alg2-gaps.md` |
-| 2026-05-21 | `2026-05-21-aloepri-next-steps.md` |
-| 2026-05-21 | `2026-05-21-aloepri-gemma-deferred.md` |
-| 2026-05-21 | `2026-05-21-ima-transformer-paper-disparity.md` |
-| 2026-05-21 | `2026-05-21-uvo-isa-multikey-and-gpu-keymat-bug.md` |
-| 2026-05-26 | `2026-05-26-alg2-paper-literal-defense-gap.md` |
-| 2026-05-26 | `2026-05-26-aloepri-recommendations.md` |
+| 2026-05-20 | `2026-05-20-ima-embedrow-transformer-investigation.md`          |
+| 2026-05-21 | `2026-05-21-aloepri-quantisation-and-alg2-gaps.md`              |
+| 2026-05-21 | `2026-05-21-aloepri-next-steps.md`                              |
+| 2026-05-21 | `2026-05-21-aloepri-gemma-deferred.md`                          |
+| 2026-05-21 | `2026-05-21-ima-transformer-paper-disparity.md`                 |
+| 2026-05-21 | `2026-05-21-uvo-isa-multikey-and-gpu-keymat-bug.md`             |
+| 2026-05-26 | `2026-05-26-alg2-paper-literal-defense-gap.md`                  |
+| 2026-05-26 | `2026-05-26-aloepri-recommendations.md`                         |

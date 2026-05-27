@@ -1,0 +1,20 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+[ima_embedrow_attacks] MemAvailable=25.2 GB (min 25.0 GB)
+[IMA-EmbedRow] loading plaintext GGUF: /home/timo/.cache/huggingface/hub/models--bartowski--Qwen_Qwen3-8B-GGUF/snapshots/0b69f75b7472688e6808490aa2b85efdb81b5ce7/Qwen_Qwen3-8B-bf16.gguf
+  loaded vocab=151936 d_eff=4096 n_layers=36
+[IMA-EmbedRow] loading obfuscated GGUF: /home/timo/.cache/huggingface/path-2-aloepri/qwen3-8b/keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-uvo-beta1-bf16.gguf
+  loaded vocab=151936 d_eff=4352 n_layers=36
+[IMA-EmbedRow] loading τ from /home/timo/.cache/huggingface/path-2-aloepri/qwen3-8b/keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-uvo-beta1-bf16.gguf.key.npz
+  τ active_size=151669 (rest identity)
+[IMA-EmbedRow] running IMA-EmbedRow-ridge (multi-α ridge on embed rows)…
+  ima_embedrow_ridge top1=0.9688 top10=0.9922 risk=high α*=1.0
+[IMA-EmbedRow] running IMA-EmbedRow-transformer (paper §F.1 trained Qwen-backbone inverter, public-corpus pipeline)…
+  loading tokenizer from Qwen/Qwen3-8B
+  collecting public-corpus token windows (seq_len=32, train=128, val=16, test=16)
+  pre-generating multi-key pool: K=64 attacker keymats via Algorithm 1 (h=128, λ=0.3, α_e=1.0, base_seed=20360517)
+  building paper-like inverter (d_obs=4352 d_plain=4096 vocab=151936)
+  saved checkpoint → /home/timo/.cache/aloepri-ima-checkpoints/ima_xformer_baa72630b5541a7a.pt
+  saved best-state → ima_xformer_baa72630b5541a7a.best.pt
+  ima_embedrow_transformer top1=0.0000 top10=0.0000 risk=low best_epoch=0
+[IMA-EmbedRow] wrote → /home/timo/repos/private-rag-path-2/evals/aloepri-attacks/results/sweep/cell-qwen3-8b-uvo-beta1-attn-multilayer-20260526/ima-embedrow-multikey.json

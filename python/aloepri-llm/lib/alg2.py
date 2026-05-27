@@ -101,6 +101,7 @@ def generate_block_perm(
     gamma: float,
     rope_base: float,
     seed: int,
+    mode: str = "fixed_window",
 ) -> np.ndarray:
     """Block-wise locality-preserving permutation of RoPE pairs.
 
@@ -109,24 +110,42 @@ def generate_block_perm(
     RoPE (R̂_qk's commutation with RoPE assumes the data at position
     i continues to see RoPE frequency θ_i).
 
-    The earlier dynamic-window softmax variant (parameterised by β,
-    γ, rope_base) collapsed to identity at default params — see
-    docs/handoffs/2026-05-19-alg2-z-block-degeneracy.md. This
-    replacement uses **fixed β-wide windows**: each consecutive group
-    of β RoPE pairs is shuffled internally. `γ` and `rope_base` are
-    accepted for signature stability but unused.
+    `mode="fixed_window"` is the hardened path-2 default: each
+    consecutive group of β RoPE pairs is shuffled internally, ignoring
+    γ and rope_base. `mode="dynamic_window"` retains the paper-like
+    softmax window sampler; with γ=1e3 it often collapses to identity,
+    which is useful for paper-fidelity probes but weak as a defence.
     """
-    _ = (gamma, rope_base)  # unused — see docstring
+    if mode not in {"fixed_window", "dynamic_window"}:
+        raise ValueError(f"unsupported block permutation mode {mode!r}")
     rng = np.random.default_rng(seed)
     beta = max(1, min(int(beta), num_blocks))
     perm_blocks: list[int] = []
     start = 0
-    while start < num_blocks:
-        c = min(beta, num_blocks - start)
-        window = np.arange(start, start + c, dtype=np.int64)
-        rng.shuffle(window)
-        perm_blocks.extend(window.tolist())
-        start += c
+    if mode == "fixed_window":
+        while start < num_blocks:
+            c = min(beta, num_blocks - start)
+            window = np.arange(start, start + c, dtype=np.int64)
+            rng.shuffle(window)
+            perm_blocks.extend(window.tolist())
+            start += c
+    else:
+        zeta_log = (-2.0 * np.arange(num_blocks, dtype=np.float64) / max(1, num_blocks)) * np.log(float(rope_base))
+        while start < num_blocks:
+            c = min(beta, num_blocks - start)
+            if c == 1:
+                perm_blocks.append(start)
+                start += 1
+                continue
+            local = gamma * (zeta_log[start:start + c] - zeta_log[start])
+            local = local - np.max(local)
+            probs = np.exp(local)
+            probs = probs / np.sum(probs)
+            window_size = int(rng.choice(np.arange(1, c + 1), p=probs))
+            window = np.arange(start, start + window_size, dtype=np.int64)
+            rng.shuffle(window)
+            perm_blocks.extend(window.tolist())
+            start += window_size
     perm = np.array(perm_blocks, dtype=np.int64)
 
     # Build the (head_dim, head_dim) permutation matrix in half-rotated layout
@@ -160,34 +179,72 @@ def generate_head_perm(n: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
 # ────────────────────────────────────────────────────────────────────
 
 
-def generate_u_vo(head_dim: int, seed: int, *, paper_literal: bool = False) -> np.ndarray:
+def generate_u_vo(
+    head_dim: int,
+    seed: int,
+    *,
+    paper_literal: bool = False,
+    mode: str | None = None,
+    pow2_exp: int = 1,
+) -> np.ndarray:
     """Random projection Û_vo for the V→O cancellation (paper §5.2.3 step 4).
 
     Sampled from N(0, (1/head_dim) · I) per paper Algorithm 2 line 4.
 
-    When `paper_literal=True`: return the raw Gaussian sample directly
-    (paper-faithful). The matrix is later inverted (step 7:
-    W̃_o = Û_vo⁻¹ · W_o); high condition number on the raw sample may
-    introduce numerical loss when bf16-casting Û_vo⁻¹. Paper accepts
-    this as part of the obfuscation; we re-test accuracy + recovery
-    under this exact construction (A2 paper-faithful sanity check,
-    2026-05-26).
+    `mode` controls the sampled family:
 
-    When `paper_literal=False` (default, our deployed cell): the raw
-    Gaussian is QR-orthogonalised then perturbed by a small Gaussian.
-    This produces a near-orthogonal matrix with well-conditioned
-    inverse at bf16, at the cost of preserving more per-head structure
-    than paper's pure Gaussian. Empirically the deployed cell shows
-    ridge `kqv_out` recovery at L=0 of 83.77% obf — a wider-spectrum
-    Û_vo (paper-literal) is expected to lower this.
+    - `raw-gaussian`: return the raw Gaussian sample directly
+      (paper-faithful). The matrix is later inverted (step 7:
+      W̃_o = Û_vo⁻¹ · W_o); high condition number on the raw sample may
+      introduce numerical loss when bf16-casting Û_vo⁻¹.
+
+    - `qr-perturb` (default, our deployed cell): the raw Gaussian is
+      QR-orthogonalised then perturbed by a small Gaussian. This produces
+      a near-orthogonal matrix with well-conditioned inverse at bf16, at
+      the cost of preserving more per-head structure than paper's pure
+      Gaussian.
+
+    - `orthogonal`: QR-orthogonalised only. This keeps condition number
+      exactly 1, reducing bf16 V/O cancellation error versus `qr-perturb`,
+      but gives up the singular-value perturbation.
+
+    - `signed-permutation`: a random signed permutation matrix. This is
+      bf16-exact and adds essentially no accuracy loss beyond the base
+      bf16 weight cast, but is a much weaker V/O mixing defence.
+
+    - `pow2-monomial`: a signed permutation with per-channel power-of-two
+      scales sampled from `[-pow2_exp, +pow2_exp]`. Multiplication by
+      powers of two commutes with bf16 rounding for normal-range values,
+      so this preserves the near-zero accuracy cost of signed permutations
+      while adding magnitude perturbation on the V/O channels.
 
     Returns: (head_dim, head_dim) float32.
     """
+    if mode is None:
+        mode = "raw-gaussian" if paper_literal else "qr-perturb"
+    if paper_literal and mode == "qr-perturb":
+        mode = "raw-gaussian"
+    valid_modes = {"raw-gaussian", "qr-perturb", "orthogonal", "signed-permutation", "pow2-monomial"}
+    if mode not in valid_modes:
+        raise ValueError(f"unsupported U_vo mode {mode!r}; expected one of {sorted(valid_modes)}")
+
     rng = np.random.default_rng(seed)
+    if mode in {"signed-permutation", "pow2-monomial"}:
+        perm = rng.permutation(head_dim)
+        signs = rng.choice(np.array([-1.0, 1.0], dtype=np.float32), size=head_dim)
+        scales = np.ones(head_dim, dtype=np.float32)
+        if mode == "pow2-monomial":
+            e = max(0, int(pow2_exp))
+            exponents = rng.integers(-e, e + 1, size=head_dim, dtype=np.int32)
+            scales = np.exp2(exponents).astype(np.float32)
+        out = np.zeros((head_dim, head_dim), dtype=np.float32)
+        out[np.arange(head_dim), perm] = signs * scales
+        return out
+
     # Standard Gaussian with paper's variance 1/head_dim.
     raw = rng.standard_normal(size=(head_dim, head_dim)).astype(np.float64)
     raw *= (1.0 / np.sqrt(head_dim))
-    if paper_literal:
+    if mode == "raw-gaussian":
         return raw.astype(np.float32)
     # QR-stabilise: gives Q (orthogonal) · R (upper triangular with positive
     # diagonal). We return Q · (I + δ·R_norm) where R_norm is the
@@ -201,6 +258,8 @@ def generate_u_vo(head_dim: int, seed: int, *, paper_literal: bool = False) -> n
     diag_sign = np.sign(diag)
     diag_sign[diag_sign == 0] = 1.0
     q = q * diag_sign  # fix Q sign convention (Householder)
+    if mode == "orthogonal":
+        return q.astype(np.float32)
     # Small Gaussian perturbation on the orthogonal Q — keeps it close to
     # an orthogonal matrix but breaks the head_dim symmetry the attacker
     # would otherwise rely on.
@@ -233,8 +292,17 @@ def build_layer_keys(
     rope_base: float = 1e6,
     h_hadamard_signs: bool = False,
     enable_u_vo: bool = False,
+    u_vo_mode: str = "qr-perturb",
+    u_vo_pow2_exp: int = 1,
     paper_literal: bool = False,
+    paper_literal_k: bool = False,
+    paper_literal_u_vo: bool = False,
+    paper_literal_k_no_r: bool = False,
+    block_perm_mode: str = "fixed_window",
 ) -> LayerAlg2Keys:
+    paper_literal_k = bool(paper_literal or paper_literal_k)
+    paper_literal_u_vo = bool(paper_literal or paper_literal_u_vo)
+    paper_literal_k_no_r = bool(paper_literal_k_no_r)
     r_qk = generate_r_qk(head_dim, seed + 1)
     h_qk = generate_h_qk(head_dim, qk_scale_range, seed + 2,
                          hadamard_signs=h_hadamard_signs)
@@ -245,6 +313,7 @@ def build_layer_keys(
         gamma=gamma,
         rope_base=rope_base,
         seed=seed + 3,
+        mode=block_perm_mode,
     )
     z_block_inv = z_block.T
 
@@ -271,20 +340,29 @@ def build_layer_keys(
     # ~35 % score perturbation. Treated as a *deliberate non-covariant*
     # defence component (it accounts for most of Alg2's measured ISA
     # HiddenState delta — see docs/handoffs/2026-05-25-alg2-attack-crossmap.md).
-    if paper_literal:
-        # Paper Algorithm 2 line 6 literal: W̃_k = Q̂_k W_k Ĥ⁻¹ Ẑᵀ. No R̂.
-        # Score residual: M_q · M_k.T = R · H · Z · Z · H⁻¹ which only collapses
-        # to R (absorbed by RoPE) when Z² = I. With β=8 and uniform-S_w
-        # BlockPerm, Z² ≠ I almost surely → extra ‖Z² − I‖ score-surface
-        # perturbation. Paper's qualitative ≈_{e_C^attn} permits this; we
-        # measure the resulting recovery rate as an honest characterization
-        # of paper-faithful Alg2.
+    if paper_literal_k_no_r:
+        # Experimental beyond-paper variant from the 2026-05-26 PM diagnosis:
+        # omit R̂ on the K side. This is *not* Algorithm 2 line 6 in the PDF;
+        # it creates a much larger score perturbation and is kept only as an
+        # explicit hardening knob for follow-up tests.
         k_matrix = (h_qk_inv @ z_block.T).astype(np.float32)
+    elif paper_literal_k:
+        # Paper Algorithm 2 line 6 literal, verified against 2603.01499v2.pdf:
+        # W̃_k = Q̂_k W_k R̂_qk Ĥ_qk⁻¹ Ẑ_blockᵀ. The transpose on Z leaves a
+        # Z² residual in M_q · M_k.T when Z is non-involutive, but β=1 still
+        # cancels exactly.
+        k_matrix = (r_qk @ h_qk_inv @ z_block.T).astype(np.float32)
     else:
         k_matrix = (r_qk @ h_qk_inv @ z_block).astype(np.float32)
 
     if enable_u_vo:
-        u_vo = generate_u_vo(head_dim, seed + 7, paper_literal=paper_literal)
+        u_vo = generate_u_vo(
+            head_dim,
+            seed + 7,
+            paper_literal=paper_literal_u_vo,
+            mode=u_vo_mode,
+            pow2_exp=u_vo_pow2_exp,
+        )
         u_vo_inv = np.linalg.inv(u_vo.astype(np.float64)).astype(np.float32)
     else:
         u_vo = None

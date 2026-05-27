@@ -1,0 +1,112 @@
+{
+  "sequence_ima_embed": {
+    "attack": "sequence_ima_embed",
+    "condition": "obfuscated",
+    "model_id": "Qwen3-4B-Q8_0-untied.gguf",
+    "n_prompts": 160,
+    "n_train": 128,
+    "n_test": 512,
+    "ttrsr_top1": 0.0390625,
+    "ttrsr_top10": 0.21875,
+    "risk_level": "low",
+    "primary_metric_name": "token_top1_recovery_rate",
+    "extra": {
+      "config": {
+        "d_obs": 2816,
+        "vocab_size": 151936,
+        "n_layers": 2,
+        "n_heads": 8,
+        "d_model": 2816,
+        "d_ff": 11264,
+        "seq_len": 32,
+        "dropout": 0.0
+      },
+      "train_runtime_s": 37.88,
+      "eval_runtime_s": 0.74,
+      "train_metrics": {
+        "train_loss_per_step": [
+          {
+            "step": 0,
+            "loss": 12.077789306640625
+          }
+        ],
+        "val_top1_per_epoch": [
+          {
+            "epoch": 0,
+            "val_top1": 0.01953125
+          },
+          {
+            "epoch": 1,
+            "val_top1": 0.0390625
+          }
+        ]
+      },
+      "eval_metrics": {
+        "ttrsr_top1": 0.0390625,
+        "ttrsr_topk": 0.21875,
+        "topk": 10,
+        "n_test_positions": 512,
+        "per_position_top1": [
+          0.0,
+          0.125,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0625,
+          0.0,
+          0.0625,
+          0.0,
+          0.125,
+          0.125,
+          0.0625,
+          0.0,
+          0.0,
+          0.0,
+          0.0625,
+          0.0,
+          0.125,
+          0.0625,
+          0.0625,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.125,
+          0.0625,
+          0.1875,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "attacker_alpha_e": 0.0,
+      "attacker_tau_seed": 99999,
+      "attacker_noise_seed": 88888
+    }
+  },
+  "args": {
+    "plain": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-4b/Qwen3-4B-Q8_0-untied.gguf",
+    "output": "/home/timo/repos/private-rag-path-2/evals/aloepri-attacks/results/sweep/cell-qwen3-4b-plain-control-20260527/m2_7-sequence-ima-embed.json",
+    "surface": "embed",
+    "corpus_file": "evals/aloepri-attacks/corpora/release-gate-512.txt",
+    "tokenizer_model": "Qwen/Qwen3-4B",
+    "seq_len": 32,
+    "n_train": 128,
+    "n_val": 16,
+    "n_test": 16,
+    "n_layers": 2,
+    "n_heads": 8,
+    "batch_size": 8,
+    "lr": 0.0003,
+    "epochs": 2,
+    "device": "cuda",
+    "attacker_expansion": 128,
+    "attacker_alpha_e": 0.0,
+    "attacker_tau_seed": 99999,
+    "attacker_noise_seed": 88888,
+    "keymat_seed": 77777,
+    "no_run": false
+  }
+}

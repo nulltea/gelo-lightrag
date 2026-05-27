@@ -1,0 +1,177 @@
+{
+  "endpoint": "http://127.0.0.1:8071",
+  "key_path": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-4b/untied-keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-beta2-paperK-uvo-pow2e1-bf16-native.gguf.key.npz",
+  "plain_mode": false,
+  "tokenizer": "Qwen/Qwen3-4B",
+  "quality": {
+    "skipped": true
+  },
+  "humaneval": {
+    "n": 20,
+    "passed": 6,
+    "accuracy": 0.3,
+    "wall_s": 352.9690620051697,
+    "details": [
+      {
+        "task_id": "HumanEval/163",
+        "passed": false,
+        "completion": "    # Check if a > b\n    if a > b:\n        return []\n    # Check if a is even\n    if a % 2 != 0:\n        a += 1\n    # Check if b is even\n    if b % 2 != 0:\n        b -= 1\n    # Generate the list of even numbers between a and b\n    result = []\n    for i in range(a, b+1):\n        result.append(i)\n    return result\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpjcaxhrj9.py\", line 41, in <module>\n    check(generate_integers)\n  File \"/tmp/tmpjcaxhrj9.py\", line 31, in check\n    assert candidate(2, 10) == [2, 4,",
+        "n_response_tokens": 384,
+        "wall_s": 17.65525438496843
+      },
+      {
+        "task_id": "HumanEval/28",
+        "passed": false,
+        "completion": "    return ''.join(String)",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp3eos5ks6.py\", line 27, in <module>\n    check(concatenate)\n  File \"/tmp/tmp3eos5ks6.py\", line 22, in check\n    assert candidate([]) == ''\n           ^",
+        "n_response_tokens": 384,
+        "wall_s": 17.561994235031307
+      },
+      {
+        "task_id": "HumanEval/6",
+        "passed": false,
+        "completion": "    return [parse_group(group) for group in string.split()]",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp39ziyqwi.py\", line 28, in <module>\n    check(parse_nested_parens)\n  File \"/tmp/tmp39ziyqwi.py\", line 23, in check\n    assert candidate('(()()) ((()))",
+        "n_response_tokens": 381,
+        "wall_s": 17.63388022594154
+      },
+      {
+        "task_id": "HumanEval/70",
+        "passed": false,
+        "completion": "    # So the function is supposed to return a list in order. So the function is supposed to return a list in which the first element is the minimum of the original list. Then the maximum of the remaining integers. Then the minimum of the remaining integers. Then the maximum of the remaining integers. So the function is supposed to return a list in which the first element is the minimum of the original list. Then the maximum of the remaining integers. Then the minimum of the remaining integers. Then the maximum of the remaining integers. So the function is supposed to return a list in which the",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpfk5yu30l.py\", line 33, in <module>\n    check(strange_sort_list)\n  File \"/tmp/tmpfk5yu30l.py\", line 18, in check\n    assert candidate([1, 2, 3, 4]) ==",
+        "n_response_tokens": 383,
+        "wall_s": 17.622981787193567
+      },
+      {
+        "task_id": "HumanEval/62",
+        "passed": false,
+        "completion": "    # xs is a list of coefficients of a polynomial. So the first element is the constant term. So the derivative is the sum of the coefficients multiplied by their respective exponents. So the first element is the constant term. So the derivative is the sum of the coefficients multiplied by their respective exponents. So the first element is the constant term. So the derivative is the sum of the coefficients multiplied by their respective exponents. So the first element is the constant term. So the derivative is the sum of the coefficients multiplied by their respective exponents. So the first",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmppqvgoxmt.py\", line 29, in <module>\n    check(derivative)\n  File \"/tmp/tmppqvgoxmt.py\", line 21, in check\n    assert candidate([3, 1, 2, 4, 5]) == [1,",
+        "n_response_tokens": 384,
+        "wall_s": 17.61255063675344
+      },
+      {
+        "task_id": "HumanEval/57",
+        "passed": false,
+        "completion": "    # Check if the list is strictly increasing or strictly decreasing.\n    # So the list must be strictly increasing or strictly decreasing. So the list must be strictly increasing or strictly decreasing. So the list must be strictly increasing or strictly decreasing. So the list must be strictly increasing or strictly decreasing. So the list must be strictly increasing or strictly decreasing. So the list must be strictly increasing or strictly decreasing. So the list must be strictly increasing or strictly decreasing. So the list must be strictly increasing or strictly decreasing. So the list",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpsok4rnqh.py\", line 32, in <module>\n    check(monotonic)\n  File \"/tmp/tmpsok4rnqh.py\", line 21, in check\n    assert candidate([1, 2, 4, 10]) == True\n ",
+        "n_response_tokens": 384,
+        "wall_s": 17.58345826715231
+      },
+      {
+        "task_id": "HumanEval/35",
+        "passed": true,
+        "completion": "    max_element = l[0]\n    for i in range(1, len(l)):\n        if l[i] > max_element:\n            max_element = l[i]\n    return max_element\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 17.597785423044115
+      },
+      {
+        "task_id": "HumanEval/26",
+        "passed": false,
+        "completion": "    seen = set()\n    result = []\n    for num in numbers:\n        if num not in seen:\n            result.append(num)\n            seen.add(num)\n        else:\n            pass\n    return result\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp6f0p4myx.py\", line 35, in <module>\n    check(remove_duplicates)\n  File \"/tmp/tmp6f0p4myx.py\", line 32, in check\n    assert candidate([1, 2, 3, 2, 4, ",
+        "n_response_tokens": 381,
+        "wall_s": 17.602827329188585
+      },
+      {
+        "task_id": "HumanEval/139",
+        "passed": false,
+        "completion": "    # Check if n is less than or equal to 0\n    if n <= 0:\n        return 0\n    # Initialize the result as 1\n    result = 1\n    # For each number from 1 to n, multiply the result by the factorial of that number\n    for i in range(1, n+1):\n        # Compute the factorial of i\n        factorial_i = 1\n        for j in range(1, i+1):\n            factorial_I = factorial_I * j\n        # Multiply the result by the factorial of i\n        result *= factorial_I\n    return result",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp1mkhm0_w.py\", line 41, in <module>\n    check(special_factorial)\n  File \"/tmp/tmp1mkhm0_w.py\", line 32, in check\n    assert candidate(4) == 288, \"Test",
+        "n_response_tokens": 384,
+        "wall_s": 17.636405454017222
+      },
+      {
+        "task_id": "HumanEval/22",
+        "passed": true,
+        "completion": "    return [x for x in values if isinstance(x, int)]\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 17.619701420888305
+      },
+      {
+        "task_id": "HumanEval/151",
+        "passed": false,
+        "completion": "    return sum( x**2 for x in lst if x >0 and x == int(x))\n \n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpn0j8biz6.py\", line 36, in <module>\n    check(double_the_difference)\n  File \"/tmp/tmpn0j8biz6.py\", line 22, in check\n    assert candidate([5, 4]) == 2",
+        "n_response_tokens": 384,
+        "wall_s": 17.723326400853693
+      },
+      {
+        "task_id": "HumanEval/108",
+        "passed": false,
+        "completion": "    # Check if the array is empty\n    if len(arr) == 0:\n        return 0\n    # Check each element in the array\n    count = 0\n    for num in arr:\n        # Check if the number is negative\n        if num < 0:\n            # Check the first signed digit\n            first_digit = num\n            # Check the sum of digits\n            sum_digits = sum(int(d) for d in str(abs(num))\n\n            # Check if the sum of digits is >0\n            if sum_digits >0:\n                count +=1\n        else:\n            # Check the sum of digits\n            sum_digits = sum(int(d) for d in str(num))\n            ",
+        "error": "  File \"/tmp/tmp96517sqc.py\", line 23\n    sum_digits = sum(int(d) for d in str(abs(num))\n                    ^\nSyntaxError: '(' was never closed\n",
+        "n_response_tokens": 384,
+        "wall_s": 17.638769972138107
+      },
+      {
+        "task_id": "HumanEval/8",
+        "passed": true,
+        "completion": "    sum_numbers = sum(numbers)\n    product_numbers = 1\n    for number in numbers:\n        product_numbers *= number\n    return (sum_numbers, product_numbers)",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 17.65339012630284
+      },
+      {
+        "task_id": "HumanEval/7",
+        "passed": true,
+        "completion": "    return [s for s in strings if substring in s]\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 17.633402050938457
+      },
+      {
+        "task_id": "HumanEval/23",
+        "passed": true,
+        "completion": "    return len(string)\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 17.521624652203172
+      },
+      {
+        "task_id": "HumanEval/55",
+        "passed": true,
+        "completion": "    if n == 0:\n        return 0\n    elif n == 1:\n        return 1\n    else:\n        return fib(n-1) + fib(n-2)\n    ",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 17.541592829860747
+      },
+      {
+        "task_id": "HumanEval/59",
+        "passed": false,
+        "completion": "    # Check if the number is even\n    if n % 2 == 0:\n        return n//2\n    # Check if the number is divisible by 3\n    if n % 3 == 0:\n        return n//3\n    # Check if the number is divisible by 5\n    if n % 5 == 0:\n        return n//5\n    # Check if the number is divisible by 7\n    if n % 7 == 0:\n        return n//7\n    # Check if the number is divisible by 9\n    if n % 9 == 0:\n        return n//9\n    # Check if the number is divisible by 11\n    if n % 11 == 0:\n        return n//11\n    # Check if the number is divisible by 13\n    if n % 13 == 0:\n        return n//13\n    # Check if the numb",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp8_87e274.py\", line 64, in <module>\n    check(largest_prime_factor)\n  File \"/tmp/tmp8_87e274.py\", line 57, in check\n    assert candidate(27) == 3\n    ",
+        "n_response_tokens": 384,
+        "wall_s": 17.56459315493703
+      },
+      {
+        "task_id": "HumanEval/129",
+        "passed": false,
+        "completion": "    # So the problem is to find the minimal path of length k in the grid. \n    #The path is a sequence of cells, each consecutive pair of cells in the path are adjacent (i.e. share an edge). \n    #The path must be of length k. So the path is a sequence of k cells, each consecutive pair in the sequence are adjacent. \n    #The path is minimal in the sense that the sequence of values of the cells is lex smallest. \n    #The grid is such that each value from 1 to N^2 appears exactly once. So the grid is a permutation of 1..N^2. \n    #So the problem is to find the minimal lex path of length k in the",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpkbk9r23k.py\", line 69, in <module>\n    check(minPath)\n  File \"/tmp/tmpkbk9r23k.py\", line 53, in check\n    assert candidate([[1, 2, 3], [4, 5, 6], [7,",
+        "n_response_tokens": 384,
+        "wall_s": 18.08025548281148
+      },
+      {
+        "task_id": "HumanEval/161",
+        "passed": false,
+        "completion": "    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # co",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpkmq_ihit.py\", line 108, in <module>\n    check(solve)\n  File \"/tmp/tmpkmq_ihit.py\", line 94, in check\n    assert candidate(\"AsDf\") == \"aSdF\"\n         ",
+        "n_response_tokens": 384,
+        "wall_s": 17.711062154732645
+      },
+      {
+        "task_id": "HumanEval/143",
+        "passed": false,
+        "completion": "    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # co",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpu425qg1n.py\", line 115, in <module>\n    check(words_in_sentence)\n  File \"/tmp/tmpu425qg1n.py\", line 103, in check\n    assert candidate(\"This is a tes",
+        "n_response_tokens": 384,
+        "wall_s": 17.773544561117887
+      }
+    ]
+  }
+}

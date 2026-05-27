@@ -1,0 +1,177 @@
+{
+  "endpoint": "http://127.0.0.1:8066",
+  "key_path": "/home/timo/.cache/huggingface/path-2-aloepri/qwen3-4b/untied-keymat-h128-pi-noise-ae1.0-ah0.2-alg2-matrix-gamma-hadamard-uvo-bf16-native.gguf.key.npz",
+  "plain_mode": false,
+  "tokenizer": "Qwen/Qwen3-4B",
+  "quality": {
+    "skipped": true
+  },
+  "humaneval": {
+    "n": 20,
+    "passed": 3,
+    "accuracy": 0.15,
+    "wall_s": 353.26738523086533,
+    "details": [
+      {
+        "task_id": "HumanEval/163",
+        "passed": false,
+        "completion": "    # Check if a is greater than b, then return the even digits between a and b in ascending order\n    # else return the even digits between a and b in ascending order\n    # Check if a is greater than b, then return the even digits between a and b in ascending order\n    # else return the even digits between a and b in ascending order\n    # Check if a is greater than b, then return the even digits between a and b in ascending order\n    # else return the even digits between a and\n    # Check if a is greater than b, then return the even digits between a and b in ascending order\n    # else return ",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpr8jwlj2h.py\", line 47, in <module>\n    check(generate_integers)\n  File \"/tmp/tmpr8jwlj2h.py\", line 37, in check\n    assert candidate(2, 10) == [2, 4,",
+        "n_response_tokens": 384,
+        "wall_s": 17.698602828662843
+      },
+      {
+        "task_id": "HumanEval/28",
+        "passed": false,
+        "completion": "    return ''.join(string)",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpvke9ghin.py\", line 27, in <module>\n    check(concatenate)\n  File \"/tmp/tmpvke9ghin.py\", line 22, in check\n    assert candidate([]) == ''\n           ^",
+        "n_response_tokens": 384,
+        "wall_s": 17.65129566192627
+      },
+      {
+        "task_id": "HumanEval/6",
+        "passed": false,
+        "completion": "    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # co",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmphbzv0ini.py\", line 105, in <module>\n    check(parse_nested_parens)\n  File \"/tmp/tmphbzv0ini.py\", line 100, in check\n    assert candidate('(()()) ((()",
+        "n_response_tokens": 384,
+        "wall_s": 17.705520265270025
+      },
+      {
+        "task_id": "HumanEval/70",
+        "passed": false,
+        "completion": "    # Check if the list is empty\n    if not lst:\n        return []\n    # Check if the list has only one element\n    if len(lst) == 1:\n        return lst\n    # Check if the list has all same elements\n    if all(x == lst[0] for x in lst):\n        return lst\n    # Check if the list has even number of elements\n    if len(lst) % 2 ==0:\n        return sorted(lst)\n    # Check if the list has odd number of elements\n    if len(lst) %2 ==1:\n        return sorted(lst, reverse=True)\n    # Check if the list has even number of elements\n    # Return sorted list\n    return sorted(lst)\n    # Check if the list ",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp1dyse6i3.py\", line 77, in <module>\n    check(strange_sort_list)\n  File \"/tmp/tmp1dyse6i3.py\", line 62, in check\n    assert candidate([1, 2, 3, 4]) ==",
+        "n_response_tokens": 384,
+        "wall_s": 17.554970680736005
+      },
+      {
+        "task_id": "HumanEval/62",
+        "passed": false,
+        "completion": "    return [i * j for i, j in enumerate(xs[1:]]",
+        "error": "  File \"/tmp/tmp8e62x82j.py\", line 12\n    return [i * j for i, j in enumerate(xs[1:]]\n                                              ^\nSyntaxError: closing parenthesis ']' does not match opening parent",
+        "n_response_tokens": 384,
+        "wall_s": 17.743239875882864
+      },
+      {
+        "task_id": "HumanEval/57",
+        "passed": false,
+        "completion": "    # Check if the list is empty or has one element\n    if len(l) < 2:\n        return True\n    # Check if the list is strictly increasing or strictly decreasing\n    # Check if the list is strictly increasing\n    if l[0] < l[1] and all(l[i] < l[i+1] for i in range(len(l)-1)):\n        return True\n    # Check if the list is strictly decreasing\n    if l[0] > l[1] and all(l[i] > l[i+1] for i in range(len(l)-1)):\n        return True\n    return False\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpiv03zoil.py\", line 42, in <module>\n    check(monotonic)\n  File \"/tmp/tmpiv03zoil.py\", line 35, in check\n    assert candidate([4, 1, 1, 0]) == True\n  ",
+        "n_response_tokens": 384,
+        "wall_s": 17.67390907043591
+      },
+      {
+        "task_id": "HumanEval/35",
+        "passed": true,
+        "completion": "    # Check if the list is empty\n    if not l:\n        raise ValueError(\"No element in the list\")\n    # Return the max element in the list\n    return max(l)\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 17.587892069946975
+      },
+      {
+        "task_id": "HumanEval/26",
+        "passed": false,
+        "completion": "    # 1. Check if the list is empty. Return the same.\n    if not numbers:\n        return []\n    # 2. Create a new list to store the result.\n    result = []\n    # 3. Iterate through the numbers in the input list.\n    for num in numbers:\n        # 4. Check if the current number is the same as the previous one.\n        # 5. If it is the same as the previous one, skip it.\n        # 6. Add it to the result list.\n        result.append(num)\n    # 7. Return the result list.\n    return result\n\nWait, but the code in the function is not correct. Let me see. The code in the function is not correct. Let me",
+        "error": "  File \"/tmp/tmpj3z7wkpc.py\", line 24\n    orrect. Let me see. The code in\n              ^^^\nSyntaxError: invalid syntax\n",
+        "n_response_tokens": 384,
+        "wall_s": 17.57366581307724
+      },
+      {
+        "task_id": "HumanEval/139",
+        "passed": false,
+        "completion": "    # Check if n is a positive integer\n    if n < 0:\n        return 0\n    # Check if n is 0\n    if n == 0:\n        return 1\n    # Check if n is 1\n    if n == 1:\n        return 1\n    # Check if n is 2\n    if n == 2:\n        return 2\n    # Check if n is 3\n    if n == 3:\n        return 6\n    # Check if n is 4\n    if n == 4:\n        return 24\n    # Check if n is 5\n    if n == 5:\n        return 120\n    # Check if n is 6\n    if n == 6:\n        return 720\n    # Check if n is 7\n    if n == 7:\n        return 504\n    # Check if n is 8\n    if n == 8:\n        return 4032\n    # Check if n is 9\n    if n == ",
+        "error": "  File \"/tmp/tmpjrkw6t7m.py\", line 60\n    if n == 1\n             ^\nSyntaxError: expected ':'\n",
+        "n_response_tokens": 384,
+        "wall_s": 17.640364626888186
+      },
+      {
+        "task_id": "HumanEval/22",
+        "passed": true,
+        "completion": "    return [i for i in values if isinstance(i, int) and not isinstance(i, bool)]",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 17.641456718556583
+      },
+      {
+        "task_id": "HumanEval/151",
+        "passed": false,
+        "completion": "    # Check if the list is empty\n    if len(lst) == 0:\n        return 0\n    # Check if the list is not empty\n    else:\n        # Check if the list is not empty\n        # Check if the list is not empty\n        # Check if the list is not empty\n        # Check if the list is not empty\n        # Check if the list is not empty\n        # Check if the list is not empty\n        # Check if the list is not empty\n        # Check if the list is not empty\n        # Check if the list is not empty\n        # Check if the list is not empty\n        # Check if the list is not empty\n        # Check if the list is",
+        "error": "  File \"/tmp/tmpolyc6k5k.py\", line 55\n    def check(candidate):\nIndentationError: expected an indented block after 'else' statement on line 18\n",
+        "n_response_tokens": 384,
+        "wall_s": 17.75632491800934
+      },
+      {
+        "task_id": "HumanEval/108",
+        "passed": false,
+        "completion": "    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # code here\n    # co",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmptqq4_st3.py\", line 108, in <module>\n    check(count_nums)\n  File \"/tmp/tmptqq4_st3.py\", line 94, in check\n    assert candidate([]) == 0\n           ^^",
+        "n_response_tokens": 384,
+        "wall_s": 17.66111062793061
+      },
+      {
+        "task_id": "HumanEval/8",
+        "passed": false,
+        "completion": "    sum_numbers = sum(numbers)\n    product_numbers = 1\n    for number in numbers:\n        product_numbers *= number\n    return (sum_numbers, product_numbers)\n\n# Now, let's test the code with some examples.\n\n# Test case 1: empty list\n# Expected output (0,1)\nprint(sum_product([]))\n# Test case 2: [1,2,3,4]\n# expected output (10,24)\nprint(sum_product([1,2,3,4]))\n# Test case 3: [0]\n# expected output (0,1)\nprint(Sum_product([0]))\n# Test case 4: [3] \n# expected output (3,1)\nprint(Sum_product([3]))",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpryvghu1e.py\", line 28, in <module>\n    print(Sum_product([0]))\n          ^^^^^^^^^^^\nNameError: name 'Sum_product' is not defined. Did you mean: 'sum",
+        "n_response_tokens": 384,
+        "wall_s": 17.589237248990685
+      },
+      {
+        "task_id": "HumanEval/7",
+        "passed": false,
+        "completion": "    return [s for s in string if substring in s]",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpqvxzbblr.py\", line 28, in <module>\n    check(filter_by_substring)\n  File \"/tmp/tmpqvxzbblr.py\", line 22, in check\n    assert candidate([], 'john') ==",
+        "n_response_tokens": 384,
+        "wall_s": 17.610134875401855
+      },
+      {
+        "task_id": "HumanEval/23",
+        "passed": true,
+        "completion": "    return len(string)\n",
+        "error": "",
+        "n_response_tokens": 384,
+        "wall_s": 17.55659758206457
+      },
+      {
+        "task_id": "HumanEval/55",
+        "passed": false,
+        "completion": "    return 1 if n < 2 else n + fib(n-1)\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp45wm81b3.py\", line 29, in <module>\n    check(fib)\n  File \"/tmp/tmp45wm81b3.py\", line 23, in check\n    assert candidate(8) == 21\n           ^^^^^^^^^^",
+        "n_response_tokens": 384,
+        "wall_s": 17.58101376518607
+      },
+      {
+        "task_id": "HumanEval/59",
+        "passed": false,
+        "completion": "    # n is not a prime. So it has a factor. So it has a factor. So it has a factor. So it has a factor. So it has a factor. So it has a factor. So it has a factor. So it has a factor. So it has a factor. So it has a factor. So it has a factor. So it has a factor. So it has a factor. So it has a factor. So it has a factor. So it has a factor. So it has a factor. So it has a factor. So it has a factor. So it has a factor. So it has a factor. So it has a factor. So it has a factor. So it has a factor. So it has a factor. So it has a factor. So it has a factor. So it has a factor. So it has a fact",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpva4j5jz1.py\", line 27, in <module>\n    check(largest_prime_factor)\n  File \"/tmp/tmpva4j5jz1.py\", line 19, in check\n    assert candidate(15) == 5\n    ",
+        "n_response_tokens": 384,
+        "wall_s": 17.5767644578591
+      },
+      {
+        "task_id": "HumanEval/129",
+        "passed": false,
+        "completion": "    # So the problem is to find the minimal lexicographical path of length k in the grid. \n    #The minimal path is the one that is lex smallest. So the idea is that the path is the one that is lex smallest. So the idea is that the path is the one that is lex smallest. So the idea is that the path is the one that is lex smallest. So the idea is that the path is the one that is lex smallest. So the idea is that the path is the one that is lex smallest. So the idea is that the path is the one that is lex smallest. So the idea is that the path is the one that is lex smallest. So the idea is that ",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmp4u1yqerb.py\", line 55, in <module>\n    check(minPath)\n  File \"/tmp/tmp4u1yqerb.py\", line 39, in check\n    assert candidate([[1, 2, 3], [4, 5, 6], [7,",
+        "n_response_tokens": 384,
+        "wall_s": 18.09223159402609
+      },
+      {
+        "task_id": "HumanEval/161",
+        "passed": false,
+        "completion": "    # Check if the string contains no letters\n    # If the string contains no letters, reverse the string\n    # else, reverse the case of each letter\n    # else, reverse the string\n    # else, reverse the case of each letter\n    # else, reverse the string\n    # else, reverse the case of each letter\n    # else, reverse the string\n    # else, reverse the case of each letter\n    # else, reverse the string\n    # else, reverse the case of each letter\n    # else, reverse the string\n    # else, reverse the case of each letter\n    # else, reverse the string\n    # else, reverse the case of each letter\n",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpopfbadfq.py\", line 72, in <module>\n    check(solve)\n  File \"/tmp/tmpopfbadfq.py\", line 58, in check\n    assert candidate(\"AsDf\") == \"aSdF\"\n          ",
+        "n_response_tokens": 384,
+        "wall_s": 17.64713331265375
+      },
+      {
+        "task_id": "HumanEval/143",
+        "passed": false,
+        "completion": "    # Write code here\n    # Split the sentence into words\n    words = sentence.split()\n    # Check if the length of each word is a prime number\n    # If the length of each word is a prime number, then we keep it in the new string\n    # else, we remove it\n    # So the new string is the words whose lengths are prime numbers\n    # Return the new string\n    # Now, the code here is not correct\n    # Because the code here is not correct\n    # So the code here is not correct\n    # So the code here is not correct\n    # So the code here is not correct\n    # So the code here is not correct\n    # So the ",
+        "error": "Traceback (most recent call last):\n  File \"/tmp/tmpo_7g1_uu.py\", line 76, in <module>\n    check(words_in_sentence)\n  File \"/tmp/tmpo_7g1_uu.py\", line 64, in check\n    assert candidate(\"This is a test\"",
+        "n_response_tokens": 384,
+        "wall_s": 17.72514154110104
+      }
+    ]
+  }
+}
