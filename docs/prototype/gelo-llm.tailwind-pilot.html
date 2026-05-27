@@ -1,0 +1,3667 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>private-rag — generation (GELO LLM)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({
+        startOnLoad: true,
+        theme: "neutral",
+        securityLevel: "loose",
+      });
+    </script>
+    <style>
+      /* Trust-zone palette — kept inline so SVG diagrams can reference them
+         without depending on the legacy site.css. Same semantic mapping as
+         the rest of the site: terracotta = TEE, slate = GPU, teal = storage. */
+      :root {
+        --paper: #ffffff;
+        --paper-2: #f4f4f4;
+        --ink: #14181c;
+        --ink-2: #3c434b;
+        --ink-3: #6a7280;
+        --rule: #14181c;
+        --tee: #b85a32;
+        --tee-soft: #ecd1c0;
+        --gpu: #5a6573;
+        --gpu-soft: #dde0e5;
+        --storage: #2e6a5e;
+        --client: #4a6f8a;
+        --crypto: #6a4a8a;
+      }
+      /* Body prose reads too thin at the system-stack default weight of 400.
+         Bump body paragraphs + list items to 450 (just above regular) and
+         emphasis to 650 so prose lands at a comfortable book-weight on the
+         system UI stack without going visibly bold. Also nudge font-size
+         up 0.1rem from the Tailwind defaults for breathing room at the
+         wider page. */
+      main p,
+      main li,
+      main dd {
+        font-weight: 450;
+        color: #1e293b; /* slate-800 */
+      }
+      main p strong,
+      main li strong,
+      main dd strong {
+        font-weight: 650;
+      }
+      main .text-base {
+        font-size: 1.1rem;
+      }
+      main .text-sm {
+        font-size: 0.975rem;
+      }
+      main .text-xs {
+        font-size: 0.85rem;
+      }
+      .label-tiny {
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .deep {
+        background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+      }
+
+      /* SVG tokens — minimum set needed by the preserved §06 diagram.
+         Faithful to the original site.css definitions; scope only to
+         the diagram via `.flow` so they don't bleed into the rest of
+         the Tailwind layout. */
+      .diagram-frame {
+        border: 1px solid var(--ink);
+        background: var(--paper);
+        padding: 28px 32px 36px;
+        overflow-x: auto;
+      }
+      .diagram-cap {
+        display: flex;
+        justify-content: space-between;
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.18em;
+        color: var(--ink-3);
+        margin-bottom: 24px;
+        gap: 16px;
+      }
+      .diagram-cap .l {
+        color: var(--ink);
+        font-weight: 500;
+      }
+      .flow .zone-band-tee {
+        fill: var(--tee-soft);
+        fill-opacity: 0.35;
+      }
+      .flow .zone-band-gpu {
+        fill: var(--gpu-soft);
+        fill-opacity: 0.35;
+      }
+      .flow .zone-label {
+        font:
+          600 12px/1 "JetBrains Mono",
+          ui-monospace,
+          monospace;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        fill: var(--ink);
+      }
+      .flow .zone-sublabel {
+        font:
+          400 10px/1.2 "JetBrains Mono",
+          ui-monospace,
+          monospace;
+        fill: var(--ink-3);
+      }
+      .flow .box {
+        fill: var(--paper);
+        stroke: var(--ink);
+        stroke-width: 1;
+      }
+      .flow .box-tee {
+        stroke: var(--tee);
+      }
+      .flow .box-gpu {
+        stroke: var(--gpu);
+      }
+      .flow .box-strong {
+        stroke-width: 1.5;
+      }
+      .flow .box-label {
+        font:
+          500 11px/1.2 "JetBrains Mono",
+          ui-monospace,
+          monospace;
+        fill: var(--ink);
+      }
+      .flow .box-mono {
+        font:
+          400 9.5px/1.2 "JetBrains Mono",
+          ui-monospace,
+          monospace;
+        fill: var(--ink-2);
+      }
+      .flow .box-sub {
+        font:
+          400 10px/1.2 "JetBrains Mono",
+          ui-monospace,
+          monospace;
+        fill: var(--ink-3);
+      }
+      .flow .arrow {
+        stroke: var(--ink);
+        stroke-width: 1.2;
+        fill: none;
+      }
+      .flow .arrow-secret {
+        stroke: var(--tee);
+      }
+      .flow .arrow-masked {
+        stroke: #b08020;
+        stroke-dasharray: 4 3;
+      }
+      .flow .arrow-label {
+        font:
+          500 10px/1.2 "JetBrains Mono",
+          ui-monospace,
+          monospace;
+        fill: var(--ink-2);
+      }
+      .flow .arrow-label.attest {
+        fill: var(--client);
+      }
+      .flow .arrow-label.masked {
+        fill: #8b6520;
+      }
+      .flow .boundary {
+        stroke: var(--ink);
+        stroke-width: 1;
+        stroke-dasharray: 6 4;
+      }
+      .flow .boundary-label {
+        font:
+          500 10px/1 "JetBrains Mono",
+          ui-monospace,
+          monospace;
+        fill: var(--ink-3);
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+      }
+    </style>
+  </head>
+  <body class="bg-stone-50 text-slate-900 font-sans antialiased">
+    <!-- ─── TOP NAV ─── -->
+    <nav
+      class="sticky top-0 z-30 bg-stone-50/85 backdrop-blur border-b border-slate-200"
+    >
+      <div class="max-w-[1240px] mx-auto px-12 h-14 flex items-baseline gap-8">
+        <a
+          href="index.html"
+          class="font-serif text-base text-slate-900 tracking-tight hover:text-emerald-700 self-center"
+        >
+          private-rag
+        </a>
+        <ul class="flex items-baseline gap-1 text-sm self-center">
+          <li>
+            <a
+              href="storage.html"
+              class="px-3 py-2 rounded text-slate-700 hover:bg-slate-100 hover:text-slate-900"
+              >Storage <span class="text-xs text-slate-400">— CAPRISE</span></a
+            >
+          </li>
+          <li>
+            <a
+              href="embedding.html"
+              class="px-3 py-2 rounded text-slate-700 hover:bg-slate-100 hover:text-slate-900"
+              >Embedding <span class="text-xs text-slate-400">— GELO</span></a
+            >
+          </li>
+          <li>
+            <a
+              href="reranking.html"
+              class="px-3 py-2 rounded text-slate-700 hover:bg-slate-100 hover:text-slate-900"
+              >Reranking <span class="text-xs text-slate-400">— GELO</span></a
+            >
+          </li>
+          <li class="relative group">
+            <button
+              type="button"
+              class="px-3 py-2 rounded text-emerald-800 bg-emerald-50 border border-emerald-200 flex items-baseline gap-1.5 cursor-default"
+              aria-current="page"
+            >
+              Generation
+              <span class="text-[10px] text-emerald-700">▾</span>
+            </button>
+            <ul
+              class="hidden group-hover:block group-focus-within:block absolute left-0 mt-0.5 bg-white border border-slate-200 rounded shadow-md min-w-[180px] py-1 z-40"
+            >
+              <li>
+                <a
+                  href="gelo-llm.html"
+                  class="block px-4 py-2 text-sm bg-emerald-50 text-emerald-900 font-medium"
+                  aria-current="page"
+                  >GELO LLM</a
+                >
+              </li>
+              <li>
+                <a
+                  href="aloepri-llm.html"
+                  class="block px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 hover:text-slate-900"
+                  >AloePri LLM</a
+                >
+              </li>
+            </ul>
+          </li>
+          <li>
+            <a
+              href="graphrag.html"
+              class="px-3 py-2 rounded text-slate-700 hover:bg-slate-100 hover:text-slate-900"
+              >GraphRAG <span class="text-xs text-slate-400">— Compass</span></a
+            >
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <main class="max-w-[1240px] mx-auto px-12 py-12 space-y-14">
+      <!-- ─── MASTHEAD ─── -->
+      <header class="border-b border-slate-200 pb-10">
+        <div class="flex items-baseline justify-between flex-wrap gap-3 mb-4">
+          <div
+            class="text-xs font-mono text-slate-500 uppercase tracking-widest"
+          >
+            private-rag · stage 04 of 4
+          </div>
+          <div class="font-mono text-xs text-slate-500">
+            prompt → KV cache → token stream
+          </div>
+        </div>
+        <h1
+          class="font-serif text-5xl tracking-tight text-slate-900 leading-tight"
+        >
+          Generation
+          <span class="italic font-light text-slate-500">— GELO LLM</span>
+        </h1>
+        <p class="mt-5 text-slate-700 text-base leading-relaxed max-w-3xl">
+          Autoregressive answer generation under the same GELO mask + TwinShield
+          primitives the embedder and reranker already validated.
+          <strong>Qwen3-1.7B runs end-to-end</strong> today inside an attested
+          SEV-SNP CVM; every Q/K/V/O + MLP matmul rides through a per-batch Haar
+          mask before crossing PCIe; QK-norm + RoPE + GQA + SwiGLU happen
+          entirely in-TEE on plaintext tensors. Tokens stream back to the client
+          over RATLS.
+        </p>
+        <dl
+          class="mt-7 grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-2 text-xs font-mono"
+        >
+          <div>
+            <dt class="text-slate-500 uppercase tracking-wider">protocol</dt>
+            <dd class="text-slate-800">
+              GELO + TwinShield (per-forward Haar A + shield)
+            </dd>
+          </div>
+          <div>
+            <dt class="text-slate-500 uppercase tracking-wider">TEE</dt>
+            <dd class="text-slate-800">AMD SEV-SNP CVM</dd>
+          </div>
+          <div>
+            <dt class="text-slate-500 uppercase tracking-wider">GPU</dt>
+            <dd class="text-slate-800">commodity Vulkan via VFIO</dd>
+          </div>
+          <div>
+            <dt class="text-slate-500 uppercase tracking-wider">model</dt>
+            <dd class="text-slate-800">Qwen3-1.7B · Qwen3-4B</dd>
+          </div>
+        </dl>
+      </header>
+
+      <!-- ─── HEADLINE STATS ─── -->
+      <section class="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div class="rounded-lg border border-slate-200 bg-white p-5">
+          <div class="label-tiny text-slate-500">prefill tok/s</div>
+          <div class="font-serif text-4xl mt-1 text-slate-900">
+            <em class="not-italic font-normal">121</em
+            ><span class="text-xs font-mono text-slate-500 ml-1"
+              >agg · B=8</span
+            >
+          </div>
+          <p class="mt-2 text-xs text-slate-600 leading-relaxed">
+            Qwen3-4B at production-extraction shape (n = 2 048, DCT-IV cascade).
+            Single-stream B = 1 long-context (n = 2 561) holds
+            <strong>81 tok/s</strong>.
+          </p>
+        </div>
+        <div class="rounded-lg border border-slate-200 bg-white p-5">
+          <div class="label-tiny text-slate-500">decode tok/s</div>
+          <div class="font-serif text-4xl mt-1 text-slate-900">
+            <em class="not-italic font-normal">4.62</em
+            ><span class="text-xs font-mono text-slate-500 ml-1"
+              >agg · B=8</span
+            >
+          </div>
+          <p class="mt-2 text-xs text-slate-600 leading-relaxed">
+            Qwen3-4B at n = 2 048 (in-TEE attention 54 % of wall). Single-stream
+            B = 1 long-context: <strong>1.44 tok/s</strong> —
+            attention-bandwidth-bound at this hardware tier.
+          </p>
+        </div>
+        <div class="rounded-lg border border-slate-200 bg-white p-5">
+          <div class="label-tiny text-slate-500">
+            batched decode amortisation
+          </div>
+          <div class="font-serif text-4xl mt-1 text-slate-900">
+            <em class="not-italic font-normal">2.6 – 5.2</em
+            ><span class="text-xs font-mono text-slate-500 ml-1">× vs B=1</span>
+          </div>
+          <p class="mt-2 text-xs text-slate-600 leading-relaxed">
+            Both at B = 8. <strong>2.6×</strong> per-seq at real-weight
+            production shape (Qwen3-4B n = 2 048). <strong>5.2×</strong> at
+            synth Qwen3-4B-shape n_kv = 64.
+          </p>
+        </div>
+        <div
+          class="rounded-lg border-2 border-emerald-700 bg-emerald-50/60 p-5"
+        >
+          <div class="label-tiny text-emerald-800">
+            auto vs haar @ pow2-aligned
+          </div>
+          <div class="font-serif text-4xl mt-1 text-emerald-900">
+            <em class="not-italic font-normal">−36</em
+            ><span class="text-xs font-mono text-emerald-700 ml-1">% TTFT</span>
+          </div>
+          <p class="mt-2 text-xs text-emerald-900 leading-relaxed">
+            Qwen3-4B n = 2 040 · Auto routes to HD₃ at pad ratio 1.0 ·
+            <strong>16.3 s</strong> vs ~25.6 s dense Haar QR baseline · σ &lt;
+            12 ms across decode steps.
+          </p>
+        </div>
+      </section>
+
+      <!-- ─── TABLE OF CONTENTS ─── -->
+      <nav
+        class="border-t border-b border-slate-200 py-5 grid grid-cols-2 md:grid-cols-5 gap-x-4 gap-y-2 text-sm"
+      >
+        <a href="#role" class="text-slate-700 hover:text-emerald-700"
+          ><span class="font-mono text-xs text-slate-400">§01</span> Role</a
+        >
+        <a href="#defs" class="text-slate-700 hover:text-emerald-700"
+          ><span class="font-mono text-xs text-slate-400">§02</span>
+          Definitions</a
+        >
+        <a href="#threats" class="text-slate-700 hover:text-emerald-700"
+          ><span class="font-mono text-xs text-slate-400">§03</span> Threat
+          model</a
+        >
+        <a href="#models" class="text-slate-700 hover:text-emerald-700"
+          ><span class="font-mono text-xs text-slate-400">§04</span>
+          Workloads</a
+        >
+        <a href="#components" class="text-slate-700 hover:text-emerald-700"
+          ><span class="font-mono text-xs text-slate-400">§05</span>
+          Components</a
+        >
+        <a href="#flow" class="text-slate-700 hover:text-emerald-700"
+          ><span class="font-mono text-xs text-slate-400">§06</span> Compute
+          flow</a
+        >
+        <a href="#perf" class="text-slate-700 hover:text-emerald-700"
+          ><span class="font-mono text-xs text-slate-400">§07</span> Performance
+          &amp; correctness</a
+        >
+        <a href="#optimizations" class="text-slate-700 hover:text-emerald-700"
+          ><span class="font-mono text-xs text-slate-400">§08</span>
+          Optimizations</a
+        >
+        <a href="#attacks" class="text-slate-700 hover:text-emerald-700"
+          ><span class="font-mono text-xs text-slate-400">§09</span> Attack
+          harness</a
+        >
+        <a href="#status" class="text-slate-700 hover:text-emerald-700"
+          ><span class="font-mono text-xs text-slate-400">§10</span> Status
+          &amp; gaps</a
+        >
+      </nav>
+
+      <!-- ============================================================ -->
+      <!-- §01 ROLE                                                     -->
+      <!-- ============================================================ -->
+      <section id="role" class="space-y-4 scroll-mt-12">
+        <header
+          class="flex items-baseline gap-4 flex-wrap pb-3 border-b border-slate-200"
+        >
+          <span class="font-mono text-sm text-slate-500">§01</span>
+          <h2 class="font-serif text-3xl tracking-tight text-slate-900">
+            Role in the project
+          </h2>
+          <span class="label-tiny text-slate-500 ml-auto"
+            >where this fits · what it closes · what currently runs</span
+          >
+        </header>
+
+        <p class="text-base text-slate-800 leading-relaxed">
+          Generation is the final stage that closes the private-RAG loop:
+          <a href="embedding.html" class="text-emerald-700 hover:underline"
+            >embed</a
+          >
+          the query,
+          <a href="storage.html" class="text-emerald-700 hover:underline"
+            >retrieve</a
+          >
+          ciphertext candidates,
+          <a href="reranking.html" class="text-emerald-700 hover:underline"
+            >rerank</a
+          >
+          them inside the CVM, and
+          <strong>generate the answer inside the same trust boundary</strong>
+          rather than handing decrypted top-k chunks to a client-side LLM. Model
+          weights are public; the protected asset is the user's prompt, the
+          retrieved chunk text, the per-token logits, and the sampled tokens —
+          all of which must stay confidential against a co-located untrusted GPU
+          and an untrusted CVM operator.
+        </p>
+
+        <div class="grid md:grid-cols-2 gap-4 mt-4">
+          <div
+            class="rounded-lg border border-emerald-300 bg-emerald-50/50 p-5"
+          >
+            <div class="label-tiny text-emerald-800">runs today</div>
+            <p class="mt-2 text-sm text-slate-800 leading-relaxed">
+              Greedy decoding on
+              <code class="font-mono text-xs">Qwen/Qwen3-1.7B</code> end-to-end
+              under the GELO protocol: prefill + 8-token decode with
+              <strong>bit-identical token output</strong> across
+              <code class="font-mono text-xs">PlaintextExecutor</code>,
+              <code class="font-mono text-xs">InProcessTrustedExecutor</code>
+              (per-forward Haar mask + shield(8, 4.0)), and U-Verify k = 2. GELO
+              mask is +33 % TPOT on AMD RADV GFX1151 iGPU; argmax stability
+              holds. <code class="font-mono text-xs">Qwen3-4B</code> rides the
+              same code path as the stretch target.
+            </p>
+          </div>
+          <div class="rounded-lg border border-red-300 bg-red-50/50 p-5">
+            <div class="label-tiny text-red-800">open</div>
+            <p class="mt-2 text-sm text-slate-800 leading-relaxed">
+              <strong>(a)</strong> U-Verify unusable at 1.7B-scale — k = 2
+              Freivalds probes against ~13 GB collapse decode to 0.04 tok/s.
+              Needs sublinear-in-weight-size integrity primitive.
+              <strong>(b)</strong> Decode-phase KV-cache bandwidth dominates
+              past ~4k tokens — SCX-style per-position encoding (Yuan et al.,
+              SIGCOMM 2025) candidate; security analysis is the gating spike.
+              Both items in §10.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- §02 DEFINITIONS                                              -->
+      <!-- ============================================================ -->
+      <section id="defs" class="space-y-4 scroll-mt-12">
+        <header
+          class="flex items-baseline gap-4 flex-wrap pb-3 border-b border-slate-200"
+        >
+          <span class="font-mono text-sm text-slate-500">§02</span>
+          <h2 class="font-serif text-3xl tracking-tight text-slate-900">
+            Definitions &amp; glossary
+          </h2>
+          <span class="label-tiny text-slate-500 ml-auto"
+            >terminology introduced by this stage</span
+          >
+        </header>
+
+        <p class="text-base text-slate-800 leading-relaxed">
+          Only the terms specific to generation. Protocol terms (mask, shield,
+          U-Verify, OutAttnMult, permuted attention) are defined in
+          <a href="embedding.html" class="text-emerald-700 hover:underline"
+            >embedding §05</a
+          >
+          and <code class="font-mono text-xs">gelo.md</code>.
+        </p>
+
+        <div
+          class="rounded-lg border border-slate-200 bg-white overflow-hidden"
+        >
+          <table class="w-full text-sm">
+            <thead class="bg-slate-50 border-b border-slate-200">
+              <tr class="text-left">
+                <th class="px-4 py-2.5 w-40 font-semibold text-slate-700">
+                  Term
+                </th>
+                <th class="px-4 py-2.5 w-20 font-semibold text-slate-700">
+                  Short
+                </th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700">
+                  Meaning
+                </th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              <tr>
+                <td class="px-4 py-3 align-top font-medium text-slate-900">
+                  Prefill
+                </td>
+                <td class="px-4 py-3 align-top text-slate-500">—</td>
+                <td class="px-4 py-3 align-top text-slate-700 leading-relaxed">
+                  Single forward pass over the full prompt that populates the KV
+                  cache. Compute-intensive, attention-dominated past ~2k tokens;
+                  the "long" workload of the two phases.
+                </td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top font-medium text-slate-900">
+                  Decode
+                </td>
+                <td class="px-4 py-3 align-top text-slate-500">—</td>
+                <td class="px-4 py-3 align-top text-slate-700 leading-relaxed">
+                  Per-token autoregressive step. The new token's query attends
+                  to all cached K, V; one new K/V pair is appended. Per-step
+                  compute is small, dispatch-bound; the "narrow" workload.
+                </td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top font-medium text-slate-900">
+                  Time-to-first-token
+                </td>
+                <td class="px-4 py-3 align-top text-slate-500 font-mono">
+                  TTFT
+                </td>
+                <td class="px-4 py-3 align-top text-slate-700 leading-relaxed">
+                  Latency from request arrival to first output token. Dominated
+                  by prefill cost.
+                </td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top font-medium text-slate-900">
+                  Time-per-output-token
+                </td>
+                <td class="px-4 py-3 align-top text-slate-500 font-mono">
+                  TPOT
+                </td>
+                <td class="px-4 py-3 align-top text-slate-700 leading-relaxed">
+                  Steady-state inter-token latency once generation starts.
+                  Dominated by decode cost.
+                </td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top font-medium text-slate-900">
+                  KV cache
+                </td>
+                <td class="px-4 py-3 align-top text-slate-500">—</td>
+                <td class="px-4 py-3 align-top text-slate-700 leading-relaxed">
+                  Materialised <code class="font-mono text-xs">(K, V)</code> for
+                  every previous position, per layer, per head. Lives in
+                  encrypted CVM DRAM; sized
+                  <code class="font-mono text-xs"
+                    >2 · n_layers · n_kv_heads · n_cache · d_head</code
+                  >. ~58 MB for Qwen3-1.7B at n_cache=4k.
+                </td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top font-medium text-slate-900">
+                  QK-norm
+                </td>
+                <td class="px-4 py-3 align-top text-slate-500">—</td>
+                <td class="px-4 py-3 align-top text-slate-700 leading-relaxed">
+                  Per-head RMSNorm on Q and K <em>before</em> RoPE. Qwen3's only
+                  architectural delta vs Qwen2. Stays in-TEE on plaintext;
+                  absent on Qwen2/LLaMA/Mistral so the step is a no-op there.
+                </td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top font-medium text-slate-900">
+                  Grouped-query attention
+                </td>
+                <td class="px-4 py-3 align-top text-slate-500 font-mono">
+                  GQA
+                </td>
+                <td class="px-4 py-3 align-top text-slate-700 leading-relaxed">
+                  Q has more heads than K/V; multiple Q heads share one K/V
+                  head. Qwen3-1.7B uses 2:1 (16 Q, 8 KV).
+                </td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top font-medium text-slate-900">
+                  Address-bus leak
+                </td>
+                <td class="px-4 py-3 align-top text-slate-500">—</td>
+                <td class="px-4 py-3 align-top text-slate-700 leading-relaxed">
+                  Attack class where an observer on the memory or PCIe bus
+                  learns content from <em>which</em> addresses are accessed, not
+                  what is read at them. Defeats mask-based confidentiality on
+                  table lookups — the index, not the value, is the secret.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- §03 THREAT MODEL                                             -->
+      <!-- ============================================================ -->
+      <section id="threats" class="space-y-4 scroll-mt-12">
+        <header
+          class="flex items-baseline gap-4 flex-wrap pb-3 border-b border-slate-200"
+        >
+          <span class="font-mono text-sm text-slate-500">§03</span>
+          <h2 class="font-serif text-3xl tracking-tight text-slate-900">
+            Threat model
+          </h2>
+          <span class="label-tiny text-slate-500 ml-auto"
+            >what each component sees · what it cannot · what's new vs
+            embedding/rerank</span
+          >
+        </header>
+
+        <p class="text-base text-slate-800 leading-relaxed">
+          Same trust posture as embedding and reranking: hardware-attested TEE
+          on CPU, information-theoretically blind GPU, everything else hostile.
+          The openweight assumption holds — weights pin to a public HuggingFace
+          revision (<code class="font-mono text-xs">Qwen/Qwen3-1.7B</code>
+          today); SHA-256 of the loaded bytes rides as
+          <code class="font-mono text-xs">model_identity</code> through the
+          attestation report. Generation extends the model with
+          <strong>two new exit channels</strong> (KV cache, per-token
+          streaming); each is closed structurally rather than statistically.
+        </p>
+
+        <div
+          class="rounded-lg border border-slate-200 bg-white overflow-hidden"
+        >
+          <table class="w-full text-sm">
+            <thead class="bg-slate-50 border-b border-slate-200">
+              <tr class="text-left">
+                <th class="px-4 py-2.5 font-semibold text-slate-700">
+                  Component
+                </th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700 w-28">
+                  Trust
+                </th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700">Sees</th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700">
+                  Does NOT see
+                </th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              <tr>
+                <td class="px-4 py-3 align-top font-medium">
+                  User-side prompt
+                </td>
+                <td class="px-4 py-3 align-top">
+                  <span
+                    class="inline-block px-2 py-0.5 rounded-full bg-violet-100 border border-violet-300 text-violet-900 text-[10px] font-medium"
+                    >confidential</span
+                  >
+                </td>
+                <td class="px-4 py-3 align-top text-slate-500">—</td>
+                <td class="px-4 py-3 align-top text-slate-500">—</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top font-medium">
+                  TEE (SEV-SNP CVM)
+                </td>
+                <td class="px-4 py-3 align-top">
+                  <span
+                    class="inline-block px-2 py-0.5 rounded-full bg-emerald-100 border border-emerald-300 text-emerald-900 text-[10px] font-medium"
+                    >trusted</span
+                  >
+                </td>
+                <td class="px-4 py-3 align-top text-slate-700 leading-relaxed">
+                  prompt · retrieved chunk text · per-layer activations · scores
+                  · sampled tokens · KV cache · mask state · model weights
+                </td>
+                <td class="px-4 py-3 align-top text-slate-500">—</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top font-medium">
+                  GPU + driver + PCIe
+                </td>
+                <td class="px-4 py-3 align-top">
+                  <span
+                    class="inline-block px-2 py-0.5 rounded-full bg-slate-100 border border-slate-300 text-slate-700 text-[10px] font-medium"
+                    >untrusted</span
+                  >
+                </td>
+                <td class="px-4 py-3 align-top text-slate-700 leading-relaxed">
+                  public model weights · per-batch masked activations
+                  <code class="font-mono text-xs">U = A·H</code> ·
+                  integrity-probed matmul results
+                </td>
+                <td class="px-4 py-3 align-top text-slate-700 leading-relaxed">
+                  clean activations · mask
+                  <code class="font-mono text-xs">A</code> · prompt tokens ·
+                  sampled tokens · KV cache
+                </td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top font-medium">
+                  TEE host (CVM operator)
+                </td>
+                <td class="px-4 py-3 align-top">
+                  <span
+                    class="inline-block px-2 py-0.5 rounded-full bg-slate-100 border border-slate-300 text-slate-700 text-[10px] font-medium"
+                    >untrusted</span
+                  >
+                </td>
+                <td class="px-4 py-3 align-top text-slate-700 leading-relaxed">
+                  encrypted CVM memory · masked PCIe traffic · attestation
+                  evidence · per-token TLS write timing · prompt length (via TLS
+                  frame size) · generation length
+                </td>
+                <td class="px-4 py-3 align-top text-slate-700 leading-relaxed">
+                  plaintext memory · per-CVM encryption key · token content ·
+                  KV-cache bytes · scores · routing
+                </td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top font-medium">
+                  Network operator
+                </td>
+                <td class="px-4 py-3 align-top">
+                  <span
+                    class="inline-block px-2 py-0.5 rounded-full bg-slate-100 border border-slate-300 text-slate-700 text-[10px] font-medium"
+                    >untrusted</span
+                  >
+                </td>
+                <td class="px-4 py-3 align-top text-slate-700 leading-relaxed">
+                  TLS-wrapped requests · attestation evidence · per-token TLS
+                  frame timing
+                </td>
+                <td class="px-4 py-3 align-top text-slate-700 leading-relaxed">
+                  RATLS contents
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 class="font-serif text-xl text-slate-900 mt-8">
+          Five exit-channel leaks specific to generation
+        </h3>
+        <p class="text-sm text-slate-600">Each closed by construction.</p>
+
+        <div class="space-y-3">
+          <details
+            class="rounded-lg border border-slate-200 bg-white overflow-hidden"
+            open
+          >
+            <summary
+              class="px-4 py-3 cursor-pointer flex items-baseline gap-3 hover:bg-slate-50"
+            >
+              <span class="font-semibold text-slate-900"
+                >KV-cache content leak</span
+              >
+            </summary>
+            <div class="px-4 pb-4 text-sm text-slate-700 leading-relaxed">
+              KV cache lives entirely in encrypted CVM DRAM, indexed by
+              <code class="font-mono text-xs"
+                >(layer_idx, head_idx, position)</code
+              >. GPU never touches KV bytes — attention's
+              <code class="font-mono text-xs">Q · Kᵀ</code> and
+              <code class="font-mono text-xs">P · V</code> run in-TEE on CPU
+              under AOCL-BLIS; K and V never persist GPU-side. Decode-phase π
+              handling — fresh π each step vs session-persistent π — is the
+              decision point that gates SCX-style encoded-KV adoption; see §10.
+            </div>
+          </details>
+
+          <details
+            class="rounded-lg border border-slate-200 bg-white overflow-hidden"
+          >
+            <summary
+              class="px-4 py-3 cursor-pointer flex items-baseline gap-3 hover:bg-slate-50"
+            >
+              <span class="font-semibold text-slate-900"
+                >Per-token TLS timing</span
+              >
+            </summary>
+            <div class="px-4 pb-4 text-sm text-slate-700 leading-relaxed">
+              Streaming output flushes one ciphertext frame per sampled token
+              over RATLS. An on-path observer sees per-token timing; combined
+              with public knowledge of GELO+Qwen3 forward-pass cost, this is
+              mild side information about token entropy. Mitigations at
+              deployment time: emit at fixed cadence padded by sleep · batch
+              tokens into fixed-size frames · disable streaming entirely and
+              return at EOS. Protocol surface is unchanged by the choice.
+            </div>
+          </details>
+
+          <details
+            class="rounded-lg border border-slate-200 bg-white overflow-hidden"
+          >
+            <summary
+              class="px-4 py-3 cursor-pointer flex items-baseline gap-3 hover:bg-slate-50"
+            >
+              <span class="font-semibold text-slate-900"
+                >Generation-length leak</span
+              >
+            </summary>
+            <div class="px-4 pb-4 text-sm text-slate-700 leading-relaxed">
+              Total token count is observable from TLS frame count and
+              connection duration. Treated as out-of-scope at the protocol layer
+              — same posture as the reranker's
+              <code class="font-mono text-xs">k_max</code> being a deployment
+              property, not a request property. Fixed-length deployments (always
+              emit <code class="font-mono text-xs">n_max</code>, padded with
+              EOS-after-stop) are available as a wrapper.
+            </div>
+          </details>
+
+          <details
+            class="rounded-lg border border-slate-200 bg-white overflow-hidden"
+          >
+            <summary
+              class="px-4 py-3 cursor-pointer flex items-baseline gap-3 hover:bg-slate-50"
+            >
+              <span class="font-semibold text-slate-900"
+                >Sampler-state leak</span
+              >
+            </summary>
+            <div class="px-4 pb-4 text-sm text-slate-700 leading-relaxed">
+              Sampling (greedy, top-k, top-p, temperature) runs entirely in-TEE
+              on plaintext logits. RNG is a ChaCha20 seeded from the per-session
+              <code class="font-mono text-xs">SessionKey</code>; GPU sees
+              neither logits nor sample. Logits zeroized after sampling; only
+              the sampled
+              <code class="font-mono text-xs">token_id</code> survives to the
+              next step.
+            </div>
+          </details>
+
+          <details
+            class="rounded-lg border border-slate-200 bg-white overflow-hidden"
+          >
+            <summary
+              class="px-4 py-3 cursor-pointer flex items-baseline gap-3 hover:bg-slate-50"
+            >
+              <span class="font-semibold text-slate-900"
+                >Tied-LM-head dot-product leak</span
+              >
+            </summary>
+            <div class="px-4 pb-4 text-sm text-slate-700 leading-relaxed">
+              Output projection is
+              <code class="font-mono text-xs">H_final · token_embeddingᵀ</code>
+              over 262 144 vocab rows. Mask GEMM at this shape is unchanged from
+              the reranker's tied-LM-head pattern — masked offload of the same
+              form as every other linear. The vocab-row gather that
+              <em>follows</em> sampling stays in-TEE — token-id-keyed lookups
+              never leave the trust boundary.
+            </div>
+          </details>
+        </div>
+
+        <div
+          class="rounded-lg border-2 border-emerald-700 bg-emerald-50/40 p-5 mt-6"
+        >
+          <div class="label-tiny text-emerald-800 mb-2">validating result</div>
+          <p class="text-sm text-slate-800 leading-relaxed">
+            <a
+              href="https://tee.fail"
+              class="text-emerald-700 hover:underline font-medium"
+              >TEE.Fail</a
+            >
+            (DDR5 bus-interposer attack, Oct 2025) defeats SGX, TDX, and SEV-SNP
+            key sealing in the offline case and uses extracted CPU-TEE keys to
+            compromise H100 confidential GPU. The architectural choice that
+            survives it is the protocol's
+            <strong>per-batch fresh Haar mask</strong>: mask material exists
+            only for the duration of one forward pass; an offline TEE compromise
+            reveals nothing about any past or future forward until a fresh mask
+            is sampled. Today's Qwen3 measurement validates the property
+            end-to-end.
+          </p>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- §04 WORKLOADS (compact pilot)                                -->
+      <!-- ============================================================ -->
+      <section id="models" class="space-y-4 scroll-mt-12">
+        <header
+          class="flex items-baseline gap-4 flex-wrap pb-3 border-b border-slate-200"
+        >
+          <span class="font-mono text-sm text-slate-500">§04</span>
+          <h2 class="font-serif text-3xl tracking-tight text-slate-900">
+            Supported workloads &amp; architectures
+          </h2>
+          <span class="label-tiny text-slate-500 ml-auto"
+            >two phases · Qwen3 family</span
+          >
+        </header>
+
+        <h3 class="font-serif text-lg text-slate-900 mt-2">
+          Workloads — prefill &amp; decode
+        </h3>
+        <p class="text-base text-slate-800 leading-relaxed">
+          Generation has two phases with structurally different compute shapes
+          and cost profiles. The protocol covers both, with different attention
+          paths and different cost trade-offs. The runner exposes them as a
+          single
+          <code class="font-mono text-xs">generate(prompt, max_tokens)</code>
+          entry point that does prefill once and loops decode.
+        </p>
+
+        <div
+          class="rounded-lg border border-slate-200 bg-white overflow-hidden"
+        >
+          <table class="w-full text-sm">
+            <thead class="bg-slate-50 border-b border-slate-200">
+              <tr class="text-left">
+                <th class="px-4 py-2.5 font-semibold text-slate-700 w-24">
+                  Phase
+                </th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700">Shape</th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700">
+                  Dominant cost
+                </th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700">
+                  Attention path
+                </th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700">
+                  Mask cadence
+                </th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              <tr>
+                <td class="px-4 py-3 align-top font-semibold">Prefill</td>
+                <td class="px-4 py-3 align-top font-mono text-xs">
+                  n_q = n_prompt
+                </td>
+                <td class="px-4 py-3 align-top text-slate-700 leading-relaxed">
+                  attention <code class="font-mono text-xs">O(n²)</code> at long
+                  context · linear projections at short context
+                </td>
+                <td class="px-4 py-3 align-top text-slate-700 leading-relaxed">
+                  length-based auto-switch: in-TEE for short n ·
+                  <strong>fused permuted attention</strong> on GPU past
+                  threshold · OutAttnMult is the 3-dispatch fallback
+                </td>
+                <td class="px-4 py-3 align-top text-slate-700">
+                  one Haar <code class="font-mono text-xs">A</code> for the
+                  whole prefill
+                </td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top font-semibold">Decode</td>
+                <td class="px-4 py-3 align-top font-mono text-xs">
+                  n_q = 1, n_kv growing
+                </td>
+                <td class="px-4 py-3 align-top text-slate-700 leading-relaxed">
+                  dispatch overhead · KV-cache bandwidth · linear projections
+                </td>
+                <td class="px-4 py-3 align-top text-slate-700 leading-relaxed">
+                  <strong>in-TEE always.</strong> Per-step attention is
+                  microseconds at
+                  <code class="font-mono text-xs">n_q = 1</code>; auto-switch
+                  doesn't engage. KV-cache <em>bandwidth</em> is what SCX in §10
+                  optimises.
+                </td>
+                <td class="px-4 py-3 align-top text-slate-700">
+                  one fresh Haar <code class="font-mono text-xs">A</code> per
+                  decode step
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="rounded-lg bg-slate-50 border border-slate-200 p-5 mt-2">
+          <div class="label-tiny text-slate-500 mb-2">
+            why prefill and decode want different paths
+          </div>
+          <p class="text-base text-slate-800 leading-relaxed">
+            Prefill at
+            <code class="font-mono text-xs">n = 4k</code> materialises a
+            <code class="font-mono text-xs">(heads, n, n)</code> score tensor of
+            ~1 GB per layer that the 3-dispatch permuted-attention path forces
+            through device memory three times — bandwidth-bound to ~3.2 GB/layer
+            × 28 layers ≈ 90 GB on the iGPU (~1.8 s pure traffic per prefill).
+            The FlashAttention-style fused permuted kernel drops that to ~130
+            MB/layer. Decode at
+            <code class="font-mono text-xs">n_q = 1</code> never materialises a
+            square score tensor — per-step attention compute is microseconds and
+            stays in-TEE; the bottleneck is KV-cache bandwidth read at every
+            decode step, addressed by SCX-class encoded-KV (§10).
+          </p>
+        </div>
+
+        <p class="text-base text-slate-800 leading-relaxed mt-4">
+          <strong>Sampling.</strong> Greedy and top-p / top-k / temperature
+          sampling all run in-TEE on plaintext logits. The seed is derived from
+          the per-session <code class="font-mono text-xs">SessionKey</code>;
+          deterministic replay (same prompt, same session) is possible at
+          <code class="font-mono text-xs">temperature = 0</code> for debugging
+          and reproducibility benches without breaking confidentiality of the
+          live request. Today ships greedy only — top-p / top-k / temperature
+          wire in alongside the production HTTP route.
+        </p>
+
+        <h3 class="font-serif text-xl text-slate-900 mt-10">
+          Model architectures
+        </h3>
+        <p class="text-base text-slate-800 leading-relaxed">
+          The shipping surface is the <strong>Qwen3 family</strong> — vanilla
+          <code class="font-mono text-xs">Qwen3ForCausalLM</code> with GQA, full
+          causal attention, SwiGLU FFN, tied input/output embeddings, and one
+          Qwen3-specific addition: per-head QK-norm before RoPE. The same
+          <code class="font-mono text-xs">DecoderWeights</code> loader and
+          forward path that services Qwen3-Embedding under the embedder/reranker
+          protocol handles generation. The SHA-256 of the loaded safetensors +
+          tokenizer + the
+          <code class="font-mono text-xs">(q_norm, k_norm)</code> presence flag
+          rides as <code class="font-mono text-xs">model_identity</code> in
+          every attestation report — a tokenizer drift or a re-numbered
+          <code class="font-mono text-xs">&lt;eos&gt;</code> trips attestation.
+        </p>
+
+        <h4
+          class="font-mono text-xs uppercase tracking-wider text-slate-500 mt-4"
+        >
+          Qwen3 family — shipping target
+        </h4>
+        <div
+          class="rounded-lg border border-slate-200 bg-white overflow-hidden"
+        >
+          <table class="w-full text-sm">
+            <thead class="bg-slate-50 border-b border-slate-200">
+              <tr class="text-left">
+                <th class="px-4 py-2.5 font-semibold text-slate-700">
+                  Variant
+                </th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700">Layers</th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700">
+                  Hidden · Inter · d_head
+                </th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700">
+                  Q · KV heads
+                </th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700">
+                  Attention
+                </th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700">RoPE θ</th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700">
+                  QK-norm
+                </th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700">Status</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              <tr>
+                <td class="px-4 py-3 align-top font-semibold">Qwen3-1.7B</td>
+                <td class="px-4 py-3 align-top font-mono text-xs">28</td>
+                <td class="px-4 py-3 align-top font-mono text-xs">
+                  2048 · 6144 · 128
+                </td>
+                <td class="px-4 py-3 align-top font-mono text-xs">16 · 8</td>
+                <td class="px-4 py-3 align-top">full causal</td>
+                <td class="px-4 py-3 align-top font-mono text-xs">1 M</td>
+                <td class="px-4 py-3 align-top">yes</td>
+                <td class="px-4 py-3 align-top">
+                  <span
+                    class="inline-block px-2 py-0.5 rounded-full bg-emerald-100 border border-emerald-300 text-emerald-900 text-[10px] font-medium"
+                    >running — primary target</span
+                  >
+                </td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top font-semibold">Qwen3-4B</td>
+                <td class="px-4 py-3 align-top font-mono text-xs">36</td>
+                <td class="px-4 py-3 align-top font-mono text-xs">
+                  2560 · 9728 · 128
+                </td>
+                <td class="px-4 py-3 align-top font-mono text-xs">32 · 8</td>
+                <td class="px-4 py-3 align-top">full causal</td>
+                <td class="px-4 py-3 align-top font-mono text-xs">1 M</td>
+                <td class="px-4 py-3 align-top">yes</td>
+                <td class="px-4 py-3 align-top">
+                  <span
+                    class="inline-block px-2 py-0.5 rounded-full bg-slate-100 border border-slate-300 text-slate-700 text-[10px] font-medium"
+                    >stretch — same code path</span
+                  >
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="grid md:grid-cols-2 gap-4 mt-4">
+          <div class="rounded-lg border border-slate-200 bg-white p-5">
+            <div class="label-tiny text-slate-500">qwen3-specific delta</div>
+            <h4 class="font-serif text-base text-slate-900 mt-1">
+              Per-head QK-norm before RoPE
+            </h4>
+            <p class="mt-2 text-sm text-slate-700 leading-relaxed">
+              Each layer's
+              <code class="font-mono text-xs">self_attn.q_norm.weight</code> and
+              <code class="font-mono text-xs">k_norm.weight</code> are
+              <code class="font-mono text-xs">(head_dim,)</code> RMS-norm gammas
+              applied per attention head. Loaded
+              <code class="font-mono text-xs"
+                >Option&lt;Array1&lt;f32&gt;&gt;</code
+              >; forward invokes
+              <code class="font-mono text-xs">rms_norm::apply_qk_norm</code>
+              only when populated, so Qwen2 / LLaMA / Mistral checkpoints
+              continue loading byte-identically. Stays entirely in-TEE — QK-norm
+              is a no-op for the protocol.
+            </p>
+          </div>
+          <div class="rounded-lg border border-red-300 bg-red-50/30 p-5">
+            <div class="label-tiny text-red-800">out of scope</div>
+            <h4 class="font-serif text-base text-slate-900 mt-1">
+              Qwen3.5 family
+            </h4>
+            <p class="mt-2 text-sm text-slate-700 leading-relaxed">
+              2B / 4B / 9B / 35B-A3B variants ship as
+              <code class="font-mono text-xs"
+                >Qwen3_5ForConditionalGeneration</code
+              >
+              — multimodal VLM with a 24-layer ViT, image / video tokens, and a
+              text backbone using GDN-style
+              <code class="font-mono text-xs">linear_attention</code>
+              (Mamba/SSM) layers in 3:1 hybrid with
+              <code class="font-mono text-xs">full_attention</code>, MRoPE,
+              <code class="font-mono text-xs">partial_rotary_factor: 0.25</code
+              >, MTP head, and
+              <code class="font-mono text-xs">attn_output_gate</code>. Strictly
+              harder than the current Qwen3 path.
+            </p>
+          </div>
+        </div>
+
+        <h3 class="font-serif text-xl text-slate-900 mt-10">Deferred</h3>
+        <ul class="space-y-2 text-sm text-slate-700 leading-relaxed pl-4">
+          <li>
+            · <strong>LLaMA / Mistral dense</strong> — already loadable via the
+            same <code class="font-mono text-xs">DecoderWeights</code> path;
+            trivially extensible. Add a variant when needed.
+          </li>
+          <li>
+            · <strong>MoE generation</strong> — Qwen3-MoE, DeepSeek-V2: routing
+            histogram is an orthogonal exit channel; needs CryptoMoE-style
+            balanced dispatch as a separate ~3-6 month workstream.
+          </li>
+        </ul>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- §05 COMPONENTS                                               -->
+      <!-- ============================================================ -->
+      <section id="components" class="space-y-4 scroll-mt-12">
+        <header
+          class="flex items-baseline gap-4 flex-wrap pb-3 border-b border-slate-200"
+        >
+          <span class="font-mono text-sm text-slate-500">§05</span>
+          <h2 class="font-serif text-3xl tracking-tight text-slate-900">
+            Components
+          </h2>
+          <span class="label-tiny text-slate-500 ml-auto"
+            >crate-side · what's in the codebase today</span
+          >
+        </header>
+
+        <p class="text-base text-slate-800 leading-relaxed">
+          Six components, each tagged by category. The category palette is
+          shared across the site so a reader skimming any prototype doc can map
+          colour ↦ kind at a glance.
+        </p>
+
+        <!--
+          Standardised category palette — REUSE THESE EXACT CLASSES across
+          every prototype doc. Each category gets one hue; chips are the
+          50/200/700 triple from Tailwind plus a uniform pill shape.
+
+            Model      violet  · model identity / architecture variant
+            Kernel     teal    · compute primitive (matmul, norm, attn)
+            State      slate   · mutable runtime state (caches, buffers)
+            Algorithm  amber   · orchestration / control flow / sampling
+            Protocol   rose    · trust-boundary primitives (mask / shield / verify)
+            Scheme     blue    · cryptographic / encoding scheme (AEAD, RATLS frame)
+        -->
+        <div class="flex flex-wrap gap-2 text-[10px] font-mono pt-1">
+          <span
+            class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-violet-100 border border-violet-300 text-violet-900 uppercase tracking-wider"
+            ><span class="block w-1.5 h-1.5 rounded-full bg-violet-500"></span>
+            Model</span
+          >
+          <span
+            class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-teal-100 border border-teal-300 text-teal-900 uppercase tracking-wider"
+            ><span class="block w-1.5 h-1.5 rounded-full bg-teal-500"></span>
+            Kernel</span
+          >
+          <span
+            class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-slate-200 border border-slate-400 text-slate-800 uppercase tracking-wider"
+            ><span class="block w-1.5 h-1.5 rounded-full bg-slate-500"></span>
+            State</span
+          >
+          <span
+            class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-100 border border-amber-300 text-amber-900 uppercase tracking-wider"
+            ><span class="block w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+            Algorithm</span
+          >
+          <span
+            class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-rose-100 border border-rose-300 text-rose-900 uppercase tracking-wider"
+            ><span class="block w-1.5 h-1.5 rounded-full bg-rose-500"></span>
+            Protocol</span
+          >
+          <span
+            class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-100 border border-blue-300 text-blue-900 uppercase tracking-wider"
+            ><span class="block w-1.5 h-1.5 rounded-full bg-blue-500"></span>
+            Scheme</span
+          >
+        </div>
+
+        <div class="grid md:grid-cols-2 gap-4">
+          <!-- card: Qwen3Variant + DecoderWeights (Model) -->
+          <article class="rounded-lg border border-slate-200 bg-white p-5">
+            <span
+              class="inline-block px-2 py-0.5 rounded-full bg-violet-100 border border-violet-300 text-violet-900 text-[10px] font-medium uppercase tracking-wider"
+              >Model</span
+            >
+            <h3 class="font-serif text-lg text-slate-900 mt-2">
+              Qwen3Variant + DecoderWeights
+              <span
+                class="block text-xs font-mono text-slate-500 mt-1 font-normal"
+                >gelo_embedder :: decoder :: {qwen3, weights}</span
+              >
+            </h3>
+            <p class="mt-3 text-sm text-slate-700 leading-relaxed">
+              Variant configs (<code class="font-mono text-xs">Q1_7B</code>,
+              <code class="font-mono text-xs">Q4B</code>) pin HF-verified
+              constants and emit a
+              <code class="font-mono text-xs">DecoderConfig</code>; the
+              safetensors loader handles the Qwen3/Qwen2/LLaMA/Mistral family,
+              dequantises bf16/f16 → f32 on load, reads
+              <code class="font-mono text-xs">q_norm</code> /
+              <code class="font-mono text-xs">k_norm</code> as
+              <code class="font-mono text-xs">Option</code> (populated for
+              Qwen3, None elsewhere). SHA-256 of concatenated shard bytes folds
+              into the attestation
+              <code class="font-mono text-xs">model_identity</code>.
+            </p>
+            <dl
+              class="mt-3 pt-3 border-t border-slate-100 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-xs"
+            >
+              <dt class="font-mono text-slate-500">files</dt>
+              <dd class="font-mono text-slate-700">
+                decoder/qwen3.rs · decoder/weights.rs
+              </dd>
+              <dt class="font-mono text-slate-500">tokenizer</dt>
+              <dd class="font-mono text-slate-700">
+                common/tokenizer.rs · HfTokenizer
+              </dd>
+              <dt class="font-mono text-slate-500">attestation</dt>
+              <dd class="text-slate-700">
+                sha256(safetensors) || tokenizer || (q_norm, k_norm) presence →
+                model_identity
+              </dd>
+              <dt class="font-mono text-slate-500">back-compat</dt>
+              <dd class="text-slate-700">
+                byte-identical for Qwen2 / LLaMA / Mistral (QK-norm absent →
+                step skipped)
+              </dd>
+            </dl>
+          </article>
+
+          <!-- card: Causal GQA cached attention (Kernel) -->
+          <article class="rounded-lg border border-slate-200 bg-white p-5">
+            <span
+              class="inline-block px-2 py-0.5 rounded-full bg-teal-100 border border-teal-300 text-teal-900 text-[10px] font-medium uppercase tracking-wider"
+              >Kernel</span
+            >
+            <h3 class="font-serif text-lg text-slate-900 mt-2">
+              Causal GQA attention (cached)
+              <span
+                class="block text-xs font-mono text-slate-500 mt-1 font-normal"
+                >gelo_embedder :: decoder :: attention</span
+              >
+            </h3>
+            <p class="mt-3 text-sm text-slate-700 leading-relaxed">
+              Asymmetric Q vs cached-KV attention.
+              <code class="font-mono text-xs"
+                >causal_gqa_attention_cached(n_q, n_kv, q_pos_offset)</code
+              >
+              handles both prefill (n_q = n_prompt, n_kv = n_prompt) and decode
+              (n_q = 1, n_kv = n_cache + 1) under one kernel. Length-based
+              auto-switch dispatches to in-TEE CPU at short n; fused permuted
+              attention on GPU past
+              <code class="font-mono text-xs">hidden_size = 2048</code>; decode
+              always in-TEE.
+            </p>
+            <dl
+              class="mt-3 pt-3 border-t border-slate-100 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-xs"
+            >
+              <dt class="font-mono text-slate-500">entry</dt>
+              <dd class="font-mono text-slate-700">
+                causal_gqa_attention_cached
+              </dd>
+              <dt class="font-mono text-slate-500">GQA layout</dt>
+              <dd class="font-mono text-slate-700">
+                16 Q · 8 KV (Qwen3-1.7B) · 32 Q · 8 KV (Qwen3-4B)
+              </dd>
+              <dt class="font-mono text-slate-500">CPU backend</dt>
+              <dd class="text-slate-700">
+                AOCL-BLIS at decode; per-head Q·Kᵀ + softmax + ·V
+              </dd>
+            </dl>
+          </article>
+
+          <!-- card: QK-norm + RoPE (Kernel) -->
+          <article class="rounded-lg border border-slate-200 bg-white p-5">
+            <span
+              class="inline-block px-2 py-0.5 rounded-full bg-teal-100 border border-teal-300 text-teal-900 text-[10px] font-medium uppercase tracking-wider"
+              >Kernel</span
+            >
+            <h3 class="font-serif text-lg text-slate-900 mt-2">
+              QK-norm + RoPE
+              <span
+                class="block text-xs font-mono text-slate-500 mt-1 font-normal"
+                >gelo_embedder :: decoder :: {rms_norm, rope}</span
+              >
+            </h3>
+            <p class="mt-3 text-sm text-slate-700 leading-relaxed">
+              The two pre-attention transforms applied per head between QKV
+              projection and the attention kernel.
+              <code class="font-mono text-xs">apply_qk_norm</code> views the
+              <code class="font-mono text-xs"
+                >(n_tokens, n_heads · head_dim)</code
+              >
+              projection as
+              <code class="font-mono text-xs">n_tokens · n_heads</code> rows and
+              normalises each against the shared
+              <code class="font-mono text-xs">(head_dim,)</code> gamma — the
+              Qwen3 architectural delta vs Qwen2. Rotary embedding rotates Q and
+              K by token position immediately after. Both stay in-TEE on
+              plaintext tensors; no protocol surface change.
+            </p>
+            <dl
+              class="mt-3 pt-3 border-t border-slate-100 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-xs"
+            >
+              <dt class="font-mono text-slate-500">files</dt>
+              <dd class="font-mono text-slate-700">
+                decoder/rms_norm.rs · decoder/rope.rs
+              </dd>
+              <dt class="font-mono text-slate-500">order</dt>
+              <dd class="text-slate-700">QKV → QK-norm → RoPE → attention</dd>
+              <dt class="font-mono text-slate-500">no-op when</dt>
+              <dd class="text-slate-700">
+                q_norm / k_norm tensors absent (Qwen2 / LLaMA / Mistral)
+              </dd>
+            </dl>
+          </article>
+
+          <!-- card: KvCache (State) -->
+          <article class="rounded-lg border border-slate-200 bg-white p-5">
+            <span
+              class="inline-block px-2 py-0.5 rounded-full bg-slate-200 border border-slate-400 text-slate-800 text-[10px] font-medium uppercase tracking-wider"
+              >State</span
+            >
+            <h3 class="font-serif text-lg text-slate-900 mt-2">
+              KvCache
+              <span
+                class="block text-xs font-mono text-slate-500 mt-1 font-normal"
+                >gelo_embedder :: decoder :: kv_cache</span
+              >
+            </h3>
+            <p class="mt-3 text-sm text-slate-700 leading-relaxed">
+              In-CVM KV cache. Per-layer
+              <code class="font-mono text-xs"
+                >LayerKvCache::{Separate, Shared}</code
+              >
+              — separate K and V on the Qwen3 path. Grows by one position per
+              decode step; reset per
+              <code class="font-mono text-xs">generate()</code>. Always
+              RMP-protected CVM DRAM — never touched by GPU.
+            </p>
+            <dl
+              class="mt-3 pt-3 border-t border-slate-100 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-xs"
+            >
+              <dt class="font-mono text-slate-500">file</dt>
+              <dd class="font-mono text-slate-700">decoder/kv_cache.rs</dd>
+              <dt class="font-mono text-slate-500">Qwen3-1.7B</dt>
+              <dd class="text-slate-700">
+                28 layers · 8 KV heads · 128 head_dim · ~58 MB at n_cache = 4k
+              </dd>
+              <dt class="font-mono text-slate-500">π handling</dt>
+              <dd class="text-slate-700">
+                per-step decision (§10): fresh π per step vs session-persistent
+                π
+              </dd>
+            </dl>
+          </article>
+
+          <!-- card: Generation loop (Algorithm) -->
+          <article class="rounded-lg border border-slate-200 bg-white p-5">
+            <span
+              class="inline-block px-2 py-0.5 rounded-full bg-amber-100 border border-amber-300 text-amber-900 text-[10px] font-medium uppercase tracking-wider"
+              >Algorithm</span
+            >
+            <h3 class="font-serif text-lg text-slate-900 mt-2">
+              Generation loop + sampler
+              <span
+                class="block text-xs font-mono text-slate-500 mt-1 font-normal"
+                >gelo_embedder :: decoder :: generation</span
+              >
+            </h3>
+            <p class="mt-3 text-sm text-slate-700 leading-relaxed">
+              Orchestrates prefill + decode.
+              <code class="font-mono text-xs">run_prefill</code> opens one
+              <code class="font-mono text-xs">begin_forward_pass(n_prompt)</code
+              >, walks every layer with cache writes, returns the per-token
+              hidden state.
+              <code class="font-mono text-xs">run_decode_step</code> opens its
+              own
+              <code class="font-mono text-xs">begin_forward_pass(1)</code> per
+              call. <code class="font-mono text-xs">generate</code> ties these
+              together with the sampler — one fresh Haar
+              <code class="font-mono text-xs">A</code> per forward pass.
+              Sampling runs in-TEE on plaintext logits; RNG is a ChaCha20 seeded
+              from the per-session
+              <code class="font-mono text-xs">SessionKey</code>.
+            </p>
+            <dl
+              class="mt-3 pt-3 border-t border-slate-100 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-xs"
+            >
+              <dt class="font-mono text-slate-500">files</dt>
+              <dd class="font-mono text-slate-700">
+                decoder/generation.rs · decoder/forward.rs
+              </dd>
+              <dt class="font-mono text-slate-500">LM head</dt>
+              <dd class="text-slate-700">
+                tied — h_last · token_embeddingᵀ; R3 offloads under mask
+              </dd>
+              <dt class="font-mono text-slate-500">sampler</dt>
+              <dd class="text-slate-700">
+                greedy today; top-p / top-k / temperature share the call-site
+              </dd>
+              <dt class="font-mono text-slate-500">EOS</dt>
+              <dd class="font-mono text-slate-700">
+                GenerationConfig::eos_token_ids
+              </dd>
+            </dl>
+          </article>
+
+          <!-- card: RATLS token stream (Scheme) -->
+          <article class="rounded-lg border border-slate-200 bg-white p-5">
+            <span
+              class="inline-block px-2 py-0.5 rounded-full bg-blue-100 border border-blue-300 text-blue-900 text-[10px] font-medium uppercase tracking-wider"
+              >Scheme</span
+            >
+            <h3 class="font-serif text-lg text-slate-900 mt-2">
+              RATLS token stream
+              <span
+                class="block text-xs font-mono text-slate-500 mt-1 font-normal"
+                >gelo_snp_runner :: route :: generate</span
+              >
+            </h3>
+            <p class="mt-3 text-sm text-slate-700 leading-relaxed">
+              The trust-boundary egress. Each sampled
+              <code class="font-mono text-xs">token_id</code> is detokenised
+              in-TEE and emitted as one ciphertext frame over the
+              attestation-bound TLS connection. Per-token cadence is the only
+              side information visible to an on-path observer (§03 leak 3);
+              deployment choices — fixed-cadence sleep, fixed-size frame
+              batching, or EOS-only return — are wrapper policies over the same
+              emit call.
+            </p>
+            <dl
+              class="mt-3 pt-3 border-t border-slate-100 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-xs"
+            >
+              <dt class="font-mono text-slate-500">handshake</dt>
+              <dd class="text-slate-700">
+                RA-TLS with attestation report in cert extension
+              </dd>
+              <dt class="font-mono text-slate-500">frame</dt>
+              <dd class="font-mono text-slate-700">
+                {token_id: u32, finish_reason: enum, log_attestation?}
+              </dd>
+              <dt class="font-mono text-slate-500">session key</dt>
+              <dd class="text-slate-700">
+                ChaCha20 sampler RNG seed derived from the same root —
+                deterministic replay possible at temperature = 0
+              </dd>
+            </dl>
+          </article>
+
+          <!-- card: InProcessTrustedExecutor (Protocol) -->
+          <article
+            class="rounded-lg border-2 border-rose-300 bg-rose-50/40 p-5 md:col-span-2"
+          >
+            <span
+              class="inline-block px-2 py-0.5 rounded-full bg-rose-100 border border-rose-300 text-rose-900 text-[10px] font-medium uppercase tracking-wider"
+              >Protocol</span
+            >
+            <h3 class="font-serif text-lg text-slate-900 mt-2">
+              InProcessTrustedExecutor
+              <span
+                class="block text-xs font-mono text-slate-500 mt-1 font-normal"
+                >gelo_protocol :: sim</span
+              >
+            </h3>
+            <p class="mt-3 text-sm text-slate-700 leading-relaxed">
+              The masked executor — paper-parity defaults via
+              <code class="font-mono text-xs">with_seed</code>: per-forward Haar
+              <code class="font-mono text-xs">A</code> + shield(8, 4.0), no
+              U-Verify.
+              <code class="font-mono text-xs">with_verify_probes(k)</code>
+              enables Freivalds-style integrity probes.
+              <code class="font-mono text-xs">with_hd3_mask()</code> opts into
+              the Hadamard cascade (§08). Holds a
+              <code class="font-mono text-xs">WeightStore</code> shared with the
+              offload engine and a session-seeded
+              <code class="font-mono text-xs">ChaCha20Rng</code>.
+            </p>
+            <dl
+              class="mt-3 pt-3 border-t border-rose-200 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-xs"
+            >
+              <dt class="font-mono text-slate-500">file</dt>
+              <dd class="font-mono text-slate-700">
+                crates/gelo-protocol/src/sim.rs
+              </dd>
+              <dt class="font-mono text-slate-500">session bracket</dt>
+              <dd class="text-slate-700">
+                begin_forward_pass(n) samples per-forward A · end_forward_pass()
+                drops it
+              </dd>
+              <dt class="font-mono text-slate-500">per-offload mode</dt>
+              <dd class="text-slate-700">
+                opt-in with_per_offload_mask() for parity / BSS-recovery tests ·
+                not production
+              </dd>
+            </dl>
+          </article>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- §06 COMPUTE FLOW (diagram preserved verbatim)                -->
+      <!-- ============================================================ -->
+      <section id="flow" class="space-y-4 scroll-mt-12">
+        <header
+          class="flex items-baseline gap-4 flex-wrap pb-3 border-b border-slate-200"
+        >
+          <span class="font-mono text-sm text-slate-500">§06</span>
+          <h2 class="font-serif text-3xl tracking-tight text-slate-900">
+            Compute flow &amp; trust boundaries
+          </h2>
+          <span class="label-tiny text-slate-500 ml-auto"
+            >prefill once · decode loop · per-layer block detail</span
+          >
+        </header>
+
+        <p class="text-base text-slate-800 leading-relaxed">
+          Two figures trace one <strong>Qwen3-1.7B</strong> decoder block under
+          each phase — the generation path running today.
+          <strong>FIG. 02a</strong> covers prefill (full prompt, full causal
+          attention <code class="font-mono text-xs">O(n²)</code>). FIG. 02b
+          covers one decode step.
+        </p>
+
+        <div
+          class="rounded-lg border border-amber-300 bg-amber-50/30 p-4 text-sm text-amber-900"
+        >
+          <strong>Diagram preservation note:</strong> the four hand-tuned SVG
+          diagrams (~500 lines each, pixel-precise layouts) are kept verbatim
+          from the original document — see the SVG-token
+          <code class="font-mono text-xs">&lt;style&gt;</code> block at the top
+          of this file for the color tokens they reference. The example below is
+          FIG. 02a (Qwen3 prefill, one decoder block) embedded as-is to
+          demonstrate that the inlined tokens render the diagram identically to
+          the original site.css.
+        </div>
+
+        <!-- ══ DIAGRAM IS PRESERVED VERBATIM; STYLE TOKENS INLINED IN <style> ABOVE ══ -->
+        <!-- FIG. 02a — Qwen3 Prefill — see lines 1271–1720 of original gelo-llm.html -->
+        <div class="diagram-frame rounded-md">
+          <div class="diagram-cap">
+            <span class="l"
+              >FIG. 02a — Qwen3-1.7B prefill · one decoder block · pre-LN ·
+              SwiGLU · GQA(16:8) · full causal attention · QK-norm before
+              RoPE</span
+            >
+            <span
+              >blue arc = residual · solid red = TEE flow · dashed amber =
+              masked PCIe transit</span
+            >
+          </div>
+          <svg
+            class="flow"
+            viewBox="0 0 1320 820"
+            xmlns="http://www.w3.org/2000/svg"
+            role="img"
+          >
+            <defs>
+              <marker
+                id="ahqwpf"
+                viewBox="0 0 10 10"
+                refX="9"
+                refY="5"
+                markerWidth="6"
+                markerHeight="6"
+                orient="auto-start-reverse"
+              >
+                <path d="M0,0 L10,5 L0,10 z" fill="context-stroke" />
+              </marker>
+            </defs>
+            <rect x="0" y="40" width="940" height="760" class="zone-band-tee" />
+            <rect
+              x="940"
+              y="40"
+              width="380"
+              height="760"
+              class="zone-band-gpu"
+            />
+            <text x="20" y="64" class="zone-label">Trusted side · in CVM</text>
+            <text x="20" y="80" class="zone-sublabel">
+              decoder + KV cache + protocol kernel · QK-norm, RoPE, attention
+              all in-TEE
+            </text>
+            <text x="960" y="64" class="zone-label">Untrusted GPU</text>
+            <text x="960" y="80" class="zone-sublabel">
+              burn-cubecl · Vulkan · only the 4 linear GEMMs cross
+            </text>
+            <line x1="940" y1="40" x2="940" y2="800" class="boundary" />
+            <text x="944" y="796" class="boundary-label">PCIe · masked</text>
+
+            <!-- Input -->
+            <rect
+              x="220"
+              y="100"
+              width="460"
+              height="46"
+              class="box box-tee box-strong"
+            />
+            <text x="450" y="120" class="box-label" text-anchor="middle">
+              H_in (n_prompt, 2048)
+            </text>
+            <text x="450" y="138" class="box-sub" text-anchor="middle">
+              token_embedding[prompt_ids]
+            </text>
+
+            <!-- pre-LN -->
+            <path
+              d="M450 146 L450 176"
+              class="arrow arrow-secret"
+              marker-end="url(#ahqwpf)"
+            />
+            <rect
+              x="340"
+              y="176"
+              width="220"
+              height="34"
+              class="box box-tee box-strong"
+            />
+            <text x="450" y="198" class="box-label" text-anchor="middle">
+              ① RMSNorm₁ (pre-LN)
+            </text>
+
+            <!-- QKV masked offload -->
+            <path
+              d="M450 210 L450 224"
+              class="arrow arrow-secret"
+              marker-end="url(#ahqwpf)"
+            />
+            <rect x="340" y="224" width="220" height="40" class="box box-tee" />
+            <text x="356" y="242" class="box-label">
+              ② QKV (masked offload)
+            </text>
+            <text x="356" y="256" class="box-mono">
+              mix → matmul → unmix · GQA 16:8
+            </text>
+            <rect
+              x="960"
+              y="224"
+              width="340"
+              height="40"
+              class="box box-gpu box-strong"
+            />
+            <text x="976" y="242" class="box-label">
+              <tspan fill="#b73228" font-weight="700">[GEMM 1/4]</tspan>
+              matmul_many [Q, K, V]
+            </text>
+            <text x="976" y="256" class="box-mono">
+              3 weights · separate K and V (no tying)
+            </text>
+            <path
+              d="M560 236 L960 236"
+              class="arrow arrow-masked"
+              marker-end="url(#ahqwpf)"
+            />
+            <text x="680" y="230" class="arrow-label masked">mix: U = A·H</text>
+            <path
+              d="M960 252 L560 252"
+              class="arrow arrow-masked"
+              marker-end="url(#ahqwpf)"
+            />
+            <text x="680" y="266" class="arrow-label masked">
+              unmix: Aᵀ·(U·W)
+            </text>
+
+            <!-- QK-norm -->
+            <path
+              d="M450 264 L450 290"
+              class="arrow arrow-secret"
+              marker-end="url(#ahqwpf)"
+            />
+            <rect
+              x="320"
+              y="290"
+              width="260"
+              height="34"
+              class="box box-tee"
+              style="stroke: #1e7050"
+            />
+            <text
+              x="450"
+              y="312"
+              class="box-label"
+              text-anchor="middle"
+              style="fill: #1e7050"
+            >
+              ③ QK-norm (Qwen3-specific) · in-TEE
+            </text>
+
+            <!-- RoPE + Attention -->
+            <path
+              d="M450 324 L450 350"
+              class="arrow arrow-secret"
+              marker-end="url(#ahqwpf)"
+            />
+            <rect x="280" y="350" width="340" height="46" class="box box-tee" />
+            <text x="450" y="372" class="box-label" text-anchor="middle">
+              ④ RoPE + Causal Attention · in-TEE
+            </text>
+            <text x="450" y="388" class="box-sub" text-anchor="middle">
+              Q·Kᵀ → softmax(causal mask) → ·V · CPU AOCL-BLIS
+            </text>
+
+            <!-- O proj masked -->
+            <path
+              d="M450 396 L450 420"
+              class="arrow arrow-secret"
+              marker-end="url(#ahqwpf)"
+            />
+            <rect x="340" y="420" width="220" height="40" class="box box-tee" />
+            <text x="356" y="438" class="box-label">
+              ⑤ O proj (masked offload)
+            </text>
+            <text x="356" y="452" class="box-mono">mix → matmul → unmix</text>
+            <rect
+              x="960"
+              y="420"
+              width="340"
+              height="40"
+              class="box box-gpu box-strong"
+            />
+            <text x="976" y="438" class="box-label">
+              <tspan fill="#b73228" font-weight="700">[GEMM 2/4]</tspan>
+              matmul O
+            </text>
+            <path
+              d="M560 432 L960 432"
+              class="arrow arrow-masked"
+              marker-end="url(#ahqwpf)"
+            />
+            <path
+              d="M960 448 L560 448"
+              class="arrow arrow-masked"
+              marker-end="url(#ahqwpf)"
+            />
+
+            <!-- Residual + post-LN + MLP -->
+            <path
+              d="M450 460 L450 490"
+              class="arrow arrow-secret"
+              marker-end="url(#ahqwpf)"
+            />
+            <rect
+              x="340"
+              y="490"
+              width="220"
+              height="34"
+              class="box box-tee box-strong"
+            />
+            <text x="450" y="512" class="box-label" text-anchor="middle">
+              ⑥ Residual + RMSNorm₂
+            </text>
+
+            <path
+              d="M450 524 L450 552"
+              class="arrow arrow-secret"
+              marker-end="url(#ahqwpf)"
+            />
+            <rect x="340" y="552" width="220" height="40" class="box box-tee" />
+            <text x="356" y="570" class="box-label">
+              ⑦ FFN up (masked offload)
+            </text>
+            <text x="356" y="584" class="box-mono">
+              SwiGLU gate + up projections
+            </text>
+            <rect
+              x="960"
+              y="552"
+              width="340"
+              height="40"
+              class="box box-gpu box-strong"
+            />
+            <text x="976" y="570" class="box-label">
+              <tspan fill="#b73228" font-weight="700">[GEMM 3/4]</tspan>
+              matmul_many [gate, up]
+            </text>
+            <path
+              d="M560 564 L960 564"
+              class="arrow arrow-masked"
+              marker-end="url(#ahqwpf)"
+            />
+            <path
+              d="M960 580 L560 580"
+              class="arrow arrow-masked"
+              marker-end="url(#ahqwpf)"
+            />
+
+            <path
+              d="M450 592 L450 618"
+              class="arrow arrow-secret"
+              marker-end="url(#ahqwpf)"
+            />
+            <rect x="280" y="618" width="340" height="34" class="box box-tee" />
+            <text x="450" y="640" class="box-label" text-anchor="middle">
+              ⑧ SiLU(gate) ⊙ up · in-TEE
+            </text>
+
+            <path
+              d="M450 652 L450 678"
+              class="arrow arrow-secret"
+              marker-end="url(#ahqwpf)"
+            />
+            <rect x="340" y="678" width="220" height="40" class="box box-tee" />
+            <text x="356" y="696" class="box-label">
+              ⑨ FFN down (masked offload)
+            </text>
+            <rect
+              x="960"
+              y="678"
+              width="340"
+              height="40"
+              class="box box-gpu box-strong"
+            />
+            <text x="976" y="696" class="box-label">
+              <tspan fill="#b73228" font-weight="700">[GEMM 4/4]</tspan>
+              matmul down
+            </text>
+            <path
+              d="M560 690 L960 690"
+              class="arrow arrow-masked"
+              marker-end="url(#ahqwpf)"
+            />
+            <path
+              d="M960 706 L560 706"
+              class="arrow arrow-masked"
+              marker-end="url(#ahqwpf)"
+            />
+
+            <path
+              d="M450 718 L450 744"
+              class="arrow arrow-secret"
+              marker-end="url(#ahqwpf)"
+            />
+            <rect
+              x="220"
+              y="744"
+              width="460"
+              height="40"
+              class="box box-tee box-strong"
+            />
+            <text x="450" y="762" class="box-label" text-anchor="middle">
+              H_out (n_prompt, 2048)
+            </text>
+            <text x="450" y="778" class="box-sub" text-anchor="middle">
+              → next layer · final layer → final_norm → LM head
+            </text>
+          </svg>
+        </div>
+
+        <!-- ══ FIG. 02b — Qwen3 Decode ══ -->
+        <div class="diagram-frame rounded-md mt-6">
+          <div class="diagram-cap">
+            <span class="l"
+              >FIG. 02b — Qwen3-1.7B decode · one step · <code>n_q = 1</code> ·
+              <code>n_kv = n_cache</code> · attention reads from CVM-resident KV
+              cache · one fresh Haar A per step</span
+            >
+            <span
+              >decode step is shape-equivalent to a 1-token prefill against the
+              cache</span
+            >
+          </div>
+          <svg
+            class="flow"
+            viewBox="0 0 1320 820"
+            xmlns="http://www.w3.org/2000/svg"
+            role="img"
+          >
+            <defs>
+              <marker
+                id="ahqwdc"
+                viewBox="0 0 10 10"
+                refX="9"
+                refY="5"
+                markerWidth="6"
+                markerHeight="6"
+                orient="auto-start-reverse"
+              >
+                <path d="M0,0 L10,5 L0,10 z" fill="context-stroke" />
+              </marker>
+            </defs>
+            <rect x="0" y="40" width="940" height="760" class="zone-band-tee" />
+            <rect
+              x="940"
+              y="40"
+              width="380"
+              height="760"
+              class="zone-band-gpu"
+            />
+            <text x="20" y="64" class="zone-label">Trusted side · in CVM</text>
+            <text x="20" y="80" class="zone-sublabel">
+              decoder + KV cache (growing) + protocol kernel · fresh A every
+              step
+            </text>
+            <text x="960" y="64" class="zone-label">Untrusted GPU</text>
+            <text x="960" y="80" class="zone-sublabel">
+              dispatch-bound at n_q=1
+            </text>
+            <line x1="940" y1="40" x2="940" y2="800" class="boundary" />
+            <text x="944" y="796" class="boundary-label">PCIe · masked</text>
+
+            <rect
+              x="260"
+              y="100"
+              width="380"
+              height="46"
+              class="box box-tee box-strong"
+            />
+            <text x="450" y="120" class="box-label" text-anchor="middle">
+              H_in (1, 2048)
+            </text>
+            <text x="450" y="138" class="box-sub" text-anchor="middle">
+              token_embedding[sampled_id]
+            </text>
+
+            <path
+              d="M450 146 L450 176"
+              class="arrow arrow-secret"
+              marker-end="url(#ahqwdc)"
+            />
+            <rect
+              x="340"
+              y="176"
+              width="220"
+              height="32"
+              class="box box-tee box-strong"
+            />
+            <text x="450" y="196" class="box-label" text-anchor="middle">
+              ① RMSNorm₁ (pre-LN)
+            </text>
+
+            <path
+              d="M450 208 L450 222"
+              class="arrow arrow-secret"
+              marker-end="url(#ahqwdc)"
+            />
+            <rect x="340" y="222" width="220" height="40" class="box box-tee" />
+            <text x="356" y="240" class="box-label">
+              ② QKV (masked · one row)
+            </text>
+            <text x="356" y="254" class="box-mono">U = A·H · (1, 2048)</text>
+            <rect
+              x="960"
+              y="222"
+              width="340"
+              height="40"
+              class="box box-gpu box-strong"
+            />
+            <text x="976" y="240" class="box-label">
+              <tspan fill="#b73228" font-weight="700">[GEMM 1/4]</tspan>
+              matmul_many [Q, K, V]
+            </text>
+            <text x="976" y="254" class="box-mono">tiny · dispatch-bound</text>
+            <path
+              d="M560 234 L960 234"
+              class="arrow arrow-masked"
+              marker-end="url(#ahqwdc)"
+            />
+            <path
+              d="M960 250 L560 250"
+              class="arrow arrow-masked"
+              marker-end="url(#ahqwdc)"
+            />
+
+            <path
+              d="M450 262 L450 276"
+              class="arrow arrow-secret"
+              marker-end="url(#ahqwdc)"
+            />
+            <rect
+              x="320"
+              y="276"
+              width="260"
+              height="34"
+              class="box box-tee"
+              style="stroke: #1e7050"
+            />
+            <text
+              x="450"
+              y="297"
+              class="box-label"
+              text-anchor="middle"
+              style="fill: #1e7050"
+            >
+              ③ QK-norm + ④ RoPE (one position · in-TEE)
+            </text>
+
+            <path
+              d="M450 310 L450 326"
+              class="arrow arrow-secret"
+              marker-end="url(#ahqwdc)"
+            />
+            <rect x="340" y="326" width="220" height="40" class="box box-tee" />
+            <text x="450" y="344" class="box-label" text-anchor="middle">
+              ⑤ KV-cache append (position n_cache)
+            </text>
+            <text x="450" y="358" class="box-sub" text-anchor="middle">
+              K and V stored independently
+            </text>
+
+            <path
+              d="M450 366 L450 380"
+              class="arrow arrow-secret"
+              marker-end="url(#ahqwdc)"
+            />
+            <rect x="280" y="380" width="340" height="50" class="box box-tee" />
+            <text x="290" y="398" class="box-label">
+              ⑥ Causal GQA attention (in-TEE)
+            </text>
+            <text x="290" y="414" class="box-sub">
+              Q · Kᵀ_cache → softmax → ·V_cache
+            </text>
+            <text x="290" y="426" class="box-sub">
+              µs-scale at n_q = 1 · no offload, no mask round-trip
+            </text>
+            <rect
+              x="960"
+              y="380"
+              width="340"
+              height="50"
+              class="box box-gpu"
+              style="stroke-dasharray: 4 3; opacity: 0.55"
+            />
+            <text x="976" y="398" class="box-label" style="opacity: 0.75">
+              GPU idle for attention this step
+            </text>
+            <text x="976" y="414" class="box-mono" style="opacity: 0.75">
+              SCX (§10) would amortise cache-read bandwidth
+            </text>
+
+            <path
+              d="M450 430 L450 444"
+              class="arrow arrow-secret"
+              marker-end="url(#ahqwdc)"
+            />
+            <rect x="340" y="444" width="220" height="40" class="box box-tee" />
+            <text x="356" y="462" class="box-label">
+              ⑦ O proj (masked · one row)
+            </text>
+            <text x="356" y="476" class="box-mono">
+              dispatch overhead dominates
+            </text>
+            <rect x="960" y="444" width="340" height="40" class="box box-gpu" />
+            <text x="976" y="462" class="box-label">
+              <tspan fill="#b73228" font-weight="700">[GEMM 2/4]</tspan>
+              matmul O
+            </text>
+            <text x="976" y="476" class="box-mono">
+              single GEMM (1 × 2048 × 2048)
+            </text>
+            <path
+              d="M560 456 L960 456"
+              class="arrow arrow-masked"
+              marker-end="url(#ahqwdc)"
+            />
+            <path
+              d="M960 472 L560 472"
+              class="arrow arrow-masked"
+              marker-end="url(#ahqwdc)"
+            />
+
+            <path
+              d="M450 484 L450 510"
+              class="arrow arrow-secret"
+              marker-end="url(#ahqwdc)"
+            />
+            <rect
+              x="340"
+              y="510"
+              width="220"
+              height="32"
+              class="box box-tee box-strong"
+            />
+            <text x="450" y="530" class="box-label" text-anchor="middle">
+              ⑧ Residual + RMSNorm₂
+            </text>
+
+            <path
+              d="M450 542 L450 556"
+              class="arrow arrow-secret"
+              marker-end="url(#ahqwdc)"
+            />
+            <rect x="340" y="556" width="220" height="40" class="box box-tee" />
+            <text x="356" y="574" class="box-label">
+              ⑨ Gate ∥ Up (masked · one row)
+            </text>
+            <text x="356" y="588" class="box-mono">1 × 6144</text>
+            <rect
+              x="960"
+              y="556"
+              width="340"
+              height="40"
+              class="box box-gpu box-strong"
+            />
+            <text x="976" y="574" class="box-label">
+              <tspan fill="#b73228" font-weight="700">[GEMM 3/4]</tspan>
+              matmul_many [gate, up]
+            </text>
+            <text x="976" y="588" class="box-mono">2 weights · 1 dispatch</text>
+            <path
+              d="M560 568 L960 568"
+              class="arrow arrow-masked"
+              marker-end="url(#ahqwdc)"
+            />
+            <path
+              d="M960 584 L560 584"
+              class="arrow arrow-masked"
+              marker-end="url(#ahqwdc)"
+            />
+
+            <path
+              d="M450 596 L450 608"
+              class="arrow arrow-secret"
+              marker-end="url(#ahqwdc)"
+            />
+            <rect x="340" y="608" width="220" height="32" class="box box-tee" />
+            <text x="450" y="628" class="box-label" text-anchor="middle">
+              ⑩ SiLU(gate) ⊙ up
+            </text>
+
+            <path
+              d="M450 640 L450 654"
+              class="arrow arrow-secret"
+              marker-end="url(#ahqwdc)"
+            />
+            <rect x="340" y="654" width="220" height="40" class="box box-tee" />
+            <text x="356" y="672" class="box-label">
+              ⑪ FfnDown (masked · one row)
+            </text>
+            <text x="356" y="686" class="box-mono">6144 → 2048</text>
+            <rect x="960" y="654" width="340" height="40" class="box box-gpu" />
+            <text x="976" y="672" class="box-label">
+              <tspan fill="#b73228" font-weight="700">[GEMM 4/4]</tspan>
+              matmul FfnDown
+            </text>
+            <path
+              d="M560 666 L960 666"
+              class="arrow arrow-masked"
+              marker-end="url(#ahqwdc)"
+            />
+            <path
+              d="M960 682 L560 682"
+              class="arrow arrow-masked"
+              marker-end="url(#ahqwdc)"
+            />
+
+            <path
+              d="M450 694 L450 720"
+              class="arrow arrow-secret"
+              marker-end="url(#ahqwdc)"
+            />
+            <text
+              x="450"
+              y="740"
+              text-anchor="middle"
+              font-size="11"
+              fill="var(--ink-2)"
+            >
+              → next block (×27) → RMSNorm_final → tied LM head → sample → next
+              token → stream over RATLS
+            </text>
+          </svg>
+        </div>
+
+        <p class="text-sm text-slate-700 leading-relaxed mt-3">
+          <strong>What to look for.</strong>
+          <strong>① Single attention class</strong> — every layer is dense
+          causal; OutAttnMult auto-switch decides offload-vs-in-TEE per forward
+          based on <code class="font-mono text-xs">n</code> vs
+          <code class="font-mono text-xs">hidden_size = 2048</code>. At decode
+          (<code class="font-mono text-xs">n_q = 1</code>) attention always
+          stays in-TEE. <strong>② QK-norm step</strong> (green) is the Qwen3
+          delta vs Qwen2 — per-head RMSNorm on Q and K, in-TEE between QKV and
+          RoPE. <strong>③ Per-block GEMM count</strong> is 4 (QKV merged · O ·
+          gate∥up merged · FfnDown) × 28 blocks = 112 GPU dispatches per
+          forward, each riding one per-forward Haar
+          <code class="font-mono text-xs">A</code>.
+          <strong>④ Decode-step parity</strong> — argmax-stable token agreement
+          across <code class="font-mono text-xs">PlaintextExecutor</code> /
+          <code class="font-mono text-xs">InProcessTrustedExecutor</code> /
+          full-stack-with-U-Verify confirms bit-stability at this scale.
+        </p>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- §07 PERFORMANCE & CORRECTNESS                                -->
+      <!-- ============================================================ -->
+      <section id="perf" class="space-y-4 scroll-mt-12">
+        <header
+          class="flex items-baseline gap-4 flex-wrap pb-3 border-b border-slate-200"
+        >
+          <span class="font-mono text-sm text-slate-500">§07</span>
+          <h2 class="font-serif text-3xl tracking-tight text-slate-900">
+            Performance &amp; correctness
+          </h2>
+          <span class="label-tiny text-slate-500 ml-auto"
+            >Qwen3-4B production state · 2026-05-26</span
+          >
+        </header>
+
+        <p class="text-base text-slate-800 leading-relaxed">
+          End-to-end measurement of the GELO protocol on real-weight Qwen3-4B
+          generation — fp16 wgpu engine, LM-head GPU-offloaded under the same
+          masked-offload boundary, mask family auto-dispatched by pad ratio (HD₃
+          at pad ≤ 1.6, DCT-IV cascade above), and the CPU DCT-IV path running
+          as a tile-fused six-stage cascade entirely in L2 per column tile.
+        </p>
+
+        <h3 class="font-serif text-xl text-slate-900 mt-6">
+          Current measured throughput across shapes
+        </h3>
+        <p class="text-base text-slate-800 leading-relaxed">
+          Five shapes spanning the Auto-family decision space, ordered by pad
+          ratio. Auto picks the mask family that minimises GPU pad penalty: HD₃
+          when <code class="font-mono text-xs">s_pad / s ≤ 1.6</code>, DCT-IV
+          cascade otherwise. The DCT-IV path runs all three DCT stages and three
+          diagonal multiplications fused over 16-column tiles —
+          <strong>−22 %</strong> prefill wall at production-extraction vs the
+          prior 3-stage path. Single-sample cells; long-n run-to-run variance ~7
+          %.
+        </p>
+
+        <div
+          class="rounded-lg border border-slate-200 bg-white overflow-hidden"
+        >
+          <table class="w-full text-sm">
+            <thead class="bg-slate-50 border-b border-slate-200">
+              <tr class="text-left">
+                <th class="px-3 py-2.5 font-semibold text-slate-700">
+                  Shape (B · n)
+                </th>
+                <th class="px-3 py-2.5 font-semibold text-slate-700">pad</th>
+                <th class="px-3 py-2.5 font-semibold text-slate-700">Auto</th>
+                <th class="px-3 py-2.5 font-semibold text-slate-700">
+                  Prefill wall (s)
+                </th>
+                <th class="px-3 py-2.5 font-semibold text-slate-700">
+                  Prefill tok/s
+                </th>
+                <th class="px-3 py-2.5 font-semibold text-slate-700">
+                  Decode wall (s)
+                </th>
+                <th class="px-3 py-2.5 font-semibold text-slate-700">
+                  Decode tok/s
+                </th>
+                <th class="px-3 py-2.5 font-semibold text-slate-700">
+                  Decode / seq
+                </th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100 font-mono text-xs">
+              <tr>
+                <td class="px-3 py-3 align-top">
+                  <span class="font-semibold">8 · 3 500</span> · long-n HD₃
+                </td>
+                <td class="px-3 py-3 align-top">1.17</td>
+                <td class="px-3 py-3 align-top">HD₃</td>
+                <td class="px-3 py-3 align-top">289.09</td>
+                <td class="px-3 py-3 align-top">96.85</td>
+                <td class="px-3 py-3 align-top">80.64</td>
+                <td class="px-3 py-3 align-top">3.17</td>
+                <td class="px-3 py-3 align-top">0.40</td>
+              </tr>
+              <tr>
+                <td class="px-3 py-3 align-top">
+                  <span class="font-semibold">8 · 320</span> · short-n HD₃
+                </td>
+                <td class="px-3 py-3 align-top">1.56</td>
+                <td class="px-3 py-3 align-top">HD₃</td>
+                <td class="px-3 py-3 align-top">24.22</td>
+                <td class="px-3 py-3 align-top">105.7</td>
+                <td class="px-3 py-3 align-top">26.82</td>
+                <td class="px-3 py-3 align-top">9.55</td>
+                <td class="px-3 py-3 align-top">1.19</td>
+              </tr>
+              <tr>
+                <td class="px-3 py-3 align-top">
+                  <span class="font-semibold">1 · 2 561</span> · single-stream
+                </td>
+                <td class="px-3 py-3 align-top">1.59</td>
+                <td class="px-3 py-3 align-top">HD₃</td>
+                <td class="px-3 py-3 align-top">31.45</td>
+                <td class="px-3 py-3 align-top">81.43</td>
+                <td class="px-3 py-3 align-top">22.28</td>
+                <td class="px-3 py-3 align-top">1.44</td>
+                <td class="px-3 py-3 align-top">1.44</td>
+              </tr>
+              <tr>
+                <td class="px-3 py-3 align-top">
+                  <span class="font-semibold">8 · 2 400</span> · crossover band
+                </td>
+                <td class="px-3 py-3 align-top">1.70</td>
+                <td class="px-3 py-3 align-top">DCT-IV</td>
+                <td class="px-3 py-3 align-top">169.76</td>
+                <td class="px-3 py-3 align-top">113.10</td>
+                <td class="px-3 py-3 align-top">61.42</td>
+                <td class="px-3 py-3 align-top">4.17</td>
+                <td class="px-3 py-3 align-top">0.52</td>
+              </tr>
+              <tr class="bg-emerald-50/40">
+                <td class="px-3 py-3 align-top">
+                  <span class="font-semibold">8 · 2 048</span> ·
+                  <em class="italic font-sans">production extraction</em>
+                </td>
+                <td class="px-3 py-3 align-top">1.99</td>
+                <td class="px-3 py-3 align-top">DCT-IV</td>
+                <td class="px-3 py-3 align-top font-bold">135.13</td>
+                <td class="px-3 py-3 align-top font-bold">121.25</td>
+                <td class="px-3 py-3 align-top font-bold">55.44</td>
+                <td class="px-3 py-3 align-top font-bold">4.62</td>
+                <td class="px-3 py-3 align-top">0.58</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="text-sm text-slate-600 leading-relaxed">
+          <em>Adapter:</em> AMD Radeon 8060S (Strix Halo, RADV gfx1151, iGPU),
+          Mesa Vulkan, fp16 wgpu. <em>Model:</em>
+          <code class="font-mono text-xs">Qwen/Qwen3-4B</code> bf16 weights,
+          GPU-resident post-provision. <em>Workload:</em> greedy, K = 32 decode
+          tokens, R3 LM-head GPU offload, paper-parity per-forward fresh mask +
+          shield(8, 4.0).
+        </p>
+
+        <h3 class="font-serif text-xl text-slate-900 mt-8">
+          Per-bucket attribution — production shape
+        </h3>
+        <div
+          class="rounded-lg border border-slate-200 bg-white overflow-hidden"
+        >
+          <table class="w-full text-sm">
+            <thead class="bg-slate-50 border-b border-slate-200">
+              <tr class="text-left">
+                <th class="px-4 py-2.5 font-semibold text-slate-700">Bucket</th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700 w-28">
+                  Prefill
+                </th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700 w-28">
+                  Decode
+                </th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700">
+                  Reach for the lever
+                </th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              <tr>
+                <td class="px-4 py-3 align-top">CPU mask (DCT-IV cascade)</td>
+                <td class="px-4 py-3 align-top font-mono text-xs font-semibold">
+                  20.4 %
+                </td>
+                <td class="px-4 py-3 align-top font-mono text-xs">~4 %</td>
+                <td class="px-4 py-3 align-top text-slate-700">
+                  Cascade landed (was 38.0 % pre-2026-05-26); bf16 inner kernel
+                  remains as follow-up.
+                </td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top">
+                  GPU matmul (QKV / O / gate / up / down)
+                </td>
+                <td class="px-4 py-3 align-top font-mono text-xs">~52 %</td>
+                <td class="px-4 py-3 align-top font-mono text-xs">~38 %</td>
+                <td class="px-4 py-3 align-top text-slate-700">
+                  Iso-engine on iGPU — DDR5-shared; ceiling lifts on dGPU (HBM,
+                  ~40× kernel-bandwidth headroom).
+                </td>
+              </tr>
+              <tr class="bg-amber-50/30">
+                <td class="px-4 py-3 align-top">
+                  In-TEE attention (GQA over
+                  <code class="font-mono text-xs">n_kv</code>)
+                </td>
+                <td class="px-4 py-3 align-top font-mono text-xs">~16 %</td>
+                <td class="px-4 py-3 align-top font-mono text-xs font-semibold">
+                  53.9 %
+                </td>
+                <td class="px-4 py-3 align-top text-slate-700">
+                  Moving it to GPU regressed 16× at this shape (memory-bound on
+                  shared DDR5). dGPU with persistent K/V on HBM is the path.
+                </td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top">
+                  Shield + strip + misc (rmsnorm, qk-norm, RoPE, SwiGLU,
+                  residuals, kv scatter)
+                </td>
+                <td class="px-4 py-3 align-top font-mono text-xs">~7 %</td>
+                <td class="px-4 py-3 align-top font-mono text-xs">~3 %</td>
+                <td class="px-4 py-3 align-top text-slate-700">
+                  Each individually below variance floor; end-to-end bf16
+                  activations compress these incidentally.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="text-sm text-slate-600 leading-relaxed">
+          <em>compute_logits</em> (R3 LM-head GPU offload) lands at 4.2 % of
+          decode wall under the masked-offload boundary — nesting inside the
+          engine matmul span, not double-counted. Pre-R3 in-TEE LM-head was
+          46-58 % of decode wall.
+        </p>
+
+        <h3 class="font-serif text-xl text-slate-900 mt-8">
+          Cascade headline — what shifted the production-shape number
+        </h3>
+        <p class="text-base text-slate-800 leading-relaxed">
+          At the production shape the prior 3-stage DCT-IV path paid six
+          full-buffer DDR5 traverses per
+          <code class="font-mono text-xs">apply</code> /
+          <code class="font-mono text-xs">unapply</code>. The tile-fused cascade
+          loads a 16-column tile once, runs all three DCT stages and all three
+          diagonal multiplications inside L2, then writes the tile out.
+        </p>
+        <div
+          class="rounded-lg border border-slate-200 bg-white overflow-hidden"
+        >
+          <table class="w-full text-sm">
+            <thead class="bg-slate-50 border-b border-slate-200">
+              <tr class="text-left">
+                <th class="px-4 py-2.5 font-semibold text-slate-700">
+                  <code class="font-mono text-xs">B = 8 · n = 2 048</code> (pad
+                  1.99)
+                </th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700">
+                  3-stage (pre)
+                </th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700">
+                  Tile-fused cascade
+                </th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700">Δ</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              <tr>
+                <td class="px-4 py-3 align-top">Prefill wall</td>
+                <td class="px-4 py-3 align-top font-mono text-xs">174.92 s</td>
+                <td class="px-4 py-3 align-top font-mono text-xs font-semibold">
+                  135.13 s
+                </td>
+                <td class="px-4 py-3 align-top">
+                  <span class="text-emerald-700 font-semibold">−22.7 %</span>
+                </td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top">
+                  Mask bucket (apply + unapply)
+                </td>
+                <td class="px-4 py-3 align-top font-mono text-xs">
+                  66.5 s · 38.0 %
+                </td>
+                <td class="px-4 py-3 align-top font-mono text-xs font-semibold">
+                  27.57 s · 20.4 %
+                </td>
+                <td class="px-4 py-3 align-top">
+                  <span class="text-emerald-700 font-semibold"
+                    >−58.5 % bucket</span
+                  >
+                </td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top">Aggregate prefill tok/s</td>
+                <td class="px-4 py-3 align-top font-mono text-xs">93.7</td>
+                <td class="px-4 py-3 align-top font-mono text-xs font-semibold">
+                  121.3
+                </td>
+                <td class="px-4 py-3 align-top">
+                  <span class="text-emerald-700 font-semibold">+29.4 %</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="rounded-lg bg-amber-50/30 border border-amber-300 p-5 mt-2">
+          <div class="label-tiny text-amber-800 mb-2">
+            why decode tok/s isn't on the prefill curve
+          </div>
+          <p class="text-sm text-slate-800 leading-relaxed">
+            The iGPU ceiling is the in-TEE attention bucket at decode. At
+            <code class="font-mono text-xs">B = 8 · n = 2 048</code> it owns
+            53.9 % of decode wall (rising to 63 % at single-stream, 66 % at n =
+            3 500) — a memory-bound per-step GQA kernel reading the cached
+            prefix. Lifting it to iGPU compute regressed 16× at the production
+            shape. The 40+ tok/s decode target lives on dGPU substrate: HBM
+            <code class="font-mono text-xs">~3 TB/s</code> kernel-side reads
+            (~75× headroom over shared DDR5) plus persistent K/V on device.
+            Compressing decode on iGPU isn't gated on engineering — it's gated
+            on the memory hierarchy.
+          </p>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- §08 OPTIMIZATIONS                                            -->
+      <!-- ============================================================ -->
+      <section id="optimizations" class="space-y-4 scroll-mt-12">
+        <header
+          class="flex items-baseline gap-4 flex-wrap pb-3 border-b border-slate-200"
+        >
+          <span class="font-mono text-sm text-slate-500">§08</span>
+          <h2 class="font-serif text-3xl tracking-tight text-slate-900">
+            Optimizations
+          </h2>
+          <span class="label-tiny text-slate-500 ml-auto"
+            >mask families · trade-offs · what's landed</span
+          >
+        </header>
+
+        <p class="text-base text-slate-800 leading-relaxed">
+          The §07 short-prompt run is cheap on the Haar QR. Production prefill
+          at <code class="font-mono text-xs">n ≥ 2k</code> flips that picture:
+          the QR alone takes seconds. The current executor retires Haar in
+          favour of <strong>HD₃</strong> (<code class="font-mono text-xs"
+            >A = D₃·H·D₂·H·D₁·H</code
+          >) — an exactly-orthogonal cascade of three sign-flips around three
+          in-place Walsh-Hadamard transforms, no QR, mask never materialised,
+          <code class="font-mono text-xs">O(s · log s)</code> per column. The
+          Walsh-Hadamard matrix exists only at power-of-two side length, so the
+          executor leans on the shield rows it was going to add anyway: pick
+          <code class="font-mono text-xs">k</code> directly such that
+          <code class="font-mono text-xs">n + k</code> lands on a power of two.
+          One mask family at every shape.
+        </p>
+
+        <h3 class="font-serif text-xl text-slate-900 mt-6">
+          Shield-padding under batching
+        </h3>
+        <p class="text-base text-slate-800 leading-relaxed">
+          At batched decode each step has
+          <code class="font-mono text-xs">n = B</code> and
+          <code class="font-mono text-xs">k = next_pow2(B + 8) − B</code> lands
+          the stacked axis on a power of two at every batch size.
+          <code class="font-mono text-xs">k</code> stays ≥ 8 (paper floor);
+          worst-case
+          <code class="font-mono text-xs">k = 2·k_base − 1 = 15</code>.
+        </p>
+        <div
+          class="rounded-lg border border-slate-200 bg-white overflow-hidden"
+        >
+          <table class="w-full text-sm">
+            <thead class="bg-slate-50 border-b border-slate-200">
+              <tr class="text-left">
+                <th class="px-4 py-2.5 font-semibold text-slate-700">
+                  B (batched decode)
+                </th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700">
+                  k (shield rows)
+                </th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700">
+                  stacked axis
+                </th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700">
+                  HD₃ pow2?
+                </th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100 font-mono text-xs">
+              <tr>
+                <td class="px-4 py-3 align-top">1 (single-stream)</td>
+                <td class="px-4 py-3 align-top">15</td>
+                <td class="px-4 py-3 align-top">16</td>
+                <td class="px-4 py-3 align-top text-emerald-700">✓</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top">8</td>
+                <td class="px-4 py-3 align-top">8</td>
+                <td class="px-4 py-3 align-top">16</td>
+                <td class="px-4 py-3 align-top text-emerald-700">✓</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top">12</td>
+                <td class="px-4 py-3 align-top">20</td>
+                <td class="px-4 py-3 align-top">32</td>
+                <td class="px-4 py-3 align-top text-emerald-700">✓</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top">24</td>
+                <td class="px-4 py-3 align-top">8</td>
+                <td class="px-4 py-3 align-top">32</td>
+                <td class="px-4 py-3 align-top text-emerald-700">✓</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top">56</td>
+                <td class="px-4 py-3 align-top">8</td>
+                <td class="px-4 py-3 align-top">64</td>
+                <td class="px-4 py-3 align-top text-emerald-700">✓</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 class="font-serif text-xl text-slate-900 mt-8">Cost vs Haar</h3>
+        <div class="grid md:grid-cols-2 gap-4">
+          <div class="rounded-lg border border-slate-200 bg-white p-5">
+            <div class="label-tiny text-slate-500">haar</div>
+            <ul
+              class="mt-2 space-y-1.5 text-sm text-slate-800 font-mono text-xs"
+            >
+              <li>sample: O(s³) Householder QR per forward</li>
+              <li>apply/unapply: O(s²·d) dense GEMM</li>
+              <li>operand to GPU: s = n + 8</li>
+              <li>mask storage: O(s²)</li>
+            </ul>
+          </div>
+          <div
+            class="rounded-lg border-2 border-emerald-700 bg-emerald-50/40 p-5"
+          >
+            <div class="label-tiny text-emerald-800">hd₃ (current)</div>
+            <ul
+              class="mt-2 space-y-1.5 text-sm text-slate-800 font-mono text-xs"
+            >
+              <li>sample: O(s) sign-bit draws</li>
+              <li>apply/unapply: O(s·d·log s) FWHT</li>
+              <li>
+                operand to GPU: s = next_pow2(n + 8) via shield-as-padding
+              </li>
+              <li>mask storage: O(s) (three sign vectors)</li>
+            </ul>
+          </div>
+        </div>
+
+        <h3 class="font-serif text-xl text-slate-900 mt-8">
+          Mask-family TTFT comparison — Qwen3-4B, n = 2 048
+        </h3>
+        <div
+          class="rounded-lg border border-slate-200 bg-white overflow-hidden"
+        >
+          <table class="w-full text-sm">
+            <thead class="bg-slate-50 border-b border-slate-200">
+              <tr class="text-left">
+                <th class="px-4 py-2.5 font-semibold text-slate-700">
+                  Strategy
+                </th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700">
+                  TTFT (ms)
+                </th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700">
+                  vs Haar
+                </th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700">
+                  Mask families in tree
+                </th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              <tr>
+                <td class="px-4 py-3 align-top">Haar · dense QR</td>
+                <td class="px-4 py-3 align-top font-mono text-xs">25 873</td>
+                <td class="px-4 py-3 align-top text-slate-500">(base)</td>
+                <td class="px-4 py-3 align-top font-mono text-xs">1 (Haar)</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top">HD₃ · zero-pad to next pow2</td>
+                <td class="px-4 py-3 align-top font-mono text-xs">32 012</td>
+                <td class="px-4 py-3 align-top">
+                  <span class="text-red-700 font-semibold">+24 %</span>
+                </td>
+                <td class="px-4 py-3 align-top font-mono text-xs">1 (HD₃)</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top">
+                  DCT-IV · Bluestein at exact
+                  <code class="font-mono text-xs">s</code>
+                </td>
+                <td class="px-4 py-3 align-top font-mono text-xs">22 794</td>
+                <td class="px-4 py-3 align-top">
+                  <span class="text-emerald-700 font-semibold">−12 %</span>
+                </td>
+                <td class="px-4 py-3 align-top font-mono text-xs">
+                  2 (HD₃ + DCT-IV)
+                </td>
+              </tr>
+              <tr class="bg-emerald-50/40">
+                <td class="px-4 py-3 align-top">
+                  <strong>HD₃ + shield-to-pow2</strong>
+                  <span class="italic text-xs text-slate-500">(current)</span>
+                </td>
+                <td class="px-4 py-3 align-top font-mono text-xs">~ 32 000</td>
+                <td class="px-4 py-3 align-top">
+                  <span class="text-red-700 font-semibold">+24 %</span>
+                </td>
+                <td class="px-4 py-3 align-top font-mono text-xs font-semibold">
+                  1 (HD₃)
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="text-base text-slate-800 leading-relaxed">
+          At pow2-aligned shapes (n = 2 040) HD₃ wins outright vs Haar at
+          <strong>16.29 s</strong> vs <strong>~25.6 s</strong> (<strong
+            >−36 % TTFT</strong
+          >, headline). The +24 % regression above is the cost the design
+          accepts only at non-pow2 single-stream long prefill — a regime the
+          batched substrate structurally avoids.
+        </p>
+
+        <div class="rounded-lg bg-stone-50 border border-stone-300 p-5 mt-2">
+          <div class="label-tiny text-slate-500 mb-2">how we got here</div>
+          <p class="text-base text-slate-800 leading-relaxed">
+            Haar shipped first (paper-parity); HD₃ replaced Haar at pow2 shapes
+            for the −36 % TTFT win; HD₃ regressed +24 % at non-pow2 because the
+            FWHT requires pow2 and zero-padding doubles the GPU operand; DCT-IV
+            added as a non-pow2 branch (−12 % via Bluestein) which closed the
+            regression but introduced a second mask family and a second kernel
+            path; <strong>HD₃ + shield-to-pow2</strong> retires DCT-IV by using
+            the GELO-mandated shield rows themselves as the next-pow2 padding,
+            giving back one mask family + one kernel path at the cost of
+            restoring the +24 % non-pow2 regression. Worth it because the
+            batched substrate moves the production regime away from non-pow2
+            single-stream prefill entirely.
+          </p>
+        </div>
+
+        <h3 class="font-serif text-xl text-slate-900 mt-8">Trade-offs</h3>
+        <ol
+          class="space-y-3 text-sm text-slate-800 leading-relaxed pl-5 list-decimal"
+        >
+          <li>
+            <strong
+              >Mix / unmix kernels are less parallel than Haar's GEMM.</strong
+            >
+            AOCL-BLIS scales the dense Haar mask <strong>5.04×</strong> at
+            <code class="font-mono text-xs">threads = 16</code> vs
+            <code class="font-mono text-xs">threads = 1</code>. The FWHT cascade
+            chains <code class="font-mono text-xs">log₂ s</code>
+            stages with a serial barrier between them. HD₃ still wins at long n
+            because Haar's O(s³) sample cost dominates.
+          </li>
+          <li>
+            <strong>Pow2 pad on the stacked-with-shield operand</strong> —
+            addressed by shield-as-padding. At single-stream long prefill (n = 2
+            048) the formula picks
+            <code class="font-mono text-xs">k = 2 048</code>; the GPU operand
+            jumps to <code class="font-mono text-xs">s = 4 096</code> and the
+            mask GEMM cost doubles. At batched decode and rerank shapes the
+            formula keeps k ∈ [8, 15] — no padding penalty.
+          </li>
+          <li>
+            <strong>Threat-model parity vs Haar is unvalidated.</strong> HD₃'s
+            orbit is a discrete
+            <code class="font-mono text-xs">2^(3·s)</code>-element set inside
+            O(s); structurally different from the continuous Haar measure GELO's
+            §3.2 / §4.3 BSS-hardness arguments are written against. HD₃ ships
+            <strong>opt-in only</strong> (<code class="font-mono text-xs"
+              >with_hd3_mask()</code
+            >); the default stays Haar until the AloePri + GELO §4.3 attack
+            drivers show parity at the bench shapes for whichever family is the
+            candidate default.
+          </li>
+        </ol>
+
+        <h3 class="font-serif text-xl text-slate-900 mt-8">
+          Protocol-side optimisations landed
+        </h3>
+        <div class="grid md:grid-cols-2 gap-4">
+          <div
+            class="rounded-lg border border-emerald-300 bg-emerald-50/40 p-5"
+          >
+            <div class="label-tiny text-emerald-800">
+              aocl-blis multi-thread haar mask gemm
+            </div>
+            <p class="mt-2 text-sm text-slate-700 leading-relaxed">
+              <span class="font-mono text-xs">blas</span> feature default-on in
+              <span class="font-mono text-xs">gelo-protocol</span>; bench pins
+              <span class="font-mono text-xs">GELO_BLIS_THREADS = 16</span>.
+              Haar mask GEMM at s = 2 056, d = 2 048 measures
+              <strong>5.04×</strong> faster than threads = 1. HD₃/DCT-IV don't
+              route through BLIS — Haar-only win.
+            </p>
+            <div class="mt-2 text-xs font-mono text-slate-500">2026-05-19</div>
+          </div>
+          <div
+            class="rounded-lg border border-emerald-300 bg-emerald-50/40 p-5"
+          >
+            <div class="label-tiny text-emerald-800">
+              hd₃ radix-8 fwht + in-place apply
+            </div>
+            <p class="mt-2 text-sm text-slate-700 leading-relaxed">
+              Radix-8 fuses three radix-2 butterfly stages per pass (3× less
+              memory traffic);
+              <code class="font-mono text-xs">Hd3Mask::apply_in_place</code>
+              mutates cached shield-stack scratch rather than allocating a fresh
+              ~32 MB output per call.
+            </p>
+            <div class="mt-2 text-xs font-mono text-slate-500">2026-05-19</div>
+          </div>
+          <div
+            class="rounded-lg border border-emerald-300 bg-emerald-50/40 p-5"
+          >
+            <div class="label-tiny text-emerald-800">
+              hd₃ unapply_take + scratch reuse
+            </div>
+            <p class="mt-2 text-sm text-slate-700 leading-relaxed">
+              <code class="font-mono text-xs">MaskFamily::unapply_take</code>
+              consumes the engine output buffer directly and runs the FWHT
+              cascade in place. At Qwen3-4B n = 2 040:
+              <code class="font-mono text-xs">gelo:mask_unapply</code>
+              dropped 3 352 → 2 029 ms (<strong>−39.5 %</strong>), TTFT 18 490 →
+              16 566 ms (−10.4 %). Cumulative HD₃ + unapply_take vs Haar:
+              <strong>−36 % TTFT</strong>.
+            </p>
+            <div class="mt-2 text-xs font-mono text-slate-500">2026-05-20</div>
+          </div>
+          <div class="rounded-lg border border-slate-200 bg-white p-5">
+            <div class="label-tiny text-slate-500">
+              dct-iv cascade — superseded
+            </div>
+            <p class="mt-2 text-sm text-slate-700 leading-relaxed">
+              Earlier non-pow2 branch added a DCT-IV cascade (<code
+                class="font-mono text-xs"
+                >D₃·C·D₂·C·D₁·C</code
+              >
+              via Bluestein chirp-z). Delivered −12 % TTFT vs Haar at n = 2 048
+              but at the cost of a second mask family. Shield-as-padding above
+              retires it: one mask family, pow2 alignment by construction.
+              DCT-IV stays in-tree under
+              <code class="font-mono text-xs">MaskKind::Dct4</code> for parity
+              tests.
+            </p>
+            <div class="mt-2 text-xs font-mono text-slate-500">
+              2026-05-20 / superseded 2026-05-21
+            </div>
+          </div>
+        </div>
+
+        <h3 class="font-serif text-xl text-slate-900 mt-8">
+          Quantized kernels — spike-tested, deferred
+        </h3>
+        <p class="text-base text-slate-800 leading-relaxed">
+          Two GPU-side levers spike-tested at Qwen3-4B projection shapes against
+          the same f32 baseline; both negative or marginal on AMD Strix Halo
+          <code class="font-mono text-xs">gfx1151</code> iGPU. Plumbing deferred
+          until hardware changes (dGPU) or kernel stack improves.
+        </p>
+        <div
+          class="rounded-lg border border-slate-200 bg-white overflow-hidden"
+        >
+          <table class="w-full text-sm">
+            <thead class="bg-slate-50 border-b border-slate-200">
+              <tr class="text-left">
+                <th class="px-3 py-2.5 font-semibold text-slate-700">
+                  variant
+                </th>
+                <th class="px-3 py-2.5 font-semibold text-slate-700">
+                  QKV (2560→4096)
+                </th>
+                <th class="px-3 py-2.5 font-semibold text-slate-700">
+                  Gate∥Up (2560→9728)
+                </th>
+                <th class="px-3 py-2.5 font-semibold text-slate-700">
+                  FfnDown (9728→2560)
+                </th>
+                <th class="px-3 py-2.5 font-semibold text-slate-700">
+                  O (4096→2560)
+                </th>
+                <th class="px-3 py-2.5 font-semibold text-slate-700">
+                  verdict
+                </th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100 font-mono text-xs">
+              <tr>
+                <td class="px-3 py-3 align-top">
+                  Q4 weight quant (Vulkan, cubek-matmul)
+                </td>
+                <td class="px-3 py-3 align-top">0.82 ×</td>
+                <td class="px-3 py-3 align-top">0.81 ×</td>
+                <td class="px-3 py-3 align-top">0.71 ×</td>
+                <td class="px-3 py-3 align-top">0.75 ×</td>
+                <td class="px-3 py-3 align-top">
+                  <span class="text-red-700 font-semibold">regresses</span>
+                </td>
+              </tr>
+              <tr>
+                <td class="px-3 py-3 align-top">Q4 + ROCm + rocWMMA (HIP)</td>
+                <td class="px-3 py-3 align-top">0.75 ×</td>
+                <td class="px-3 py-3 align-top">0.79 ×</td>
+                <td class="px-3 py-3 align-top">0.73 ×</td>
+                <td class="px-3 py-3 align-top">0.78 ×</td>
+                <td class="px-3 py-3 align-top">
+                  <span class="text-red-700 font-semibold">regresses</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- §09 ATTACK HARNESS                                           -->
+      <!-- ============================================================ -->
+      <section id="attacks" class="space-y-4 scroll-mt-12">
+        <header
+          class="flex items-baseline gap-4 flex-wrap pb-3 border-b border-slate-200"
+        >
+          <span class="font-mono text-sm text-slate-500">§09</span>
+          <h2 class="font-serif text-3xl tracking-tight text-slate-900">
+            Attack harness
+          </h2>
+          <span class="label-tiny text-slate-500 ml-auto"
+            >three conditions · twelve attacks · empirical HD₃ gate</span
+          >
+        </header>
+
+        <p class="text-base text-slate-800 leading-relaxed">
+          Threat model: GELO §3.2 BSS-hardness game on a per-forward orthogonal
+          mask. PCIe-side attacker observes
+          <code class="font-mono text-xs">U = A · H</code> (and, for some
+          attacks, the engine output
+          <code class="font-mono text-xs">U · W</code>) for each linear offload
+          of each forward pass. Each forward draws a fresh
+          <code class="font-mono text-xs">A</code> from either the dense Haar
+          measure on <code class="font-mono text-xs">O(s)</code> or the HD₃
+          Hadamard cascade (§08); shield rows
+          <code class="font-mono text-xs">k_shield = 8</code> at energy
+          4·mean‖h‖ appended to defeat Gram-leak attacks. The attacker does
+          <em>not</em> see token ids on the wire and does <em>not</em> hold an
+          obfuscated weight table.
+          <strong>64-prompt smoke gate run: 2026-05-20.</strong>
+        </p>
+
+        <h3 class="font-serif text-xl text-slate-900 mt-6">
+          Conditions under test
+        </h3>
+        <div
+          class="rounded-lg border border-slate-200 bg-white overflow-hidden"
+        >
+          <table class="w-full text-sm">
+            <thead class="bg-slate-50 border-b border-slate-200">
+              <tr class="text-left">
+                <th class="px-4 py-2.5 font-semibold text-slate-700 w-32">
+                  Condition
+                </th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700">
+                  Executor configuration
+                </th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700">Role</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              <tr>
+                <td class="px-4 py-3 align-top">
+                  <span class="font-semibold">C0 plain</span>
+                </td>
+                <td
+                  class="px-4 py-3 align-top text-slate-700 text-xs font-mono"
+                >
+                  CapturingPlaintextExecutor wrapping PlaintextExecutor — no
+                  mask, no shield
+                </td>
+                <td class="px-4 py-3 align-top text-slate-700">
+                  Control. Each attack <em>must</em> succeed against plain
+                  inference — if it doesn't, the attack is mis-calibrated.
+                </td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top">
+                  <span class="font-semibold">C2 default</span>
+                </td>
+                <td
+                  class="px-4 py-3 align-top text-slate-700 text-xs font-mono"
+                >
+                  InProcessTrustedExecutor::with_seed — paper-parity:
+                  per-forward Haar A + ShieldConfig(8, 4.0)
+                </td>
+                <td class="px-4 py-3 align-top text-slate-700">
+                  The released GELO default. Acceptance threshold:
+                  <strong>TTRSR ≤ 10 % per recovery attack</strong>.
+                </td>
+              </tr>
+              <tr class="bg-emerald-50/30">
+                <td class="px-4 py-3 align-top">
+                  <span class="font-semibold">C3 HD₃</span>
+                </td>
+                <td
+                  class="px-4 py-3 align-top text-slate-700 text-xs font-mono"
+                >
+                  Same as C2 except .with_hd3_mask() — per-forward HD₃ cascade +
+                  shield(8, 4.0)
+                </td>
+                <td class="px-4 py-3 align-top text-slate-700">
+                  The Hadamard-cascade alternative. Must match C2 within ±0.05
+                  on every recovery attack to clear the default-flip gate.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 class="font-serif text-xl text-slate-900 mt-8">
+          Attacks under test
+        </h3>
+        <p class="text-base text-slate-800 leading-relaxed">
+          Twelve attacks across two threat-model families:
+          <strong>AloePri row-recovery</strong> (NN / IMA / ImaPaperLike / ISA /
+          IA) and <strong>GELO §4.3 BSS-hardness</strong> (anchor_ica / JADE /
+          JD / gram_error). Four AloePri families (VMA / TFMA / SDA / IA) emit
+          <code class="font-mono text-xs">not_applicable</code> rows because
+          they assume a static obfuscated weight table or a token-id stream on
+          the wire — GELO ships neither.
+        </p>
+        <div
+          class="rounded-lg border border-slate-200 bg-white overflow-hidden"
+        >
+          <table class="w-full text-sm">
+            <thead class="bg-slate-50 border-b border-slate-200">
+              <tr class="text-left">
+                <th class="px-3 py-2.5 font-semibold text-slate-700">Attack</th>
+                <th class="px-3 py-2.5 font-semibold text-slate-700">Ref</th>
+                <th class="px-3 py-2.5 font-semibold text-slate-700">
+                  C0 plain
+                </th>
+                <th class="px-3 py-2.5 font-semibold text-slate-700">
+                  C2 Haar
+                </th>
+                <th class="px-3 py-2.5 font-semibold text-slate-700">C3 HD₃</th>
+                <th class="px-3 py-2.5 font-semibold text-slate-700">Notes</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              <tr>
+                <td class="px-3 py-3 align-top">
+                  <span class="font-semibold">NN</span>
+                  <div class="text-xs text-slate-500 mt-0.5">
+                    cosine top-K vs plain embedding · layer 0
+                  </div>
+                </td>
+                <td class="px-3 py-3 align-top font-mono text-xs">0.0 %</td>
+                <td class="px-3 py-3 align-top font-mono text-xs">100.0 %</td>
+                <td class="px-3 py-3 align-top font-mono text-xs">4.5 %</td>
+                <td class="px-3 py-3 align-top font-mono text-xs">4.2 %</td>
+                <td class="px-3 py-3 align-top text-xs text-slate-700">
+                  Both well under 10 %. <strong>Pass.</strong>
+                </td>
+              </tr>
+              <tr>
+                <td class="px-3 py-3 align-top">
+                  <span class="font-semibold">IMA</span>
+                  <div class="text-xs text-slate-500 mt-0.5">
+                    multi-α ridge inverter · layer 0 · vocab-disjoint
+                  </div>
+                </td>
+                <td class="px-3 py-3 align-top font-mono text-xs">98.0 %</td>
+                <td class="px-3 py-3 align-top font-mono text-xs">96.4 %</td>
+                <td class="px-3 py-3 align-top font-mono text-xs">1.5 %</td>
+                <td class="px-3 py-3 align-top font-mono text-xs">1.5 %</td>
+                <td class="px-3 py-3 align-top text-xs text-slate-700">
+                  Both within 0.1 pt; well under 10 %. <strong>Pass.</strong>
+                </td>
+              </tr>
+              <tr>
+                <td class="px-3 py-3 align-top">
+                  <span class="font-semibold">ImaPaperLike</span>
+                  <div class="text-xs text-slate-500 mt-0.5">
+                    trained 2-layer 8-head transformer inverter
+                  </div>
+                </td>
+                <td class="px-3 py-3 align-top font-mono text-xs">49–73 %</td>
+                <td class="px-3 py-3 align-top font-mono text-xs text-red-700">
+                  0.4 %
+                </td>
+                <td class="px-3 py-3 align-top font-mono text-xs">0.0 %</td>
+                <td class="px-3 py-3 align-top font-mono text-xs">0.4 %</td>
+                <td class="px-3 py-3 align-top text-xs text-slate-700">
+                  <strong class="text-red-700">Driver broken</strong> — fails
+                  plain identity control. Cite IMA-ridge instead.
+                </td>
+              </tr>
+              <tr>
+                <td class="px-3 py-3 align-top">
+                  <span class="font-semibold">ISA</span>
+                  <div class="text-xs text-slate-500 mt-0.5">
+                    ridge at layer 23 · vocab-disjoint
+                  </div>
+                </td>
+                <td class="px-3 py-3 align-top font-mono text-xs">0.0 %</td>
+                <td class="px-3 py-3 align-top font-mono text-xs">18.8 %</td>
+                <td class="px-3 py-3 align-top font-mono text-xs">0.0 %</td>
+                <td class="px-3 py-3 align-top font-mono text-xs">4.7 %</td>
+                <td class="px-3 py-3 align-top text-xs text-slate-700">
+                  Largest within-family delta but stays under 10 %.
+                  <strong>Pass.</strong>
+                </td>
+              </tr>
+              <tr>
+                <td class="px-3 py-3 align-top">
+                  <span class="font-semibold">anchor_ica</span>
+                  <div class="text-xs text-slate-500 mt-0.5">
+                    FastICA + ridge with anchor rows
+                  </div>
+                </td>
+                <td class="px-3 py-3 align-top font-mono text-xs">≥ 0.95</td>
+                <td class="px-3 py-3 align-top font-mono text-xs">0.671</td>
+                <td class="px-3 py-3 align-top font-mono text-xs">0.497</td>
+                <td class="px-3 py-3 align-top font-mono text-xs">0.484</td>
+                <td class="px-3 py-3 align-top text-xs text-slate-700">
+                  C2/C3 Δ = 0.013 (parity within ±0.05). Both well below
+                  baseline. <strong>Pass at smoke scale.</strong>
+                </td>
+              </tr>
+              <tr>
+                <td class="px-3 py-3 align-top">
+                  <span class="font-semibold">JADE</span>
+                  <div class="text-xs text-slate-500 mt-0.5">
+                    Cardoso–Souloumiac 1993 joint-diag
+                  </div>
+                </td>
+                <td class="px-3 py-3 align-top font-mono text-xs">≥ 0.95</td>
+                <td class="px-3 py-3 align-top font-mono text-xs">0.704</td>
+                <td class="px-3 py-3 align-top font-mono text-xs">0.575</td>
+                <td class="px-3 py-3 align-top font-mono text-xs">0.574</td>
+                <td class="px-3 py-3 align-top text-xs text-slate-700">
+                  C2/C3 Δ = 0.001 (parity). Mask + shield disrupts cumulant
+                  signature. <strong>Pass.</strong>
+                </td>
+              </tr>
+              <tr>
+                <td class="px-3 py-3 align-top">
+                  <span class="font-semibold">gram_error</span>
+                  <div class="text-xs text-slate-500 mt-0.5">
+                    cos-normalised row-Gram distance
+                  </div>
+                </td>
+                <td class="px-3 py-3 align-top font-mono text-xs">
+                  0 → √2 ≈ 1.41
+                </td>
+                <td class="px-3 py-3 align-top font-mono text-xs">0.000</td>
+                <td class="px-3 py-3 align-top font-mono text-xs">1.104</td>
+                <td class="px-3 py-3 align-top font-mono text-xs">1.111</td>
+                <td class="px-3 py-3 align-top text-xs text-slate-700">
+                  C2/C3 Δ = 0.007 (parity). Both ~78 % of theoretical max; clear
+                  of 0.5 fingerprint-floor. <strong>Pass.</strong>
+                </td>
+              </tr>
+              <tr class="bg-slate-50/40 text-slate-500">
+                <td class="px-3 py-3 align-top">
+                  <span class="font-semibold">JD</span>
+                  <div class="text-xs mt-0.5">SOBI multi-observation JD</div>
+                </td>
+                <td class="px-3 py-3 align-top font-mono text-xs">≥ 0.92</td>
+                <td class="px-3 py-3 align-top font-mono text-xs">NaN</td>
+                <td class="px-3 py-3 align-top font-mono text-xs">NaN</td>
+                <td class="px-3 py-3 align-top font-mono text-xs">NaN</td>
+                <td class="px-3 py-3 align-top text-xs">
+                  Smoke run returned NaN — whitening guard fires at short
+                  prompts. Meaningful at longer prompts.
+                </td>
+              </tr>
+              <tr class="bg-slate-50/40 text-slate-500">
+                <td class="px-3 py-3 align-top">
+                  <span class="font-semibold">IA / VMA / TFMA / SDA</span>
+                  <div class="text-xs mt-0.5">
+                    weight-pair invariants · token-cipher decipherment
+                  </div>
+                </td>
+                <td class="px-3 py-3 align-top font-mono text-xs">5–14 %</td>
+                <td class="px-3 py-3 align-top text-xs">n/a</td>
+                <td class="px-3 py-3 align-top text-xs">n/a</td>
+                <td class="px-3 py-3 align-top text-xs">n/a</td>
+                <td class="px-3 py-3 align-top text-xs">
+                  <strong>Not applicable</strong> — GELO ships no obfuscated
+                  weight table; token ids never cross the trust boundary.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <details
+          class="mt-6 rounded-lg border border-slate-300 bg-stone-50 overflow-hidden"
+        >
+          <summary
+            class="px-5 py-4 cursor-pointer hover:bg-stone-100 flex items-baseline gap-3"
+          >
+            <h3 class="font-serif text-lg text-slate-900">
+              Acceptance gate — HD₃ default-flip
+            </h3>
+            <span class="text-xs text-slate-500">click to expand</span>
+          </summary>
+          <div class="px-5 pb-5">
+            <p class="text-sm text-slate-700 leading-relaxed mt-2">
+              Each gate row pairs an absolute defence claim with a C3-vs-C2
+              parity check: HD₃ default-flip requires both (a) C2 defends, and
+              (b) C3 matches C2 within ±0.05.
+            </p>
+            <div
+              class="mt-4 rounded-lg border border-slate-200 bg-white overflow-hidden"
+            >
+              <table class="w-full text-sm">
+                <thead class="bg-slate-50 border-b border-slate-200">
+                  <tr class="text-left">
+                    <th class="px-4 py-2.5 font-semibold text-slate-700">
+                      Gate field
+                    </th>
+                    <th class="px-4 py-2.5 font-semibold text-slate-700">
+                      Required
+                    </th>
+                    <th class="px-4 py-2.5 font-semibold text-slate-700">
+                      Measured
+                    </th>
+                    <th class="px-4 py-2.5 font-semibold text-slate-700">
+                      Verdict
+                    </th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-100 font-mono text-xs">
+                  <tr>
+                    <td class="px-4 py-3">ima_c2_below_10pct</td>
+                    <td class="px-4 py-3">C2 IMA &lt; 10 %</td>
+                    <td class="px-4 py-3">1.5 %</td>
+                    <td class="px-4 py-3 text-emerald-700 font-semibold">
+                      ✓ PASS
+                    </td>
+                  </tr>
+                  <tr>
+                    <td class="px-4 py-3">nn_c2_below_10pct</td>
+                    <td class="px-4 py-3">C2 NN &lt; 10 %</td>
+                    <td class="px-4 py-3">4.5 %</td>
+                    <td class="px-4 py-3 text-emerald-700 font-semibold">
+                      ✓ PASS
+                    </td>
+                  </tr>
+                  <tr>
+                    <td class="px-4 py-3">isa_c2_below_10pct</td>
+                    <td class="px-4 py-3">C2 ISA &lt; 10 %</td>
+                    <td class="px-4 py-3">0.0 %</td>
+                    <td class="px-4 py-3 text-emerald-700 font-semibold">
+                      ✓ PASS
+                    </td>
+                  </tr>
+                  <tr>
+                    <td class="px-4 py-3">nn_c3_within_5pt</td>
+                    <td class="px-4 py-3">|C3 − C2| ≤ 5 pt</td>
+                    <td class="px-4 py-3">0.3 pt</td>
+                    <td class="px-4 py-3 text-emerald-700 font-semibold">
+                      ✓ PASS
+                    </td>
+                  </tr>
+                  <tr>
+                    <td class="px-4 py-3">ima_c3_within_5pt</td>
+                    <td class="px-4 py-3">|C3 − C2| ≤ 5 pt</td>
+                    <td class="px-4 py-3">0.0 pt</td>
+                    <td class="px-4 py-3 text-emerald-700 font-semibold">
+                      ✓ PASS
+                    </td>
+                  </tr>
+                  <tr>
+                    <td class="px-4 py-3">isa_c3_within_5pt</td>
+                    <td class="px-4 py-3">|C3 − C2| ≤ 5 pt</td>
+                    <td class="px-4 py-3">4.7 pt</td>
+                    <td class="px-4 py-3 text-emerald-700 font-semibold">
+                      ✓ PASS
+                    </td>
+                  </tr>
+                  <tr>
+                    <td class="px-4 py-3">jade_c3_within_0.05</td>
+                    <td class="px-4 py-3">|C3 − C2| ≤ 0.05</td>
+                    <td class="px-4 py-3">0.001</td>
+                    <td class="px-4 py-3 text-emerald-700 font-semibold">
+                      ✓ PASS
+                    </td>
+                  </tr>
+                  <tr>
+                    <td class="px-4 py-3">gram_c3_within_0.05</td>
+                    <td class="px-4 py-3">|C3 − C2| ≤ 0.05</td>
+                    <td class="px-4 py-3">0.007</td>
+                    <td class="px-4 py-3 text-emerald-700 font-semibold">
+                      ✓ PASS
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="mt-3 text-xs text-slate-600 leading-relaxed">
+              14 of 15 reachable gates pass at 64-prompt smoke. The 15th gate
+              (anchor_ica 64-prompt) is skipped pending batched FastICA; smoke
+              cell at 8 prompts clears the parity band. 512-prompt release-gate
+              run is the final calibration before flipping the default from Haar
+              to HD₃.
+            </p>
+          </div>
+        </details>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- §10 STATUS & GAPS                                            -->
+      <!-- ============================================================ -->
+      <section id="status" class="space-y-4 scroll-mt-12">
+        <header
+          class="flex items-baseline gap-4 flex-wrap pb-3 border-b border-slate-200"
+        >
+          <span class="font-mono text-sm text-slate-500">§10</span>
+          <h2 class="font-serif text-3xl tracking-tight text-slate-900">
+            Status &amp; gaps
+          </h2>
+          <span class="label-tiny text-slate-500 ml-auto"
+            >landed · next · deferred</span
+          >
+        </header>
+
+        <p class="text-base text-slate-800 leading-relaxed">
+          <strong
+            >Qwen3-1.7B greedy generation runs end-to-end under GELO</strong
+          >, with the HD₃ Hadamard-cascade mask (§08) opt-in and the AloePri /
+          GELO §4.3 attack harness (§09) cleared at smoke scale. Today's
+          measurement: <strong>+33 % TPOT</strong> vs unprotected GPU baseline,
+          bit-identical token output.
+        </p>
+
+        <h3 class="font-serif text-xl text-slate-900 mt-6">Status snapshot</h3>
+        <div
+          class="rounded-lg border border-slate-200 bg-white overflow-hidden"
+        >
+          <table class="w-full text-sm">
+            <thead class="bg-slate-50 border-b border-slate-200">
+              <tr class="text-left">
+                <th class="px-4 py-2.5 font-semibold text-slate-700">Track</th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700">Status</th>
+                <th class="px-4 py-2.5 font-semibold text-slate-700">Where</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              <tr>
+                <td class="px-4 py-3 align-top">Qwen3 generation harness</td>
+                <td class="px-4 py-3 align-top">
+                  <span
+                    class="inline-block px-2 py-0.5 rounded-full bg-emerald-100 border border-emerald-300 text-emerald-900 text-[10px] font-medium"
+                    >landed · greedy-only · HF-transformers parity passing</span
+                  >
+                </td>
+                <td class="px-4 py-3 align-top font-mono text-xs">
+                  decoder/{generation, forward, kv_cache, rms_norm}.rs
+                </td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top">Performance bench (3-cell)</td>
+                <td class="px-4 py-3 align-top">
+                  <span
+                    class="inline-block px-2 py-0.5 rounded-full bg-emerald-100 border border-emerald-300 text-emerald-900 text-[10px] font-medium"
+                    >landed</span
+                  >
+                </td>
+                <td class="px-4 py-3 align-top font-mono text-xs">
+                  tests/qwen3_generation_bench.rs · §07
+                </td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top">
+                  HD₃ mask (radix-8 + scratch reuse)
+                </td>
+                <td class="px-4 py-3 align-top">
+                  <span
+                    class="inline-block px-2 py-0.5 rounded-full bg-emerald-100 border border-emerald-300 text-emerald-900 text-[10px] font-medium"
+                    >landed · opt-in</span
+                  >
+                </td>
+                <td class="px-4 py-3 align-top font-mono text-xs">
+                  §08 · crates/gelo-protocol/src/hd3.rs
+                </td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top">
+                  Attack harness (4-condition matrix)
+                </td>
+                <td class="px-4 py-3 align-top">
+                  <span
+                    class="inline-block px-2 py-0.5 rounded-full bg-emerald-100 border border-emerald-300 text-emerald-900 text-[10px] font-medium"
+                    >landed · 14 / 15 gates pass at 64-prompt smoke</span
+                  >
+                </td>
+                <td class="px-4 py-3 align-top font-mono text-xs">
+                  §09 · evals/aloepri-attacks/
+                </td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top">
+                  HTTP <code class="font-mono text-xs">/generate</code> route
+                </td>
+                <td class="px-4 py-3 align-top">
+                  <span
+                    class="inline-block px-2 py-0.5 rounded-full bg-amber-100 border border-amber-300 text-amber-900 text-[10px] font-medium"
+                    >planned · reranker route as template</span
+                  >
+                </td>
+                <td class="px-4 py-3 align-top font-mono text-xs">
+                  gelo-snp-runner :: main
+                </td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 align-top">
+                  Sampler — top-p / top-k / temperature
+                </td>
+                <td class="px-4 py-3 align-top">
+                  <span
+                    class="inline-block px-2 py-0.5 rounded-full bg-amber-100 border border-amber-300 text-amber-900 text-[10px] font-medium"
+                    >open · greedy-only today</span
+                  >
+                </td>
+                <td class="px-4 py-3 align-top font-mono text-xs">
+                  decoder/generation.rs
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 class="font-serif text-xl text-slate-900 mt-8">
+          Open protocol gaps
+        </h3>
+        <div class="grid md:grid-cols-2 gap-4">
+          <div class="rounded-lg border border-red-300 bg-red-50/30 p-5">
+            <div class="label-tiny text-red-800">P0 · integrity</div>
+            <h4 class="font-serif text-base text-slate-900 mt-1">
+              U-Verify cost at ≥ 1B parameters
+            </h4>
+            <p class="mt-2 text-sm text-slate-700 leading-relaxed">
+              Linear-in-weight Freivalds gives 150× decode slowdown at
+              <em>k</em> = 2; <em>k</em> = 8 production probes scale worse.
+              Candidate fixes: randomised-block Freivalds, batched-across-decode
+              verification, or checkpoint-only attestation. Mandatory before
+              integrity rides production; not a blocker for the current
+              demonstrator.
+            </p>
+          </div>
+          <div class="rounded-lg border border-amber-300 bg-amber-50/30 p-5">
+            <div class="label-tiny text-amber-800">P1 · decode bandwidth</div>
+            <h4 class="font-serif text-base text-slate-900 mt-1">
+              SCX-style KV-cache encoding for decode
+            </h4>
+            <p class="mt-2 text-sm text-slate-700 leading-relaxed">
+              Decode KV-cache bandwidth at long context is the currently
+              unmeasured cost on the demonstrator path. SCX (Yuan et al.,
+              SIGCOMM 2025) is the candidate primitive; gated on a security
+              spike against Hidden-No-More / KV-Cloak adversaries.
+            </p>
+          </div>
+          <div class="rounded-lg border border-slate-200 bg-white p-5">
+            <div class="label-tiny text-slate-500">gate · attack-harness</div>
+            <h4 class="font-serif text-base text-slate-900 mt-1">
+              HD₃ default-flip — 512-prompt re-run
+            </h4>
+            <p class="mt-2 text-sm text-slate-700 leading-relaxed">
+              with anchor_ica / JD batched. 64-prompt smoke clears every
+              reachable gate; the release-gate run is the final calibration
+              before flipping
+              <code class="font-mono text-xs"
+                >InProcessTrustedExecutor::new</code
+              >
+              default from Haar to HD₃.
+            </p>
+          </div>
+          <div class="rounded-lg border border-slate-200 bg-white p-5">
+            <div class="label-tiny text-slate-500">lever · decode</div>
+            <h4 class="font-serif text-base text-slate-900 mt-1">
+              HKDF-derived mask material for decode-step amortisation
+            </h4>
+            <p class="mt-2 text-sm text-slate-700 leading-relaxed">
+              Lever, not critical path. Landing condition: bench shows
+              mask-sample &gt; ~10 % TPOT at the larger hidden-dim shapes
+              currently exercised.
+            </p>
+          </div>
+        </div>
+
+        <h3 class="font-serif text-xl text-slate-900 mt-8">Deferred</h3>
+        <ul class="space-y-2 text-sm text-slate-700 leading-relaxed pl-4">
+          <li>
+            · <strong>Speculative decoding</strong> — protocol implications
+            under per-batch fresh <code class="font-mono text-xs">A</code> are
+            unexplored.
+          </li>
+          <li>
+            · <strong>MoE generation</strong> (Qwen3-MoE / DeepSeek-V2) —
+            router-histogram side channel needs CryptoMoE-class balanced
+            dispatch; separate ~3-6 month workstream.
+          </li>
+          <li>
+            · <strong>Score-DP / token-DP accountant</strong> — only relevant
+            when a deployment needs per-token probability export.
+          </li>
+          <li>
+            · <strong>ECDH-bound session-key handshake</strong> — reranker's
+            swap-in applies verbatim when needed.
+          </li>
+        </ul>
+
+        <h3 class="font-serif text-xl text-slate-900 mt-8">
+          Decisions locked (2026-05-20)
+        </h3>
+        <ul class="space-y-2 text-sm text-slate-700 leading-relaxed pl-4">
+          <li>
+            · <strong>Today's demonstrator</strong> — Qwen3-1.7B; Qwen3-4B as
+            same-code-path stretch. Qwen3.5 family rejected.
+          </li>
+          <li>
+            · <strong>Accuracy reference</strong> — HF
+            <code class="font-mono text-xs"
+              >transformers.AutoModelForCausalLM</code
+            >
+            at
+            <code class="font-mono text-xs">temperature = 0</code> is the accept
+            gate (llama.cpp / vLLM informational only).
+          </li>
+          <li>
+            · <strong>Sampler</strong> — greedy only; top-p / top-k /
+            temperature lands with the HTTP route.
+          </li>
+          <li>
+            · <strong>HD₃ default-flip</strong> gated on 512-prompt
+            attack-harness re-run + anchor_ica/JD batching follow-up.
+          </li>
+        </ul>
+      </section>
+
+      <!-- ─── FOOTER ─── -->
+      <footer
+        class="mt-16 pt-8 border-t border-slate-200 grid md:grid-cols-3 gap-8 text-sm"
+      >
+        <div>
+          <div class="label-tiny text-slate-500 mb-3">cross-references</div>
+          <ul class="space-y-1.5 text-slate-700">
+            <li>
+              <a href="index.html" class="hover:text-emerald-700"
+                >← Overview / Landing</a
+              >
+            </li>
+            <li>
+              <a href="embedding.html" class="hover:text-emerald-700"
+                >Embedding · upstream protocol</a
+              >
+            </li>
+            <li>
+              <a href="reranking.html" class="hover:text-emerald-700"
+                >Reranking · sibling protocol</a
+              >
+            </li>
+            <li>
+              <a href="aloepri-llm.html" class="hover:text-emerald-700"
+                >AloePri · weight-obfuscation comparison</a
+              >
+            </li>
+          </ul>
+        </div>
+        <div>
+          <div class="label-tiny text-slate-500 mb-3">source docs</div>
+          <ul class="space-y-1.5 text-slate-700 font-mono text-xs">
+            <li>docs/prototype/gelo.md</li>
+            <li>docs/research/private-llm-inference.md</li>
+            <li>crates/gelo-protocol/src/hd3.rs</li>
+            <li>evals/aloepri-attacks/ATTACK_FAMILIES.md</li>
+          </ul>
+        </div>
+        <div>
+          <div class="label-tiny text-slate-500 mb-3">notation</div>
+          <ul class="space-y-1.5 text-slate-700 text-xs">
+            <li>
+              <code class="font-mono">H</code> — hidden-state activations
+              <code class="font-mono">(n, d)</code>
+            </li>
+            <li>
+              <code class="font-mono">A</code> — per-forward orthogonal mask;
+              Haar or HD₃
+            </li>
+            <li>
+              <code class="font-mono">U = A·H</code> — masked operand crossing
+              PCIe
+            </li>
+            <li><code class="font-mono">W</code> — public model weight</li>
+            <li><code class="font-mono">n</code> — prompt token count</li>
+            <li>
+              <code class="font-mono">k</code> — shield row count (default 8)
+            </li>
+            <li>
+              <code class="font-mono">s</code> — stacked row count
+              <code class="font-mono">n + k</code> (Haar) /
+              <code class="font-mono">next_pow2(n + k)</code> (HD₃)
+            </li>
+            <li>
+              <code class="font-mono">d</code> — hidden dim (2 048 for
+              Qwen3-1.7B)
+            </li>
+          </ul>
+        </div>
+      </footer>
+    </main>
+  </body>
+</html>
