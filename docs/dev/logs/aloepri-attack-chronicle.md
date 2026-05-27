@@ -919,6 +919,145 @@ the multikey run stay on GPU end-to-end.
 
 ---
 
+### 2026-05-27 (later) — three new deobfuscation attacks (per 2026-05-26 handoff)
+
+**Source:** `docs/handoffs/2026-05-26-new-deobfuscation-attacks.md`,
+`evals/aloepri-attacks/results/sweep/cell-qwen3-4b-paperK-noH-uvo-pow2e1-b2-20260527/{m2_7-arrowmatch,m2_7-sequence-ima-*}.json`,
+`evals/aloepri-attacks/results/sweep/cell-qwen3-4b-plain-control-20260527/`.
+
+The 2026-05-26 handoff implemented three new deobfuscation-attack
+drivers (C1 TFMA-seeded ridge, ArrowMatch port, Sequence-IMA scaffold)
+and queued them for next-session empirical work. Status today:
+
+| #   | Attack                                      | Run status                                   | Verdict                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| --- | ------------------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | **C1: TFMA-seeded ridge**                   | **Never ran. Driver deleted today.**         | The handoff added TFMA-seeded sampling to the existing IMA-EmbedRow-ridge attack. The ridge variant itself was removed from `run_ima_embedrow_attacks{,_multikey}.py` + orchestrator earlier today (commit `ab6c1f5`) because it over-triggered on identity-fixed specials. No TFMA-seeded measurements were captured before deletion. To revive C1 we'd need a non-ridge inverter (transformer/MLP) with the TFMA-seeded training-pair selection — not the deleted ridge code. |
+| 2   | **ArrowMatch** (Wang et al. USENIX Sec '25) | Ran on Q3-4B paperK β=2 cell + plain control | **Structurally defeated** by AloePri's matrix-multiplication keymat, exactly as Obs2 from the paper predicts.                                                                                                                                                                                                                                                                                                                                                                   |
+| 3   | **Sequence-IMA scaffold**                   | Ran on Q3-4B paperK β=2 cell + α_e=0 control | **Inverter at paper-default budget is at corpus-frequency floor**, not measuring keymat inversion. Both obfuscated and α_e=0 plain controls land at 3.9–4.1 % top-1 / 21.9–22.7 % top-10 — same number — indicating the inverter never learned the keymat dependency. Re-run with scaled budget before drawing defense conclusions.                                                                                                                                             |
+
+#### ArrowMatch — direction-similarity attack on token_embd
+
+Two-stage cosine matching from Wang et al. (USENIX Sec '25, "Game of
+Arrows"). For each obfuscated row `w̃_i`, find
+`σ̂(i) = argmin_j cos(w̃_i, w_j)` over plaintext rows; then length-
+adjust `ŝ_i = ||w_{σ(i)}|| / ||w̃_i||`. Paper's Obs2 claims direction-
+similarity is broken only by per-vector ops (Π+D), and AloePri's
+matrix-multiplication keymat `Q̂` is exactly the case Obs2 identifies
+as immune.
+
+**Configuration:** Q3-4B paperK / no-H / pow2 / β=2 cell + plain
+control (untied bf16). Token embedding tensor, V=151 669 active /
+151 936 total, chunked GPU cosine match on ROCm, 100 s wall.
+Stage 2 length adjustment skipped (broadcast bug on
+active-vocab vs full-vocab shape — would need a 1-line script fix to
+land in future sweeps).
+
+**Result:**
+
+| Cell                                                  | Stage-1 top-1 | Stage-1 top-10 |        cosine at correct (mean ± std) |
+| ----------------------------------------------------- | ------------: | -------------: | ------------------------------------: |
+| Plain control (identity-τ, `--plain == --obfuscated`) |   **98.58 %** |        98.59 % |                     **1.000** ± 0.000 |
+| Obfuscated (paperK β=2)                               |    **0.00 %** |        0.008 % | **−0.0001** ± 0.020, p10/p90 = ±0.025 |
+
+Plain-control 98.58 % top-1 with cosine = 1.000 confirms the attack
+implementation works (the residual 1.4 % gap reflects
+duplicate/near-duplicate rows in Qwen3's tokenizer). On the
+obfuscated cell, **cosine alignment between corresponding plain/obf
+rows is statistically zero** — the matrix-multiplication keymat
+zeroes the direction signal exactly as Obs2 anticipates. Defended by
+construction; no follow-up needed on this surface.
+
+Attack-harness ledger row added: `m2_7-arrowmatch.json` next to the
+other 4B β=2 cell results.
+
+#### Sequence-IMA scaffold — corpus-prior floor reading
+
+Per-row paper IMA inverts each token row independently; the
+handoff's Sequence-IMA scaffold (`run_sequence_ima.py`) instead
+processes a window of `n_q=32` obfuscated rows jointly through a
+2-layer 8-head encoder (618 M params at d_model=d_obs=2 816), with
+the predicted output being the full `n_q`-position plain-token
+sequence. Cross-attention over the window should give ~√n_q SNR
+gain over per-row paper IMA.
+
+**Configuration:** Q3-4B Q8_0-untied as plain table; attacker
+synthesises own τ_a / Q̂_a / noise_a on a 9 470-token public
+corpus; n_train=128 sequences × seq_len=32 = 4 096 positions,
+n_val=16, n_test=16, batch=8, lr=3e-4, epochs=2 (paper §F.2
+defaults); AdamW; ROCm GPU.
+
+**Result:**
+
+| Cell                                    |      top-1 |  top-10 |     val_top1 ep0 → ep1 |   wall |
+| --------------------------------------- | ---------: | ------: | ---------------------: | -----: |
+| Obfuscated (α_e=1.0, paperK β=2 keymat) | **4.10 %** | 22.66 % | 4.30 % → 3.91 % (flat) | 37.4 s |
+| Plain control (α_e=0.0, same keymat)    | **3.91 %** | 21.88 % |                 (same) | 37.4 s |
+
+The **noise-free plain control lands at the same number** as the
+obfuscated cell. Removing the entire Gaussian noise budget moved
+top-1 by 0.19 pp (within run-to-run noise). The val curve never
+descends past ep0. Combined reading:
+
+1. The 618 M-param inverter at n_train=128 × 32 tok = 4 096
+   positions is wildly under-trained; loss never converges. It's
+   stuck at the **corpus-token-frequency prior** — the marginal
+   distribution of frequent tokens in the public corpus
+   (Qwen3's tokenizer has a small set of dominant whitespace /
+   punctuation / common-word tokens that account for ~4 %
+   marginal frequency).
+2. So the 4.10 % obfuscated number was NOT a measurement of
+   weakened defense — it was the corpus-prior floor. The
+   handoff's "Sequence-IMA could beat per-row IMA" hypothesis is
+   not falsified (sequence context probably DOES add signal), but
+   the current budget can't expose it.
+3. The proper plain control for this scaffold (a meaningful
+   ~100 % ceiling) would require either (a) `Q̂_a = I` so the
+   inverter just learns identity (no flag for this in the current
+   script), or (b) a much larger training budget so the inverter
+   actually descends below the corpus prior.
+
+**Verdict:** scaffold cleared the smoke test but is not yet a
+production attack reading. Before re-running on real defended
+cells, the budget needs to scale (paper's hidden-experiment budget
+is 4 096+ training pairs at higher epochs) AND ideally the
+synthesis pipeline should rotate `τ_a` per training pair to force
+key-invariant inversion (the handoff already notes this as the
+target). Until then any Sequence-IMA TTRSR is "did the inverter
+escape corpus-frequency floor", not "did obfuscation hold".
+
+#### Decisions
+
+1. **ArrowMatch closed-out** on the 4B paperK β=2 cell. Add to the
+   §08 attack ledger as a pass-by-construction. No follow-up unless
+   future Alg2 variants change the keymat structure.
+2. **C1 TFMA-seeded ridge needs a re-implementation path** if we
+   want a TFMA-seeded measurement. The ridge variant is gone; a
+   non-ridge inverter (transformer or small MLP) with the same
+   TFMA-seeded training-pair selection would be the equivalent
+   measurement. Estimated ~1 day to graft the
+   `_load_corpus_token_ids_from_*` helpers (preserved in the
+   deletion history but removed from current code) onto the
+   transformer-inverter driver. Not prioritised today.
+3. **Sequence-IMA scaffold needs budget scaling + identity-keymat
+   control flag** before it produces a defense reading. The
+   plain-vs-obf parity at the current budget makes any obfuscated
+   number meaningless; expand both (a) training to n_train ≥ 4 096
+   sequences + epochs ≥ 8-16, and (b) add a `--attacker-keymat-
+identity` flag for a tight ~100 % plain control. ~1-2 day
+   patch.
+
+**Wall + artifacts:**
+
+- ArrowMatch obf: 100.99 s on ROCm (151 669 × 151 669 cosine via
+  chunked match, V × V matrix never materialised).
+- ArrowMatch plain control: 53.48 s (same chunking, identity-τ
+  skips the τ-lookup hot path).
+- Sequence-IMA train+eval: 37.4 s train + 0.7 s eval on GPU.
+- Plain-control directory:
+  `evals/aloepri-attacks/results/sweep/cell-qwen3-4b-plain-control-20260527/`.
+
+---
+
 ## 5. Applicability under openweight threat model
 
 Nine of AloePri's ten primitives are **inapplicable** to GELO's threat model (they protect the wrong axis):

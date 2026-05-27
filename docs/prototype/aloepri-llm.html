@@ -3754,6 +3754,76 @@
             </tr>
             <tr>
               <td>
+                <b>ArrowMatch</b>
+                <div class="alias">
+                  chunked cosine direction matching on
+                  <code>token_embd</code>; paper §3.2 "Game of Arrows" (Wang et
+                  al., USENIX Sec '25, 2026-05-27 port)
+                </div>
+              </td>
+              <td>
+                Recovers τ from
+                <code>(W<sub>plain</sub>, W<sub>obfuscated</sub>)</code>
+                via direction similarity. For each obfuscated embedding row
+                w̃<sub>i</sub>, find σ̂(i) = argmin<sub>j</sub> cos(w̃<sub>i</sub>,
+                w<sub>j</sub>) over all plaintext rows; recovery rate = how
+                often σ̂(i) = τ<sup>−1</sup>(i). Stage 2 length-adjustment
+                skipped (broadcast bug on active-vocab vs full-vocab shape —
+                defers a 1-line patch). Paper §3.2 Obs2: matrix-multiplication
+                obfuscation is immune to this attack; only per-vector ops (Π+D)
+                leak direction signal. AloePri's
+                <code>W̃ = Π · W · Q̂ + ε</code> uses matrix-mult <code>Q̂</code>,
+                so the attack is bounded by construction. Attack driver:
+                <code>run_arrowmatch.py</code>.
+              </td>
+              <td class="num">
+                <span style="font-size: 12px; color: #888"
+                  >novel (path-2 port; paper §3.2 framing)</span
+                >
+              </td>
+              <td class="num accent">
+                <b>98.58 % top-1</b><br />98.59 % top-10<br /><span
+                  style="font-size: 11px; color: #888"
+                  >identity-τ control, cosine at correct = 1.000; 1.4 % residual
+                  gap from duplicate / near-duplicate embed rows in Qwen3-4B's
+                  tokenizer</span
+                >
+              </td>
+              <td class="num accent">
+                <b>0.00 % top-1</b><br />0.008 % top-10<br /><span
+                  style="font-size: 11px; color: #888"
+                  >β=2/no-H true-paper-K + pow2 UVO h128; cosine at correct mean
+                  = −0.0001 ± 0.020 (statistically zero); 100 s on ROCm</span
+                >
+              </td>
+              <td class="num accent">
+                <b>0.00 % top-1</b><br />0.01 % top-10<br /><span
+                  style="font-size: 11px; color: #888"
+                  >β=2/no-H true-paper-K + pow2 UVO h128 (8B d=4096 →
+                  d<sub>obs</sub>=4352); plain control 100.00 % at cosine 1.000;
+                  cosine at correct mean = 0.0002 (statistically zero); 177 s on
+                  ROCm</span
+                >
+              </td>
+              <td>
+                <b
+                  >Pass at both sizes — structurally defeated by
+                  construction.</b
+                >
+                Plain control hits 98.58 % (4B) / 100.00 % (8B) at cosine 1.000,
+                confirming the attack works on per-vector obfuscations. On the
+                obfuscated cells, cosine alignment between corresponding
+                plain/obf rows collapses to noise (mean ≈ 0, p10/p90 ≈ ±0.025) —
+                AloePri's matrix-multiplication keymat <code>Q̂</code> zeroes the
+                direction signal exactly as Obs2 anticipates. No follow-up
+                needed unless future Alg2 variants drop the matrix-mult keymat
+                structure. The 4B vs 8B parity (0.00 % → 0.00 %) shows the
+                result is d-invariant — the structural argument doesn't depend
+                on dimension.
+              </td>
+            </tr>
+            <tr>
+              <td>
                 <b>VMA</b>
                 <div class="alias">
                   RowSort weight-pair recovery — AloePri §F.1 Table 8
