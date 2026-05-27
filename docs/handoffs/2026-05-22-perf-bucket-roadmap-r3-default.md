@@ -1,3 +1,11 @@
+---
+type: handoff
+status: current
+created: 2026-05-22
+updated: 2026-05-22
+tags: [m1.12, perf]
+---
+
 # Handoff — 2026-05-22 — Perf-bucket roadmap after R3 + LM-head default-flip
 
 Focus area for the next session: pick up the M1.12 perf roadmap at

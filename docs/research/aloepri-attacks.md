@@ -1,6 +1,19 @@
+---
+type: research
+status: current
+created: 2026-05-21
+updated: 2026-05-26
+tags: [aloepri, attacks]
+---
+
 # AloePri attack notes
 
 Conceptual descriptions of the attacks in §08 of `docs/prototype/aloepri-llm.html`. Threat-model conclusions live here; harness/driver-fix progress lives in `docs/handoffs/`.
+
+> **See also:**
+> - [`aloepri-keymat-variance.md`](aloepri-keymat-variance.md) — statistical-context note: K=64 keymat-pool sample variance is ~5 pp at d=2560. Any single-seed TTRSR reading here carries ~5 pp noise; comparisons within that band are not significant.
+> - [`aloepri-vs-gelo.md`](aloepri-vs-gelo.md) — threat-model comparison and deployment positioning. The empirical attack suite below is the benchmark referenced from that doc §4.
+> - [`../archive/handoffs/2026-05-26-aloepri-recommendations.md`](../archive/handoffs/2026-05-26-aloepri-recommendations.md) — deployment recommendations extracted from these measurements.
 
 ## IMA-EmbedRow-ridge
 
@@ -73,7 +86,7 @@ Because of this, **IMA-EmbedRow-ridge and IMA-L0-activation are no longer measur
 
 This threat model is strictly weaker for the attacker (no deployment-τ leak required), which is why the ridge safety argument above doesn't apply to it. AloePri's reported "IMA = 0 %" on Qwen2.5-14B is paper's claim that this transformer attack fails on their deployment.
 
-The current path-2 driver doesn't yet reproduce paper's attack faithfully — the trained inverter at paper-default hyperparameters fails the identity-τ plain control across every architecture variant tried, so the obfuscated reading isn't interpretable as a defence number. Tracking the fix in `docs/handoffs/`.
+The current aloepri driver doesn't yet reproduce paper's attack faithfully — the trained inverter at paper-default hyperparameters fails the identity-τ plain control across every architecture variant tried, so the obfuscated reading isn't interpretable as a defence number. Tracking the fix in `docs/handoffs/`.
 
 ### Why IMA-L0-transformer is redundant with IMA-EmbedRow-transformer
 
@@ -228,7 +241,7 @@ But sort doesn't defeat:
 
 Mechanism (conjectured): §5.2.2 scrambles W_e per-row; Alg2's matrix-Γ scrambles W_q/W_k per-source. Each alone leaves enough residual structure for VMA's multi-source voting to recover. Stacked, both axes are perturbed independently and the cross-source vote can't reinforce.
 
-**Path-2 attribution (Q3-4B, 3-seed mean).** Total deployment drop: 98.4 % → 9.5 % = −89 pp.
+**AloePri attribution (Q3-4B, 3-seed mean).** Total deployment drop: 98.4 % → 9.5 % = −89 pp.
 
 | Component | Contribution |
 |---|---:|
@@ -383,7 +396,7 @@ Full report: `evals/aloepri-attacks/results/sweep/2B1-attn-output-vs-kq-comparis
 
 Capture sanity (2026-05-26 Step 0, `compare_plain_obf.py` against the 20260526 captures): plain–obf correlation 0.58-0.66 at L=0, 0.89-0.91 at L=17; not byte-identical, not near-identical → captures are genuinely obfuscated, ruling out a capture-path artifact.
 
-The pre-softmax 47 % obf TTRSR is **not bounded** by paper §5.4. It is a real path-2 finding: a ridge attacker who can capture the pre-softmax `Q·K^T` tensor recovers ~half the tokens on a full-Alg2 deployment. The 1.5 pp defense delta says Alg2 doesn't meaningfully obstruct this particular attack on this particular surface.
+The pre-softmax 47 % obf TTRSR is **not bounded** by paper §5.4. It is a real aloepri finding: a ridge attacker who can capture the pre-softmax `Q·K^T` tensor recovers ~half the tokens on a full-Alg2 deployment. The 1.5 pp defense delta says Alg2 doesn't meaningfully obstruct this particular attack on this particular surface.
 
 The attention-output measurement (pending) tests the theorem's prediction. If output-surface Δ is small (single-digit pp), the theorem is empirically validated and the score-surface 47 % stands as a *complementary* finding on an out-of-scope surface. If output-surface Δ is also large, the theorem fails — the Lipschitz framework would need to be re-examined or the §5.4 output bound would need to be empirically violated.
 
@@ -448,13 +461,8 @@ Paper Table 4 (page 15) reports `AttnScore TTRSR = 0.0 %` for Noise+KeyMat+Head&
 
 §5.4's bound is consistent with everything we measure. The tightened theorem holds.
 
-### Implications for path-2
-
-1. **The recommended deployment construction is paper-literal Alg2, not our prior default.** Our deployed cell was understating AloePri's actual defense by 7–40 pp on both surfaces. Migration to `--alg2-paper-literal` is the path-2 recommendation, contingent on accuracy preservation under bf16 (paper-literal Û_vo has 500× higher condition number; bf16 inverse loss is a new precision risk to verify — see next-steps memo).
-2. **AloePri §5.4 protects the attention output surface, more than we previously measured.** Subject to confirming accuracy under paper-literal, the §5.4-bounded surface defense delta at L=0 is **50 pp** under paper-literal (vs 14 pp under our default). At L≥5 the delta is **40 pp** under paper-literal (vs 0.5 pp under default). This is a substantive deployment protection, not the 1.4 pp we previously reported.
-3. **AloePri's score-surface defense, under paper-literal, is also non-trivial at L≥5.** Even outside §5.4's quantitative bound, the paper-literal `kq` defense delta at L=5+ is 16–31 pp, dropping obf to single digits. The L=0 surplus (~5 pp) is still small but no longer "no defense."
-4. **A different threat-model reading.** The path-2 score-surface attack we previously characterised as "AloePri provides ~0 pp defense" was a measurement of the *anti-defense version* of Alg2 we'd deployed. Real AloePri Alg2 (paper-literal) defends meaningfully on this surface too. The remaining 6-7 % obf TTRSR at L≥5 is the operational leak budget, not 47 %.
-5. **TEE-protected attention (path-1) remains the gold standard for adversaries who can capture either surface at L=0** — even paper-literal Alg2 leaks 43 % on `kq` at L=0 and 47 % on `kqv_out` at L=0. The L=0 surplus is α_e=1.0 embedding-noise shadow; only an in-TEE first decoder layer eliminates it.
+> Deployment recommendations that flowed from these measurements live in
+> [`docs/archive/handoffs/2026-05-26-aloepri-recommendations.md`](../archive/handoffs/2026-05-26-aloepri-recommendations.md).
 
 ### Open question — score-surface `e_C^attn` bound
 

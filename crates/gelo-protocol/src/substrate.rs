@@ -6,6 +6,53 @@ use ndarray::{Array2, Array3, ArrayView2, ArrayView3, Axis};
 
 use crate::ple::PleTable;
 
+/// Opaque handle for a matmul issued via [`GpuOffloadEngine::matmul_async`].
+///
+/// Internally holds a `FnOnce` closure that consumes the engine-specific
+/// pending tensor (or a pre-computed `Array2<f32>` for the sync fallback)
+/// and produces the final result on call. [`Self::into_array`] drains the
+/// token and returns the matmul output, blocking on the underlying GPU
+/// work if it hasn't completed yet.
+///
+/// `Send` because the substrate's R4 thread-split design moves tokens
+/// between the main thread (issuing matmuls) and worker threads (shield
+/// generation). Not `Sync` — a token has single-consumer semantics.
+pub struct MatmulToken {
+    inner: Box<dyn FnOnce() -> Result<Array2<f32>> + Send>,
+}
+
+impl MatmulToken {
+    /// Build a token that immediately yields a pre-computed array.
+    /// Used by the trait's default sync-fallback `matmul_async`.
+    pub fn ready(out: Array2<f32>) -> Self {
+        Self {
+            inner: Box::new(move || Ok(out)),
+        }
+    }
+
+    /// Build a token from a closure. Engines with deferred dispatch
+    /// (wgpu/cubecl via `burn_tensor::Tensor::into_data`) capture the
+    /// pending tensor and drain it on call.
+    pub fn from_fn<F>(f: F) -> Self
+    where
+        F: FnOnce() -> Result<Array2<f32>> + Send + 'static,
+    {
+        Self { inner: Box::new(f) }
+    }
+
+    /// Drain the token and produce the final array. Blocks if the
+    /// underlying engine work hasn't completed yet.
+    pub fn into_array(self) -> Result<Array2<f32>> {
+        (self.inner)()
+    }
+}
+
+impl std::fmt::Debug for MatmulToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MatmulToken(<pending>)")
+    }
+}
+
 /// Identifies a specific projection weight inside a transformer encoder.
 /// The trusted side uses this both to address weights on the GPU and to
 /// decide whether a given matmul should be offloaded or run locally.
@@ -180,6 +227,57 @@ pub trait GpuOffloadEngine: Send {
     ) -> Result<Vec<Array2<f32>>> {
         let f32_owned: Array2<f32> = input.mapv(|v| v.to_f32());
         self.matmul_many(handles, f32_owned.view())
+    }
+
+    /// **R4 async** sibling of [`Self::matmul`]. Issues the GPU work
+    /// and returns a [`MatmulToken`] that the caller drains via
+    /// [`Self::read_result`] (or [`MatmulToken::into_array`] directly).
+    ///
+    /// On engines with deferred dispatch (wgpu/cubecl), this returns
+    /// as soon as the kernel is *submitted* — the GPU runs concurrent
+    /// with whatever the caller does next. The substrate's R4 design
+    /// uses this window to run shield-row sampling for site N+1 on a
+    /// worker thread while site N's matmul executes.
+    ///
+    /// Default impl runs sync and stashes the result behind a no-op
+    /// token. Correct, just no overlap.
+    ///
+    /// Plan: `docs/plans/m1-12-r4-async-overlap.md` §B.
+    fn matmul_async(
+        &self,
+        handle: WeightHandle,
+        input: ArrayView2<f32>,
+    ) -> Result<MatmulToken> {
+        let out = self.matmul(handle, input)?;
+        Ok(MatmulToken::ready(out))
+    }
+
+    /// Drain a [`MatmulToken`] produced by [`Self::matmul_async`].
+    /// Blocks until the GPU work completes (or returns immediately on
+    /// the sync-fallback path).
+    ///
+    /// Default impl forwards to [`MatmulToken::into_array`]; engines
+    /// don't typically need to override. The substrate wraps this
+    /// call site with `profile::time("engine:matmul_wait", ...)`.
+    fn read_result(&self, token: MatmulToken) -> Result<Array2<f32>> {
+        token.into_array()
+    }
+
+    /// Async sibling of [`Self::matmul_many`]. One [`MatmulToken`] per
+    /// handle, in handle order.
+    ///
+    /// Default impl loops over [`Self::matmul_async`], so engines
+    /// without a batched async path produce correct output. The wgpu
+    /// engine overrides to share a single upload + lazy dispatch.
+    fn matmul_many_async(
+        &self,
+        handles: &[WeightHandle],
+        input: ArrayView2<f32>,
+    ) -> Result<Vec<MatmulToken>> {
+        handles
+            .iter()
+            .map(|h| self.matmul_async(*h, input))
+            .collect()
     }
 
     /// Two-operand dynamic matmul where neither operand is a pre-registered

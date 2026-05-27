@@ -1,3 +1,11 @@
+---
+type: handoff
+status: current
+created: 2026-05-26
+updated: 2026-05-26
+tags: [mask, perf]
+---
+
 # Handoff — 2026-05-26 — Mask instrumentation + Auto threshold tune
 
 Five patches landed in this round, all in

@@ -1,3 +1,11 @@
+---
+type: plan
+status: current
+created: 2026-05-22
+updated: 2026-05-22
+tags: [m1.12, blis, perf]
+---
+
 # M1.12 — Per-shape BLIS thread dispatch (3a follow-up)
 
 > **Parent context:**

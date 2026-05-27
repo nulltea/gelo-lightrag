@@ -1,3 +1,11 @@
+---
+type: plan
+status: current
+created: 2026-05-26
+updated: 2026-05-26
+tags: [gelo, perf]
+---
+
 # GELO-LLM performance roadmap
 
 > **Workload anchor.** Qwen3-4B GELO inference on Strix Halo iGPU

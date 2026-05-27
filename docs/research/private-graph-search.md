@@ -1,6 +1,22 @@
+---
+type: research
+status: current
+created: 2026-05-11
+updated: 2026-05-11
+tags: [graph-rag, lightrag]
+---
+
 # Private Graph Search (GraphRAG / LightRAG)
 
 > Research date: 2026-04-23. Sources: Edgequake (existing corpus), OpenAlex, SearxNcrawl, arXiv/ePrint/ACL/USENIX full-PDF fetches. Self-contained step.
+>
+> **Scope boundary:** this doc covers *graph-structure* privacy and
+> GraphRAG-class threats (KG extraction, reconstruction, poisoning,
+> logic-rewiring). For vector-RAG retrieval primitives (Tiptoe, Panther,
+> PrivANN) see [`private-information-retrieval.md`](private-information-retrieval.md)
+> and [`fhe-encrypted-vector-db.md`](fhe-encrypted-vector-db.md). Our own
+> LightRAG integration design lives in
+> [`../dev/prototype/private-graph-rag-design.md`](../dev/prototype/private-graph-rag-design.md).
 
 ## Overview
 

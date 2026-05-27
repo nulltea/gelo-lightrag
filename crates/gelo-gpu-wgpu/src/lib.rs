@@ -39,7 +39,7 @@ use cubecl_wgpu::{AutoGraphicsApi, RuntimeOptions, WgpuDevice, WgpuRuntime, init
 use half::{bf16, f16};
 use ndarray::{Array2, Array3, ArrayView2, ArrayView3};
 
-use gelo_protocol::{GpuOffloadEngine, WeightHandle};
+use gelo_protocol::{GpuOffloadEngine, MatmulToken, WeightHandle};
 
 /// burn-cubecl backend specialised to f32 floats. The default engine
 /// precision.
@@ -466,6 +466,137 @@ impl GpuOffloadEngine for WgpuVulkanEngine {
                             .map_err(|e| anyhow!("Array2 from tensor data: {e}"))
                     })
                     .collect()
+            }
+        }
+    }
+
+    /// **R4 async** override. Splits the existing sync `matmul` into
+    /// (upload + kernel issue) and (download), returning a
+    /// [`MatmulToken`] whose closure captures the pending burn-tensor.
+    ///
+    /// The kernel issue (`lhs.matmul(weight)`) is non-blocking on
+    /// burn-cubecl — the actual GPU sync happens inside the closure
+    /// when the substrate drains the token via `into_array`. This
+    /// frees the substrate's calling thread to run shield/cascade
+    /// work for the next offload site while the GPU is busy.
+    ///
+    /// Plan: `docs/plans/m1-12-r4-async-overlap.md` §B.
+    fn matmul_async(
+        &self,
+        handle: WeightHandle,
+        input: ArrayView2<'_, f32>,
+    ) -> Result<MatmulToken> {
+        let k = input.ncols();
+        let guard = self.weights.lock().unwrap();
+        match &*guard {
+            WeightStore::F32(map) => {
+                let weight = map
+                    .get(&handle)
+                    .ok_or_else(|| anyhow!("weight {handle:?} not registered"))?
+                    .clone();
+                if k != weight.dims()[0] {
+                    return Err(anyhow!(
+                        "matmul_async shape mismatch: input cols {k} != weight rows {}",
+                        weight.dims()[0]
+                    ));
+                }
+                drop(guard);
+                let lhs = array2_to_tensor_f32(input, &self.device);
+                let pending = lhs.matmul(weight);
+                Ok(MatmulToken::from_fn(move || tensor2_to_array_f32(pending)))
+            }
+            WeightStore::F16(map) => {
+                let weight = map
+                    .get(&handle)
+                    .ok_or_else(|| anyhow!("weight {handle:?} not registered"))?
+                    .clone();
+                if k != weight.dims()[0] {
+                    return Err(anyhow!(
+                        "matmul_async shape mismatch: input cols {k} != weight rows {}",
+                        weight.dims()[0]
+                    ));
+                }
+                drop(guard);
+                let lhs = array2_to_tensor_f16(input, &self.device);
+                let pending = lhs.matmul(weight);
+                Ok(MatmulToken::from_fn(move || tensor2_to_array_f16(pending)))
+            }
+        }
+    }
+
+    /// **R4 async** override for `matmul_many`. Shares one upload of
+    /// `input` across all N kernel launches (same algebra as the sync
+    /// `matmul_many` but each output is captured into its own token
+    /// rather than batched via [`Transaction`]). The first token
+    /// drained triggers a device sync that completes *all* N kernels;
+    /// subsequent token drains just read pre-completed buffers, so
+    /// the bus savings of the sync path are preserved.
+    fn matmul_many_async(
+        &self,
+        handles: &[WeightHandle],
+        input: ArrayView2<'_, f32>,
+    ) -> Result<Vec<MatmulToken>> {
+        if handles.is_empty() {
+            return Ok(Vec::new());
+        }
+        let k = input.ncols();
+        let guard = self.weights.lock().unwrap();
+        match &*guard {
+            WeightStore::F32(map) => {
+                let weights: Vec<Tensor<CubeWgpu32, 2>> = handles
+                    .iter()
+                    .map(|h| {
+                        let w = map
+                            .get(h)
+                            .ok_or_else(|| anyhow!("weight {h:?} not registered"))?
+                            .clone();
+                        if w.dims()[0] != k {
+                            return Err(anyhow!(
+                                "matmul_many_async shape mismatch on {h:?}: input cols {k} != weight rows {}",
+                                w.dims()[0]
+                            ));
+                        }
+                        Ok(w)
+                    })
+                    .collect::<Result<_>>()?;
+                drop(guard);
+                let lhs = array2_to_tensor_f32(input, &self.device);
+                let tokens = weights
+                    .into_iter()
+                    .map(|w| {
+                        let pending = lhs.clone().matmul(w);
+                        MatmulToken::from_fn(move || tensor2_to_array_f32(pending))
+                    })
+                    .collect();
+                Ok(tokens)
+            }
+            WeightStore::F16(map) => {
+                let weights: Vec<Tensor<CubeWgpu16, 2>> = handles
+                    .iter()
+                    .map(|h| {
+                        let w = map
+                            .get(h)
+                            .ok_or_else(|| anyhow!("weight {h:?} not registered"))?
+                            .clone();
+                        if w.dims()[0] != k {
+                            return Err(anyhow!(
+                                "matmul_many_async shape mismatch on {h:?}: input cols {k} != weight rows {}",
+                                w.dims()[0]
+                            ));
+                        }
+                        Ok(w)
+                    })
+                    .collect::<Result<_>>()?;
+                drop(guard);
+                let lhs = array2_to_tensor_f16(input, &self.device);
+                let tokens = weights
+                    .into_iter()
+                    .map(|w| {
+                        let pending = lhs.clone().matmul(w);
+                        MatmulToken::from_fn(move || tensor2_to_array_f16(pending))
+                    })
+                    .collect();
+                Ok(tokens)
             }
         }
     }

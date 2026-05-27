@@ -53,3 +53,45 @@ When in doubt: would this paragraph make sense to a reader who has
 never seen the source tree? If it depends on knowing the crate
 layout or having `cargo doc` open, it belongs in code/rustdoc, not
 the HTML.
+
+## Markdown docs (`docs/**/*.md`)
+
+All markdown docs under `docs/` carry YAML frontmatter:
+
+```yaml
+---
+type: <handoff|plan|prototype-note|research|theory|dev-log|reference>
+status: <current|partial|stale>
+created: YYYY-MM-DD
+updated: YYYY-MM-DD
+tags: []
+# Optional: superseded_by, supersedes, companion, archive_reason
+---
+```
+
+Folder mapping (by `type`):
+
+- `handoff`        → `docs/handoffs/YYYY-MM-DD-<slug>.md` (filename date = last update)
+- `plan`           → `docs/plans/`
+- `prototype-note` → `docs/dev/prototype/`
+- `research`       → `docs/research/`
+- `theory`         → `docs/research/`
+- `dev-log`        → `docs/dev/logs/`
+- `reference`      → `docs/plans/` (no dedicated folder until critical mass)
+
+When a handoff is no longer in active reference (typically more than a
+few days old and not driving current work), move it to
+`docs/archive/handoffs/`. The filename stays the same. The active
+`docs/handoffs/` directory should hold only handoffs that the current
+or next session is likely to read. Plans and other docs that go stale
+(superseded, aborted, paused indefinitely) stay in place with
+`status: stale` and `archive_reason` set — only handoffs are archived
+to a separate directory.
+
+When one doc supersedes another, set `superseded_by: <slug>` on the
+older doc and `supersedes: [<slug>, …]` on the newer. For partial
+supersession, use `companion: [<slug>, …]` and explain the
+relationship in `archive_reason`.
+
+The HTML pages under `docs/prototype/*.html` are unaffected by this
+convention and follow the separate rules above.
