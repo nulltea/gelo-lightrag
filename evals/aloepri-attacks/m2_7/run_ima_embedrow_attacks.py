@@ -1,20 +1,16 @@
-"""Run the IMA-EmbedRow prompt-inversion attacks against the §05 obfuscated GGUF.
+"""Run the IMA-EmbedRow prompt-inversion attack against the §05 obfuscated GGUF.
 
-These are the two **prompt-inversion via static-weight** flavours of
-the Inversion Model Attack described in paper §F.1, ported as path-2
-attack drivers with self-descriptive names parallel to the existing
+The **prompt-inversion via static-weight** flavour of the Inversion
+Model Attack described in paper §F.1, ported as a path-2 attack
+driver with a self-descriptive name parallel to the existing
 `IMA-L0-activation` / `IMA-L0-transformer` surface attacks in §08:
 
-* **IMA-EmbedRow-ridge** — ridge regression on `(W̃_embed[τ[i]], W_embed[i])`
-  pairs. Port of `vendor/aloepri-py/src/security_qwen/ima.py::run_ima_baseline`.
-  Surface = static rows of the obfuscated embedding table. Inverter =
-  multi-α ridge with val selection.
-* **IMA-EmbedRow-transformer** — trained 2-layer transformer inverter on
-  the same pairs. Port of `run_ima_paper_like`. The paper trains a
-  Qwen2 backbone with 2 decoder layers + 8 heads; we use the same
-  pre-LN block as `attack_drivers/run_ima_paper_like.py` (vanilla MHA,
-  GELU FFN) — the privacy claim is that *no* learnable inverter can
-  recover τ from masked observations.
+* **IMA-EmbedRow-transformer** — trained 2-layer transformer inverter
+  on `(W̃_embed[τ[i]], W_embed[i])` pairs. Port of `run_ima_paper_like`.
+  The paper trains a Qwen2 backbone with 2 decoder layers + 8 heads;
+  we use the same pre-LN block as `attack_drivers/run_ima_paper_like.py`
+  (vanilla MHA, GELU FFN) — the privacy claim is that *no* learnable
+  inverter can recover τ from masked observations.
 
 Threat model (paper §F.1 / Table 1 caption): adversary has both the
 plaintext weights θ and the obfuscated weights θ̃. They also have
@@ -36,7 +32,13 @@ thread 1.
 Naming note: parallel to `IMA-L0-{activation,transformer}` which name
 the *surface* (layer-0 hidden state) and *inverter type*. Here the
 surface is `EmbedRow` (a row of the obfuscated embedding table) and
-the inverter type is explicit (`ridge` or `transformer`).
+the inverter is the trained transformer.
+
+(The IMA-EmbedRow-ridge variant was deleted 2026-05-27 because it
+over-triggered on the ~293 identity-fixed special-token pairs and
+was not the paper's actual IMA attack surface; the deprecated-ridge
+disparity is documented in the
+`aloepri_attack_harness_disparities.md` memory note.)
 
 Output JSON schema matches `run_static_attacks.py` so the §08 doc
 ingestion treats both static-weight families uniformly.
@@ -69,9 +71,6 @@ from attack_drivers.common import (  # type: ignore  # noqa: E402
 )
 
 _ima = load_aloepri_module("src/security_qwen/ima.py")
-_fit_ridge_regressor = _ima._fit_ridge_regressor
-_predict_ridge = _ima._predict_ridge
-_evaluate_inversion_predictions = _ima._evaluate_inversion_predictions
 
 # Paper-faithful trained-inverter primitives (paper §F.1, reference
 # impl run_ima_paper_like). The reference's Qwen2-backbone inverter +
@@ -94,277 +93,6 @@ def load_tau(key_path: Path) -> tuple[np.ndarray, int]:
     tau = z["tau"].astype(np.int64)
     active_size = int(z["active_size"])
     return tau, active_size
-
-
-# ───── Splits ──────────────────────────────────────────────────────
-
-
-def _sample_splits(
-    *,
-    active_size: int,
-    train_size: int,
-    val_size: int,
-    test_size: int,
-    candidate_pool_size: int,
-    seed: int,
-) -> dict[str, np.ndarray]:
-    """Vocab-disjoint splits over `[0, active_size)`. Mirrors the
-    AloePri reference but without tokenizer-driven 'sensitive token'
-    weighting — path-2 doesn't carry the same DEFAULT_PROMPTS list.
-    """
-    rng = np.random.default_rng(seed)
-    perm = rng.permutation(active_size)
-    required = train_size + val_size + test_size
-    if required > active_size:
-        raise ValueError(
-            f"requested splits {required} > active_size {active_size}"
-        )
-    test_ids = perm[:test_size]
-    val_ids = perm[test_size : test_size + val_size]
-    train_ids = perm[test_size + val_size : test_size + val_size + train_size]
-    candidate = perm[: min(candidate_pool_size, active_size)]
-    # Ensure test ⊂ candidate.
-    candidate = np.unique(np.concatenate([candidate, test_ids]))
-    return {
-        "train_plain_ids": train_ids.astype(np.int64),
-        "val_plain_ids": val_ids.astype(np.int64),
-        "test_plain_ids": test_ids.astype(np.int64),
-        "candidate_plain_ids": candidate.astype(np.int64),
-    }
-
-
-def _tfma_seeded_splits(
-    *,
-    active_size: int,
-    train_size: int,
-    val_size: int,
-    test_size: int,
-    candidate_pool_size: int,
-    seed: int,
-    corpus_token_ids: np.ndarray,
-) -> dict[str, np.ndarray]:
-    """TFMA-seeded splits (C1, 2026-05-26).
-
-    Realistic deployment-day attacker harvest: top-frequency tokens
-    leak their τ-mapping via TFMA (paper §7.6) — count obfuscated id
-    frequencies on the wire, match to plain id frequency rank, and
-    you have known `(plain_id, obf_id)` pairs at zero cryptographic
-    cost. Memory note `aloepri-attacks.md` §"Why AloePri is safe from
-    ridge in practice" claims that ≤ 20 such pairs is far below the
-    threshold where ridge inverts. THIS function implements the test:
-    use the top-K most-frequent tokens in `corpus_token_ids` as the
-    ridge training set, with val/test/candidate sampled from the
-    REMAINING tokens — to measure how well ridge generalises beyond
-    what TFMA can directly leak.
-
-    Args:
-        corpus_token_ids: flat array of all token IDs that appear in
-            a public corpus. Repeats matter — they encode the empirical
-            frequency. The simplest source is concatenating the
-            `prompt_token_ids` from existing capture meta.json files.
-            Active-vocab-bound: any token id ≥ active_size is ignored.
-
-    Returns:
-        Same keys as `_sample_splits`. `train_plain_ids` is the
-        top-`train_size` most-frequent token IDs (rank-ordered);
-        `val_plain_ids`, `test_plain_ids`, `candidate_plain_ids` are
-        sampled from the remaining vocab via the supplied seed.
-
-    Important: this is a stronger-than-realistic seed condition —
-    we give the attacker EXACT τ on the top-K. The realistic TFMA
-    error rate is ~20 % per paper §7.6 distribution-aware row; this
-    function does not model that noise. Use it as a worst-case bound.
-    """
-    rng = np.random.default_rng(seed)
-    ids = np.asarray(corpus_token_ids, dtype=np.int64)
-    ids = ids[(ids >= 0) & (ids < active_size)]
-    if ids.size == 0:
-        raise ValueError("corpus_token_ids is empty after active-vocab clipping")
-    counts = np.bincount(ids, minlength=active_size)[:active_size]
-    # Stable sort by descending count, tiebreak by token id ascending.
-    # Negate counts for descending; argsort is stable.
-    order = np.argsort(-counts, kind="stable")
-    train_ids = order[:train_size]
-    # Vocab-disjoint val/test/candidate sampled from the rest.
-    train_set = set(int(x) for x in train_ids.tolist())
-    remaining = np.array([i for i in range(active_size) if i not in train_set], dtype=np.int64)
-    if remaining.size < val_size + test_size:
-        raise ValueError(
-            f"insufficient remaining vocab ({remaining.size}) for val+test "
-            f"({val_size + test_size}); reduce --ridge-train-size or sizes"
-        )
-    perm = rng.permutation(remaining)
-    test_ids = perm[:test_size]
-    val_ids = perm[test_size : test_size + val_size]
-    candidate = perm[: min(candidate_pool_size, remaining.size)]
-    # Test ⊂ candidate (matches _sample_splits convention).
-    candidate = np.unique(np.concatenate([candidate, test_ids]))
-    # Diagnostic: how many unique tokens contributed (i.e., min meaningful
-    # train_size before zero-frequency tokens enter)?
-    nonzero_train = int((counts[train_ids] > 0).sum())
-    print(
-        f"[tfma-seeded] train_size={train_size} "
-        f"(of which {nonzero_train} have non-zero corpus frequency); "
-        f"corpus_unique_tokens={int((counts > 0).sum())} / active_size={active_size}",
-        file=sys.stderr,
-    )
-    return {
-        "train_plain_ids": train_ids.astype(np.int64),
-        "val_plain_ids": val_ids.astype(np.int64),
-        "test_plain_ids": test_ids.astype(np.int64),
-        "candidate_plain_ids": candidate.astype(np.int64),
-    }
-
-
-def _load_corpus_token_ids_from_captures(meta_paths: list[Path]) -> np.ndarray:
-    """Load `prompt_token_ids` from one or more capture meta.json files
-    and flatten into a 1-D array. Used as the empirical frequency
-    source for TFMA-seeded splits.
-    """
-    all_ids: list[int] = []
-    for p in meta_paths:
-        meta = json.loads(p.read_text())
-        for prompt in meta.get("config", {}).get("prompt_token_ids", []):
-            all_ids.extend(int(x) for x in prompt)
-    if not all_ids:
-        raise ValueError(f"no prompt_token_ids found in {meta_paths}")
-    return np.asarray(all_ids, dtype=np.int64)
-
-
-def _load_corpus_token_ids_from_text(corpus_path: Path, tokenizer_model_id: str) -> np.ndarray:
-    """Tokenise a public text corpus via the HF tokenizer for
-    `tokenizer_model_id` and return a flat 1-D array of token IDs.
-    """
-    from transformers import AutoTokenizer  # type: ignore
-    tok = AutoTokenizer.from_pretrained(tokenizer_model_id)
-    text = corpus_path.read_text(encoding="utf-8")
-    # Tokenise without special tokens — matches what the attacker would
-    # see if harvesting frequencies from raw text.
-    encoded = tok(text, add_special_tokens=False, return_tensors=None)
-    return np.asarray(encoded["input_ids"], dtype=np.int64)
-
-
-# ───── IMA-EmbedRow-ridge ──────────────────────────────────────────
-
-
-def run_ima_embedrow_ridge(
-    plain: ModelWeights,
-    obfuscated: ModelWeights,
-    tau: np.ndarray,
-    *,
-    active_size: int,
-    train_size: int = 1024,
-    val_size: int = 128,
-    test_size: int = 128,
-    candidate_pool_size: int = 2048,
-    topk: int = 10,
-    ridge_alphas: tuple[float, ...] = (1e-4, 1e-2, 1.0),
-    seed: int = 20260518,
-    tfma_seeded_corpus_token_ids: np.ndarray | None = None,
-) -> AttackResult:
-    """Ridge inverter on `(W̃_embed[τ[i]], W_embed[i])` pairs.
-
-    Returns TTRSR top-1/top-10 plus full diagnostic block (alpha scan,
-    cosine, runtime).
-
-    When `tfma_seeded_corpus_token_ids` is provided, the training pairs
-    are the top-`train_size` most-frequent tokens in that corpus
-    (simulating a TFMA-seeded deployment-day attacker — C1, 2026-05-26).
-    Otherwise training pairs are uniformly random from the active vocab.
-    """
-    t0 = time.perf_counter()
-
-    if tfma_seeded_corpus_token_ids is not None:
-        splits = _tfma_seeded_splits(
-            active_size=active_size,
-            train_size=train_size,
-            val_size=val_size,
-            test_size=test_size,
-            candidate_pool_size=candidate_pool_size,
-            seed=seed,
-            corpus_token_ids=tfma_seeded_corpus_token_ids,
-        )
-    else:
-        splits = _sample_splits(
-            active_size=active_size,
-            train_size=train_size,
-            val_size=val_size,
-            test_size=test_size,
-            candidate_pool_size=candidate_pool_size,
-            seed=seed,
-        )
-
-    plain_W_e = torch.from_numpy(plain.token_embd.astype(np.float32))
-    obs_W_e = torch.from_numpy(obfuscated.token_embd.astype(np.float32))
-    tau_t = torch.from_numpy(tau)
-
-    train_ids = torch.from_numpy(splits["train_plain_ids"])
-    val_ids = torch.from_numpy(splits["val_plain_ids"])
-    test_ids = torch.from_numpy(splits["test_plain_ids"])
-    candidate_ids = torch.from_numpy(splits["candidate_plain_ids"])
-
-    x_train = obs_W_e[tau_t[train_ids]]
-    y_train = plain_W_e[train_ids]
-    x_val = obs_W_e[tau_t[val_ids]]
-    x_test = obs_W_e[tau_t[test_ids]]
-
-    val_candidate_ids = torch.unique(torch.cat([val_ids, candidate_ids]))
-
-    best_alpha: float | None = None
-    best_val_top1 = -1.0
-    best_model: dict[str, torch.Tensor] | None = None
-    alpha_scores: list[dict[str, Any]] = []
-
-    for alpha in ridge_alphas:
-        model = _fit_ridge_regressor(x_train, y_train, ridge_alpha=float(alpha))
-        val_pred = _predict_ridge(model, x_val)
-        val_metrics = _evaluate_inversion_predictions(
-            predicted_embeddings=val_pred,
-            true_plain_ids=val_ids,
-            candidate_plain_ids=val_candidate_ids,
-            baseline_embed=plain_W_e,
-            topk=topk,
-        )
-        alpha_scores.append(
-            {"ridge_alpha": float(alpha), "val_top1": val_metrics["token_top1_recovery_rate"]}
-        )
-        if val_metrics["token_top1_recovery_rate"] > best_val_top1:
-            best_val_top1 = val_metrics["token_top1_recovery_rate"]
-            best_alpha = float(alpha)
-            best_model = model
-
-    assert best_model is not None
-
-    test_pred = _predict_ridge(best_model, x_test)
-    metrics = _evaluate_inversion_predictions(
-        predicted_embeddings=test_pred,
-        true_plain_ids=test_ids,
-        candidate_plain_ids=candidate_ids,
-        baseline_embed=plain_W_e,
-        topk=topk,
-    )
-
-    top1 = float(metrics["token_top1_recovery_rate"])
-    top10 = float(metrics["token_top10_recovery_rate"])
-
-    return AttackResult(
-        attack="ima_embedrow_ridge",
-        condition="obfuscated",
-        model_id=str(obfuscated.path.name),
-        n_prompts=0,
-        n_train=int(train_ids.shape[0]),
-        n_test=int(test_ids.shape[0]),
-        ttrsr_top1=top1,
-        ttrsr_top10=top10,
-        risk_level=classify_risk_level(top1),
-        extra={
-            "best_ridge_alpha": best_alpha,
-            "alpha_scan": alpha_scores,
-            "embedding_cosine_similarity": float(metrics["embedding_cosine_similarity"]),
-            "candidate_pool_size": int(candidate_ids.shape[0]),
-            "runtime_seconds": round(time.perf_counter() - t0, 2),
-        },
-    )
 
 
 # ───── IMA-EmbedRow-transformer (paper §F.1, trained 2-layer inverter) ───────
@@ -991,40 +719,6 @@ def main() -> int:
              "trivial). Verifies the attack itself works.",
     )
     p.add_argument("--output", type=Path, required=True)
-    p.add_argument("--ridge-train-size", type=int, default=1024)
-    p.add_argument("--ridge-val-size", type=int, default=128)
-    p.add_argument("--ridge-test-size", type=int, default=128)
-    p.add_argument("--ridge-candidate-pool-size", type=int, default=2048)
-    # C1 TFMA-seeded ridge (2026-05-26). When --ridge-tfma-seeded is on,
-    # ridge train pairs are the top-N most-frequent tokens in
-    # --ridge-tfma-corpus (or --ridge-tfma-from-captures) instead of
-    # a uniform-random sample from the active vocab. Models the realistic
-    # deployment-day attacker whose τ-mapping leaks via TFMA on the
-    # high-frequency tail. See run_ima_embedrow_ridge docstring.
-    p.add_argument(
-        "--ridge-tfma-seeded",
-        action="store_true",
-        help="Use top-frequency tokens as ridge training pairs (C1). "
-             "Requires --ridge-tfma-corpus or --ridge-tfma-from-captures.",
-    )
-    p.add_argument(
-        "--ridge-tfma-corpus", type=Path,
-        help="Public text corpus to tokenise + count for frequency ranking. "
-             "Tokeniser comes from --baseline-model-dir.",
-    )
-    p.add_argument(
-        "--ridge-tfma-from-captures", type=Path, action="append", default=None,
-        help="Capture meta.json file(s) to read prompt_token_ids from for "
-             "frequency ranking. Repeatable. Cheaper than retokenising — "
-             "the prompt_token_ids are already the result of running the "
-             "harness corpus through Qwen3's tokeniser.",
-    )
-    p.add_argument(
-        "--ridge-train-size-sweep", type=int, nargs="+", default=None,
-        help="If provided, run ridge attack at each train_size in this "
-             "list and emit a multi-row result (sweep over n_train). "
-             "Overrides --ridge-train-size. Use with --skip-transformer.",
-    )
     # Paper-faithful transformer-inverter parameters (paper §F.1 / §F.2,
     # reference impl `run_ima_paper_like`).
     p.add_argument(
@@ -1075,11 +769,6 @@ def main() -> int:
              "content-addressed on all hyperparameters except --paper-epochs, "
              "so a 1000-epoch run will resume from a prior 100-epoch run at "
              "the same config. Set to empty string to disable checkpointing.",
-    )
-    p.add_argument(
-        "--skip-transformer",
-        action="store_true",
-        help="Skip the slow trained-inverter attack (ridge only).",
     )
     # Attacker-side Algorithm 1 parameters. Under Kerckhoffs the
     # attacker knows these (algorithm public, keys secret). Default to
@@ -1166,115 +855,51 @@ def main() -> int:
 
     results: dict[str, dict[str, Any]] = {}
 
-    # C1 corpus loading: needed if --ridge-tfma-seeded.
-    tfma_corpus_ids: np.ndarray | None = None
-    if args.ridge_tfma_seeded:
-        if args.ridge_tfma_from_captures:
-            print(f"[IMA-EmbedRow] loading TFMA corpus from "
-                  f"{len(args.ridge_tfma_from_captures)} capture meta.json file(s)")
-            tfma_corpus_ids = _load_corpus_token_ids_from_captures(
-                args.ridge_tfma_from_captures
-            )
-        elif args.ridge_tfma_corpus is not None:
-            print(f"[IMA-EmbedRow] tokenising TFMA corpus {args.ridge_tfma_corpus} "
-                  f"with {args.baseline_model_dir} tokeniser")
-            tfma_corpus_ids = _load_corpus_token_ids_from_text(
-                args.ridge_tfma_corpus, args.baseline_model_dir
-            )
-        else:
-            raise SystemExit(
-                "--ridge-tfma-seeded requires --ridge-tfma-corpus or "
-                "--ridge-tfma-from-captures"
-            )
-        print(f"  loaded {tfma_corpus_ids.size} tokens "
-              f"({len(set(tfma_corpus_ids.tolist()))} unique) for frequency ranking")
-
-    train_sizes = args.ridge_train_size_sweep or [args.ridge_train_size]
-    sweep_mode = args.ridge_train_size_sweep is not None
-    if sweep_mode:
-        print(f"[IMA-EmbedRow] ridge sweep over train_sizes={train_sizes}")
-        results["ima_embedrow_ridge_sweep"] = []
-
-    for n_train in train_sizes:
-        seed_tag = "tfma" if args.ridge_tfma_seeded else "rand"
-        print(f"[IMA-EmbedRow] running IMA-EmbedRow-ridge "
-              f"(train={n_train} mode={seed_tag})…")
-        ridge = run_ima_embedrow_ridge(
-            plain,
-            obfuscated,
-            tau,
-            active_size=active_size,
-            train_size=n_train,
-            val_size=args.ridge_val_size,
-            test_size=args.ridge_test_size,
-            candidate_pool_size=args.ridge_candidate_pool_size,
-            tfma_seeded_corpus_token_ids=tfma_corpus_ids,
-        )
-        print(
-            f"  n_train={n_train} top1={ridge.ttrsr_top1:.4f} top10={ridge.ttrsr_top10:.4f} "
-            f"risk={ridge.risk_level} α*={ridge.extra['best_ridge_alpha']}"
-        )
-        if sweep_mode:
-            row = ridge.to_dict()
-            row["n_train_requested"] = n_train
-            row["mode"] = seed_tag
-            results["ima_embedrow_ridge_sweep"].append(row)
-        else:
-            results["ima_embedrow_ridge"] = ridge.to_dict()
-            results["ima_embedrow_ridge"]["mode"] = seed_tag
-
-    if not args.skip_transformer:
-        print("[IMA-EmbedRow] running IMA-EmbedRow-transformer "
-              "(paper §F.1 trained Qwen-backbone inverter, public-corpus pipeline)…")
-        corpus_paths = (
-            tuple(str(p) for p in args.public_corpus_path)
-            if args.public_corpus_path
-            else DEFAULT_PUBLIC_CORPUS_PATHS
-        )
-        xformer = run_ima_embedrow_transformer(
-            plain,
-            obfuscated,
-            tau,
-            baseline_model_dir=args.baseline_model_dir,
-            public_corpus_paths=corpus_paths,
-            sequence_length=args.paper_sequence_length,
-            train_sequence_count=args.paper_train_sequence_count,
-            val_sequence_count=args.paper_val_sequence_count,
-            test_sequence_count=args.paper_test_sequence_count,
-            batch_size=args.paper_batch_size,
-            epochs=args.paper_epochs,
-            learning_rate=args.paper_lr,
-            weight_decay=args.paper_weight_decay,
-            candidate_pool_size=(
-                args.paper_candidate_pool_size if args.paper_candidate_pool_size > 0 else None
-            ),
-            # Map our friendlier 'gpu' alias to PyTorch's 'cuda' device
-            # string (used for both NVIDIA CUDA and AMD ROCm/HIP).
-            device=("cuda" if args.paper_device == "gpu" else args.paper_device),
-            checkpoint_dir=(
-                args.paper_checkpoint_dir
-                if args.paper_checkpoint_dir and str(args.paper_checkpoint_dir)
-                else None
-            ),
-            identity_tau=args.identity_tau,
-            attacker_expansion=args.attacker_expansion,
-            attacker_lam=args.attacker_lambda,
-            attacker_alpha_e=args.attacker_alpha_e,
-            attacker_seed=args.attacker_seed,
-            use_bf16=not args.no_bf16,
-        )
-        print(
-            f"  ima_embedrow_transformer top1={xformer.ttrsr_top1:.4f} "
-            f"top10={xformer.ttrsr_top10:.4f} risk={xformer.risk_level} "
-            f"best_epoch={xformer.extra['best_epoch']}"
-        )
-        results["ima_embedrow_transformer"] = xformer.to_dict()
-    else:
-        results["ima_embedrow_transformer"] = {
-            "attack": "ima_embedrow_transformer",
-            "risk_level": "skipped",
-            "extra": {"note": "--skip-transformer was set"},
-        }
+    print("[IMA-EmbedRow] running IMA-EmbedRow-transformer "
+          "(paper §F.1 trained Qwen-backbone inverter, public-corpus pipeline)…")
+    corpus_paths = (
+        tuple(str(p) for p in args.public_corpus_path)
+        if args.public_corpus_path
+        else DEFAULT_PUBLIC_CORPUS_PATHS
+    )
+    xformer = run_ima_embedrow_transformer(
+        plain,
+        obfuscated,
+        tau,
+        baseline_model_dir=args.baseline_model_dir,
+        public_corpus_paths=corpus_paths,
+        sequence_length=args.paper_sequence_length,
+        train_sequence_count=args.paper_train_sequence_count,
+        val_sequence_count=args.paper_val_sequence_count,
+        test_sequence_count=args.paper_test_sequence_count,
+        batch_size=args.paper_batch_size,
+        epochs=args.paper_epochs,
+        learning_rate=args.paper_lr,
+        weight_decay=args.paper_weight_decay,
+        candidate_pool_size=(
+            args.paper_candidate_pool_size if args.paper_candidate_pool_size > 0 else None
+        ),
+        # Map our friendlier 'gpu' alias to PyTorch's 'cuda' device
+        # string (used for both NVIDIA CUDA and AMD ROCm/HIP).
+        device=("cuda" if args.paper_device == "gpu" else args.paper_device),
+        checkpoint_dir=(
+            args.paper_checkpoint_dir
+            if args.paper_checkpoint_dir and str(args.paper_checkpoint_dir)
+            else None
+        ),
+        identity_tau=args.identity_tau,
+        attacker_expansion=args.attacker_expansion,
+        attacker_lam=args.attacker_lambda,
+        attacker_alpha_e=args.attacker_alpha_e,
+        attacker_seed=args.attacker_seed,
+        use_bf16=not args.no_bf16,
+    )
+    print(
+        f"  ima_embedrow_transformer top1={xformer.ttrsr_top1:.4f} "
+        f"top10={xformer.ttrsr_top10:.4f} risk={xformer.risk_level} "
+        f"best_epoch={xformer.extra['best_epoch']}"
+    )
+    results["ima_embedrow_transformer"] = xformer.to_dict()
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     out = {
