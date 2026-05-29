@@ -352,49 +352,47 @@ Qwen3-4B adversary view (prefill-only cover: `perm_kv` + σ=0.01 on K +
 (in the `gelo-attack` container) attacks it. Artefacts:
 `evals/aloepri-attacks/{persistent_attn_gate.py, captures/gate_results.json}`.
 
-| measurement | result | reading |
+All attacks are **reference-free** (operate on the cover-applied data
+alone); ground truth is used **only for scoring**, the max
+benefit-of-the-doubt convention — so a passing result is robust.
+
+| attack | result (n_kv=545, layers 0/17/35) | reading |
 |---|---|---|
-| baseline (direct cos-match `v_sent`→`v_clean`) | cos ≈ 0.07, perm ≈ chance | the cover defeats naive coordinate matching |
-| **gate 3 (content / `O_v`): FastICA corr** | **0.249 vs 0.347 no-attack baseline** | **`O_v` HOLDS** — ICA recovers nothing above the coincidental high-d column-overlap floor; V coordinates stay hidden |
-| gate 2 (position) ⚠ **reference-equipped, NOT a threat-model result** | row-norm match recovers perm 0.70/1.00 vs chance 0.0018 | only confirms the **geometry leak** (norms are `O_v`-invariant); the *position-mapping* number is invalid (see caveat 1) |
+| baseline (direct cos-match `v_sent`→`v_clean`) | cos ≈ 0.07, perm ≈ chance | cover defeats naive coordinate matching |
+| **gate 3 (content / `O_v`): FastICA** | corr **0.25** | nothing recovered above the coincidental floor |
+| **gate 3 (content / `O_v`): JADE (4th-order)** | corr **0.36** ≈ no-attack floor **0.35** | **`O_v` HOLDS** — even 4th-order JADE doesn't un-mix; far from recovery (self-test ref 0.998) |
+| **gate 2 (position): K-Gram spectral seriation** | \|Kendall τ\| **0.05 / 0.06 / 0.20** (avg **0.10**) | **position largely HELD reference-free** — RoPE's relative-position signal does not survive `perm_kv`+`O_qk`+σ for seriation (mild residual only at the deepest layer) |
 
-**Honest caveats — the gate-2 number is not threat-model-valid.**
-(1) The two gates differ in *where* the reference is used, and only one
-is legitimate:
-  - **Gate 3 (ICA) is reference-free in the *attack*** — FastICA recovers
-    components from `v_sent` alone; ground truth is used **only to score**
-    (max benefit-of-the-doubt, the run_jade convention). The attacker
-    *with* that advantage still failed (corr ≤ baseline) ⇒ "`O_v` holds"
-    is **robust**.
-  - **Gate 2 (norm-match) uses the reference *inside the attack*** — it
-    Hungarian-matches observed norms to the **clean canonical-order
-    norms**, which are private. The attack can't even run without them.
-    So 0.70–1.00 is a different, **non-realistic** attacker, *not* a
-    benefit-of-doubt bound. It establishes **only** that the value-norm
-    *multiset* + Gram leak (the documented residual, reference-free);
-    it says **nothing** about real position recovery.
-(2) Gate 3 used PCA-to-99%-var + capped FastICA (tol 1e-2); a 4th-order
-**JADE** joint-diagonalisation is the stronger escalation to *confirm*
-"`O_v` holds" — FastICA failing is strong but not final. (3) Single
-prompt, 3 layers, σ=0.01 — needs breadth.
+JADE validated on a known Laplace mixture (`--self-test`, matched corr
+0.998), so the gate-3 negative is trustworthy. All attacks reference-free
+(ground truth used only for scoring — benefit-of-doubt), so these are
+robust *passes*, not artifacts.
 
-**Gate 2 is therefore still OPEN for the threat model.** The real
-reference-free position attacks exploit *public* structure, not a private
-reference, and **neither is built**:
-- **RoPE signature** — K is cached post-RoPE (a known position-dependent
-  rotation); its phase progression across the sequence may survive the
-  fixed `O_qk` (which rotates all positions equally, preserving relative
-  phase) → a candidate reference-free position channel on K.
-- **HNM score-structure statistics** — the attention/score patterns under
-  fixed `perm_kv` across the N queries (the √N channel).
+**This overturns the earlier pessimism.** The reference-*equipped*
+norm-match (now removed) suggested position leaked at 0.70–1.00; that was
+a non-realistic attacker. Under the real threat model **both content
+(`O_v`) and position (`perm_kv`+`O_qk`) are largely protected** for the
+prefill-only cover. The only *confirmed* reference-free leak is the
+**geometry residual** (row-norm multiset + Gram are `O_v`-invariant) —
+the documented, accepted residual; `O_v` hides coordinates, not the
+cloud's shape.
 
-**Design implication.** Content-hiding (`O_v`) looks viable; the open
-problem is the **geometry/position leak**, which no rotation fixes
-(only additive noise destroys geometry — uncorrectable on this path →
-the TwinShield escalation if geometry-hiding becomes mandatory). This
-sharpens the v1 question: *is leaking value-norm geometry (the cloud's
-shape, and — reference-equipped — the position order) acceptable?* If
-yes, ship perm+`O_v`; if no, TwinShield.
+**Breadth — confirmed.** A 2nd prompt × 5 layers (0/9/18/27/35, n_kv=479)
+reproduces both findings: gate-3 ICA 0.25 / JADE 0.37 ≈ no-attack 0.35
+(`O_v` holds, stable across prompts); gate-2 seriation |τ| avg 0.15
+(per-layer 0.05–0.26, no systematic layer trend — L35 high in run 1, low
+in run 2 → the position residual is weak/noisy, not structural).
+
+**Still to do:** the **HNM score-structure** attack (the √N channel) as a
+second reference-free gate-2; wider σ sweep; and tightening whether the
+weak τ≈0.1–0.15 position residual matters.
+
+**Design implication (updated).** The prefill-only cover (`perm_kv` +
+`O_qk` + `O_v` + σ) looks **substantially viable** on this evidence —
+content and position both largely hidden reference-free, leaving only the
+accepted geometry residual. That strengthens the prefill-only 16.4× path
+and lowers the urgency of the TwinShield fallback (still the escalation if
+the geometry residual or the HNM channel proves unacceptable).
 
 ## Acceptance gate (v1)
 
