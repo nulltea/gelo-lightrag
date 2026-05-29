@@ -315,6 +315,138 @@ sequencing runs the cheap in-tree path first and reaches for the
 structurally-cleaner-but-higher-unknown path only on a measured perf
 failure.
 
+> **Reframing (2026-05-29, corrected after reading the paper).** The
+> offloaded-prefill cover is **feature-rotation-only**, not additive. Two
+> independent eliminations force this (see the fused-kernel section): (a)
+> block-fresh-π leaks π through the causal mask, so permutation cannot run
+> on an untrusted causal-prefill kernel; (b) TwinShield additive is
+> **architecturally incompatible with a fused kernel** — verified against
+> arXiv 2507.03278 v2: it offloads the attention *GEMMs* and runs softmax
+> **in the TEE** over a recovered, round-tripped score matrix, which is
+> exactly what a fused FlashAttention kernel exists to avoid. The only
+> cover that is both causal-mask-safe and transparent to cubek-attention's
+> normalised output is orthogonal feature rotation (`O_qk`/`O_v`) — which
+> we already have. TwinShield remains a *separate, kernel-incompatible*
+> lever (GEMM-offload + TEE softmax), not this lever's cover.
+
+## Fused attention kernel — `cubek-attention` (no hand-roll)
+
+The deferred "custom single-pass cubecl FlashAttention-D" turns out **not
+to be custom**. `cubek-attention` (`=0.1.1`, already a dependency; the
+spike `cubek_attention_spike.rs` launches + matches a CPU reference at the
+fp16 floor on our wgpu stack) is the cubecl-ecosystem fused kernel:
+tiled online-softmax (the `[B,H,sq,skv]` scores never touch HBM — this is
+what kills the ~4 GB prefill scores tensor), causal + arbitrary supplied
+mask, f16, portable `Unit` and tensor-core `BlackboxAccelerated`
+strategies, remainder tiling for arbitrary sequence lengths. **We
+integrate it; we do not author GPU kernels** (no in-repo `#[cube]`).
+
+Two capability gaps, and what each costs:
+
+| gap | prefill (the target) | decode |
+|---|---|---|
+| **no native GQA** — single `num_heads`; K/V shaped `[B,num_heads,skv,d]`, so K/V must be expanded 8→32 heads | modest: ~2.1 GB transient expanded K/V (B=8, n=2048) vs ~0.5 GB un-replicated; the extra HBM reads hide under the n_q=2048 matmul (compute-bound). One `repeat_dim`, once. | costly: decode is memory-bound, so 4× per-step K/V read bandwidth + 4× resident VRAM, and it breaks the un-replicated-storage / NVMe-spill economics. Closeable later by a kv-head-broadcast read-index in the K/V loader (a fast-follow, **not** a new kernel). |
+| **no `(m,l)`/LSE output** — `launch(...) -> Result<()>` writes only normalized `out` | none: prefill is one-shot, no tail to merge. | under permutation: blocks tail-in-TEE (which needs the GPU's partial stats). **Under feature-rotation (no permutation): moot** — token order is public, so there is no write-location channel to close; the full normalised attend is correct. See below. |
+
+### Why the offload cover is feature-rotation-only (two eliminations)
+
+Two independent arguments rule out the other two covers for a fused,
+normalised-output kernel, leaving feature rotation as the only survivor.
+
+**Elimination 1 — permutation leaks π through the causal mask (prefill).**
+At prefill the query and key axes are the same `n` tokens, so the causal
+mask is the `n × n` "who-may-attend-whom" matrix. Over a permuted buffer
+it is a *permuted* lower-triangular matrix that must be supplied to the
+kernel explicitly (cubek's built-in `causal:true` masks in physical-slot
+order — over permuted bytes that is simply the *wrong* math, so
+correctness forces handing over the true permuted mask). That matrix
+leaks π **exactly**: if physical slot `i` holds original position `pᵢ`,
+its row-sum is `#{j : pⱼ ≤ pᵢ} = pᵢ + 1` — **the row-sum equals the rank**,
+so π is read off directly, no inversion, no reference, regardless of how
+well the *contents* are covered. (Verified 2026-05-29.) At decode this
+vanishes: `n_q = 1`, the new token attends everything, its mask row is
+all-ones and carries no pairwise order — so permutation *can* offload
+decode, just never prefill.
+
+**Elimination 2 — additive (TwinShield) is incompatible with a fused
+kernel.** Verified against arXiv 2507.03278 v2: TwinShield's softmax
+offload has the GPU return only the blinded exponentials `e^(xᵢ−rᵢ)` and
+the **TEE** multiply back `e^(rᵢ)`, sum, and divide; its attention offload
+has the GPU compute the blinded *GEMM* `(Q+R_Q)(Kᵀ+R_Kᵀ)` (a permuted 2×2
+block) and the **TEE recover `QKᵀ` and run the softmax**. The accelerator
+never returns a normalised attention output. So additive blinding
+structurally requires the GPU to stop at the un-normalised stage and hand
+intermediates back — which (a) re-materialises and round-trips the
+`[sq,skv]` score matrix (the ~4 GB prefill tensor a fused kernel exists to
+avoid; ~160 ms/dir/layer over PCIe at n=2048) and (b) keeps the softmax in
+the TEE. It cannot run *through* `cubek-attention`. This also matches the
+first-principles result: a normalised-output kernel admits a cover only if
+the cover preserves `softmax(QKᵀ)` up to a TEE-applicable linear
+post-correction — additive on K shifts softmax non-linearly, additive on V
+needs the full probability matrix `P` to undo. TwinShield stays a
+*separate lever* (GEMM-offload + TEE softmax), evaluated on its own terms,
+not this lever's cover.
+
+**The survivor — orthogonal feature rotation.** `O_qk` on Q and K cancels
+in the score (`(Q·O_qk)(K·O_qk)ᵀ = QKᵀ` for orthogonal `O_qk`), so the GPU
+computes identical scores while never seeing clean Q/K and **the softmax
+is untouched**; `O_v` on V passes through the value contraction, so the
+GPU returns `O_true·O_v` (normalised) and the TEE corrects with a single
+`·O_vᵀ`. Both rotations are on the **head-dim axis** — the token axis is
+untouched, so the causal mask is the standard *public* triangular and
+leaks nothing. This is the cover we already have
+(`PermAttnConfig::feature_rotation`, `O_qk`/`O_v`), it serves prefill and
+decode identically, and it dissolves the LSE gap (no permutation ⇒ no
+write-location channel ⇒ no partial stats needed). σ-noise is **off** on
+the offload path (additive noise on K is non-correctable through a fused
+softmax, same as Elimination 2). Block-fresh-π + σ remain the cover for
+the **in-TEE default path**; the **offloaded path is rotation-only**.
+
+### The offload-cover sufficiency spike (the gate the lever hangs on)
+
+Rotation-only is the only *correctable, causal-safe* cover for the fused
+kernel — but it is also the **weakest** of the three: orthogonal rotation
+preserves the row norms `‖Kᵢ‖`, the full row-Gram `KKᵀ` (every pairwise
+inner product), and — with no permutation — the **token order** (positions
+are public). So the adversary holds the entire token-set geometry up to a
+single global orthonormal transform, tied to known positions. The spike
+asks one question: **is that residual breakable reference-free?** Reusing
+the gate-3 capture harness + the container attack rig, on real Qwen3
+activations (iterate on 1.7B, confirm on 4B):
+
+1. **Reference-free rotation recovery.** The adversary has `KKᵀ` exactly
+   (rotation-invariant), so classical MDS recovers K up to one global
+   `O*`; the attack is "pin `O*` reference-free." Run FastICA / JADE on the
+   rotation-only view (`k_rot = K·O_qk`, `v_rot = V·O_v`) — the existing
+   gate-3 attacks, but on the *no-permutation* view — and score mean
+   matched `|corr|` of recovered coordinates to the clean (position-known)
+   columns. Establish the chance floor with a random-rotation control.
+2. **Order-is-public residual.** Quantify what preserved order + Gram buys
+   an attacker that permutation previously denied: e.g. does `‖Kᵢ‖` or the
+   Gram structure correlate with positional/semantic structure usefully?
+   (This is the gap vs the permutation path, made explicit.)
+3. **Fixed-rotation accumulation (the rotation analog of HNM √N).** `O_qk`
+   is fixed for the session (it must be, to cancel against the resident
+   `K·O_qk`), so the adversary observes many ephemeral `Q·O_qk` uploads +
+   the fixed `K·O_qk`/`V·O_v` over a long generation. Does sample
+   accumulation let ICA/JADE pin the rotation that one-shot cannot? Sweep
+   observation count; this sets any re-rotation cadence.
+
+**Correctness + cost (Rust, alongside the attacks).** A parity test that
+cubek's normalised attend over rotated, GQA-expanded K/V, public causal
+mask, then in-TEE `·O_vᵀ`, equals clean attention at the fp16 floor (mirror
+`kv_session_partial_tail_merge_matches_full`); measure the `O_vᵀ`
+correction (one `[B, H·d, d]` right-multiply per layer — `O(B·H·d²)`,
+expected trivial).
+
+**Pass ⇒ rotation-only ships as the offload cover; cubek-attention serves
+prefill + decode. Fail ⇒ the offload needs token-order hiding, which the
+fused kernel cannot provide (permutation = mask leak, additive =
+kernel-incompatible) ⇒ no fused-kernel prefill offload; fall back to
+in-TEE prefill, or evaluate the TwinShield GEMM-offload lever separately
+on its score-round-trip cost.** Everything in the fused-kernel lever is
+downstream of this gate.
+
 ## Open questions (the load-bearing gates)
 
 The kernel / backend / session-handle-API choices below these are
@@ -645,17 +777,36 @@ Phase 1 (cover incl. O_v/O_qk, σ=0 parity)  + real-activation capture
      can't expose the stats; at decode (n_q=1, scores tiny) the composed
      ~5-dispatch form is fine (~0.5 ms/step, ≈ the gate-1 resident attend).
      Neutral-to-faster than tail-on-GPU (drops the append round-trip).
-   - **Prefill (fast-follow): custom single-pass cubecl FlashAttention-D**
-     — needed only to avoid the ~4 GB scores tensor at n_q=2048; cubecl
-     (CUDA+SPIR-V), GQA in-shader. Deferred.
-6. **Phase 4 — decode wire-up** (now unblocked — Phase 3 decode part is
-   composed ops, no security gate left for it): thread the session through
-   `decoder_block_cached_batched`; the TEE applies the cover + holds the
-   ≤N-token tail plaintext; per step `attend → (m,l,acc)` + TEE merge;
-   `kv_refresh_block` at block boundaries; in-TEE fallback behind a flag.
-7. **Acceptance + flip** — the 4-tier gate, then default-on behind the
+   - **Prefill: `cubek-attention`, rotation-only cover** —
+     *superseded — see the fused-kernel section.* It is **not** a custom
+     kernel (`cubek-attention =0.1.1`) and there is **no GQA in-shader**
+     (K/V expanded 8→32). cubek's tiling is what avoids the ~4 GB scores
+     tensor. Offloaded *causal* prefill rules out permutation (mask leak)
+     and additive (kernel-incompatible, verified vs the paper), so the
+     offload cover is **feature-rotation-only**, gated on the sufficiency
+     spike — not a free fast-follow.
+6. **Phase 4 — decode wire-up (perf)** — ✅ **2026-05-29** (see Done #9).
+   Gated GPU-resident `attend_session` (full normalised), in-TEE default.
+   *Note:* this shipped the **perf** path. Under the rotation-only offload
+   cover the write-location channel is moot (token order public), so the
+   full normalised attend is the correct decode shape — partial-stats /
+   `kv_refresh_block` are not needed on the offload path.
+7. **Phase 5 — offload-cover sufficiency spike** (the gate the offload
+   lever hangs on). Reference-free attacks on the rotation-only view
+   (rotation recovery, order-is-public residual, fixed-rotation
+   accumulation) + a cubek-parity / `O_vᵀ`-cost check — see *The
+   offload-cover sufficiency spike*. **Pass ⇒ prefill+decode offload ship
+   on `cubek-attention`; fail ⇒ in-TEE prefill (or the separate TwinShield
+   GEMM-offload lever).**
+8. **Phase 6 — prefill-attention offload** (on a spike pass): integrate
+   `cubek-attention` into the engine (`fused_attention_batched`), feed
+   rotation-covered (`O_qk`/`O_v`) + GQA-expanded K/V, public triangular
+   mask, `Unit`/`Blackbox` autotune; correct `·O_vᵀ` in-TEE on readback;
+   bench vs the 43.7 s in-TEE `tee:attn_inplace_many` prefill bucket.
+9. **Acceptance + flip** — the 4-tier gate, then default-on behind the
    c5 AloePri condition (mirrors R3).
-8. **Fast-follows** — prefill FlashAttention-D; NVMe `SpillProvider`.
+10. **Fast-follows** — kv-head-broadcast in cubek's K/V loader (recover the
+    4× GQA cost, esp. for decode-via-cubek); NVMe `SpillProvider`.
 
 ### TwinShield reuse (what a pivot costs)
 
