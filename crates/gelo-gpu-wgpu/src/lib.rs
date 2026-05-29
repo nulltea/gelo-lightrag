@@ -367,10 +367,20 @@ impl WgpuVulkanEngine {
         let shifted = scores.sub(m.clone()).exp();
         let l = shifted.clone().sum_dim(2);
         let acc = shifted.matmul(v_act);
+        // Batch the (acc, m, l) download into one device sync (one
+        // Transaction) instead of three separate `.into_data()` calls.
+        let (acc_d, m_d, l_d) = (acc.dims(), m.dims(), l.dims());
+        let to_dim = |d: [usize; 3]| (d[0], d[1], d[2]);
+        let mut data = Transaction::<CubeWgpu16>::default()
+            .register(acc)
+            .register(m)
+            .register(l)
+            .execute()
+            .into_iter();
         Ok((
-            tensor3_to_array_f16(acc)?,
-            tensor3_to_array_f16(m)?,
-            tensor3_to_array_f16(l)?,
+            tensor_data_to_array3_f16(data.next().unwrap(), to_dim(acc_d))?,
+            tensor_data_to_array3_f16(data.next().unwrap(), to_dim(m_d))?,
+            tensor_data_to_array3_f16(data.next().unwrap(), to_dim(l_d))?,
         ))
     }
 
@@ -630,6 +640,15 @@ fn tensor_data_to_array_f32(data: TensorData, rows: usize, cols: usize) -> Resul
         .into_vec()
         .map_err(|e| anyhow!("burn f32 TensorData -> Vec<f32>: {e:?}"))?;
     Array2::from_shape_vec((rows, cols), v).map_err(|e| anyhow!("Array2 from tensor data: {e}"))
+}
+
+fn tensor_data_to_array3_f16(data: TensorData, dims: (usize, usize, usize)) -> Result<Array3<f32>> {
+    let v_f16: Vec<f16> = data
+        .into_vec()
+        .map_err(|e| anyhow!("burn f16 TensorData -> Vec<f16>: {e:?}"))?;
+    let v: Vec<f32> = v_f16.into_iter().map(|x| x.to_f32()).collect();
+    Array3::from_shape_vec((dims.0, dims.1, dims.2), v)
+        .map_err(|e| anyhow!("Array3 from tensor data: {e}"))
 }
 
 fn tensor_data_to_array_f16(data: TensorData, rows: usize, cols: usize) -> Result<Array2<f32>> {

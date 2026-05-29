@@ -571,33 +571,25 @@ pub fn attention_partial(
     scale: f32,
 ) -> (Array3<f32>, Array3<f32>, Array3<f32>) {
     let (h, n_q, d) = q.dim();
-    let n_t = k.dim().1;
     let mut acc = Array3::<f32>::zeros((h, n_q, d));
     let mut m = Array3::<f32>::zeros((h, n_q, 1));
     let mut l = Array3::<f32>::zeros((h, n_q, 1));
     for hi in 0..h {
+        let qh = q.index_axis(Axis(0), hi); // (n_q, d)
+        let kh = k.index_axis(Axis(0), hi); // (n_t, d)
+        let vh = v.index_axis(Axis(0), hi); // (n_t, d)
+        // Q·Kᵀ via ndarray matmul (matrixmultiply SIMD / BLIS under
+        // `blas-ndarray`), not the old scalar triple-loop.
+        let mut scores = qh.dot(&kh.t()); // (n_q, n_t)
+        scores *= scale;
         for i in 0..n_q {
-            // scores_j = scale · <q[hi,i], k[hi,j]>
-            let mut mx = f32::NEG_INFINITY;
-            let mut scores = vec![0.0f32; n_t];
-            for j in 0..n_t {
-                let mut dot = 0.0f32;
-                for c in 0..d {
-                    dot += q[(hi, i, c)] * k[(hi, j, c)];
-                }
-                scores[j] = dot * scale;
-                mx = mx.max(scores[j]);
-            }
-            let mut sum = 0.0f32;
-            for j in 0..n_t {
-                let e = (scores[j] - mx).exp();
-                sum += e;
-                for c in 0..d {
-                    acc[(hi, i, c)] += e * v[(hi, j, c)];
-                }
-            }
+            let mut row = scores.row(i).to_owned(); // (n_t,)
+            let mx = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            row.mapv_inplace(|s| (s - mx).exp());
+            l[(hi, i, 0)] = row.sum();
             m[(hi, i, 0)] = mx;
-            l[(hi, i, 0)] = sum;
+            // acc = softmax-weights · V  (1×n_t · n_t×d → d), matmul.
+            acc.slice_mut(s![hi, i, ..]).assign(&row.dot(&vh));
         }
     }
     (acc, m, l)

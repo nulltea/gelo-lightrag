@@ -202,18 +202,27 @@ the gates already cover.** Per-step residual signals — the covered `q_t`
 upload (fixed scratch slot, no cache position) and the `(m,l,acc)`
 download (aggregate, no per-key info) — don't reopen it.
 
-**Performance (MEASURED 2026-05-29 — corrects the earlier estimate;
-`bench-results/phase3-tailtee-5090-2026-05-29.log`).** Tail-in-TEE
-(`gpu_resident_partial_tailtee_b8`) = **0.71 ms/step @ n_kv=2048**, i.e.
-**16× under in-TEE (11.25 ms)** — but **~1.5× *slower* than tail-on-GPU**
-(0.46 ms), *not* the neutral-to-faster I'd estimated. The overhead is the
-**naive scalar in-TEE `attention_partial`** (256 heads × N=16 tail tokens,
-un-vectorised) + the **3-tensor partial readback** (`acc,m,l` — 3 syncs vs
-1), not the merge. So the mandatory write-channel fix costs ~0.25 ms/step
-vs the insecure path, but is **cheap in absolute terms (16× headroom)**.
-Optimisable (BLAS the tail GEMM; batch the readback in one `Transaction`).
-Parity verified: prefix(GPU)+tail(TEE) merge == full attention at fp16
-floor (`kv_session_partial_tail_merge_matches_full`).
+**Performance (MEASURED 2026-05-29).** Tail-in-TEE
+(`gpu_resident_partial_tailtee_b8`) = **~0.74 ms/step @ n_kv=2048**, i.e.
+**15× under in-TEE (11.0 ms)** but **~1.6× slower than tail-on-GPU**
+(0.45 ms) — the cost of the security property. Parity verified
+(prefix(GPU)+tail(TEE) merge == full attention at fp16 floor,
+`kv_session_partial_tail_merge_matches_full`).
+
+**Overhead root cause — it's GPU dispatch count, not the CPU side
+(`bench-results/phase3-tailtee-opt-5090-2026-05-29.log`).** I first
+guessed the ~0.29 ms was the scalar in-TEE tail + the 3-tensor readback,
+and optimised both — **BLAS'd the tail** (`attention_partial` → ndarray
+`.dot()`) and **batched the readback** (one `Transaction`). They moved
+*nothing* (0.71 → 0.74 ms, within noise). The real cost: `attend_session`
+runs one **fused** `softmax`, but the composed `attend_session_partial`
+runs `max_dim` + `sub` + `exp` + `sum_dim` as **separate dispatches** (~3
+extra launches), and at decode (tiny tensors) launch overhead dominates.
+**Recoverable only by fusing** — i.e. the custom single-pass cubecl kernel
+(the deferred prefill kernel also serves decode), *not* by CPU-side work.
+Kept the two optimisations anyway (cleaner code, parity-preserved,
+perf-neutral). At 15× under in-TEE the mandatory fix is cheap in absolute
+terms; the dispatch overhead is fused-kernel territory, deferred.
 
 **Alternatives are worse:** random-slot writes still leak via write order;
 full-cache rewrite-per-step defeats persistence; ORAM-style decoy writes
