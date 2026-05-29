@@ -50,6 +50,7 @@
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use half::f16;
+use half::slice::HalfFloatSliceExt;
 use gelo_embedder::decoder::attention::{
     causal_gqa_attention_cached, causal_gqa_attention_permuted_cached,
 };
@@ -500,15 +501,33 @@ fn r1_4_bench(c: &mut Criterion) {
         // un-replicated (kills bytes) is the bigger upload lever.
         {
             let (_q_st, k_st, v_st) = stack_for_engine(&qs, &ks, &vs);
+            let ks_f32 = k_st.as_slice().expect("contiguous");
+            let vs_f32 = v_st.as_slice().expect("contiguous");
+            // Scalar f16::from_f32 map (the pre-optimisation path).
             group.bench_with_input(
-                BenchmarkId::new("kv_convert_only_b8", n_kv),
+                BenchmarkId::new("kv_convert_scalar_b8", n_kv),
                 &n_kv,
                 |bencher, _| {
                     bencher.iter(|| {
                         let kf: Vec<f16> =
-                            k_st.iter().map(|&x| f16::from_f32(black_box(x))).collect();
+                            ks_f32.iter().map(|&x| f16::from_f32(black_box(x))).collect();
                         let vf: Vec<f16> =
-                            v_st.iter().map(|&x| f16::from_f32(black_box(x))).collect();
+                            vs_f32.iter().map(|&x| f16::from_f32(black_box(x))).collect();
+                        black_box((kf, vf));
+                    });
+                },
+            );
+            // SIMD F16C path (half convert_from_f32_slice) — what the
+            // engine's array3_to_tensor_f16 now uses.
+            group.bench_with_input(
+                BenchmarkId::new("kv_convert_simd_b8", n_kv),
+                &n_kv,
+                |bencher, _| {
+                    bencher.iter(|| {
+                        let mut kf = vec![f16::ZERO; ks_f32.len()];
+                        kf.convert_from_f32_slice(black_box(ks_f32));
+                        let mut vf = vec![f16::ZERO; vs_f32.len()];
+                        vf.convert_from_f32_slice(black_box(vs_f32));
                         black_box((kf, vf));
                     });
                 },

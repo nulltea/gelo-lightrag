@@ -498,12 +498,40 @@ Phase 1 (cover incl. O_v/O_qk, σ=0 parity)  + real-activation capture
    the §4.E.3 activation pipeline and is now *less urgent* since the
    vectorised convert + un-replicated (4×) capture most of the win.
 
-   **Remaining Phase-2 sub-steps:** the vectorised f32→f16 convert (cheap,
-   touches the shared upload path — wants its own measurement);
-   bf16-native upload (deferred to §4.E.3); `/code-review` of the trait
-   change. `kv_attend` still returns the full normalised context (the
-   partial-stats `(m,l,acc)` variant is the Phase-3 kernel); not yet wired
-   into `TrustedExecutor`/forward (Phase 4).
+   **Vectorised convert — done, but under-delivered (2026-05-29;
+   `bench-results/simd-convert-5090-2026-05-29.log`).** Swapped the scalar
+   `f16::from_f32` map in `array3/array2_to_tensor_f16` for half's
+   `convert_from_f32_slice` (F16C `vcvtps2ph`, runtime-detected); parity
+   holds. Measured **only 1.7× (130 vs 223 ms convert; `no_mask` 490→232 ms)**,
+   *not* the hoped ~10× — at ~1 ns/elem the convert is **memory/allocation-
+   bound** (read 536 MB f32, alloc+write 268 MB f16/tensor), not
+   arithmetic-bound, so F16C buys little. Kept (free), but it is *not* the
+   answer.
+
+   **Does it beat in-TEE? Regime-dependent:**
+   - **Prefill-only** (no decode re-permute — the case the reference-free
+     gates leaned toward): per-step decode is the resident read only
+     (0.40 ms) → **25× under in-TEE; the convert is moot** (one-time
+     prefill cost).
+   - **Per-block refresh** (if gate-2 σ-sweep, *deferred*, requires it):
+     amortised per-step ≈ resident 0.40 + (un-replicated `no_mask` 232/4)/N.
+     At N=16 ≈ **4 ms vs in-TEE 10 ms → ~2.5×** (beats it, modest margin;
+     the convert is still ~half the refresh).
+
+   **⇒ bf16-native is promoted (per the decision rule).** Since the
+   vectorised convert under-delivered and the convert still dominates the
+   *refresh* path, **bf16-native upload — which eliminates the convert
+   entirely (resident bf16 cache, memcpy not convert) — is the priority
+   refresh lever** (refresh → DMA-only ≈ 25 ms /N → ~2 ms/step → ~5×).
+   **Contingency:** this only matters if per-block refresh is actually
+   required — which is the deferred gate-2 σ-sweep. If prefill-only holds,
+   refresh (and the whole convert/bf16 question) is moot for decode.
+
+   **Remaining Phase-2 sub-steps:** bf16-native upload (now priority, but
+   gated on gate-2 confirming refresh is needed; full version needs
+   §4.E.3); `/code-review` of the trait change. `kv_attend` still returns
+   the full normalised context (partial-stats `(m,l,acc)` is the Phase-3
+   kernel); not yet wired into `TrustedExecutor`/forward (Phase 4).
 5. **Phase 3 — production kernel** (gated on the security result):
    cubecl partial-stats / GQA-aware FlashAttention-D (cubecl-custom vs
    upstream-burn; both CUDA-capable).

@@ -53,6 +53,7 @@ type Dev = WgpuDevice;
 type Rt = CudaRuntime;
 #[cfg(feature = "cuda")]
 type Dev = CudaDevice;
+use half::slice::HalfFloatSliceExt;
 use half::{bf16, f16};
 use ndarray::{Array2, Array3, ArrayView2, ArrayView3};
 
@@ -442,14 +443,16 @@ fn tensor3_to_array_f32(t: Tensor<CubeWgpu32, 3>) -> Result<Array3<f32>> {
 fn array2_to_tensor_f16(view: ArrayView2<'_, f32>, device: &Dev) -> Tensor<CubeWgpu16, 2> {
     let rows = view.nrows();
     let cols = view.ncols();
-    // f32→f16 conversion. LLVM auto-vectorises this to vcvtps2ph on x86
-    // with AVX2 enabled (default in release).
-    let v: Vec<f16> = view
-        .as_standard_layout()
-        .iter()
-        .map(|&x| f16::from_f32(x))
-        .collect();
-    Tensor::<CubeWgpu16, 2>::from_data(TensorData::new(v, [rows, cols]), device)
+    // f32→f16 via half's slice conversion, which dispatches to the F16C
+    // `vcvtps2ph` hardware path at runtime (the scalar `f16::from_f32`
+    // map does NOT auto-vectorise — it's the software bit-twiddle —
+    // measured ~2.7 ns/elem vs ~0.2-0.3 ns SIMD; see the upload
+    // decomposition in docs/plans/perm-attn-gpu-offload.md).
+    let std = view.as_standard_layout();
+    let src = std.as_slice().expect("standard-layout slice is contiguous");
+    let mut dst = vec![f16::ZERO; src.len()];
+    dst.convert_from_f32_slice(src);
+    Tensor::<CubeWgpu16, 2>::from_data(TensorData::new(dst, [rows, cols]), device)
 }
 
 /// **bf16-native** weight upload. Skips the bf16 → f32 host
@@ -493,12 +496,14 @@ fn array3_to_tensor_f16(view: ArrayView3<'_, f32>, device: &Dev) -> Tensor<CubeW
     let b = view.shape()[0];
     let m = view.shape()[1];
     let k = view.shape()[2];
-    let v: Vec<f16> = view
-        .as_standard_layout()
-        .iter()
-        .map(|&x| f16::from_f32(x))
-        .collect();
-    Tensor::<CubeWgpu16, 3>::from_data(TensorData::new(v, [b, m, k]), device)
+    // SIMD f32→f16 (F16C vcvtps2ph) — see array2_to_tensor_f16. This is
+    // the K/V upload hot path; the convert was ~75% of the per-call
+    // upload cost as a scalar loop (gate-1 decomposition).
+    let std = view.as_standard_layout();
+    let src = std.as_slice().expect("standard-layout slice is contiguous");
+    let mut dst = vec![f16::ZERO; src.len()];
+    dst.convert_from_f32_slice(src);
+    Tensor::<CubeWgpu16, 3>::from_data(TensorData::new(dst, [b, m, k]), device)
 }
 
 fn tensor2_to_array_f16(t: Tensor<CubeWgpu16, 2>) -> Result<Array2<f32>> {
