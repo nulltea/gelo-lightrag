@@ -356,17 +356,37 @@ Qwen3-4B adversary view (prefill-only cover: `perm_kv` + σ=0.01 on K +
 |---|---|---|
 | baseline (direct cos-match `v_sent`→`v_clean`) | cos ≈ 0.07, perm ≈ chance | the cover defeats naive coordinate matching |
 | **gate 3 (content / `O_v`): FastICA corr** | **0.249 vs 0.347 no-attack baseline** | **`O_v` HOLDS** — ICA recovers nothing above the coincidental high-d column-overlap floor; V coordinates stay hidden |
-| **gate 2 (position): perm recovery from row-norm geometry** | **0.70 (L0) / 1.00 (L17,L35)** vs chance 0.0018 | the **geometry residual is real and severe** — row norms are `O_v`-invariant, so `perm_kv` leaks almost completely; `O_v` gives zero position protection |
+| gate 2 (position) ⚠ **reference-equipped, NOT a threat-model result** | row-norm match recovers perm 0.70/1.00 vs chance 0.0018 | only confirms the **geometry leak** (norms are `O_v`-invariant); the *position-mapping* number is invalid (see caveat 1) |
 
-**Honest caveats.** (1) The gate-2 perm-recovery is **reference-equipped**
-(scores against the clean row-norms) — same worst-case framing as the
-σ-sweep probe; reference-*free*, the leak is the value-norm *multiset* +
-Gram (the documented accepted residual), not the position mapping itself.
-But it definitively shows `O_v`+`perm` do not hide geometry. (2) Gate 3
-used PCA-to-99%-var + capped FastICA (tol 1e-2); a 4th-order **JADE**
-joint-diagonalisation is the stronger escalation to confirm "`O_v` holds"
-— FastICA failing is strong but not final. (3) Single prompt, 3 layers,
-σ=0.01 — needs breadth for a release verdict.
+**Honest caveats — the gate-2 number is not threat-model-valid.**
+(1) The two gates differ in *where* the reference is used, and only one
+is legitimate:
+  - **Gate 3 (ICA) is reference-free in the *attack*** — FastICA recovers
+    components from `v_sent` alone; ground truth is used **only to score**
+    (max benefit-of-the-doubt, the run_jade convention). The attacker
+    *with* that advantage still failed (corr ≤ baseline) ⇒ "`O_v` holds"
+    is **robust**.
+  - **Gate 2 (norm-match) uses the reference *inside the attack*** — it
+    Hungarian-matches observed norms to the **clean canonical-order
+    norms**, which are private. The attack can't even run without them.
+    So 0.70–1.00 is a different, **non-realistic** attacker, *not* a
+    benefit-of-doubt bound. It establishes **only** that the value-norm
+    *multiset* + Gram leak (the documented residual, reference-free);
+    it says **nothing** about real position recovery.
+(2) Gate 3 used PCA-to-99%-var + capped FastICA (tol 1e-2); a 4th-order
+**JADE** joint-diagonalisation is the stronger escalation to *confirm*
+"`O_v` holds" — FastICA failing is strong but not final. (3) Single
+prompt, 3 layers, σ=0.01 — needs breadth.
+
+**Gate 2 is therefore still OPEN for the threat model.** The real
+reference-free position attacks exploit *public* structure, not a private
+reference, and **neither is built**:
+- **RoPE signature** — K is cached post-RoPE (a known position-dependent
+  rotation); its phase progression across the sequence may survive the
+  fixed `O_qk` (which rotates all positions equally, preserving relative
+  phase) → a candidate reference-free position channel on K.
+- **HNM score-structure statistics** — the attention/score patterns under
+  fixed `perm_kv` across the N queries (the √N channel).
 
 **Design implication.** Content-hiding (`O_v`) looks viable; the open
 problem is the **geometry/position leak**, which no rotation fixes
