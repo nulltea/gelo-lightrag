@@ -526,7 +526,109 @@ pub trait GpuOffloadEngine: Send {
     ) -> Result<Array3<f32>> {
         self.fused_attention_batched(request.q, request.k, request.v, request.scale, request.mask)
     }
+
+    // ── Resident K/V session — perm-attn-gpu-offload Phase 2 ─────────
+    //
+    // Engine-owned, device-resident K/V that persists across decode
+    // steps so only the new row moves per step (the gate-1 win: the
+    // full-cache re-upload is ~99.9% of the naive offload cost). The
+    // session is **cover-agnostic** — the TEE applies any
+    // permutation/noise/rotation cover *before* these calls, and
+    // `kv_refresh_block` just swaps the resident bytes — so the same
+    // substrate serves block-fresh-π AND the TwinShield-Xue fallback.
+    // Default impls are unsupported; the wgpu engine overrides them.
+
+    /// Upload `(heads, n_kv, d_head)` K/V as a resident session,
+    /// pre-allocated to `capacity` on the n_kv axis. Returns its id.
+    fn kv_create_session(
+        &self,
+        _k: ArrayView3<f32>,
+        _v: ArrayView3<f32>,
+        _capacity: usize,
+    ) -> Result<KvSessionId> {
+        Err(anyhow!(
+            "kv_create_session: this engine has no resident K/V session support"
+        ))
+    }
+
+    /// Append one decode token's `(heads, 1, d_head)` K/V row (O(1)
+    /// in-place; at capacity it overwrites the last slot).
+    fn kv_append(
+        &self,
+        _id: KvSessionId,
+        _k_row: ArrayView3<f32>,
+        _v_row: ArrayView3<f32>,
+    ) -> Result<()> {
+        Err(anyhow!("kv_append: unsupported"))
+    }
+
+    /// Attend `(heads, n_q, d_head)` Q over the resident `[0..len]` K/V:
+    /// `softmax(q·kᵀ·scale)·v`. Phase 2 returns the full context; the
+    /// partial-stats `(m, l, acc)` variant for the prefix/tail online
+    /// merge is the Phase-3 kernel.
+    fn kv_attend(
+        &self,
+        _id: KvSessionId,
+        _q: ArrayView3<f32>,
+        _scale: f32,
+    ) -> Result<Array3<f32>> {
+        Err(anyhow!("kv_attend: unsupported"))
+    }
+
+    /// Replace the resident cache with a fresh `(heads, n_kv, d_head)`
+    /// K/V (e.g. after the TEE re-applies the block cover) and reset len.
+    fn kv_refresh_block(
+        &self,
+        _id: KvSessionId,
+        _k: ArrayView3<f32>,
+        _v: ArrayView3<f32>,
+    ) -> Result<()> {
+        Err(anyhow!("kv_refresh_block: unsupported"))
+    }
+
+    /// Free a session. Default no-op (engines without sessions hold none).
+    fn kv_drop_session(&self, _id: KvSessionId) -> Result<()> {
+        Ok(())
+    }
 }
+
+/// Opaque handle to an engine-owned resident K/V session.
+pub type KvSessionId = u64;
+
+/// Cold-tier provider for resident K/V that exceeds VRAM — the
+/// perm-attn-gpu-offload **Phase-2 NVMe-spill seam**. Phase 1 ships
+/// [`NullSpillProvider`] (VRAM-only); the NVMe-backed impl drops in here
+/// with no change to the session API. Not yet wired into the session
+/// (VRAM-only in the current increment); defined now so the spill tier
+/// is structurally guaranteed rather than promised.
+pub trait SpillProvider: Send + Sync {
+    /// Fetch a cold page (positions `[start, end)`) back to host for
+    /// re-upload. `None` ⇒ that page is not spilled.
+    fn fetch(
+        &self,
+        _session: KvSessionId,
+        _start: usize,
+        _end: usize,
+    ) -> Result<Option<(Array2<f32>, Array2<f32>)>> {
+        Ok(None)
+    }
+
+    /// Evict a cold page to the backing store.
+    fn evict(
+        &self,
+        _session: KvSessionId,
+        _start: usize,
+        _end: usize,
+        _k: ArrayView2<f32>,
+        _v: ArrayView2<f32>,
+    ) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// VRAM-only provider (no spill) — the Phase-1 default.
+pub struct NullSpillProvider;
+impl SpillProvider for NullSpillProvider {}
 
 #[cfg(test)]
 mod fused_attention_tests {

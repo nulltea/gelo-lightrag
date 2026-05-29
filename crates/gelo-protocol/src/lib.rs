@@ -51,6 +51,7 @@ pub use sim::ReferenceCpuEngine;
 pub use sim::{InProcessTrustedExecutor, PlaintextExecutor};
 pub use snapshot::{PcieSnapshot, SnapshotCapture, SnapshotConfig};
 pub use substrate::{
-    ForwardSessionShape, FusedAttentionBatch, GpuOffloadEngine, MatmulToken, RegisteredLinearBatch,
-    RegisteredLinearInput, RuntimeMatmulBatch, TrustedExecutor, WeightHandle, WeightKind,
+    ForwardSessionShape, FusedAttentionBatch, GpuOffloadEngine, KvSessionId, MatmulToken,
+    NullSpillProvider, RegisteredLinearBatch, RegisteredLinearInput, RuntimeMatmulBatch,
+    SpillProvider, TrustedExecutor, WeightHandle, WeightKind,
 };

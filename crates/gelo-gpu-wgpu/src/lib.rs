@@ -28,6 +28,7 @@
 //!   accessor.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{Result, anyhow};
@@ -55,7 +56,7 @@ type Dev = CudaDevice;
 use half::{bf16, f16};
 use ndarray::{Array2, Array3, ArrayView2, ArrayView3};
 
-use gelo_protocol::{GpuOffloadEngine, MatmulToken, WeightHandle};
+use gelo_protocol::{GpuOffloadEngine, KvSessionId, MatmulToken, WeightHandle};
 
 /// burn-cubecl backend specialised to f32 floats. The default engine
 /// precision.
@@ -139,6 +140,11 @@ pub struct WgpuVulkanEngine {
     device: Dev,
     weights: Arc<Mutex<WeightStore>>,
     fp16: bool,
+    /// Resident K/V sessions (perm-attn-gpu-offload Phase 2). Shared
+    /// across `clone_shared` handles so a session created on one handle
+    /// is visible on its clones (mirrors the weight-cache sharing).
+    sessions: Arc<Mutex<HashMap<KvSessionId, ResidentKvSession>>>,
+    next_session_id: Arc<AtomicU64>,
 }
 
 impl WgpuVulkanEngine {
@@ -153,6 +159,8 @@ impl WgpuVulkanEngine {
             device,
             weights: Arc::new(Mutex::new(WeightStore::F32(HashMap::new()))),
             fp16: false,
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+            next_session_id: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -172,6 +180,8 @@ impl WgpuVulkanEngine {
             device,
             weights: Arc::new(Mutex::new(WeightStore::F16(HashMap::new()))),
             fp16: true,
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+            next_session_id: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -181,6 +191,8 @@ impl WgpuVulkanEngine {
             device: self.device.clone(),
             weights: Arc::clone(&self.weights),
             fp16: self.fp16,
+            sessions: Arc::clone(&self.sessions),
+            next_session_id: Arc::clone(&self.next_session_id),
         }
     }
 }
@@ -630,6 +642,71 @@ fn submit_registered_many_f16(
 // ─── GpuOffloadEngine impl ─────────────────────────────────────────────
 
 impl GpuOffloadEngine for WgpuVulkanEngine {
+    // ── Resident K/V session (perm-attn-gpu-offload Phase 2) ─────────
+    // Engine-owned; the session map is shared across clone_shared
+    // handles so the forward path's per-layer engine clones see it.
+
+    fn kv_create_session(
+        &self,
+        k: ArrayView3<'_, f32>,
+        v: ArrayView3<'_, f32>,
+        capacity: usize,
+    ) -> Result<KvSessionId> {
+        let session = self.create_kv_session(k, v, capacity)?;
+        let id = self.next_session_id.fetch_add(1, Ordering::Relaxed);
+        self.sessions.lock().expect("sessions mutex").insert(id, session);
+        Ok(id)
+    }
+
+    fn kv_append(
+        &self,
+        id: KvSessionId,
+        k_row: ArrayView3<'_, f32>,
+        v_row: ArrayView3<'_, f32>,
+    ) -> Result<()> {
+        let mut map = self.sessions.lock().expect("sessions mutex");
+        let s = map
+            .get_mut(&id)
+            .ok_or_else(|| anyhow!("kv_append: unknown session {id}"))?;
+        self.append_kv(s, k_row, v_row)
+    }
+
+    fn kv_attend(
+        &self,
+        id: KvSessionId,
+        q: ArrayView3<'_, f32>,
+        scale: f32,
+    ) -> Result<Array3<f32>> {
+        let map = self.sessions.lock().expect("sessions mutex");
+        let s = map
+            .get(&id)
+            .ok_or_else(|| anyhow!("kv_attend: unknown session {id}"))?;
+        self.attend_session(q, s, scale)
+    }
+
+    fn kv_refresh_block(
+        &self,
+        id: KvSessionId,
+        k: ArrayView3<'_, f32>,
+        v: ArrayView3<'_, f32>,
+    ) -> Result<()> {
+        let cap = self
+            .sessions
+            .lock()
+            .expect("sessions mutex")
+            .get(&id)
+            .map(|s| s.capacity)
+            .ok_or_else(|| anyhow!("kv_refresh_block: unknown session {id}"))?;
+        let fresh = self.create_kv_session(k, v, cap)?;
+        self.sessions.lock().expect("sessions mutex").insert(id, fresh);
+        Ok(())
+    }
+
+    fn kv_drop_session(&self, id: KvSessionId) -> Result<()> {
+        self.sessions.lock().expect("sessions mutex").remove(&id);
+        Ok(())
+    }
+
     fn register_weight(&mut self, handle: WeightHandle, weight: ArrayView2<'_, f32>) -> Result<()> {
         let mut guard = self.weights.lock().unwrap();
         match &mut *guard {

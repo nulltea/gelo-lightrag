@@ -466,12 +466,22 @@ Phase 1 (cover incl. O_v/O_qk, σ=0 parity)  + real-activation capture
    view. **Prefill-only first; if recovery is bad, flip on per-block /
    per-N-block `perm_kv` refresh and re-attack.** This is the gate on
    Phases 4+.
-4. **Phase 2 — session substrate (cover-agnostic, parallel to 1–3)**:
-   `GpuOffloadEngine` session API (`create/append/attend→partial(m,l,acc)/
-   refresh_block/drop`), `SpillProvider` (null), **un-replicated GQA +
-   bf16-native upload** (the gate-1 re-permute optimization).
-   **Build `refresh_block` into the API now** even though prefill-only
-   doesn't call it — makes the "add per-block refresh" step nearly free.
+4. **Phase 2 — session substrate (cover-agnostic, parallel to 1–3)** —
+   🟡 **first increment landed 2026-05-29.** Done: `GpuOffloadEngine`
+   session API (`kv_create_session` / `kv_append` / `kv_attend` /
+   `kv_refresh_block` / `kv_drop_session`, default-unsupported so existing
+   engines don't break), `WgpuVulkanEngine` impl (engine-owned session map
+   shared across `clone_shared`, reusing the `ResidentKvSession` logic),
+   `SpillProvider` trait + `NullSpillProvider` seam, all exported from
+   `gelo-protocol`. Verified: `tests/kv_session.rs` — create→append→attend
+   matches direct `fused_attention_batched` at fp16 floor; refresh/drop
+   correct; f32 engine rejects. `refresh_block` is in the API (per the
+   build-it-now decision). **Remaining Phase-2 sub-steps:** un-replicated
+   GQA storage + bf16-native upload (the gate-1 re-permute optimisation;
+   `kv_attend` currently returns the full normalised context — the
+   partial-stats `(m,l,acc)` variant is the Phase-3 kernel), and a
+   `/code-review` of the trait change before merge. Not yet wired into
+   `TrustedExecutor`/forward (that's Phase 4).
 5. **Phase 3 — production kernel** (gated on the security result):
    cubecl partial-stats / GQA-aware FlashAttention-D (cubecl-custom vs
    upstream-burn; both CUDA-capable).
