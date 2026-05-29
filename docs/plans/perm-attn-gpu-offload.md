@@ -344,6 +344,38 @@ The gates run in two environments, and only part runs on the dGPU box:
   trivially fail (false pass), so step 0 is capturing real K/V at the
   production shape.
 
+### First real-activation gate run (2026-05-29)
+
+Pipeline now wired end-to-end: `attn_cover_capture.rs` dumps the real
+Qwen3-4B adversary view (prefill-only cover: `perm_kv` + σ=0.01 on K +
+`O_qk`/`O_v`, n_kv=545, layers 0/17/35) → `persistent_attn_gate.py`
+(in the `gelo-attack` container) attacks it. Artefacts:
+`evals/aloepri-attacks/{persistent_attn_gate.py, captures/gate_results.json}`.
+
+| measurement | result | reading |
+|---|---|---|
+| baseline (direct cos-match `v_sent`→`v_clean`) | cos ≈ 0.07, perm ≈ chance | the cover defeats naive coordinate matching |
+| **gate 3 (content / `O_v`): FastICA corr** | **0.249 vs 0.347 no-attack baseline** | **`O_v` HOLDS** — ICA recovers nothing above the coincidental high-d column-overlap floor; V coordinates stay hidden |
+| **gate 2 (position): perm recovery from row-norm geometry** | **0.70 (L0) / 1.00 (L17,L35)** vs chance 0.0018 | the **geometry residual is real and severe** — row norms are `O_v`-invariant, so `perm_kv` leaks almost completely; `O_v` gives zero position protection |
+
+**Honest caveats.** (1) The gate-2 perm-recovery is **reference-equipped**
+(scores against the clean row-norms) — same worst-case framing as the
+σ-sweep probe; reference-*free*, the leak is the value-norm *multiset* +
+Gram (the documented accepted residual), not the position mapping itself.
+But it definitively shows `O_v`+`perm` do not hide geometry. (2) Gate 3
+used PCA-to-99%-var + capped FastICA (tol 1e-2); a 4th-order **JADE**
+joint-diagonalisation is the stronger escalation to confirm "`O_v` holds"
+— FastICA failing is strong but not final. (3) Single prompt, 3 layers,
+σ=0.01 — needs breadth for a release verdict.
+
+**Design implication.** Content-hiding (`O_v`) looks viable; the open
+problem is the **geometry/position leak**, which no rotation fixes
+(only additive noise destroys geometry — uncorrectable on this path →
+the TwinShield escalation if geometry-hiding becomes mandatory). This
+sharpens the v1 question: *is leaking value-norm geometry (the cloud's
+shape, and — reference-equipped — the position order) acceptable?* If
+yes, ship perm+`O_v`; if no, TwinShield.
+
 ## Acceptance gate (v1)
 
 Layered — failing any tier reopens the TwinShield-Xue fallback:

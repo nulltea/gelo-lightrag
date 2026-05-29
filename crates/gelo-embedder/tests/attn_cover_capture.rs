@@ -142,7 +142,11 @@ fn capture_attn_cover_adversary_view() -> Result<()> {
     );
 
     // ── Real prefill → populated KV cache ──────────────────────────
-    let input_ids = tokenizer.encode(prompt.as_str(), 256)?;
+    let max_tok: usize = std::env::var("GELO_CAPTURE_MAXTOK")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1024);
+    let input_ids = tokenizer.encode(prompt.as_str(), max_tok)?;
     let n_kv = input_ids.len();
     assert!(n_kv >= 8, "need a non-trivial prompt; got {n_kv} tokens");
     let mut exec = PlaintextExecutor::new(ReferenceCpuEngine::new());
