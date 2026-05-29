@@ -555,7 +555,7 @@ Both curves monotonically climbing at ep=100; not saturated.
 
 ---
 
-### 2026-05-21 — Path-2 next-steps (gates queue)
+### 2026-05-21 — AloePri next-steps (gates queue)
 
 **Source:** `docs/archive/handoffs/2026-05-21-aloepri-next-steps.md`
 
@@ -656,7 +656,7 @@ Config: Qwen3-4B Q8_0 untied base, h=128, β=8, α_e=1.0, α_h=0.2, Alg2 matrix-
 
 ---
 
-### 2026-05-26 — Path-2 recommendations (extracted to archive handoff)
+### 2026-05-26 — AloePri recommendations (extracted to archive handoff)
 
 **Source:** `docs/archive/handoffs/2026-05-26-aloepri-recommendations.md` (extracted from `aloepri-attacks.md` §"Implications for path-2")
 
@@ -1158,7 +1158,7 @@ Phase 2 acceptance requires:
 - [`aloepri-attack-harness-findings.md`](../../archive/dev/logs/aloepri-attack-harness-findings.md) (archived) — Phase 1 OOM incident (subsumed into §4 entry for 2026-05-19; original preserved as standalone reference).
 - [`alg2-threat-model-log.md`](../../archive/dev/logs/alg2-threat-model-log.md) (archived) — broader threat-model + bug log (Qwen3 architectural gaps, Ẑ_block / QK-norm / Û_vo deep dives).
 - [`aloepri-deployment-log.md`](../../archive/dev/logs/aloepri-deployment-log.md) (archived) — deployment fixes (special-token, server patches, quantisation).
-- [`aloepri-status.md`](aloepri-status.md) — running plan log for path-2 work.
+- [`aloepri-status.md`](aloepri-status.md) — running plan log for AloePri work.
 
 ### Static reference
 

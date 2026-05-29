@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Architecture review - private-rag / GELO GPU protocol</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose" });
+    </script>
+    <style>
+      body { background: #fafaf9; }
+      .deep { background: linear-gradient(135deg, #0f172a, #1f2937); color: white; }
+      .seam-line { border-top: 2px dashed #64748b; }
+      .leak { color: #dc2626; border-color: #dc2626; }
+      .module-box { border: 1px solid #cbd5e1; background: #fff; border-radius: 0.5rem; }
+      .thin { min-height: 2.3rem; }
+      .mass-interface { background: #fee2e2; border: 1px solid #fca5a5; }
+      .mass-implementation { background: #e0f2fe; border: 1px solid #7dd3fc; }
+      .arrow { position: relative; }
+      .arrow:after {
+        content: "";
+        position: absolute;
+        right: -0.55rem;
+        top: 50%;
+        width: 0.55rem;
+        border-top: 2px solid #94a3b8;
+      }
+      .arrow:before {
+        content: "";
+        position: absolute;
+        right: -0.62rem;
+        top: calc(50% - 4px);
+        border-left: 7px solid #94a3b8;
+        border-top: 4px solid transparent;
+        border-bottom: 4px solid transparent;
+      }
+    </style>
+  </head>
+  <body class="text-slate-900 font-sans">
+    <main class="max-w-6xl mx-auto px-6 py-10 space-y-10">
+      <header class="space-y-5">
+        <div>
+          <p class="text-xs uppercase tracking-wider text-slate-500">Architecture review - 2026-05-27</p>
+          <h1 class="text-3xl md:text-4xl font-semibold tracking-normal">private-rag: GELO protocol and wgpu offload</h1>
+        </div>
+        <div class="grid md:grid-cols-4 gap-3 text-sm">
+          <div class="module-box p-3"><span class="font-semibold">Solid box</span><br />module</div>
+          <div class="module-box p-3"><span class="font-semibold">Dashed line</span><br />seam</div>
+          <div class="module-box p-3 border-red-300 text-red-700"><span class="font-semibold">Red</span><br />leakage</div>
+          <div class="deep rounded-lg p-3"><span class="font-semibold">Dark box</span><br />deep module</div>
+        </div>
+        <p class="text-sm text-slate-600 max-w-3xl">
+          No <code>CONTEXT.md</code> or <code>docs/adr/</code> files were present, so domain vocabulary comes from the repo README:
+          retrieval-only private RAG, regulated client, untrusted cloud, attested SEV-SNP CVM, GELO split inference, and Vulkan GPU offload.
+        </p>
+      </header>
+
+      <section id="candidates" class="space-y-8">
+        <article id="accelerator-seam" class="bg-white border border-slate-200 rounded-lg p-5 md:p-6 shadow-sm space-y-5">
+          <div class="flex flex-wrap items-center gap-2">
+            <h2 class="text-2xl font-semibold mr-auto">Deepen the accelerator seam</h2>
+            <span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-semibold">Strong</span>
+            <span class="rounded-full bg-slate-100 text-slate-700 px-3 py-1 text-xs font-semibold">ports & adapters</span>
+          </div>
+
+          <div>
+            <h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Files</h3>
+            <div class="font-mono text-sm text-slate-700 grid md:grid-cols-2 gap-1">
+              <span>crates/gelo-protocol/src/substrate.rs:93</span>
+              <span>crates/gelo-protocol/src/attention.rs</span>
+              <span>crates/gelo-protocol/src/out_attn_mult.rs</span>
+              <span>crates/gelo-gpu-wgpu/src/lib.rs:302</span>
+            </div>
+          </div>
+
+          <div class="grid lg:grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4">
+              <h3 class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before</h3>
+              <pre class="mermaid">
+flowchart TB
+  T[TrustedExecutor] --> G[GpuOffloadEngine]
+  G --> R[register variants]
+  G --> M[matmul variants]
+  G --> A[async tokens]
+  G --> D[dynamic matmul]
+  G --> S[softmax]
+  G --> F[fused attention]
+  A -.perf facts.-> T
+  F -.privacy shape facts.-> T
+  classDef leak stroke:#dc2626,color:#dc2626,stroke-width:2px;
+  class A,F leak;
+              </pre>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4">
+              <h3 class="text-xs uppercase tracking-wider text-slate-500 mb-3">After</h3>
+              <div class="h-80 flex flex-col justify-center gap-4">
+                <div class="module-box p-3 text-center">trusted GELO protocol</div>
+                <div class="seam-line"></div>
+                <div class="deep rounded-lg p-5 text-center">
+                  <div class="text-xs uppercase tracking-wider text-slate-300">accelerator module</div>
+                  <div class="text-lg font-semibold">one capability-aware interface</div>
+                  <div class="mt-3 grid grid-cols-3 gap-2 text-xs text-slate-200">
+                    <span class="rounded border border-slate-500 p-2">linear</span>
+                    <span class="rounded border border-slate-500 p-2">runtime matmul</span>
+                    <span class="rounded border border-slate-500 p-2">attention</span>
+                  </div>
+                </div>
+                <div class="module-box p-3 text-center">wgpu adapter / CPU adapter</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid md:grid-cols-3 gap-4 text-sm">
+            <div><h3 class="font-semibold">Problem</h3><p class="text-slate-700">The accelerator module is shallow: one seam exposes registration, precision, async, dynamic matmul, softmax, and fused attention facts that callers and tests must understand.</p></div>
+            <div><h3 class="font-semibold">Solution</h3><p class="text-slate-700">Move operation selection and fallback policy behind the accelerator module, leaving callers with GELO-shaped offload requests instead of primitive capability trivia.</p></div>
+            <div><h3 class="font-semibold">Benefits</h3>
+              <ul class="list-disc list-inside text-slate-700">
+                <li>locality: perf policy concentrates</li>
+                <li>locality: privacy facts concentrate</li>
+                <li>leverage: one test surface</li>
+                <li>interface shrinks; implementation absorbs variants</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <article id="wgpu-precision" class="bg-white border border-slate-200 rounded-lg p-5 md:p-6 shadow-sm space-y-5">
+          <div class="flex flex-wrap items-center gap-2">
+            <h2 class="text-2xl font-semibold mr-auto">Collapse wgpu precision duplication</h2>
+            <span class="rounded-full bg-amber-100 text-amber-800 px-3 py-1 text-xs font-semibold">Worth exploring</span>
+            <span class="rounded-full bg-slate-100 text-slate-700 px-3 py-1 text-xs font-semibold">in-process</span>
+          </div>
+
+          <div>
+            <h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Files</h3>
+            <div class="font-mono text-sm text-slate-700 grid md:grid-cols-2 gap-1">
+              <span>crates/gelo-gpu-wgpu/src/lib.rs:74</span>
+              <span>crates/gelo-gpu-wgpu/src/lib.rs:177</span>
+              <span>crates/gelo-gpu-wgpu/src/lib.rs:302</span>
+              <span>crates/gelo-gpu-wgpu/src/lib.rs:832</span>
+            </div>
+          </div>
+
+          <div class="grid lg:grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4">
+              <h3 class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before</h3>
+              <div class="grid grid-cols-2 gap-4 h-80">
+                <div class="space-y-2">
+                  <div class="text-xs uppercase tracking-wider text-slate-500">f32 branch</div>
+                  <div class="module-box thin p-2">register</div>
+                  <div class="module-box thin p-2">matmul</div>
+                  <div class="module-box thin p-2">many</div>
+                  <div class="module-box thin p-2">async</div>
+                  <div class="module-box thin p-2">bf16 input</div>
+                  <div class="module-box thin p-2">attention</div>
+                </div>
+                <div class="space-y-2">
+                  <div class="text-xs uppercase tracking-wider text-slate-500">f16 branch</div>
+                  <div class="module-box thin p-2">register</div>
+                  <div class="module-box thin p-2">matmul</div>
+                  <div class="module-box thin p-2">many</div>
+                  <div class="module-box thin p-2">async</div>
+                  <div class="module-box thin p-2">bf16 input</div>
+                  <div class="module-box thin p-2">attention</div>
+                </div>
+              </div>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4">
+              <h3 class="text-xs uppercase tracking-wider text-slate-500 mb-3">After</h3>
+              <div class="h-80 flex items-center justify-center">
+                <div class="w-full max-w-md">
+                  <div class="module-box p-3 text-center mb-3">WgpuVulkanEngine</div>
+                  <div class="seam-line mb-3"></div>
+                  <div class="deep rounded-lg p-5">
+                    <div class="text-xs uppercase tracking-wider text-slate-300">precision implementation</div>
+                    <div class="grid grid-cols-2 gap-3 mt-4 text-sm">
+                      <div class="rounded border border-slate-500 p-3 text-center">f32 adapter</div>
+                      <div class="rounded border border-slate-500 p-3 text-center">f16 adapter</div>
+                    </div>
+                    <div class="mt-4 rounded bg-slate-800 p-3 text-sm text-center">shared shape checks, upload, dispatch, download pattern</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid md:grid-cols-3 gap-4 text-sm">
+            <div><h3 class="font-semibold">Problem</h3><p class="text-slate-700">The wgpu adapter repeats the same implementation pattern across f32 and f16 in nearly every method, so a new operation doubles the review surface.</p></div>
+            <div><h3 class="font-semibold">Solution</h3><p class="text-slate-700">Concentrate precision-specific tensor upload, weight lookup, dispatch, and download inside one internal module, then let each offload method express only its GELO operation shape.</p></div>
+            <div><h3 class="font-semibold">Benefits</h3>
+              <ul class="list-disc list-inside text-slate-700">
+                <li>locality: precision bugs stay internal</li>
+                <li>leverage: one dispatch pattern</li>
+                <li>tests cover precision matrix</li>
+                <li>delete mirrored branches</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <article id="forward-session" class="bg-white border border-slate-200 rounded-lg p-5 md:p-6 shadow-sm space-y-5">
+          <div class="flex flex-wrap items-center gap-2">
+            <h2 class="text-2xl font-semibold mr-auto">Make the forward session a deep module</h2>
+            <span class="rounded-full bg-amber-100 text-amber-800 px-3 py-1 text-xs font-semibold">Worth exploring</span>
+            <span class="rounded-full bg-slate-100 text-slate-700 px-3 py-1 text-xs font-semibold">local-substitutable</span>
+          </div>
+
+          <div>
+            <h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Files</h3>
+            <div class="font-mono text-sm text-slate-700 grid md:grid-cols-2 gap-1">
+              <span>crates/gelo-protocol/src/sim.rs:116</span>
+              <span>crates/gelo-protocol/src/sim.rs:318</span>
+              <span>crates/gelo-protocol/src/sim.rs:354</span>
+              <span>crates/gelo-protocol/src/mask.rs</span>
+            </div>
+          </div>
+
+          <div class="grid lg:grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4">
+              <h3 class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before</h3>
+              <div class="h-80 grid grid-cols-2 gap-3 content-center">
+                <div class="module-box p-3 arrow">mask kind</div>
+                <div class="module-box p-3">session</div>
+                <div class="module-box p-3 arrow">shield overlay</div>
+                <div class="module-box p-3">scratch pools</div>
+                <div class="module-box p-3 arrow">rng streams</div>
+                <div class="module-box p-3">snapshot capture</div>
+                <div class="module-box p-3 arrow">U-Verify</div>
+                <div class="module-box p-3">PLE table</div>
+                <div class="col-span-2 leak rounded border p-3 text-center">InProcessTrustedExecutor carries all invariants</div>
+              </div>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4">
+              <h3 class="text-xs uppercase tracking-wider text-slate-500 mb-3">After</h3>
+              <div class="h-80 flex flex-col justify-center gap-3">
+                <div class="module-box p-3 text-center">InProcessTrustedExecutor</div>
+                <div class="seam-line"></div>
+                <div class="deep rounded-lg p-5 text-center">
+                  <div class="text-xs uppercase tracking-wider text-slate-300">forward session module</div>
+                  <div class="grid grid-cols-2 gap-2 mt-4 text-xs text-slate-200">
+                    <span class="rounded border border-slate-500 p-2">begin / end</span>
+                    <span class="rounded border border-slate-500 p-2">mask topology</span>
+                    <span class="rounded border border-slate-500 p-2">shield rows</span>
+                    <span class="rounded border border-slate-500 p-2">scratch reuse</span>
+                  </div>
+                </div>
+                <div class="module-box p-3 text-center">linear / attention offload calls</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid md:grid-cols-3 gap-4 text-sm">
+            <div><h3 class="font-semibold">Problem</h3><p class="text-slate-700">The trusted executor interface asks callers to respect a lifecycle while the implementation keeps mask topology, shield policy, scratch reuse, RNG, snapshots, and U-Verify in one large module.</p></div>
+            <div><h3 class="font-semibold">Solution</h3><p class="text-slate-700">Deepen the forward session so it owns lifecycle invariants and hands offload calls a ready GELO operand context instead of scattered session facts.</p></div>
+            <div><h3 class="font-semibold">Benefits</h3>
+              <ul class="list-disc list-inside text-slate-700">
+                <li>locality: lifecycle bugs concentrate</li>
+                <li>locality: scratch ownership clear</li>
+                <li>leverage: session tests hit one interface</li>
+                <li>offload code reads algebraically</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <article id="attention-policy" class="bg-white border border-slate-200 rounded-lg p-5 md:p-6 shadow-sm space-y-5">
+          <div class="flex flex-wrap items-center gap-2">
+            <h2 class="text-2xl font-semibold mr-auto">Concentrate attention privacy policy</h2>
+            <span class="rounded-full bg-slate-100 text-slate-700 px-3 py-1 text-xs font-semibold">Speculative</span>
+            <span class="rounded-full bg-slate-100 text-slate-700 px-3 py-1 text-xs font-semibold">mock</span>
+          </div>
+
+          <div>
+            <h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Files</h3>
+            <div class="font-mono text-sm text-slate-700 grid md:grid-cols-2 gap-1">
+              <span>crates/gelo-protocol/src/attention.rs</span>
+              <span>crates/gelo-protocol/src/out_attn_mult.rs</span>
+              <span>crates/gelo-protocol/src/substrate.rs:330</span>
+              <span>crates/gelo-embedder/src/decoder/attention.rs</span>
+            </div>
+          </div>
+
+          <div class="grid lg:grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4">
+              <h3 class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before</h3>
+              <pre class="mermaid">
+flowchart LR
+  BERT[BERT attention] --> QKT[OutAttnMult]
+  DEC[decoder attention] --> PERM[permutation shield]
+  SUB[GpuOffloadEngine] --> FUSED[fused attention fallback]
+  PERM -.mask leak rules.-> DEC
+  FUSED -.perf fallback.-> SUB
+  classDef leak stroke:#dc2626,color:#dc2626,stroke-width:2px;
+  class PERM,FUSED leak;
+              </pre>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4">
+              <h3 class="text-xs uppercase tracking-wider text-slate-500 mb-3">After</h3>
+              <div class="h-80 flex items-center justify-center">
+                <div class="deep rounded-lg p-5 w-full max-w-md">
+                  <div class="text-xs uppercase tracking-wider text-slate-300">attention offload module</div>
+                  <div class="mt-4 grid gap-2 text-sm text-slate-100">
+                    <div class="rounded border border-slate-500 p-3">chooses privacy construction</div>
+                    <div class="rounded border border-slate-500 p-3">owns causal-mask leakage rule</div>
+                    <div class="rounded border border-slate-500 p-3">tests one attention interface</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid md:grid-cols-3 gap-4 text-sm">
+            <div><h3 class="font-semibold">Problem</h3><p class="text-slate-700">Attention has multiple privacy constructions and engine fallbacks, and the leakage rule for causal softmax is carried by comments near specific implementations.</p></div>
+            <div><h3 class="font-semibold">Solution</h3><p class="text-slate-700">Move attention construction choice, causal-mask handling, and fallback selection behind one attention offload module.</p></div>
+            <div><h3 class="font-semibold">Benefits</h3>
+              <ul class="list-disc list-inside text-slate-700">
+                <li>locality: leakage rules central</li>
+                <li>leverage: one parity suite</li>
+                <li>tests assert policy, not plumbing</li>
+                <li>callers stop branching</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section id="top-recommendation" class="bg-slate-950 text-white rounded-lg p-6">
+        <p class="text-xs uppercase tracking-wider text-slate-400">Top recommendation</p>
+        <h2 class="text-2xl font-semibold mt-2"><a href="#accelerator-seam" class="underline decoration-slate-500">Deepen the accelerator seam</a></h2>
+        <p class="mt-3 text-slate-200 max-w-3xl">
+          Tackle this first because it defines the test surface for both the wgpu adapter and the trusted executor; the deletion test says the current complexity would reappear across protocol callers, adapter methods, and performance tests.
+        </p>
+      </section>
+    </main>
+  </body>
+</html>

@@ -60,7 +60,7 @@ Neither surface matches paper Table 4's defense pattern. The three reconciling h
 
 Step 3 of the post-grilling plan (paper-faithful gradient-opt ISA) is the highest-leverage next test for hypothesis (2).
 
-### Implication for path-2
+### Implication for AloePri
 
 Both the score surface (47 %) and the attention-output surface (84 % at L=0, ~25 % at L=23) leak heavily to a ridge attacker. The full Alg2 obfuscation provides at most 14 pp of defense on the worst-case L=0 output surface, and ~0 pp elsewhere. **AloePri-style obfuscation is not sufficient for attention-surface privacy under a ridge threat model.** TEE-protected attention (path-1) or a non-covariant score-/output-surface perturbation that intentionally violates §5.4's invariance bound is required.
 

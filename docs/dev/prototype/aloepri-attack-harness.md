@@ -6,7 +6,7 @@ updated: 2026-05-18
 tags: [aloepri, attacks]
 ---
 
-# AloePri attack-resistance harness — Phase 2/3 handoff
+# AloePri attack-resistance harness
 
 > **Sibling docs:**
 > [`../../research/aloepri-vs-gelo.md`](../../research/aloepri-vs-gelo.md) §4

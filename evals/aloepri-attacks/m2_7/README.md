@@ -136,9 +136,9 @@ git add vendor/llama.cpp && git commit -m "bump llama.cpp pin"
   server writes the dump file from inside the container; the Python
   harness needs to truncate it from the host between prompts, which
   only works when the file is owned by the host user.
-* The Python harness pulls `tokenizers` via the path-2 `AloePriClient`.
+* The Python harness pulls `tokenizers` via the AloePri `AloePriClient`.
   System Python on Ubuntu 24+ refuses pip installs (PEP 668), so run
-  the harness through the path-2 venv:
+  the harness through the AloePri venv:
   `/home/timo/repos/private-rag-path-2/python/aloepri-llm/.venv/bin/python`.
 
 **HiddenState pass** (NN / IMA basic / IMA paper-like / ISA

@@ -92,7 +92,7 @@ For control runs swap the obfuscated cell with the no-R PAPERLIT cell
 **Expected outcome.** Memory note + handoff text predicts the elbow
 lands at n_train > 20 (paper-safety argument holds). If the elbow
 lands at n_train ≤ 20, AloePri's strong-Π argument breaks and
-ridge-with-deployment-day-leakage is a real path-2 threat.
+ridge-with-deployment-day-leakage is a real AloePri threat.
 
 #### Update 2026-05-27 (later): C1 not run, driver deleted
 
@@ -413,7 +413,7 @@ all valid follow-ups but lower priority than running what we have.
   hypothesise → instrument → fix" loop on the three attack results
   once they land.
 - **`/code-review`** before any cell is built or attack result becomes
-  load-bearing for path-2 deployment — these are new attack drivers,
+  load-bearing for AloePri deployment — these are new attack drivers,
   and `run_arrowmatch.py` in particular has GPU memory + numerical
   edge cases that warrant a pass.
 - **`/ask before running attacks/captures`** — memory note

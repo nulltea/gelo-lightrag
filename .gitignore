@@ -19,3 +19,6 @@ python/*/__pycache__/
 **/__pycache__/
 *.pyc
 vendor/aloepri-py
+
+bench-results
+.env

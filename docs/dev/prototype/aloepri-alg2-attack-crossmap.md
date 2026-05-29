@@ -8,11 +8,11 @@ tag (**M** measured, **T** theory only, **C** code ready but not run).
 
 ## TL;DR (2026-05-25, post real-data attack runs)
 
-- **Algorithm 2** in path-2 has 5 runtime-touching components: `R̂_qk`,
+- **Algorithm 2** in AloePri has 5 runtime-touching components: `R̂_qk`,
   `Ĥ_qk`, `Ẑ_block`, `Π_head` (= `τ_kv` + `τ_group`), `Û_vo`.
-  Definitions follow paper §5.2.3 with one deliberate path-2 deviation
+  Definitions follow paper §5.2.3 with one deliberate AloePri deviation
   on the K-side formula (`lib/alg2.py:241-262`).
-- The path-2 attack ledger has 12 attacks across four families.
+- The AloePri attack ledger has 12 attacks across four families.
   **Empirically validated Alg2 defences (2026-05-25 real-data runs on
   the deployed Q3-4B Û_vo cell):**
   - **Per-head fingerprint:** Q/K/V/O all at ≈ random chance (Π_head
@@ -254,7 +254,7 @@ measure what §5.2.2 (noise + Π) and Algorithm 2 add on top.
 
 ### Headline (2026-05-25, post-Alg1+minAlg2 measurement)
 
-**The minimal-optimal Alg2 configuration (R̂_qk + Hadamard + Ẑ_block β=8 + Π_head) adds essentially ZERO measurable defense on top of Alg1 alone across the entire path-2 attack ledger.**
+**The minimal-optimal Alg2 configuration (R̂_qk + Hadamard + Ẑ_block β=8 + Π_head) adds essentially ZERO measurable defense on top of Alg1 alone across the entire AloePri attack ledger.**
 
 Every cell deltas to within ±5 pp noise of Alg1-only. The largest measurable shift is VMA dropping from 98.4 → 96.5 % (still trivially recoverable). The crossmap-doc theoretical attribution that Ẑ_block carries ~70 % of the Alg2 ISA HiddenState delta (~1.7 pp on the deployed cell) **fails to reproduce** when measured in isolation — Alg1's keymat is what carries the heavy lifting, and Ẑ_block's marginal contribution is within pool-noise of zero.
 
@@ -271,7 +271,7 @@ Every cell deltas to within ±5 pp noise of Alg1-only. The largest measurable sh
 | QK-norm Γ eigendecomposition | **Not defended by design** (Alg2-specific surface; structural break) |
 | TFMA / SDA | **Π alone** (§5.2.2 token-perm); orthogonal to Alg1/Alg2 |
 
-**Initial conclusion (later revised, see below):** Algorithm 2 in path-2 carries no measurable defensive contribution on the current attack ledger.
+**Initial conclusion (later revised, see below):** Algorithm 2 in AloePri carries no measurable defensive contribution on the current attack ledger.
 
 ## VMA attribution diagnose — §5.2.2 × Alg2 interaction (2026-05-25)
 
@@ -335,7 +335,7 @@ Built 4 isolation cells on Alg1+§5.2.2 substrate. Ran VMA 3-seed each.
 
 `probe_alg2_static_attacks.py` (synthetic uniform-Gaussian weights) measured R̂_qk = 0.4 pp + Hadamard ±1 = 0 pp on VMA. **Real Q3-4B trained weights give the same components −17.8 pp.** The structured per-row distribution of trained Q/K is sensitive to per-pair 2D rotation + sign flips in a way that random Gaussian weights aren't. The earlier synthetic probe systematically underestimated R̂_qk + Hadamard's VMA contribution.
 
-### Path-2 deployment defense recipe (post-bisection)
+### AloePri deployment defense recipe (post-bisection)
 
 For **VMA** specifically:
 - §5.2.2 (Π + α_e + α_h): primary, −63 pp
@@ -508,7 +508,7 @@ positional signal beyond what a linear ridge can recover at any depth.
 | 2 | `obfuscate_qwen3_gguf.py:531-542` legacy reconstruction omits `u_vo`/`u_vo_inv` → `TypeError` if anyone runs `--alg2 --alg2-u-vo` without `--alg2-qk-norm-matrix` | low (deployed config doesn't hit it) | **fixed 2026-05-25** — pass `full_keys.u_vo` and `full_keys.u_vo_inv` through |
 | 3 | `python/aloepri-llm/scripts/check_alg2_invariance.py:26` imports from `python/path-2` (stale after rename) | low | **fixed 2026-05-25** — renamed to `python/aloepri-llm` |
 | 4 | `--alg2-gamma`, `rope_base` are dead CLI args after 2026-05-19 Ẑ_block fix | low | left as documented cruft — signature ripple to remove is uglier than the benefit |
-| 5 | Path-2 deviates from paper Alg2 line 6 (`M_k = R̂_qk · Ĥ_qk⁻¹ · Ẑ_block` vs paper's `Ĥ_qk⁻¹ · Ẑ_block^T`); algebra makes `M_q · M_k^T = I` exactly (paper's requires Ẑ² = I) | design choice | documented; security-proof implications untested |
+| 5 | AloePri deviates from paper Alg2 line 6 (`M_k = R̂_qk · Ĥ_qk⁻¹ · Ẑ_block` vs paper's `Ĥ_qk⁻¹ · Ẑ_block^T`); algebra makes `M_q · M_k^T = I` exactly (paper's requires Ẑ² = I) | design choice | documented; security-proof implications untested |
 | 6 | Doc-level "Alg2 amplifies K_a × K_d" conflates §5.2.2 + §5.2.3 + bf16 + Q8_0; Phase d ablation plan in `2026-05-22-keymat-defense-optimization.md` inherits the confusion | medium | **fixed 2026-05-25** — framing-correction blocks added to both `aloepri-keymat-variance.md` and the Phase d table now has a §5.2 column + Ẑ_block + Π_head rows |
 
 ## Gaps
@@ -516,7 +516,7 @@ positional signal beyond what a linear ridge can recover at any depth.
 ### Open empirical gaps
 
 - **ISA-attn-score: never run on any cell.** Driver exists, returns
-  `not_applicable` for GELO but should run for path-2 cells. Theoretical
+  `not_applicable` for GELO but should run for AloePri cells. Theoretical
   prediction: Π_head and Ẑ_block dominate; R̂_qk and Ĥ_qk ±1 cancel.
   Cost: ~45 min once a deployed Û_vo GGUF is regenerated (none on disk).
 - **Per-head fingerprint and V/O channel-pair drivers: never run.** Both
@@ -550,7 +550,7 @@ positional signal beyond what a linear ridge can recover at any depth.
 
 ### Static-weight attacks not implemented
 
-The path-2 ledger is missing several attacks that R̂_qk / Ĥ_qk
+The AloePri ledger is missing several attacks that R̂_qk / Ĥ_qk
 non-unit / Û_vo would defend against if they were in the ledger:
 
 - **Per-head fingerprint** — code now exists (see [Inventory](#path-2-implemented-attack-inventory)).

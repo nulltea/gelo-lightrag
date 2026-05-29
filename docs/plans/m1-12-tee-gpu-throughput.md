@@ -2,7 +2,7 @@
 type: plan
 status: current
 created: 2026-05-22
-updated: 2026-05-22
+updated: 2026-05-27
 tags: [m1.12, gpu, perf]
 ---
 
@@ -37,11 +37,11 @@ SEV-SNP + VFIO dGPU**:
 
 Three items survive:
 
-| Item | Engineering | Win |
-|---|---|---|
-| **R1.** Factor shared `provision_decoder_into` helper | ~1 day | Consolidate take()-on-provision across 6 callers |
-| **R3.** LM-head GPU masked offload (`token_embedding` × hidden → vocab) | ~3 days + c6 gate | Retire ~120 s/forward `compute_logits` bucket |
-| **R4.** Async pipelining — decouple matmul submit/wait | 5-8 days | Overlap CPU mask (~25 % share) and GPU matmul (~50 % share) → ~25-30 % wall reduction |
+| Item | Engineering | Win | Status |
+|---|---|---|---|
+| **R1.** Factor shared `provision_decoder_into` helper | ~1 day | Consolidate take()-on-provision across 6 callers | ✅ shipped |
+| **R3.** LM-head GPU masked offload (`token_embedding` × hidden → vocab) | ~3 days + c6 gate | Retire ~120 s/forward `compute_logits` bucket | ✅ shipped + default-on |
+| **R4.** Async pipelining — decouple matmul submit/wait | 5-8 days | Overlap CPU mask (~25 % share) and GPU matmul (~50 % share) → ~25-30 % wall reduction | ❌ tested 2026-05-26, no iGPU win — see §5 |
 
 Plus one gate task:
 
@@ -49,7 +49,11 @@ Plus one gate task:
 |---|---|---|
 | **c6 AloePri spot-check** on LM-head offload shape | ~3 days | Flip `LM_HEAD_GPU_OFFLOAD=1` default-on |
 
-Sequence: **R1 → R3 (behind flag) → c6 → R4**. Total ~12-15 days end-to-end.
+Sequence: **R1 → R3 (behind flag) → c6 → R4**. R1–c6 shipped;
+R4 implemented on `feat/r4-async-overlap` but disproved at
+measurement (cutover cancelled, substrate retained as dGPU-
+revival precondition — see §5 for the full outcome and
+[[r4-async-igpu-outcome]] in memory).
 
 ---
 
@@ -235,6 +239,40 @@ Mirrors c4 / c5 precedent (handoff
 
 ## 5. R4 — Async pipelining of CPU mask + GPU matmul
 
+> **Status — TESTED 2026-05-26, FAILED ON iGPU.** Implementation
+> landed on `feat/r4-async-overlap`: profile cross-thread
+> aggregator (`f72dbc6`), engine async API + `MatmulToken`
+> (`294b70b`), substrate async API + `OffloadHandle` (`8d1271d`),
+> forward.rs prefill dispatch behind `GELO_ASYNC_OFFLOAD=1`
+> (`769b458`). The `r4_async_minibench` at Qwen3-1.7B B=2 n=256
+> measured flat-to-+3 % regression (1808.7 → 1802.7 ms one run,
+> 1698.0 → 1745.6 ms another — −0.33 % and +2.80 %). Mask
+> buckets unchanged, so substrate math is correct; the
+> regression is dispatch overhead (~+2 ms × ~56 dispatch calls
+> per forward).
+>
+> **Why the Q#2 spike (`bench-results/q2-radv-async-spike-2026-05-26_14-14-23`)
+> misled.** The spike ran cascade on a buffer unrelated to the
+> matmul and measured 58 % overlap. The real forward pass has
+> a strict serial dependency — `apply M_{i+1}` consumes the
+> unapplied output of `matmul M_i` — so there's nothing to hide
+> behind matmul-in-flight. The async dispatch path adds
+> bookkeeping (token allocation, closure capture, separate
+> submit + wait) with no offsetting overlap.
+>
+> **Disposition.** Branch + minibench retained; master holds no
+> R4 cutover (per commit `2381fd4`). The substrate is a
+> **precondition for dGPU revival** (PCIe DMA and GPU compute
+> are physically separate, so the overlap that vanished on UMA
+> reappears) and for **cross-prompt batching** (independent
+> forwards can interleave). Do not flip `GELO_ASYNC_OFFLOAD` on
+> iGPU; do not re-spike on iGPU without an architectural
+> change. Full retro in memory `r4-async-igpu-outcome` and
+> roadmap `gelo-llm-perf-roadmap.md` §4.D.
+>
+> The original design notes below are kept as the substrate
+> reference for future dGPU/cross-prompt revival.
+
 ### Problem
 
 Per-layer flow today alternates CPU mask work and GPU matmul:
@@ -313,12 +351,16 @@ async pipelining wasn't justified at our shape.
    committing R3 engineering. If the bucket measures < 30 s/forward,
    R3's priority drops — async pipelining (R4) wins better.
 
-2. **wgpu's `SubmissionFuture` semantics on RADV.** Some Vulkan
-   drivers serialise submissions despite the async API. Spike-
-   measure that R4's async dispatch actually overlaps CPU and GPU
-   work on this hardware. If RADV serialises, R4 is dead on this
-   substrate (still relevant for the dGPU path with proper async
-   support).
+2. **wgpu's `SubmissionFuture` semantics on RADV.** ❌ **Resolved
+   2026-05-26.** Spike measured 58 % overlap (so RADV does not
+   serialise submissions at the wgpu layer), but R4 still failed
+   in the real forward pass because the bottleneck wasn't
+   submission serialisation — it was the strict
+   apply→matmul→unapply→apply data dependency leaving nothing
+   to overlap. R4 is iGPU-dead for shape-independent reasons,
+   not because of RADV. The substrate stays relevant for dGPU
+   (PCIe pipelining) and cross-prompt batching. See §5 status
+   block above.
 
 3. **c6 capture infrastructure.** The existing AloePri snapshot
    capture in `evals/aloepri-attacks/` knows the M1.11 condition
@@ -331,20 +373,21 @@ async pipelining wasn't justified at our shape.
 
 ```
 1. M1.11 D2   — orchestrator rewire (1 day, headline 5× extraction)
-2. M1.11 R1.4 — batched-attention GPU kernel (2-3 days, largest perf bucket)
-3. M1.12 R1   — provision_decoder_into helper (1 day, cleanup + sets up R3)
-4. M1.12 R3   — LM-head GPU offload behind flag (~3 days)
+2. M1.11 R1.4 — batched-attention GPU kernel (2-3 days, largest perf bucket)  [aborted — see bucket_2_batched_gpu_attention_aborted]
+3. M1.12 R1   — provision_decoder_into helper (1 day, cleanup + sets up R3)   [shipped]
+4. M1.12 R3   — LM-head GPU offload behind flag (~3 days)                     [shipped]
 5. M1.12 c6   — AloePri spot-check (~3 days, gates LM-head default-flip)
-6. M1.12 R4   — async pipelining (5-8 days, biggest remaining structural lever)
+6. M1.12 R4   — async pipelining (5-8 days)                                   [tested 2026-05-26, no iGPU win — see §5]
 7. M1.11 D3   — c5 AloePri gate + crossover bench (3 days, default-flip)
 ```
 
-Total: ~17-22 days end-to-end. M1.11 D2 + R1.4 land first because
-they're outside M1.12 scope but smaller engineering with comparable
-impact. R1.4 specifically retires the in-TEE attention bucket,
-re-shapes the M1.12 profile baseline, and reduces the value of R4
-slightly (less CPU work left to overlap) — but the structural
-async-pipelining lever still matters at B=8+ shapes.
+Steps 1–6 shipped or resolved; R4 lived on `feat/r4-async-overlap`
+and didn't survive end-to-end measurement (no iGPU wall savings;
+substrate retained as dGPU-revival precondition).
+M1.11 D2 + R1.4 landed first because they're outside M1.12 scope
+but smaller engineering with comparable impact. R1.4 specifically
+was aborted at the Phase A spike (in-TEE attention vs batched GPU
+attention: 16× regression on iGPU).
 
 ---
 

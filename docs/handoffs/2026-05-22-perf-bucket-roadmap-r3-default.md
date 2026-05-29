@@ -2,7 +2,7 @@
 type: handoff
 status: current
 created: 2026-05-22
-updated: 2026-05-22
+updated: 2026-05-27
 tags: [m1.12, perf]
 ---
 
@@ -252,6 +252,24 @@ turns out dead on iGPU (Q#2 says RADV serialises), 3b becomes the
 only path to recover the prefill bucket structurally.
 
 ### 4. Async pipelining (M1.12 R4) — DECIDE BEFORE STARTING
+
+> **Resolved 2026-05-27.** R4 implemented end-to-end on
+> `feat/r4-async-overlap`, measured at production-like shape, and
+> failed: flat-to-+3 % regression on iGPU. The Q#2 spike's 58 %
+> overlap was a synthetic-harness artefact — the real forward
+> pass has a strict apply→matmul→unapply→apply serial dependency
+> with nothing to hide behind matmul-in-flight; the async
+> dispatch path adds ~2 ms × ~56 matmuls/forward of pure
+> bookkeeping. Cutover cancelled, master holds no R4 artefacts
+> (commit `2381fd4`). Substrate retained on the feat branch as
+> a dGPU-revival precondition (PCIe DMA + GPU compute are
+> physically separate, so the overlap reappears) and for
+> cross-prompt batching. Full retro: memory
+> `r4-async-igpu-outcome`; roadmap §4.D in
+> `docs/plans/gelo-llm-perf-roadmap.md`.
+>
+> The discussion below is preserved for historical context on
+> the decision rule that led into the test.
 
 Plan-estimated 25–30 % prefill wall via overlapping CPU mask (layer
 N+1) with GPU matmul (layer N).

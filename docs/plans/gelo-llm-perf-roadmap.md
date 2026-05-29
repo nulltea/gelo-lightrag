@@ -2,8 +2,8 @@
 type: plan
 status: current
 created: 2026-05-26
-updated: 2026-05-26
-tags: [gelo, perf]
+updated: 2026-05-27
+tags: [gelo, perf, d2-shipped]
 ---
 
 # GELO-LLM performance roadmap
@@ -56,13 +56,18 @@ tags: [gelo, perf]
    variance) and HD₃ bf16 regresses 2× (current bulk widen-narrow
    impl). The post-cascade-refactor L2-resident tile design
    already captured the bandwidth gains bf16 was meant to deliver.
+   §4.D R4 async overlap ❌ **tested 2026-05-26, no iGPU wall
+   win** — implementation on `feat/r4-async-overlap` measured
+   flat-to-+3 % regression at Qwen3-1.7B B=2 n=256; the Q#2 spike
+   (58 % overlap on a synthetic harness) didn't survive the
+   forward-pass strict serial data dependency. Branch retained
+   as infrastructure for dGPU revival + cross-prompt batching;
+   master has no R4 cutover ([[r4-async-igpu-outcome]]).
    Remaining iGPU work in EV order:
-   §3.1 #2 variance sweep (calibrates everything below),
-   Q#2 RADV-async spike → §4.D R4 async overlap (the next
-   ~15 % wall lever, if Q#2 clears), and dGPU substrate prep
-   (§4.B.2 / §4.C.2). Phase 1-3a infrastructure remains useful
-   for dGPU revival where bf16-native compute kernels change
-   the math.
+   §3.1 #2 variance sweep (calibrates everything below) and
+   dGPU substrate prep (§4.B.2 / §4.C.2). Phase 1-3a infrastructure
+   remains useful for dGPU revival where bf16-native compute
+   kernels change the math.
 
 ---
 
@@ -519,41 +524,55 @@ Cross-cuts buckets A and B by overlapping CPU mask (layer N+1)
 with GPU matmul (layer N). Doesn't fit any single bottleneck,
 so it gets its own bucket.
 
-**Gate — Q#2 RESOLVED 2026-05-26** (`bench-results/q2-radv-async-spike-2026-05-26_14-14-23`):
-PARTIAL OVERLAP measured. burn-tensor exposes `into_data_async`
-under the hood so wgpu submit is non-blocking by design — the
-question reduced to bus contention on Strix Halo UMA. Result:
+**Status — TESTED 2026-05-26, FAILED ON iGPU.** Implementation
+landed on `feat/r4-async-overlap` (engine async API +
+`MatmulToken`, substrate async API + `OffloadHandle`, forward.rs
+prefill dispatch behind `GELO_ASYNC_OFFLOAD=1`). Production-shape
+minibench measured no wall savings; cutover cancelled, master
+holds no R4 artefacts ([[r4-async-igpu-outcome]]).
 
-| Regime | Wall (n=2056, d=2560, d_out=2560) |
-|---|---:|
-| T_gpu (engine.matmul alone) | 19.08 ms ± 0.42 |
-| T_cpu (DCT-IV cascade alone) | 10.02 ms ± 0.23 |
-| T_concurrent (both via std::thread) | 23.26 ms ± 0.84 |
-| Speedup vs serial | **1.25×** |
-| Wall saved | **5.84 ms = 58.3 % of min(T_cpu, T_gpu)** |
+**Why the Q#2 spike misled.** The spike
+(`bench-results/q2-radv-async-spike-2026-05-26_14-14-23`) ran
+mask cascade on a buffer unrelated to the matmul and measured
+1.25× concurrent speedup (~58 % overlap). The real forward pass
+has a strict serial data dependency: `apply M_{i+1}` consumes
+the unapplied output of matmul `M_i`. Nothing to hide behind
+matmul-in-flight; the async dispatch path adds ~2 ms/matmul of
+bookkeeping (token allocation, closure capture, separate submit
++ wait calls) that's pure overhead.
 
-CPU runs at ~58 % efficiency under concurrent GPU load. Well
-above the "weak" threshold; in the "partial overlap, R4 viable"
-band. **R4 green-lit.**
+**Measurements** (`r4_async_minibench`, Qwen3-1.7B B=2 n=256,
+RADV gfx1151):
 
-**Impact estimate (refreshed by measurement)**:
+| Run | sync (ms) | async (ms) | delta |
+|---|---:|---:|---:|
+| 2026-05-26 17:44 | 1808.7 ± 8.3 | 1802.7 ± 12.5 | −0.33 % (noise) |
+| 2026-05-26 20:22 | 1698.0 ± 13.6 | 1745.6 ± 9.8 | +2.80 % (outside noise) |
 
-| Substrate | Estimate | Reason |
-|---|---|---|
-| iGPU (UMA) | **~12 % wall** at production prefill | Mask bucket 20 % × 58 % overlap × applicable shapes |
-| dGPU (PCIe) | ~25-30 % wall | PCIe DMA + GPU matmul are physically separate; no shared-bus contention |
+Profile-bucket diff at run 20:22: async engine bucket = sync
++ 98 ms ≈ +2 ms × 56 dispatch calls. Mask buckets unchanged
+across conditions — substrate math is correct; the regression
+is dispatch overhead only.
 
-**Engineering**: 5-8 days substrate refactor — add
-`engine.matmul_async` + `engine.read_result` to the trait,
-expose async path through substrate `offload_linear_async`,
-pipeline forward.rs to issue layer N's matmul before computing
-layer N+1's mask cascade.
+**Disposition**:
 
-**Order interaction** (revised): §4.E bf16 activation pipeline
-was deprioritised 2026-05-26 (microbench-disconfirmed). R4 is
-now the next legitimate iGPU lever. The 5-8 day investment is
-justified by the 12 % wall projection — at production shape
-135 s → 119 s prefill.
+- **iGPU**: no perf use. `GELO_ASYNC_OFFLOAD` stays default-off
+  on the feature branch; do not cut over.
+- **dGPU revival** (§4.B.2 / §4.C.2): the async substrate is a
+  precondition — PCIe DMA and GPU compute are physically
+  separate, so the overlap that vanished on UMA reappears.
+  Branch retained for that future.
+- **Cross-prompt batching**: independent forwards can interleave
+  the async path; another future use case for the substrate.
+
+**Caveat on shape sensitivity.** Numbers above are Qwen3-1.7B
+B=2 n=256. Per-matmul wall at production shape (Qwen3-4B B=8
+n=2048) is ~5-10× larger; the +2 ms/matmul overhead would
+represent a smaller share. The regression may shrink to flat
+at production shape — but the *upside* is still zero in the
+strict serial chain, so production-shape async is at best
+break-even. Don't re-spike on iGPU without an architectural
+change (cross-prompt batching, dGPU substrate).
 
 ### §4.E bf16 / activation precision (cross-cutting)
 
@@ -592,8 +611,12 @@ Multi-week phase 3b (substrate offload_linear_bf16) and phase 3c
 (forward.rs wire-up) are NOT WORTH PURSUING on iGPU. The
 infrastructure landed across phases 1-3a remains useful for the
 dGPU substrate revival (dGPU has bf16-native compute kernels via
-cuBLAS, so the precision story flips). On iGPU, the next iGPU
-lever is **Q#2 RADV-async spike → R4 async overlap** (§4.D).
+cuBLAS, so the precision story flips). On iGPU, §4.D R4 async
+overlap was the next candidate but also failed at measurement
+(see §4.D for outcome). The next legitimate iGPU work is the
+§3.1 #2 variance sweep + dGPU substrate prep — no more
+single-lever iGPU prefill wins remain above the ~7 % variance
+floor.
 
 #### §4.E.1 Inner-kernel rewrite (FWHT + DCT-IV in bf16)
 
@@ -696,7 +719,7 @@ floor (~7 % at long-n); single-cell estimates are gated on
 | **§4.A.2 HD₃ mask** | column-axis FWHT | < 2 % decode; < 8 % long-n prefill (subsumed by §4.E.1) | (inherited from iGPU) | (no separate dGPU lever) |
 | **§4.B GPU matmul** | substrate prereqs (B≥16) | aggregate-tok/s only | persistent K/V upload elision; Q4 weights | ~40× ceiling |
 | **§4.C In-TEE attention** | none — aborted | 0 % | bucket-2 revival + GQA WGSL + persistent K/V | 53.9 % → ~10-20 % decode |
-| **§4.D Compute pipelining (R4)** | async overlap (gated Q#2) | ~15 % wall iGPU best | async overlap | ~25-30 % wall |
+| **§4.D Compute pipelining (R4)** | async overlap ❌ tested, failed | flat-to-+3 % regression (no upside in strict serial chain) | async overlap (substrate retained) | ~25-30 % wall |
 | **§4.E bf16 / activation precision** | E.1 inner kernel → E.3 end-to-end | 3-10 % direct + structural | prerequisite for §4.C.2 | unblocks dGPU C |
 | **§4.F Misc TEE ops** | parked | < 2 % | parked | < 2 % |
 
@@ -716,7 +739,7 @@ levers compound with §4.B.2 and §4.E.3.
 | Decision | Gated by | Outcome |
 |---|---|---|
 | Top mask-bucket lever | §3.1 #1 long-n HD₃ cells | Picks §4.A.1 DCT-IV vs §4.A.2 HD₃ work |
-| Whether R4 ships at all (§4.D) | Q#2 RADV-async spike | If RADV serialises, R4 dead on iGPU — skip to §4.E + dGPU prerequisites |
+| Whether R4 ships at all (§4.D) | ❌ resolved 2026-05-26 | Tested on `feat/r4-async-overlap`: no iGPU win (forward-pass serial-dependency chain leaves nothing to overlap). Substrate retained for dGPU revival only ([[r4-async-igpu-outcome]]). |
 | dGPU persistent K/V cover design | Option I vs Option G security spikes | Whichever clears first defines the dGPU revival path |
 | Bucket 3a / threads-dispatch — keep or delete | Production decision on Haar | Currently inert; safe to leave in tree but don't invest further |
 | M5.9 hardware procurement timeline | Out-of-band (business) | Sets dGPU calendar |
@@ -729,7 +752,7 @@ levers compound with §4.B.2 and §4.E.3.
 |---|---|
 | §4.A.1 DCT-IV refactor shows < 20 % bucket reduction in spike | Drop the refactor; try the alternative design (transpose vs block-strided) or escalate to a custom DCT-IV kernel (out of v1 scope). |
 | §4.E.3 bf16 activations introduces numerical regression | `m1-12-bf16-activation-pipeline.md` §1.3 specifies parity contract (bf16-floor 1e-3 abs, greedy token stability). Re-baseline tests are part of the deliverable. |
-| §4.D R4 async pipelining shows no win on iGPU | Q#2 spike (½ day) decides before engineering commits. iGPU-specific; dGPU has its own async story. |
+| §4.D R4 async pipelining shows no win on iGPU | ❌ realised 2026-05-26. Full implementation on `feat/r4-async-overlap` measured flat-to-+3 %; substrate retained as dGPU-revival precondition, master holds no R4 cutover. |
 | §4.C.2 Option I σ-vs-N curve exceeds model tolerance | Option G parallel spike. If neither clears, persistent K/V is impossible; full §4.C.2 falls to bucket-2-equivalent without K/V persistence, ceiling ~25 tok/s instead of 40+. |
 
 ### §6.3 Hardware risks
@@ -757,12 +780,16 @@ orchestrator / paper-research. Captured here to keep the
 roadmap honest about what's a perf lever vs what's a separate
 workstream.
 
-- **D2 orchestrator rewire** — substrate landed in
-  `gelo-embedder::DecoderRuntime::generate_extraction_batched`;
-  remaining edit in `lightrag-private::extract_kg_from_chunks`.
-  Realises 5× end-to-end extraction wall on the v7 fixture. Not
-  Gelo-LLM scope. Plan: [`m1-11-batched-decode.md`](m1-11-batched-decode.md);
-  handoff: [`2026-05-22-q3-4b-b8-mask-sweep.md`](../handoffs/2026-05-22-q3-4b-b8-mask-sweep.md) §"Status on M1.11".
+- **D2 orchestrator rewire** ✅ **shipped 2026-05-27** (commit
+  `d241a7a`). `extract_kg_from_chunks` now dispatches in adaptive
+  sub-batches of `cfg.extraction_batch_size` (default 8) through
+  `ExtractionDecoder::generate_extraction_batched`. v7 fixture
+  measured **578.83 s extract_kg wall** vs ~2 401 s pre-rewire
+  sequential extrapolation = **4.15×**, beats m1-11 §6 per-seq A_b
+  projection (~700-900 s) by 14-28 %. Not Gelo-LLM scope. Plan:
+  [`m1-11-batched-decode.md`](m1-11-batched-decode.md) §8 #12;
+  bench log:
+  `bench-results/d2-extract-bench-2026-05-27_11-55-00.log`.
 - **Varlen / chunked batching** — per-sequence orchestration for
   ragged sequences. Zero win in identical-length bench; ~10-30 %
   per-prompt wall in production extraction with variable chunks.

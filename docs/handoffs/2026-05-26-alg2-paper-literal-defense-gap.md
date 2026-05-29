@@ -140,7 +140,7 @@ This is a narrower paper-faithful variant that captures most of the defense gain
 
 ### 5. Re-deploy decision
 
-If accuracy holds under (3) AND A1+A2 give the measured defense gain, the recommended path-2 deployment would require an explicit hardening decision beyond paper (`--alg2-paper-literal-k-no-r`), not a silent migration from default Alg2 across all future Q3-4B / Q3-8B / Q2.5-14B obfuscation runs. The deployed cell becomes the no-R experimental variant; the prior CAVEAT in `alg2.py:244-262` becomes wrong (deliberate non-covariance was the bug, not the feature). HTML §08 + theorem doc need updating to reflect the recommended construction.
+If accuracy doesn't hold under (3) no-R AND A1+A2 give the measured defense gain, the recommended AloePri deployment would require an explicit hardening decision beyond paper (`--alg2-paper-literal-k-no-r`), not a silent migration from default Alg2 across all future Q3-4B / Q3-8B / Q2.5-14B obfuscation runs. The deployed cell becomes the no-R experimental variant; the prior CAVEAT in `alg2.py:244-262` becomes wrong (deliberate non-covariance was the bug, not the feature). HTML §08 + theorem doc need updating to reflect the recommended construction.
 
 > Deployment recommendations that flowed from these measurements live in [`docs/archive/handoffs/2026-05-26-aloepri-recommendations.md`](../archive/handoffs/2026-05-26-aloepri-recommendations.md).
 
