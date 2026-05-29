@@ -575,6 +575,22 @@ pub trait GpuOffloadEngine: Send {
         Err(anyhow!("kv_attend: unsupported"))
     }
 
+    /// **Partial-stats attend** (Phase 3, decode tail-in-TEE): like
+    /// [`Self::kv_attend`] but returns the *unnormalised* online-softmax
+    /// state `(acc, m, l)` over the resident prefix instead of the
+    /// normalised context, so the TEE can merge the in-TEE tail
+    /// (`attention_partial` + `merge_attention_partials`) — keeping the
+    /// freshest tokens off the GPU (closes the write-location channel).
+    /// `acc (h_q, n_q, d)`, `m`/`l (h_q, n_q, 1)`. Default: unsupported.
+    fn kv_attend_partial(
+        &self,
+        _id: KvSessionId,
+        _q: ArrayView3<f32>,
+        _scale: f32,
+    ) -> Result<(Array3<f32>, Array3<f32>, Array3<f32>)> {
+        Err(anyhow!("kv_attend_partial: unsupported"))
+    }
+
     /// Replace the resident cache with a fresh `(heads, n_kv, d_head)`
     /// K/V (e.g. after the TEE re-applies the block cover) and reset len.
     fn kv_refresh_block(

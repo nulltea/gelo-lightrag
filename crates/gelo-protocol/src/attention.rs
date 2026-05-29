@@ -558,6 +558,81 @@ pub(crate) fn sample_orthogonal<R: RngCore>(d: usize, rng: &mut R) -> Array2<f32
     m
 }
 
+/// In-TEE partial attention (perm-attn-gpu-offload Phase 3, the tail
+/// side of the prefix/tail split). Returns the *unnormalised* online-
+/// softmax state `(acc, m, l)` over `k`/`v` for query `q` — same contract
+/// as the engine's `attend_session_partial`, computed on the CPU for the
+/// ≤N freshest tokens that stay in the TEE. Shapes: `q (h, n_q, d)`,
+/// `k`/`v (h, n_t, d)` → `acc (h, n_q, d)`, `m`/`l (h, n_q, 1)`.
+pub fn attention_partial(
+    q: ArrayView3<'_, f32>,
+    k: ArrayView3<'_, f32>,
+    v: ArrayView3<'_, f32>,
+    scale: f32,
+) -> (Array3<f32>, Array3<f32>, Array3<f32>) {
+    let (h, n_q, d) = q.dim();
+    let n_t = k.dim().1;
+    let mut acc = Array3::<f32>::zeros((h, n_q, d));
+    let mut m = Array3::<f32>::zeros((h, n_q, 1));
+    let mut l = Array3::<f32>::zeros((h, n_q, 1));
+    for hi in 0..h {
+        for i in 0..n_q {
+            // scores_j = scale · <q[hi,i], k[hi,j]>
+            let mut mx = f32::NEG_INFINITY;
+            let mut scores = vec![0.0f32; n_t];
+            for j in 0..n_t {
+                let mut dot = 0.0f32;
+                for c in 0..d {
+                    dot += q[(hi, i, c)] * k[(hi, j, c)];
+                }
+                scores[j] = dot * scale;
+                mx = mx.max(scores[j]);
+            }
+            let mut sum = 0.0f32;
+            for j in 0..n_t {
+                let e = (scores[j] - mx).exp();
+                sum += e;
+                for c in 0..d {
+                    acc[(hi, i, c)] += e * v[(hi, j, c)];
+                }
+            }
+            m[(hi, i, 0)] = mx;
+            l[(hi, i, 0)] = sum;
+        }
+    }
+    (acc, m, l)
+}
+
+/// Merge two unnormalised online-softmax partials `(acc, m, l)` into the
+/// final normalised attention output — the TEE-side step that combines
+/// the GPU's resident-prefix partial with the in-TEE tail partial
+/// (FlashAttention's exact running-stats merge). All inputs `(h, n_q, d)`
+/// for `acc`, `(h, n_q, 1)` for `m`/`l`; returns `(h, n_q, d)`.
+pub fn merge_attention_partials(
+    acc1: ArrayView3<'_, f32>,
+    m1: ArrayView3<'_, f32>,
+    l1: ArrayView3<'_, f32>,
+    acc2: ArrayView3<'_, f32>,
+    m2: ArrayView3<'_, f32>,
+    l2: ArrayView3<'_, f32>,
+) -> Array3<f32> {
+    let (h, n_q, d) = acc1.dim();
+    let mut out = Array3::<f32>::zeros((h, n_q, d));
+    for hi in 0..h {
+        for i in 0..n_q {
+            let mm = m1[(hi, i, 0)].max(m2[(hi, i, 0)]);
+            let e1 = (m1[(hi, i, 0)] - mm).exp();
+            let e2 = (m2[(hi, i, 0)] - mm).exp();
+            let ll = l1[(hi, i, 0)] * e1 + l2[(hi, i, 0)] * e2;
+            let inv = if ll > 0.0 { 1.0 / ll } else { 0.0 };
+            for c in 0..d {
+                out[(hi, i, c)] = (acc1[(hi, i, c)] * e1 + acc2[(hi, i, c)] * e2) * inv;
+            }
+        }
+    }
+    out
+}
+
 /// Add `N(0, σ²·I)` noise to a 3D view element-wise.
 ///
 /// On small tensors stays single-threaded scalar (rayon work-stealing

@@ -6,10 +6,11 @@
 //!
 //! Requires a Vulkan device (skips cleanly if none is available).
 
-use ndarray::{Array3, Axis, concatenate};
+use ndarray::{Array3, Axis, concatenate, s};
 
 use gelo_gpu_wgpu::WgpuVulkanEngine;
 use gelo_protocol::GpuOffloadEngine;
+use gelo_protocol::attention::{attention_partial, merge_attention_partials};
 
 const H: usize = 8; // kv heads
 const D: usize = 128; // head_dim
@@ -130,6 +131,89 @@ fn kv_session_gqa_broadcast_matches_expanded() {
         "un-replicated GQA broadcast must match expanded reference: drift={drift}",
     );
     engine.kv_drop_session(id).ok();
+}
+
+fn normalize_partial(acc: &Array3<f32>, l: &Array3<f32>) -> Array3<f32> {
+    let (h, nq, d) = acc.dim();
+    let mut out = Array3::<f32>::zeros((h, nq, d));
+    for hi in 0..h {
+        for i in 0..nq {
+            let inv = 1.0 / l[(hi, i, 0)];
+            for c in 0..d {
+                out[(hi, i, c)] = acc[(hi, i, c)] * inv;
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn kv_session_partial_normalized_matches_fused() {
+    // Phase-3 partial-stats: attend_session_partial returns (acc,m,l);
+    // acc/l (normalised) must match the full fused attention.
+    let engine = match WgpuVulkanEngine::new_fp16() {
+        Ok(e) => e,
+        Err(_) => {
+            eprintln!("[skip] no Vulkan fp16 device");
+            return;
+        }
+    };
+    let scale = 1.0_f32 / (D as f32).sqrt();
+    let n_kv = 40;
+    let k = fill(H, n_kv, D, 1);
+    let v = fill(H, n_kv, D, 2);
+    let q = fill(H, 1, D, 3);
+    let session = engine.create_kv_session(k.view(), v.view(), n_kv).expect("create");
+    let (acc, _m, l) = engine
+        .attend_session_partial(q.view(), &session, scale)
+        .expect("partial");
+    let out = normalize_partial(&acc, &l);
+    let out_ref = engine
+        .fused_attention_batched(q.view(), k.view(), v.view(), scale, None)
+        .expect("fused");
+    let drift = max_abs_diff(&out, &out_ref);
+    assert!(drift < 5e-2, "partial-stats acc/l must match fused: drift={drift}");
+}
+
+#[test]
+fn kv_session_partial_tail_merge_matches_full() {
+    // The full tail-in-TEE step: GPU partial over the prefix + in-TEE
+    // partial over the tail + merge must equal attention over the full
+    // K/V (the write-channel-closing decode path).
+    let engine = match WgpuVulkanEngine::new_fp16() {
+        Ok(e) => e,
+        Err(_) => {
+            eprintln!("[skip] no Vulkan fp16 device");
+            return;
+        }
+    };
+    let scale = 1.0_f32 / (D as f32).sqrt();
+    let (n_kv, n_tail) = (40usize, 8usize);
+    let n_prefix = n_kv - n_tail;
+    let k = fill(H, n_kv, D, 1);
+    let v = fill(H, n_kv, D, 2);
+    let q = fill(H, 1, D, 3);
+    let k_prefix = k.slice(s![.., 0..n_prefix, ..]).to_owned();
+    let v_prefix = v.slice(s![.., 0..n_prefix, ..]).to_owned();
+    let k_tail = k.slice(s![.., n_prefix..n_kv, ..]).to_owned();
+    let v_tail = v.slice(s![.., n_prefix..n_kv, ..]).to_owned();
+
+    let session = engine
+        .create_kv_session(k_prefix.view(), v_prefix.view(), n_kv)
+        .expect("create");
+    let (acc_g, m_g, l_g) = engine
+        .attend_session_partial(q.view(), &session, scale)
+        .expect("gpu partial");
+    let (acc_t, m_t, l_t) = attention_partial(q.view(), k_tail.view(), v_tail.view(), scale);
+    let out = merge_attention_partials(
+        acc_g.view(), m_g.view(), l_g.view(),
+        acc_t.view(), m_t.view(), l_t.view(),
+    );
+    let out_ref = engine
+        .fused_attention_batched(q.view(), k.view(), v.view(), scale, None)
+        .expect("fused full");
+    let drift = max_abs_diff(&out, &out_ref);
+    assert!(drift < 5e-2, "prefix(GPU)+tail(TEE) merge must match full: drift={drift}");
 }
 
 #[test]

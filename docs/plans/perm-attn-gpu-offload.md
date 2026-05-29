@@ -202,11 +202,18 @@ the gates already cover.** Per-step residual signals — the covered `q_t`
 upload (fixed scratch slot, no cache position) and the `(m,l,acc)`
 download (aggregate, no per-key info) — don't reopen it.
 
-**Performance.** Tail-in-TEE is **neutral-to-faster** per step (≈0.48 ms
-est. vs 0.66 ms tail-on-GPU): it drops the per-step append round-trip
-(~0.20 ms) and adds only the ≤N-token in-TEE tail attention (microseconds
-at N=16–64) + the merge (microseconds). Its real cost is *engineering*
-(the partial-stats kernel), not runtime. (Estimate; tail + merge unmeasured.)
+**Performance (MEASURED 2026-05-29 — corrects the earlier estimate;
+`bench-results/phase3-tailtee-5090-2026-05-29.log`).** Tail-in-TEE
+(`gpu_resident_partial_tailtee_b8`) = **0.71 ms/step @ n_kv=2048**, i.e.
+**16× under in-TEE (11.25 ms)** — but **~1.5× *slower* than tail-on-GPU**
+(0.46 ms), *not* the neutral-to-faster I'd estimated. The overhead is the
+**naive scalar in-TEE `attention_partial`** (256 heads × N=16 tail tokens,
+un-vectorised) + the **3-tensor partial readback** (`acc,m,l` — 3 syncs vs
+1), not the merge. So the mandatory write-channel fix costs ~0.25 ms/step
+vs the insecure path, but is **cheap in absolute terms (16× headroom)**.
+Optimisable (BLAS the tail GEMM; batch the readback in one `Transaction`).
+Parity verified: prefix(GPU)+tail(TEE) merge == full attention at fp16
+floor (`kv_session_partial_tail_merge_matches_full`).
 
 **Alternatives are worse:** random-slot writes still leak via write order;
 full-cache rewrite-per-step defeats persistence; ORAM-style decoy writes

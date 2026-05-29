@@ -336,22 +336,61 @@ impl WgpuVulkanEngine {
         scale: f32,
     ) -> Result<Array3<f32>> {
         let (h_q, _nq, d) = q.dim();
+        let q_t = array3_to_tensor_f16(q, &self.device);
+        let (k_act, v_act) = self.resident_kv_expanded(session, h_q, d)?;
+        let scores = q_t.matmul(k_act.permute([0, 2, 1])).mul_scalar(scale);
+        let probs = activation::softmax(scores, 2);
+        tensor3_to_array_f16(probs.matmul(v_act))
+    }
+
+    /// **Partial-stats attend** (perm-attn-gpu-offload Phase 3, decode
+    /// tail-in-TEE). Returns the *unnormalised* online-softmax state over
+    /// the resident prefix — `(acc, m, l)` with `acc = Σ exp(s−m)·V`,
+    /// `m = max_j s_j`, `l = Σ exp(s−m)` — instead of the normalised
+    /// context. The TEE merges this with the in-TEE tail's partial
+    /// (`merge_attention_partials`) so the freshest ≤N tokens never reach
+    /// the GPU (closes the per-step write-location side channel). Composed
+    /// from burn primitives — no custom kernel; at decode (n_q=1, tiny
+    /// scores) the non-fused form is fine. Shapes: `acc (h_q, n_q, d)`,
+    /// `m`/`l` `(h_q, n_q, 1)`.
+    pub fn attend_session_partial(
+        &self,
+        q: ArrayView3<'_, f32>,
+        session: &ResidentKvSession,
+        scale: f32,
+    ) -> Result<(Array3<f32>, Array3<f32>, Array3<f32>)> {
+        let (h_q, _nq, d) = q.dim();
+        let q_t = array3_to_tensor_f16(q, &self.device);
+        let (k_act, v_act) = self.resident_kv_expanded(session, h_q, d)?;
+        let scores = q_t.matmul(k_act.permute([0, 2, 1])).mul_scalar(scale);
+        let m = scores.clone().max_dim(2);
+        let shifted = scores.sub(m.clone()).exp();
+        let l = shifted.clone().sum_dim(2);
+        let acc = shifted.matmul(v_act);
+        Ok((
+            tensor3_to_array_f16(acc)?,
+            tensor3_to_array_f16(m)?,
+            tensor3_to_array_f16(l)?,
+        ))
+    }
+
+    /// Slice the resident K/V to `[0..len]` and GQA-broadcast un-replicated
+    /// kv heads up to `h_q` query heads (interleaved, on-device). Shared by
+    /// `attend_session` / `attend_session_partial`.
+    fn resident_kv_expanded(
+        &self,
+        session: &ResidentKvSession,
+        h_q: usize,
+        d: usize,
+    ) -> Result<(Tensor<CubeWgpu16, 3>, Tensor<CubeWgpu16, 3>)> {
         let h_kv = session.k_t.dims()[0];
         let len = session.len;
-        let q_t = array3_to_tensor_f16(q, &self.device);
         let mut k_act = session.k_t.clone().slice([0..h_kv, 0..len, 0..d]);
         let mut v_act = session.v_t.clone().slice([0..h_kv, 0..len, 0..d]);
-        // GQA broadcast: when K/V are stored **un-replicated** (h_kv kv
-        // heads) but Q has h_q query heads, expand each kv head across
-        // its group of q heads on-device — q head `qh` uses kv head
-        // `qh / group` (interleaved). This keeps upload/storage 4×
-        // smaller (the gate-1 re-permute win) while the compute still
-        // sees the expanded view; the Phase-3 kernel folds this
-        // broadcast into the shader (no re-materialisation).
         if h_q != h_kv {
             if h_q % h_kv != 0 {
                 return Err(anyhow!(
-                    "attend_session: q heads {h_q} not a multiple of kv heads {h_kv}"
+                    "resident_kv_expanded: q heads {h_q} not a multiple of kv heads {h_kv}"
                 ));
             }
             let group = h_q / h_kv;
@@ -364,11 +403,7 @@ impl WgpuVulkanEngine {
                 .repeat_dim(1, group)
                 .reshape([h_q, len, d]);
         }
-        let kt = k_act.permute([0, 2, 1]);
-        let scores = q_t.matmul(kt).mul_scalar(scale);
-        let probs = activation::softmax(scores, 2);
-        let out = probs.matmul(v_act);
-        tensor3_to_array_f16(out)
+        Ok((k_act, v_act))
     }
 }
 
@@ -712,6 +747,19 @@ impl GpuOffloadEngine for WgpuVulkanEngine {
             .get(&id)
             .ok_or_else(|| anyhow!("kv_attend: unknown session {id}"))?;
         self.attend_session(q, s, scale)
+    }
+
+    fn kv_attend_partial(
+        &self,
+        id: KvSessionId,
+        q: ArrayView3<'_, f32>,
+        scale: f32,
+    ) -> Result<(Array3<f32>, Array3<f32>, Array3<f32>)> {
+        let map = self.sessions.lock().expect("sessions mutex");
+        let s = map
+            .get(&id)
+            .ok_or_else(|| anyhow!("kv_attend_partial: unknown session {id}"))?;
+        self.attend_session_partial(q, s, scale)
     }
 
     fn kv_refresh_block(

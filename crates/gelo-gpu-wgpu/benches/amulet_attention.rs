@@ -55,6 +55,7 @@ use gelo_embedder::decoder::attention::{
     causal_gqa_attention_cached, causal_gqa_attention_permuted_cached,
 };
 use gelo_gpu_wgpu::WgpuVulkanEngine;
+use gelo_protocol::attention::{attention_partial, merge_attention_partials};
 use gelo_protocol::{GpuOffloadEngine, InProcessTrustedExecutor, PermAttnConfig, rng::MaskSeed};
 use ndarray::{Array2, Array3};
 use rand::{Rng, SeedableRng};
@@ -529,6 +530,48 @@ fn r1_4_bench(c: &mut Criterion) {
                         let mut vf = vec![f16::ZERO; vs_f32.len()];
                         vf.convert_from_f32_slice(black_box(vs_f32));
                         black_box((kf, vf));
+                    });
+                },
+            );
+        }
+
+        // ─── Variant 7: Phase-3 tail-in-TEE decode step ─────────────
+        //
+        // The full write-channel-closing decode step: GPU partial-stats
+        // attend over the resident prefix + in-TEE attention over an N=16
+        // plaintext tail + the online-softmax merge. Compared to
+        // gpu_resident_append_b8 (tail-on-GPU), this drops the per-step
+        // append round-trip; the tail + merge are CPU and tiny.
+        {
+            let engine = base_engine.clone_shared();
+            let scale = 1.0_f32 / (D_HEAD_4B as f32).sqrt();
+            let (q_st, k_st, v_st) = stack_for_engine(&qs, &ks, &vs);
+            let session = engine
+                .create_kv_session(k_st.view(), v_st.view(), n_kv)
+                .expect("create_kv_session");
+            let n_tail = 16.min(n_kv);
+            let tail_k = k_st.slice(ndarray::s![.., 0..n_tail, ..]).to_owned();
+            let tail_v = v_st.slice(ndarray::s![.., 0..n_tail, ..]).to_owned();
+
+            group.bench_with_input(
+                BenchmarkId::new("gpu_resident_partial_tailtee_b8", n_kv),
+                &n_kv,
+                |bencher, _| {
+                    bencher.iter(|| {
+                        let (acc_g, m_g, l_g) = engine
+                            .attend_session_partial(black_box(q_st.view()), &session, scale)
+                            .expect("partial");
+                        let (acc_t, m_t, l_t) = attention_partial(
+                            black_box(q_st.view()),
+                            tail_k.view(),
+                            tail_v.view(),
+                            scale,
+                        );
+                        let out = merge_attention_partials(
+                            acc_g.view(), m_g.view(), l_g.view(),
+                            acc_t.view(), m_t.view(), l_t.view(),
+                        );
+                        black_box(out);
                     });
                 },
             );
