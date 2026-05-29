@@ -285,12 +285,23 @@ pub trait GpuOffloadEngine: Send {
         if request.handles.is_empty() {
             return Ok(Vec::new());
         }
-        match request.input {
+        // Trace by GPU dispatch fan-out: a single-weight offload (O,
+        // FfnDown) is `engine:matmul`; a fused bundle (QKV, gate∥up) is
+        // `engine:matmul_many`. Both route through `matmul_many` since
+        // the registered-linear refactor, so fan-out is the only thing
+        // that separates them — labelling here keeps the two GPU paths
+        // distinct in the profile instead of merged under one bucket.
+        let label = if request.handles.len() == 1 {
+            "engine:matmul"
+        } else {
+            "engine:matmul_many"
+        };
+        crate::profile::time(label, || match request.input {
             RegisteredLinearInput::F32(input) => self.matmul_many(request.handles, input),
             RegisteredLinearInput::Bf16(input) => {
                 self.matmul_many_bf16_input(request.handles, input)
             }
-        }
+        })
     }
 
     /// **R4 async** sibling of [`Self::matmul`]. Issues the GPU work

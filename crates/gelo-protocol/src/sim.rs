@@ -1316,11 +1316,9 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
         let concat_masked = self.build_per_sequence_masked(hidden, &masks, batch_size, data_n);
 
         let handles = [handle];
-        let mut concat_outs = profile::time("engine:registered_linear", || {
-            self.engine.run_registered_linear(RegisteredLinearBatch {
-                handles: &handles,
-                input: RegisteredLinearInput::F32(concat_masked.view()),
-            })
+        let mut concat_outs = self.engine.run_registered_linear(RegisteredLinearBatch {
+            handles: &handles,
+            input: RegisteredLinearInput::F32(concat_masked.view()),
         })?;
         anyhow::ensure!(
             concat_outs.len() == 1,
@@ -1373,11 +1371,9 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
             WeightHandle::new(layer, WeightKind::K),
             WeightHandle::new(layer, WeightKind::V),
         ];
-        let qkv_out = profile::time("engine:registered_linear", || {
-            self.engine.run_registered_linear(RegisteredLinearBatch {
-                handles: &handles,
-                input: RegisteredLinearInput::F32(concat_masked.view()),
-            })
+        let qkv_out = self.engine.run_registered_linear(RegisteredLinearBatch {
+            handles: &handles,
+            input: RegisteredLinearInput::F32(concat_masked.view()),
         })?;
         anyhow::ensure!(
             qkv_out.len() == 3,
@@ -1456,11 +1452,9 @@ impl<E: GpuOffloadEngine> InProcessTrustedExecutor<E> {
         };
         let concat_masked = self.build_per_sequence_masked(hidden, &masks, batch_size, data_n);
 
-        let masked_outs = profile::time("engine:registered_linear", || {
-            self.engine.run_registered_linear(RegisteredLinearBatch {
-                handles,
-                input: RegisteredLinearInput::F32(concat_masked.view()),
-            })
+        let masked_outs = self.engine.run_registered_linear(RegisteredLinearBatch {
+            handles,
+            input: RegisteredLinearInput::F32(concat_masked.view()),
         })?;
         anyhow::ensure!(
             masked_outs.len() == handles.len(),
@@ -1822,11 +1816,9 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         }
         let (mask, masked, n_data) = self.build_shielded_and_apply(hidden);
         let handles = [handle];
-        let mut masked_outs = profile::time("engine:registered_linear", || {
-            self.engine.run_registered_linear(RegisteredLinearBatch {
-                handles: &handles,
-                input: RegisteredLinearInput::F32(masked.view()),
-            })
+        let mut masked_outs = self.engine.run_registered_linear(RegisteredLinearBatch {
+            handles: &handles,
+            input: RegisteredLinearInput::F32(masked.view()),
         })?;
         anyhow::ensure!(
             masked_outs.len() == 1,
@@ -1889,11 +1881,9 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
             WeightHandle::new(layer, WeightKind::K),
             WeightHandle::new(layer, WeightKind::V),
         ];
-        let qkv_out = profile::time("engine:registered_linear", || {
-            self.engine.run_registered_linear(RegisteredLinearBatch {
-                handles: &handles,
-                input: RegisteredLinearInput::F32(masked.view()),
-            })
+        let qkv_out = self.engine.run_registered_linear(RegisteredLinearBatch {
+            handles: &handles,
+            input: RegisteredLinearInput::F32(masked.view()),
         })?;
         anyhow::ensure!(
             qkv_out.len() == 3,
@@ -1979,11 +1969,9 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
         }
         let (mask, masked, n_data) = self.build_shielded_and_apply(hidden);
 
-        let masked_outs = profile::time("engine:registered_linear", || {
-            self.engine.run_registered_linear(RegisteredLinearBatch {
-                handles,
-                input: RegisteredLinearInput::F32(masked.view()),
-            })
+        let masked_outs = self.engine.run_registered_linear(RegisteredLinearBatch {
+            handles,
+            input: RegisteredLinearInput::F32(masked.view()),
         })?;
         anyhow::ensure!(
             masked_outs.len() == handles.len(),
@@ -2181,11 +2169,9 @@ impl<E: GpuOffloadEngine> TrustedExecutor for PlaintextExecutor<E> {
         hidden: ArrayView2<f32>,
     ) -> Result<Array2<f32>> {
         let handles = [handle];
-        let mut outputs = profile::time("engine:registered_linear", || {
-            self.engine.run_registered_linear(RegisteredLinearBatch {
-                handles: &handles,
-                input: RegisteredLinearInput::F32(hidden),
-            })
+        let mut outputs = self.engine.run_registered_linear(RegisteredLinearBatch {
+            handles: &handles,
+            input: RegisteredLinearInput::F32(hidden),
         })?;
         anyhow::ensure!(
             outputs.len() == 1,
