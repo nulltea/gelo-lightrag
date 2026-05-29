@@ -168,6 +168,56 @@ Where the clock ticks — **and this is the part to grill**:
 
 F1+ is preserved throughout: the GPU only ever sees permuted+noised operands, and the softmax it runs is over permuted scores (equivariant) — it never learns π. The TEE-side merge is a small plaintext correction, not a softmax-over-real-positions.
 
+### Write-location side channel on per-step append (found 2026-05-29)
+
+**The attack.** The resident cache is stored in *permuted* order (the GPU
+can't apply the secret π, so the bytes are pre-permuted). A naive
+"tail-on-GPU" decode appends each new token's K/V row to its slot via a
+per-step write. The GPU is **untrusted (VFIO-passed) and can log its own
+VRAM writes**, so it observes *which slot is written each step*. Over a
+block it sees `perm⁻¹(p), perm⁻¹(p+1), …` for consecutive positions —
+i.e. it **reads off the permutation of the appended tokens directly,
+reference-free, from the write sequence.** This bypasses the entire cover
+(it's a side channel on *writes*, not on the covered *contents* the gates
+evaluated). Tail-on-GPU cannot escape it: sequential-slot writes expose
+positions outright; permuted-slot writes expose π via the write order.
+
+**Threat-model gate.** The attack requires the adversary to observe
+**per-step VRAM write locations/timing** (not just bulk resident
+snapshots). A malicious GPU under SEV-SNP + VFIO plausibly can. *If it
+can*, the mitigation below is mandatory; if it sees only bulk contents,
+tail-on-GPU-covered suffices.
+
+**Mitigation — tail-in-TEE (the Phase-3 partial-stats kernel).** Keep the
+frozen prefix fixed-resident (uploaded once per block, **bulk**) and the
+newest ≤N tokens **in the TEE** (never written to the GPU). Per step the
+GPU returns partial `(m,l,acc)` over the fixed prefix; the TEE attends the
+in-TEE tail and merges. Result: **zero observable per-token cache writes**
+during the block → the per-step write-timing signal is *eliminated*, not
+noised. The only writes are block-boundary bulk re-covers, which are
+perm-opaque (sequential buffer fill of already-permuted bytes) and feed
+only the cross-block HNM √N channel (gate-2, measured weak, |τ|≈0.1). So
+this **converts a direct permutation readout into the statistical channel
+the gates already cover.** Per-step residual signals — the covered `q_t`
+upload (fixed scratch slot, no cache position) and the `(m,l,acc)`
+download (aggregate, no per-key info) — don't reopen it.
+
+**Performance.** Tail-in-TEE is **neutral-to-faster** per step (≈0.48 ms
+est. vs 0.66 ms tail-on-GPU): it drops the per-step append round-trip
+(~0.20 ms) and adds only the ≤N-token in-TEE tail attention (microseconds
+at N=16–64) + the merge (microseconds). Its real cost is *engineering*
+(the partial-stats kernel), not runtime. (Estimate; tail + merge unmeasured.)
+
+**Alternatives are worse:** random-slot writes still leak via write order;
+full-cache rewrite-per-step defeats persistence; ORAM-style decoy writes
+are expensive. Tail-in-TEE is the clean fix.
+
+**Consequence for sequencing.** If the threat model includes
+write-observation, **Phase 3 (partial-stats kernel → tail-in-TEE) is
+necessary, not a prefill/perf fast-follow** — it closes a channel that
+otherwise reads the appended permutation directly, at ~zero (favourable)
+runtime cost.
+
 ---
 
 ## Session-resident K/V API (substrate refactor — gated on the spikes)
