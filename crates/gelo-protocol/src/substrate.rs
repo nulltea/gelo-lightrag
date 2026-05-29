@@ -1186,6 +1186,47 @@ pub trait TrustedExecutor {
         Ok(out)
     }
 
+    // ── Resident K/V session (perm-attn-gpu-offload Phase 4 perf wire-up) ──
+    // Thin executor-side delegates to the engine's `kv_*` session API, so
+    // the decode forward can route attention through device-resident K/V
+    // (create once at the first decode step, append per step, attend).
+    // Default impls are unsupported; the GPU-backed executor overrides.
+
+    /// Create a resident K/V session from `(heads, n_kv, d_head)` K/V.
+    fn resident_kv_create(
+        &mut self,
+        _k: ArrayView3<f32>,
+        _v: ArrayView3<f32>,
+        _capacity: usize,
+    ) -> Result<KvSessionId> {
+        Err(anyhow!("resident_kv_create: this executor has no GPU session support"))
+    }
+
+    /// Append one decode token's `(heads, 1, d_head)` K/V row.
+    fn resident_kv_append(
+        &mut self,
+        _id: KvSessionId,
+        _k_row: ArrayView3<f32>,
+        _v_row: ArrayView3<f32>,
+    ) -> Result<()> {
+        Err(anyhow!("resident_kv_append: unsupported"))
+    }
+
+    /// Attend `(heads, n_q, d_head)` Q over the resident session.
+    fn resident_kv_attend(
+        &mut self,
+        _id: KvSessionId,
+        _q: ArrayView3<f32>,
+        _scale: f32,
+    ) -> Result<Array3<f32>> {
+        Err(anyhow!("resident_kv_attend: unsupported"))
+    }
+
+    /// Free a resident session (end of generation).
+    fn resident_kv_drop(&mut self, _id: KvSessionId) -> Result<()> {
+        Ok(())
+    }
+
     /// Cached-KV variant of [`Self::offload_attention_permuted`] for
     /// the autoregressive generation shape. Same protocol semantics
     /// (Amulet softmax-equivariance under fresh per-call permutations

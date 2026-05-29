@@ -437,3 +437,43 @@ cells `gpu_resident_b8` / `gpu_resident_append_b8` in
 `ResidentKvF16` (`upload_resident_kv` / `attend_resident`) and
 `ResidentKvSession` (`create_kv_session` / `append_kv` / `attend_session`)
 in `crates/gelo-gpu-wgpu/src/lib.rs`.
+
+## 11. Wired decode path (2026-05-29) — the microbench-to-forward gap is dispatch, not attend
+
+The §10.1 cell is an *isolated* attend. §11 is the same engine seam
+threaded through the real forward (`decoder_block_cached_batched`,
+GLOBAL layers, behind `GELO_GPU_RESIDENT_ATTN`; in-TEE default). Same
+production bench as §9 (`gelo_llm_prefill_decode_breakdown`, 4b, B=8,
+N=2048, **K=32**, Vulkan). Greedy-parity holds byte-for-byte off-vs-on.
+
+| B=8 decode, Vulkan | in-TEE (§9 baseline) | GPU-resident | Δ |
+|---|--:|--:|--:|
+| **attn bucket** | 14 574 ms (`tee:attn_cached_inplace_many`) | **8 724 ms** (`tee:attn_resident_gpu`, 1152 calls) | **0.60×** |
+| per-call attn | 12.65 ms | 7.57 ms | 1.67× |
+| decode wall | 40.6 s | 28.81 s | 0.71× **(confounded — see below)** |
+| tok/s/seq | 0.79 | 1.11 | 1.40× |
+
+**Read the bucket, not the wall.** The attention bucket — the only one
+the flag touches — is the clean number: **0.60× (−5.85 s)**. The decode
+wall fell 40.6→28.81 s, but `engine:matmul` (8956→4382) and
+`matmul_many` (9941→8670) also moved between these *separate-session*
+runs, and the flag cannot touch the projection/LM-head matmuls. That is
+cross-run autotune/thermal variance (§5 confounds), not the wire-up.
+**Do not attribute the −11.8 s wall to this change** without a
+same-session off/on A/B.
+
+**Why 1.67×, not the §10.1 16.4×.** §10.1 measured a lone `attend`
+(0.662 ms/step incl. append). The wired path is 7.57 ms per *(layer,
+step)* — the gap is integration overhead the microbench omits, paid
+×36 layers ×32 steps: `stack_heads` (f32→f16 of the full Q block per
+step), GQA-broadcast attend over the growing slice, `unstack_heads`
+(f16→f32 of ctx), and a TEE↔GPU round-trip *serialized per layer*. The
+decode loop is **dispatch-bound**, exactly the Phase-3 concern. The
+next lever is the fused FlashAttention-D kernel + collapsing per-step
+dispatches — not raw attend throughput, which §10.1 already showed is
+ample.
+
+**Artefact:** `bench-results/phase4-resident-decode-5090-2026-05-29.log`;
+wire-up in `crates/gelo-embedder/src/decoder/forward.rs`
+(`decoder_block_cached_batched`, `stack_heads`/`unstack_heads`),
+`KvCache::gpu_sessions`, `TrustedExecutor::resident_kv_*`.

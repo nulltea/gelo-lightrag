@@ -17,8 +17,8 @@ use crate::rng::MaskSeed;
 use crate::shield::{ShieldConfig, stack_shield};
 use crate::snapshot::{SnapshotCapture, SnapshotConfig};
 use crate::substrate::{
-    GpuOffloadEngine, RegisteredLinearBatch, RegisteredLinearInput, RuntimeMatmulBatch,
-    TrustedExecutor, WeightHandle, WeightKind,
+    GpuOffloadEngine, KvSessionId, RegisteredLinearBatch, RegisteredLinearInput,
+    RuntimeMatmulBatch, TrustedExecutor, WeightHandle, WeightKind,
 };
 
 /// Reference [`GpuOffloadEngine`] that performs the offloaded GEMM on
@@ -2066,6 +2066,38 @@ impl<E: GpuOffloadEngine> TrustedExecutor for InProcessTrustedExecutor<E> {
                 &mut self.rng,
             )
         })
+    }
+
+    // Resident K/V session (Phase-4 perf wire-up) — delegate to the engine.
+    fn resident_kv_create(
+        &mut self,
+        k: ArrayView3<f32>,
+        v: ArrayView3<f32>,
+        capacity: usize,
+    ) -> Result<KvSessionId> {
+        self.engine.kv_create_session(k, v, capacity)
+    }
+
+    fn resident_kv_append(
+        &mut self,
+        id: KvSessionId,
+        k_row: ArrayView3<f32>,
+        v_row: ArrayView3<f32>,
+    ) -> Result<()> {
+        self.engine.kv_append(id, k_row, v_row)
+    }
+
+    fn resident_kv_attend(
+        &mut self,
+        id: KvSessionId,
+        q: ArrayView3<f32>,
+        scale: f32,
+    ) -> Result<Array3<f32>> {
+        self.engine.kv_attend(id, q, scale)
+    }
+
+    fn resident_kv_drop(&mut self, id: KvSessionId) -> Result<()> {
+        self.engine.kv_drop_session(id)
     }
 
     fn offload_attention_permuted_cached(

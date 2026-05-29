@@ -505,6 +505,39 @@ kernel or the integration.
    lever, √N accumulation real ⇒ `perm_kv` refresh per block; but this is a
    *cleartext-reference* probe, **not** the realistic gate.
 
+9. **Phase 4 — gated decode wire-up + full bench** — ✅ **2026-05-29.**
+   GPU-resident attention threaded through `decoder_block_cached_batched`
+   for GLOBAL layers behind `GELO_GPU_RESIDENT_ATTN` (in-TEE default).
+   Greedy-parity: byte-identical tokens flag-off vs flag-on (Qwen3-4B,
+   16 steps) — create/append/attend/stack wire-up correct, fp16 attend
+   matches f32-in-TEE on argmax. Full bench (4b, B=8, N=2048, K=32,
+   Vulkan, `bench-results/phase4-resident-decode-5090-2026-05-29.log`):
+
+   | B=8 decode, Vulkan | in-TEE baseline | GPU-resident | Δ |
+   |---|--:|--:|--:|
+   | **attn bucket** | 14 574 ms (`tee:attn_cached_inplace_many`) | **8 724 ms** (`tee:attn_resident_gpu`) | **0.60× (−5.85 s)** |
+   | per-call attn | 12.65 ms | 7.57 ms | 1.67× |
+   | decode wall | 40.6 s | 28.81 s | 0.71× (*confounded*) |
+
+   **Honest attribution.** The clean, attributable win is the attention
+   bucket: **0.60× (−5.85 s)**, the only bucket the flag touches. The
+   decode-wall delta (−11.8 s) is **confounded** — `engine:matmul`
+   moved 8956→4382 ms and `matmul_many` 9941→8670 ms between the two
+   (separate-session) runs, which the flag cannot cause; that is
+   cross-run autotune/thermal variance, not the wire-up. A same-session
+   off/on wall A/B is the follow-up to claim it cleanly.
+
+   **The 1.67×-not-25× gap is the dispatch tax.** The isolated gate-1
+   `attend` was 0.40 ms/step; the wrapped decode path is 7.57 ms/step.
+   The delta is per-(layer,step) overhead the microbench omits:
+   create/append + `stack_heads` (f32→f16) + GQA-broadcast attend +
+   `unstack_heads` (f16→f32) + TEE↔GPU round-trips, ×36 layers ×32
+   steps. This is exactly the Phase-3 dispatch-count concern; closing
+   it needs the fused FlashAttention-D kernel + fewer per-step
+   dispatches (deferred fast-follow). Net: a real, monotonic,
+   parity-preserving win on the bucket it replaces — but the headline
+   lever for the rest is dispatch count, not raw attend throughput.
+
 ### The reordered critical path
 
 ```

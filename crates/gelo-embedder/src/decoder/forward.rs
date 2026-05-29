@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use ndarray::{Array1, Array2, Array3, ArrayView2};
+use ndarray::{Array1, Array2, Array3, ArrayView2, ArrayView3};
 
 use gelo_protocol::profile;
 use gelo_protocol::tee_matmul_bf16;
@@ -341,6 +341,70 @@ pub fn run_decode_step_batched(
 ///    pattern as `decoder_block_batched`'s prefill attention). R1.4
 ///    would replace this with a single batched-kernel dispatch.
 #[allow(clippy::too_many_arguments)]
+/// Phase-4 perf wire-up flag (perm-attn-gpu-offload): route GLOBAL-layer
+/// decode attention through the GPU-resident K/V session. Default off
+/// (`GELO_GPU_RESIDENT_ATTN` ∈ {1, true}). Read once.
+fn gpu_resident_attn_enabled() -> bool {
+    static EN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *EN.get_or_init(|| {
+        std::env::var("GELO_GPU_RESIDENT_ATTN")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    })
+}
+
+/// `(B, H·d)` → `(B·H, 1, d)` (b-major), the stacked per-head shape the
+/// resident session expects.
+fn stack_heads(x: ArrayView2<'_, f32>, b: usize, h: usize, d: usize) -> Array3<f32> {
+    let mut out = Array3::<f32>::zeros((b * h, 1, d));
+    for bi in 0..b {
+        for hi in 0..h {
+            for c in 0..d {
+                out[(bi * h + hi, 0, c)] = x[(bi, hi * d + c)];
+            }
+        }
+    }
+    out
+}
+
+/// `(B·H, 1, d)` → `(B, H·d)`, inverse of [`stack_heads`].
+fn unstack_heads(x: ArrayView3<'_, f32>, b: usize, h: usize, d: usize) -> Array2<f32> {
+    let mut out = Array2::<f32>::zeros((b, h * d));
+    for bi in 0..b {
+        for hi in 0..h {
+            for c in 0..d {
+                out[(bi, hi * d + c)] = x[(bi * h + hi, 0, c)];
+            }
+        }
+    }
+    out
+}
+
+/// Stack per-`(layer, b)` cache views `(n_kv, kv_heads·d)` into the
+/// un-replicated session shape `(B·kv_heads, n_kv, d)` (b-major).
+fn stack_cache(
+    views: &[(ArrayView2<'_, f32>, ArrayView2<'_, f32>)],
+    b: usize,
+    kvh: usize,
+    d: usize,
+) -> (Array3<f32>, Array3<f32>) {
+    let n_kv = views[0].0.nrows();
+    let mut k_st = Array3::<f32>::zeros((b * kvh, n_kv, d));
+    let mut v_st = Array3::<f32>::zeros((b * kvh, n_kv, d));
+    for bi in 0..b {
+        let (kb, vb) = views[bi];
+        for hi in 0..kvh {
+            for j in 0..n_kv {
+                for c in 0..d {
+                    k_st[(bi * kvh + hi, j, c)] = kb[(j, hi * d + c)];
+                    v_st[(bi * kvh + hi, j, c)] = vb[(j, hi * d + c)];
+                }
+            }
+        }
+    }
+    (k_st, v_st)
+}
+
 fn decoder_block_cached_batched(
     cfg: &DecoderConfig,
     layer: &DecoderLayerWeights,
@@ -473,41 +537,90 @@ fn decoder_block_cached_batched(
     // section to keep Result plumbing out of the closure.
     let q_dim = cfg.num_attention_heads * cfg.head_dim_value();
     let mut ctx = Array2::<f32>::zeros((batch_size, q_dim));
-    let kv_views: Vec<(ArrayView2<'_, f32>, ArrayView2<'_, f32>)> = (0..batch_size)
-        .map(|b| kv_cache.view_b(layer_idx as usize, b))
-        .collect::<Result<Vec<_>>>()?;
-    profile::time("tee:attn_cached_inplace_many", || {
-        use ndarray::parallel::prelude::*;
-        ctx.axis_chunks_iter_mut(ndarray::Axis(0), 1)
-            .into_par_iter()
-            .enumerate()
-            .for_each(|(b, mut ctx_slice)| {
-                let q_b = q.slice(ndarray::s![b..b + 1, ..]);
-                let (k_cached, v_cached) = kv_views[b];
-                let ctx_b = match layer_class {
-                    AttentionClass::Local { window } => causal_gqa_attention_swa_cached(
-                        q_b,
-                        k_cached,
-                        v_cached,
-                        cfg.num_attention_heads,
-                        cfg.num_key_value_heads,
-                        cfg.head_dim_value(),
-                        q_pos_offsets[b],
-                        window,
-                    ),
-                    AttentionClass::Global => causal_gqa_attention_cached(
-                        q_b,
-                        k_cached,
-                        v_cached,
-                        cfg.num_attention_heads,
-                        cfg.num_key_value_heads,
-                        cfg.head_dim_value(),
-                        q_pos_offsets[b],
-                    ),
-                };
-                ctx_slice.assign(&ctx_b);
-            });
-    });
+
+    // Phase-4 perf wire-up (perm-attn-gpu-offload): route GLOBAL-layer
+    // decode attention through the GPU-resident K/V session — create once
+    // (first decode step, from the full cache) then append one row/step
+    // and attend on-device, instead of the in-TEE per-sequence kernel.
+    // Gated (default off → the in-TEE path below is unchanged); SWA layers
+    // always stay in-TEE. NO cover/tail-in-TEE yet (those need the σ-vs-N
+    // spike) — this measures the resident-attention decode-wall lever only.
+    let use_gpu_resident =
+        gpu_resident_attn_enabled() && matches!(layer_class, AttentionClass::Global);
+    if use_gpu_resident {
+        let (nqh, nkvh, dh) = (
+            cfg.num_attention_heads,
+            cfg.num_key_value_heads,
+            cfg.head_dim_value(),
+        );
+        let scale = 1.0_f32 / (dh as f32).sqrt();
+        profile::time("tee:attn_resident_gpu", || -> Result<()> {
+            let q_st = stack_heads(q.view(), batch_size, nqh, dh); // (B·nqh, 1, dh)
+            let id = match kv_cache.gpu_session(layer_idx as usize) {
+                None => {
+                    // First decode step: create the session from the full
+                    // cache (already includes this step's appended row).
+                    let (k_st, v_st) = {
+                        let kv_views: Vec<(ArrayView2<'_, f32>, ArrayView2<'_, f32>)> = (0
+                            ..batch_size)
+                            .map(|b| kv_cache.view_b(layer_idx as usize, b))
+                            .collect::<Result<Vec<_>>>()?;
+                        stack_cache(&kv_views, batch_size, nkvh, dh)
+                    };
+                    let cap = kv_cache.capacity();
+                    let id = exec.resident_kv_create(k_st.view(), v_st.view(), cap)?;
+                    kv_cache.set_gpu_session(layer_idx as usize, id);
+                    id
+                }
+                Some(id) => {
+                    // Later steps: append just this step's new K/V row.
+                    let k_row = stack_heads(k.view(), batch_size, nkvh, dh);
+                    let v_row = stack_heads(v.view(), batch_size, nkvh, dh);
+                    exec.resident_kv_append(id, k_row.view(), v_row.view())?;
+                    id
+                }
+            };
+            let ctx_st = exec.resident_kv_attend(id, q_st.view(), scale)?; // (B·nqh, 1, dh)
+            ctx = unstack_heads(ctx_st.view(), batch_size, nqh, dh);
+            Ok(())
+        })?;
+    } else {
+        let kv_views: Vec<(ArrayView2<'_, f32>, ArrayView2<'_, f32>)> = (0..batch_size)
+            .map(|b| kv_cache.view_b(layer_idx as usize, b))
+            .collect::<Result<Vec<_>>>()?;
+        profile::time("tee:attn_cached_inplace_many", || {
+            use ndarray::parallel::prelude::*;
+            ctx.axis_chunks_iter_mut(ndarray::Axis(0), 1)
+                .into_par_iter()
+                .enumerate()
+                .for_each(|(b, mut ctx_slice)| {
+                    let q_b = q.slice(ndarray::s![b..b + 1, ..]);
+                    let (k_cached, v_cached) = kv_views[b];
+                    let ctx_b = match layer_class {
+                        AttentionClass::Local { window } => causal_gqa_attention_swa_cached(
+                            q_b,
+                            k_cached,
+                            v_cached,
+                            cfg.num_attention_heads,
+                            cfg.num_key_value_heads,
+                            cfg.head_dim_value(),
+                            q_pos_offsets[b],
+                            window,
+                        ),
+                        AttentionClass::Global => causal_gqa_attention_cached(
+                            q_b,
+                            k_cached,
+                            v_cached,
+                            cfg.num_attention_heads,
+                            cfg.num_key_value_heads,
+                            cfg.head_dim_value(),
+                            q_pos_offsets[b],
+                        ),
+                    };
+                    ctx_slice.assign(&ctx_b);
+                });
+        });
+    }
 
     let attn_out = if offload {
         exec.offload_linear(WeightHandle::new(layer_idx, WeightKind::O), ctx.view())?

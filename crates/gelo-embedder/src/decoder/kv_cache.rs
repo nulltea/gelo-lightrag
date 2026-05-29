@@ -136,6 +136,12 @@ pub struct KvCache {
     max_cache_len: usize,
     kv_dim: usize,
     batch_size: usize,
+    /// GPU-resident attention session id per layer (perm-attn-gpu-offload
+    /// Phase 4 perf wire-up). `None` until the first decode step creates
+    /// the session from this layer's cache; per-generation lifecycle
+    /// matches the `KvCache` (fresh `None`s per generation → no stale
+    /// session reuse). Only used when the GPU-resident decode path is on.
+    gpu_sessions: Vec<Option<u64>>,
 }
 
 impl KvCache {
@@ -167,6 +173,7 @@ impl KvCache {
             max_cache_len,
             kv_dim,
             batch_size,
+            gpu_sessions: vec![None; num_layers],
         }
     }
 
@@ -212,6 +219,7 @@ impl KvCache {
             max_cache_len,
             kv_dim,
             batch_size,
+            gpu_sessions: vec![None; num_layers],
         }
     }
 
@@ -225,6 +233,22 @@ impl KvCache {
     /// `docs/plans/perm-attn-gpu-offload.md`).
     pub fn layer(&self, li: usize) -> &LayerKvCache {
         &self.layers[li]
+    }
+
+    /// GPU-resident attention session id for layer `li` (Phase-4 perf
+    /// wire-up), or `None` if not yet created this generation.
+    pub fn gpu_session(&self, li: usize) -> Option<u64> {
+        self.gpu_sessions[li]
+    }
+
+    /// Record the GPU-resident session id created for layer `li`.
+    pub fn set_gpu_session(&mut self, li: usize, id: u64) {
+        self.gpu_sessions[li] = Some(id);
+    }
+
+    /// All live GPU-resident session ids (for end-of-generation cleanup).
+    pub fn gpu_session_ids(&self) -> Vec<u64> {
+        self.gpu_sessions.iter().flatten().copied().collect()
     }
 
     /// Pre-allocated capacity in positions per layer.
