@@ -334,10 +334,35 @@ impl WgpuVulkanEngine {
         session: &ResidentKvSession,
         scale: f32,
     ) -> Result<Array3<f32>> {
-        let (bh, _nq, d) = q.dim();
+        let (h_q, _nq, d) = q.dim();
+        let h_kv = session.k_t.dims()[0];
+        let len = session.len;
         let q_t = array3_to_tensor_f16(q, &self.device);
-        let k_act = session.k_t.clone().slice([0..bh, 0..session.len, 0..d]);
-        let v_act = session.v_t.clone().slice([0..bh, 0..session.len, 0..d]);
+        let mut k_act = session.k_t.clone().slice([0..h_kv, 0..len, 0..d]);
+        let mut v_act = session.v_t.clone().slice([0..h_kv, 0..len, 0..d]);
+        // GQA broadcast: when K/V are stored **un-replicated** (h_kv kv
+        // heads) but Q has h_q query heads, expand each kv head across
+        // its group of q heads on-device — q head `qh` uses kv head
+        // `qh / group` (interleaved). This keeps upload/storage 4×
+        // smaller (the gate-1 re-permute win) while the compute still
+        // sees the expanded view; the Phase-3 kernel folds this
+        // broadcast into the shader (no re-materialisation).
+        if h_q != h_kv {
+            if h_q % h_kv != 0 {
+                return Err(anyhow!(
+                    "attend_session: q heads {h_q} not a multiple of kv heads {h_kv}"
+                ));
+            }
+            let group = h_q / h_kv;
+            k_act = k_act
+                .reshape([h_kv, 1, len, d])
+                .repeat_dim(1, group)
+                .reshape([h_q, len, d]);
+            v_act = v_act
+                .reshape([h_kv, 1, len, d])
+                .repeat_dim(1, group)
+                .reshape([h_q, len, d]);
+        }
         let kt = k_act.permute([0, 2, 1]);
         let scores = q_t.matmul(kt).mul_scalar(scale);
         let probs = activation::softmax(scores, 2);

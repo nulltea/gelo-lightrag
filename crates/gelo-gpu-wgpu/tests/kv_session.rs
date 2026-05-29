@@ -82,6 +82,56 @@ fn kv_session_attend_matches_direct_fused() {
     assert!(engine.kv_attend(id, q.view(), scale).is_err(), "attend on dropped session must error");
 }
 
+fn expand_interleave(k: &Array3<f32>, group: usize) -> Array3<f32> {
+    let (h_kv, n, d) = k.dim();
+    let mut out = Array3::<f32>::zeros((h_kv * group, n, d));
+    for qh in 0..h_kv * group {
+        out.index_axis_mut(Axis(0), qh)
+            .assign(&k.index_axis(Axis(0), qh / group));
+    }
+    out
+}
+
+#[test]
+fn kv_session_gqa_broadcast_matches_expanded() {
+    // Store K/V UN-REPLICATED (8 kv heads) but attend with 32 q heads.
+    // The session's on-device GQA broadcast must match a manually
+    // GQA-expanded (32-head) reference through the direct fused path.
+    let engine = match WgpuVulkanEngine::new_fp16() {
+        Ok(e) => e,
+        Err(_) => {
+            eprintln!("[skip] no Vulkan fp16 device");
+            return;
+        }
+    };
+    let scale = 1.0_f32 / (D as f32).sqrt();
+    let group = 4;
+    let h_q = H * group; // 32
+    let n_kv = 20;
+
+    let k_unrep = fill(H, n_kv, D, 1); // (8, 20, 128) — un-replicated
+    let v_unrep = fill(H, n_kv, D, 2);
+    let q = fill(h_q, 1, D, 3); // (32, 1, 128)
+
+    let id = engine
+        .kv_create_session(k_unrep.view(), v_unrep.view(), n_kv + 4)
+        .expect("create");
+    let out = engine.kv_attend(id, q.view(), scale).expect("attend"); // broadcasts 8→32
+
+    let k_exp = expand_interleave(&k_unrep, group); // (32, 20, 128)
+    let v_exp = expand_interleave(&v_unrep, group);
+    let out_ref = engine
+        .fused_attention_batched(q.view(), k_exp.view(), v_exp.view(), scale, None)
+        .expect("fused expanded");
+
+    let drift = max_abs_diff(&out, &out_ref);
+    assert!(
+        drift < 5e-2,
+        "un-replicated GQA broadcast must match expanded reference: drift={drift}",
+    );
+    engine.kv_drop_session(id).ok();
+}
+
 #[test]
 fn kv_session_unsupported_on_f32_engine() {
     // The session methods require the fp16 engine (resident bf16 cache).

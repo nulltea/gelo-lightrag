@@ -476,12 +476,34 @@ Phase 1 (cover incl. O_v/O_qk, σ=0 parity)  + real-activation capture
    `gelo-protocol`. Verified: `tests/kv_session.rs` — create→append→attend
    matches direct `fused_attention_batched` at fp16 floor; refresh/drop
    correct; f32 engine rejects. `refresh_block` is in the API (per the
-   build-it-now decision). **Remaining Phase-2 sub-steps:** un-replicated
-   GQA storage + bf16-native upload (the gate-1 re-permute optimisation;
-   `kv_attend` currently returns the full normalised context — the
-   partial-stats `(m,l,acc)` variant is the Phase-3 kernel), and a
-   `/code-review` of the trait change before merge. Not yet wired into
-   `TrustedExecutor`/forward (that's Phase 4).
+   build-it-now decision).
+
+   **Un-replicated GQA storage — done 2026-05-29.** `kv_attend` now
+   broadcasts un-replicated K/V (`num_kv_heads`) up to `num_q_heads` with
+   a device-side interleaved expand (`reshape → repeat_dim(group) →
+   reshape`), so the upload/storage is 4× smaller (the gate-1 re-permute
+   win) while the compute sees the expanded view. Verified
+   (`kv_session_gqa_broadcast_matches_expanded`: 8-head storage + 32-head
+   Q matches a manually-expanded reference at fp16 floor). The Phase-3
+   kernel later folds the broadcast in-shader (no re-materialisation).
+
+   **Upload-cost decomposition (gate-1 deliverable, done 2026-05-29;
+   `bench-results/upload-decomposition-5090-2026-05-29.log`).** At
+   n_kv=2048, B=8, the per-call K/V cost (`no_mask − resident` ≈ 490 ms)
+   splits **convert 368 ms (~75%) / DMA+sync ~122 ms (~25%)** — and the
+   convert is a *scalar* f32→f16 loop (2.7 ns/elem). **Implication:** the
+   dominant upload cost is killable **without §4.E.3** via a **vectorised
+   convert** (half's F16C `convert_from_f32_slice`, ~10×) — the cheap,
+   unblocked next lever; full **bf16-native** (no convert at all) needs
+   the §4.E.3 activation pipeline and is now *less urgent* since the
+   vectorised convert + un-replicated (4×) capture most of the win.
+
+   **Remaining Phase-2 sub-steps:** the vectorised f32→f16 convert (cheap,
+   touches the shared upload path — wants its own measurement);
+   bf16-native upload (deferred to §4.E.3); `/code-review` of the trait
+   change. `kv_attend` still returns the full normalised context (the
+   partial-stats `(m,l,acc)` variant is the Phase-3 kernel); not yet wired
+   into `TrustedExecutor`/forward (Phase 4).
 5. **Phase 3 — production kernel** (gated on the security result):
    cubecl partial-stats / GQA-aware FlashAttention-D (cubecl-custom vs
    upstream-burn; both CUDA-capable).

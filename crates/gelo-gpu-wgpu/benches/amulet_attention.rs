@@ -49,6 +49,7 @@
 //! Run with `cargo bench -p gelo-gpu-wgpu --bench amulet_attention`.
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use half::f16;
 use gelo_embedder::decoder::attention::{
     causal_gqa_attention_cached, causal_gqa_attention_permuted_cached,
 };
@@ -483,6 +484,32 @@ fn r1_4_bench(c: &mut Criterion) {
                             .attend_session(black_box(q_st.view()), &session, scale)
                             .expect("attend_session");
                         black_box(out);
+                    });
+                },
+            );
+        }
+
+        // ─── Variant 6: host f32→f16 convert only (cost decomposition) ─
+        //
+        // Times the pure CPU f32→f16 conversion of the stacked K+V — no
+        // device, no DMA. Combined with the other cells this decomposes
+        // the full-upload cost (gate-1 deliverable): the per-call K/V
+        // cost is `gpu_batched_b8_no_mask − gpu_resident_b8`; this cell
+        // isolates its CONVERT portion, so DMA+sync ≈ (no_mask − resident
+        // − convert). Tells us whether bf16-native (kills convert) or
+        // un-replicated (kills bytes) is the bigger upload lever.
+        {
+            let (_q_st, k_st, v_st) = stack_for_engine(&qs, &ks, &vs);
+            group.bench_with_input(
+                BenchmarkId::new("kv_convert_only_b8", n_kv),
+                &n_kv,
+                |bencher, _| {
+                    bencher.iter(|| {
+                        let kf: Vec<f16> =
+                            k_st.iter().map(|&x| f16::from_f32(black_box(x))).collect();
+                        let vf: Vec<f16> =
+                            v_st.iter().map(|&x| f16::from_f32(black_box(x))).collect();
+                        black_box((kf, vf));
                     });
                 },
             );
