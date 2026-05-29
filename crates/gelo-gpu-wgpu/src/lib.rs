@@ -1,7 +1,7 @@
 //! [`GpuOffloadEngine`] backed by **burn-cubecl** on the **wgpu/Vulkan** runtime.
 //!
 //! Replaces the prior cubecl-matmul direct path with `burn_tensor::Tensor::matmul`
-//! over the `CubeBackend<WgpuRuntime, …>` backend. burn-cubecl wires:
+//! over the `CubeBackend<Rt, …>` backend. burn-cubecl wires:
 //! - Real autotune with disk-persistent cache (via `cubecl-runtime::TuneCache`,
 //!   configured by workspace-root `cubecl.toml`).
 //! - Lazy / deferred dispatch — sync only happens at `.into_data()`.
@@ -34,8 +34,24 @@ use anyhow::{Result, anyhow};
 use burn_backend::Backend;
 use burn_cubecl::CubeBackend;
 use burn_tensor::{Tensor, TensorData, Transaction, activation};
+// Backend runtime + device, selected at compile time: wgpu/Vulkan by
+// default (OEM-agnostic), cubecl-cuda under the `cuda` feature. The rest
+// of the file refers to the runtime/device only through `Rt` / `Dev`.
+#[cfg(not(feature = "cuda"))]
 use cubecl_common::future;
+#[cfg(not(feature = "cuda"))]
 use cubecl_wgpu::{AutoGraphicsApi, RuntimeOptions, WgpuDevice, WgpuRuntime, init_setup_async};
+#[cfg(feature = "cuda")]
+use cubecl_cuda::{CudaDevice, CudaRuntime};
+
+#[cfg(not(feature = "cuda"))]
+type Rt = WgpuRuntime;
+#[cfg(not(feature = "cuda"))]
+type Dev = WgpuDevice;
+#[cfg(feature = "cuda")]
+type Rt = CudaRuntime;
+#[cfg(feature = "cuda")]
+type Dev = CudaDevice;
 use half::{bf16, f16};
 use ndarray::{Array2, Array3, ArrayView2, ArrayView3};
 
@@ -43,31 +59,67 @@ use gelo_protocol::{GpuOffloadEngine, MatmulToken, WeightHandle};
 
 /// burn-cubecl backend specialised to f32 floats. The default engine
 /// precision.
-type CubeWgpu32 = CubeBackend<WgpuRuntime, f32, i32, u8>;
+type CubeWgpu32 = CubeBackend<Rt, f32, i32, u8>;
 
 /// burn-cubecl backend specialised to f16 floats. Used by the fp16
 /// engine path. Requires the wgpu adapter to support the `shader-f16`
 /// extension (true on AMD RDNA2/3, NVIDIA Maxwell+, most modern Intel
 /// iGPUs).
-type CubeWgpu16 = CubeBackend<WgpuRuntime, f16, i32, u8>;
+type CubeWgpu16 = CubeBackend<Rt, f16, i32, u8>;
 
-/// Per-process GPU adapter info, captured once at first device init.
-struct GpuContext {
-    adapter_info: wgpu::AdapterInfo,
+/// Backend device class, abstracted over the wgpu / CUDA split so the
+/// engine reports device identity uniformly across both runtimes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuDeviceType {
+    Discrete,
+    Integrated,
+    Virtual,
+    Cpu,
+    Other,
+}
+
+/// Per-process GPU identity, captured once at first device init.
+pub struct GpuContext {
+    pub name: String,
+    pub device_type: GpuDeviceType,
+    pub backend: String,
 }
 
 static GPU_CTX: OnceLock<GpuContext> = OnceLock::new();
 
+#[cfg(not(feature = "cuda"))]
 fn gpu_ctx() -> &'static GpuContext {
     GPU_CTX.get_or_init(|| {
-        let device = WgpuDevice::default();
+        let device = Dev::default();
         let setup = future::block_on(init_setup_async::<AutoGraphicsApi>(
             &device,
             RuntimeOptions::default(),
         ));
+        let info = setup.adapter.get_info();
+        let device_type = match info.device_type {
+            wgpu::DeviceType::DiscreteGpu => GpuDeviceType::Discrete,
+            wgpu::DeviceType::IntegratedGpu => GpuDeviceType::Integrated,
+            wgpu::DeviceType::VirtualGpu => GpuDeviceType::Virtual,
+            wgpu::DeviceType::Cpu => GpuDeviceType::Cpu,
+            _ => GpuDeviceType::Other,
+        };
         GpuContext {
-            adapter_info: setup.adapter.get_info(),
+            backend: format!("{:?}", info.backend),
+            name: info.name,
+            device_type,
         }
+    })
+}
+
+#[cfg(feature = "cuda")]
+fn gpu_ctx() -> &'static GpuContext {
+    // cubecl-cuda has no wgpu-style adapter enumeration; the CUDA context
+    // is created lazily on the first `Backend::sync`. Report a fixed
+    // identity for device 0 — nvidia-smi confirms which physical card.
+    GPU_CTX.get_or_init(|| GpuContext {
+        name: "CUDA device 0 (cubecl-cuda)".to_string(),
+        device_type: GpuDeviceType::Discrete,
+        backend: "Cuda".to_string(),
     })
 }
 
@@ -84,7 +136,7 @@ enum WeightStore {
 /// same weight cache. Precision is fixed at construction
 /// ([`Self::new`] vs [`Self::new_fp16`]).
 pub struct WgpuVulkanEngine {
-    device: WgpuDevice,
+    device: Dev,
     weights: Arc<Mutex<WeightStore>>,
     fp16: bool,
 }
@@ -94,7 +146,7 @@ impl WgpuVulkanEngine {
     /// f32 internal precision.
     pub fn new() -> Result<Self> {
         let _ = gpu_ctx();
-        let device = WgpuDevice::default();
+        let device = Dev::default();
         <CubeWgpu32 as Backend>::sync(&device)
             .map_err(|e| anyhow!("burn-cubecl device sync at init: {e:?}"))?;
         Ok(Self {
@@ -113,7 +165,7 @@ impl WgpuVulkanEngine {
     /// this lazily; the first matmul will surface the error.)
     pub fn new_fp16() -> Result<Self> {
         let _ = gpu_ctx();
-        let device = WgpuDevice::default();
+        let device = Dev::default();
         <CubeWgpu16 as Backend>::sync(&device)
             .map_err(|e| anyhow!("burn-cubecl device sync at init: {e:?}"))?;
         Ok(Self {
@@ -151,38 +203,37 @@ impl WgpuVulkanEngine {
         self.fp16
     }
 
-    /// Backend name reported by the selected wgpu adapter (e.g. `"Vulkan"`).
+    /// Backend name (`"Vulkan"`/`"Metal"`/… on wgpu; `"Cuda"` under the
+    /// `cuda` feature).
     pub fn backend(&self) -> String {
-        format!("{:?}", gpu_ctx().adapter_info.backend)
+        gpu_ctx().backend.clone()
     }
 
-    /// Full adapter information.
-    pub fn adapter_info(&self) -> &'static wgpu::AdapterInfo {
-        &gpu_ctx().adapter_info
+    /// GPU identity captured at first init (`.name`, `.device_type`).
+    pub fn adapter_info(&self) -> &'static GpuContext {
+        gpu_ctx()
     }
 
-    /// `true` if the selected adapter is a real (discrete, integrated, or
-    /// virtual) GPU — not a software rasterizer like lavapipe.
+    /// `true` if the selected device is a real GPU (discrete, integrated,
+    /// or virtual) — not a software rasterizer like lavapipe.
     pub fn is_real_gpu(&self) -> bool {
         matches!(
-            gpu_ctx().adapter_info.device_type,
-            wgpu::DeviceType::DiscreteGpu
-                | wgpu::DeviceType::IntegratedGpu
-                | wgpu::DeviceType::VirtualGpu
+            gpu_ctx().device_type,
+            GpuDeviceType::Discrete | GpuDeviceType::Integrated | GpuDeviceType::Virtual
         )
     }
 }
 
 // ─── f32 conversion helpers ───────────────────────────────────────────
 
-fn array2_to_tensor_f32(view: ArrayView2<'_, f32>, device: &WgpuDevice) -> Tensor<CubeWgpu32, 2> {
+fn array2_to_tensor_f32(view: ArrayView2<'_, f32>, device: &Dev) -> Tensor<CubeWgpu32, 2> {
     let rows = view.nrows();
     let cols = view.ncols();
     let v: Vec<f32> = view.as_standard_layout().iter().copied().collect();
     Tensor::<CubeWgpu32, 2>::from_data(TensorData::new(v, [rows, cols]), device)
 }
 
-fn array3_to_tensor_f32(view: ArrayView3<'_, f32>, device: &WgpuDevice) -> Tensor<CubeWgpu32, 3> {
+fn array3_to_tensor_f32(view: ArrayView3<'_, f32>, device: &Dev) -> Tensor<CubeWgpu32, 3> {
     let b = view.shape()[0];
     let m = view.shape()[1];
     let k = view.shape()[2];
@@ -212,7 +263,7 @@ fn tensor3_to_array_f32(t: Tensor<CubeWgpu32, 3>) -> Result<Array3<f32>> {
 
 // ─── f16 conversion helpers ───────────────────────────────────────────
 
-fn array2_to_tensor_f16(view: ArrayView2<'_, f32>, device: &WgpuDevice) -> Tensor<CubeWgpu16, 2> {
+fn array2_to_tensor_f16(view: ArrayView2<'_, f32>, device: &Dev) -> Tensor<CubeWgpu16, 2> {
     let rows = view.nrows();
     let cols = view.ncols();
     // f32→f16 conversion. LLVM auto-vectorises this to vcvtps2ph on x86
@@ -233,7 +284,7 @@ fn array2_to_tensor_f16(view: ArrayView2<'_, f32>, device: &WgpuDevice) -> Tenso
 /// host copy of the full weight matrix.
 fn array2_bf16_to_tensor_f16(
     view: ArrayView2<'_, bf16>,
-    device: &WgpuDevice,
+    device: &Dev,
 ) -> Tensor<CubeWgpu16, 2> {
     let rows = view.nrows();
     let cols = view.ncols();
@@ -250,7 +301,7 @@ fn array2_bf16_to_tensor_f16(
 /// per-element widening happens once during the upload Vec build.
 fn array2_bf16_to_tensor_f32(
     view: ArrayView2<'_, bf16>,
-    device: &WgpuDevice,
+    device: &Dev,
 ) -> Tensor<CubeWgpu32, 2> {
     let rows = view.nrows();
     let cols = view.ncols();
@@ -262,7 +313,7 @@ fn array2_bf16_to_tensor_f32(
     Tensor::<CubeWgpu32, 2>::from_data(TensorData::new(v, [rows, cols]), device)
 }
 
-fn array3_to_tensor_f16(view: ArrayView3<'_, f32>, device: &WgpuDevice) -> Tensor<CubeWgpu16, 3> {
+fn array3_to_tensor_f16(view: ArrayView3<'_, f32>, device: &Dev) -> Tensor<CubeWgpu16, 3> {
     let b = view.shape()[0];
     let m = view.shape()[1];
     let k = view.shape()[2];

@@ -12,6 +12,11 @@ license.workspace = true
 # force pure-Rust matrixmultiply, build with --no-default-features.
 default = ["blas"]
 blas = ["gelo-protocol/blas"]
+# Opt-in CUDA backend (Nvidia dGPU). Flips the engine's cubecl runtime
+# from wgpu/Vulkan to cubecl-cuda at compile time; Vulkan stays the
+# default. Used to A/B the GPU-matmul path on Nvidia. Requires a CUDA
+# toolkit (nvrtc) + driver present.
+cuda = ["dep:cubecl-cuda", "burn-backend/cubecl-cuda"]
 
 [dependencies]
 anyhow.workspace = true
@@ -25,6 +30,7 @@ cubecl-core.workspace = true
 cubecl-runtime.workspace = true
 cubecl-std.workspace = true
 cubecl-wgpu.workspace = true
+cubecl-cuda = { workspace = true, optional = true }
 cubek-attention.workspace = true
 gelo-protocol = { path = "../gelo-protocol", default-features = false }
 half.workspace = true
@@ -52,11 +58,6 @@ criterion = { version = "0.5", default-features = false, features = ["cargo_benc
 # so the RSS measurement reflects kernel-visible free space, not
 # glibc's free-list residency.
 libc = "0.2"
-# ROCm/HIP runtime — only pulled in for the Q4-on-HIP spike test
-# (`tests/q4_hip_kernel_spike.rs`). Requires ROCm 6.x installed
-# at /opt/rocm; build will fail loudly if not.
-cubecl-hip.workspace = true
-cubecl-hip-sys.workspace = true
 
 [[bench]]
 name = "amulet_attention"

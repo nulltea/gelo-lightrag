@@ -232,7 +232,7 @@ fn m1_12_r1_q1_microbench() -> Result<()> {
     // bucket appears alongside the other buckets — confirms the
     // instrumentation fires. Historical comparison (baseline vs R3)
     // is gone: R3 is the only path now. The full prefill/decode
-    // breakdown lives in `m1_12_per_op_breakdown_prefill_decode`.
+    // breakdown lives in `gelo_llm_prefill_decode_breakdown`.
     let prompt = "The quick brown fox";
     let prompt_ids = tokenizer.encode(prompt, 32)?;
     let gen_cfg = GenerationConfig {
@@ -390,7 +390,9 @@ struct PhaseTiming {
     decode_steps: Vec<std::time::Duration>,
     /// For B=1 path: the decoded tokens. For B>1: per-sequence sample,
     /// only the first sequence's tokens are reported (the bench is
-    /// shape-comparison, not output-quality).
+    /// shape-comparison, not output-quality). Retained for callers that
+    /// assert token parity; unused by the per-op breakdown itself.
+    #[allow(dead_code)]
     tokens: Vec<u32>,
 }
 
@@ -585,15 +587,26 @@ fn run_prefill_decode<X: TrustedExecutor>(
     Ok((prefill, decode))
 }
 
+/// **Gelo-LLM main bench.** Real-weight prefill + decode per-op profile
+/// for the GELO LLM serving path on the production default (R3 LM-head
+/// GPU offload). Drives one prefill of `n` tokens then `K` decode steps
+/// at batch `B`, and dumps the full per-op profile for each phase so the
+/// GPU buckets (`engine:matmul` / `engine:matmul_many`) and the in-TEE
+/// CPU buckets (attention, mask apply/unapply, shield) are attributed
+/// side by side.
+///
+/// Env knobs: `GELO_BENCH_VARIANT` (`1.7B` default, `4b`), `GELO_BENCH_B`
+/// (default 8), `GELO_BENCH_N` (default 2048), `GELO_BENCH_MAX_TOKENS`
+/// (default 64). See `CLAUDE.md` for the canonical invocation.
 #[test]
-#[ignore = "real-weight long-context bench: minutes on Qwen3-4B at B=8 n=2048 K=64"]
-fn m1_12_per_op_breakdown_prefill_decode() -> Result<()> {
+#[ignore = "Gelo-LLM main bench: real-weight prefill+decode per-op profile (R3), minutes on Qwen3-4B"]
+fn gelo_llm_prefill_decode_breakdown() -> Result<()> {
     let variant = variant_from_env();
     let n_prompt = prompt_size_from_env();
     let max_tokens = max_tokens_from_env();
     let batch_size = batch_size_from_env();
 
-    eprintln!("=== M1.12 per-op breakdown — prefill + decode, baseline vs R3 ===");
+    eprintln!("=== Gelo-LLM per-op breakdown — prefill + decode (R3 LM-head GPU offload) ===");
     eprintln!(
         "variant: {:?} ({})  B: {batch_size}  n_prompt: {n_prompt}  max_tokens: {max_tokens}",
         variant,
@@ -625,32 +638,29 @@ fn m1_12_per_op_breakdown_prefill_decode() -> Result<()> {
     // attention) and removes tokenisation noise across sequences.
     let prompts: Vec<Vec<u32>> = (0..batch_size).map(|_| single_prompt.clone()).collect();
 
-    // --- Baseline (R3 off): prefill + decode ---
-    eprintln!();
-    eprintln!("─── BASELINE (R3 off, in-TEE compute_logits) ───");
-    let (b_prefill, b_decode) = if batch_size == 1 {
-        run_prefill_decode(
-            "baseline", &cfg, &weights, &rope, &mut exec, &single_prompt, max_tokens, false,
-        )?
-    } else {
-        run_prefill_decode_batched(
-            "baseline", &cfg, &weights, &rope, &mut exec, &prompts, max_tokens, false,
-        )?
-    };
+    // Optional warmup (GELO_BENCH_WARMUP=1): one discarded forward so
+    // cubecl autotune is cached before the measured pass. Required for a
+    // fair backend A/B — first-touch autotune (nvrtc on CUDA, SPIR-V on
+    // wgpu) otherwise dominates the GPU buckets. A 2-token decode warms
+    // the decode-step autotune (autotune keys on shape, not token count).
+    if std::env::var("GELO_BENCH_WARMUP").is_ok() {
+        eprintln!("[warmup] discarded forward to populate autotune cache…");
+        let _ = if batch_size == 1 {
+            run_prefill_decode(
+                "warmup", &cfg, &weights, &rope, &mut exec, &single_prompt, 2, true,
+            )?
+        } else {
+            run_prefill_decode_batched(
+                "warmup", &cfg, &weights, &rope, &mut exec, &prompts, 2, true,
+            )?
+        };
+        eprintln!("[warmup] done; measured pass follows.");
+    }
 
-    b_prefill.snap.dump(&format!(
-        "{:?} BASELINE prefill profile (B={batch_size} n={n_prompt})",
-        variant
-    ));
-    b_decode.snap.dump(&format!(
-        "{:?} BASELINE decode profile (B={batch_size} K={max_tokens})",
-        variant
-    ));
-
-    // --- R3 on: prefill + decode ---
-    eprintln!();
-    eprintln!("─── R3 ON (LM_HEAD_GPU_OFFLOAD, GPU LM-head) ───");
-    let (r_prefill, r_decode) = if batch_size == 1 {
+    // R3 (LM-head GPU offload) is the production default; this bench
+    // profiles that single path — one prefill of `n`, then `K` decode
+    // steps.
+    let (prefill, decode) = if batch_size == 1 {
         run_prefill_decode(
             "R3", &cfg, &weights, &rope, &mut exec, &single_prompt, max_tokens, true,
         )?
@@ -660,72 +670,26 @@ fn m1_12_per_op_breakdown_prefill_decode() -> Result<()> {
         )?
     };
 
-    r_prefill.snap.dump(&format!(
-        "{:?} R3 prefill profile (B={batch_size} n={n_prompt})",
+    prefill.snap.dump(&format!(
+        "{:?} prefill profile (B={batch_size} n={n_prompt})",
         variant
     ));
-    r_decode.snap.dump(&format!(
-        "{:?} R3 decode profile (B={batch_size} K={max_tokens})",
+    decode.snap.dump(&format!(
+        "{:?} decode profile (B={batch_size} K={max_tokens})",
         variant
     ));
 
-    // --- Side-by-side decode comparison ---
-    eprintln!();
-    eprintln!("─── DECODE Δ (R3 vs baseline) ───");
-    let b_decode_ms = b_decode.wall.as_secs_f64() * 1000.0;
-    let r_decode_ms = r_decode.wall.as_secs_f64() * 1000.0;
-    eprintln!(
-        "decode wall:  baseline {:.0} ms  R3 {:.0} ms  Δ {:+.1}%",
-        b_decode_ms,
-        r_decode_ms,
-        100.0 * (r_decode_ms - b_decode_ms) / b_decode_ms,
-    );
-    let b_logit = b_decode
-        .snap
-        .buckets
-        .get("tee:compute_logits")
-        .map(|(d, _)| d.as_secs_f64() * 1000.0)
-        .unwrap_or(0.0);
-    let r_logit = r_decode
-        .snap
-        .buckets
-        .get("tee:compute_logits")
-        .map(|(d, _)| d.as_secs_f64() * 1000.0)
-        .unwrap_or(0.0);
-    eprintln!(
-        "tee:compute_logits (decode):  baseline {:.0} ms  R3 {:.0} ms  Δ {:+.1}%",
-        b_logit,
-        r_logit,
-        100.0 * (r_logit - b_logit) / b_logit.max(1e-9),
-    );
-    let b_step_mean = if !b_decode.decode_steps.is_empty() {
-        b_decode_ms / b_decode.decode_steps.len() as f64
-    } else {
-        0.0
-    };
-    let r_step_mean = if !r_decode.decode_steps.is_empty() {
-        r_decode_ms / r_decode.decode_steps.len() as f64
+    let decode_ms = decode.wall.as_secs_f64() * 1000.0;
+    let step_mean = if !decode.decode_steps.is_empty() {
+        decode_ms / decode.decode_steps.len() as f64
     } else {
         0.0
     };
     eprintln!(
-        "per-step mean: baseline {:.0} ms  R3 {:.0} ms  ({:.2} → {:.2} tok/s)",
-        b_step_mean,
-        r_step_mean,
-        max_tokens as f64 / b_decode.wall.as_secs_f64(),
-        max_tokens as f64 / r_decode.wall.as_secs_f64(),
-    );
-
-    let prefix_match = b_decode
-        .tokens
-        .iter()
-        .zip(r_decode.tokens.iter())
-        .take_while(|(a, b)| a == b)
-        .count();
-    eprintln!(
-        "decode token-prefix match: {} / {}",
-        prefix_match,
-        b_decode.tokens.len()
+        "decode: wall {:.0} ms  per-step mean {:.0} ms  ({:.2} tok/s)",
+        decode_ms,
+        step_mean,
+        max_tokens as f64 / decode.wall.as_secs_f64(),
     );
 
     Ok(())

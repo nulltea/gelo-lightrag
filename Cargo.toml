@@ -21,12 +21,6 @@ members = [
     # protocol crates stay untouched.
     "evals/aloepri-attacks",
 ]
-exclude = [
-    # Vendored + patched cubecl-hip-sys for ROCm 7.2.1 — kept out of the
-    # workspace because it's a third-party crate with its own pinned
-    # edition/rust-version. Pulled in via [patch.crates-io] only.
-    "vendor/cubecl-hip-sys-patched",
-]
 resolver = "2"
 
 [workspace.package]
@@ -99,11 +93,11 @@ cubecl-runtime = { version = "=0.9.0", default-features = false, features = ["st
 cubecl-std = { version = "=0.9.0", default-features = false }
 cubecl-common = { version = "=0.9.0", default-features = false, features = ["std"] }
 cubecl-wgpu = { version = "=0.9.0", default-features = false, features = ["std", "spirv"] }
-# AMD ROCm/HIP runtime for cubecl. Used by the Q4 spike
-# (`crates/gelo-gpu-wgpu/tests/q4_hip_kernel_spike.rs`) to compare against
-# the Vulkan path's poor Q4 perf. Optional: only pulled in as a dev-dep
-# on `gelo-gpu-wgpu`, never in release binaries.
-cubecl-hip = { version = "=0.9.0", default-features = false, features = ["std", "rocwmma"] }
+# CUDA runtime for cubecl — the dGPU/Nvidia backend behind the engine's
+# `cuda` feature (opt-in; Vulkan stays the default for OEM-agnostic
+# operation). Used to A/B the GPU-matmul path against the Vulkan/SPIR-V
+# path on Nvidia hardware. cudarc supports CUDA 13 (`cuda-13000`).
+cubecl-cuda = { version = "=0.9.0", default-features = false, features = ["std"] }
 # CubeK attention kernels — fused FlashAttention-style Q·Kᵀ →
 # softmax → ·V in a single GPU dispatch. Used by
 # `WgpuVulkanEngine::fused_attention_batched` at decode shapes
@@ -113,21 +107,22 @@ cubecl-hip = { version = "=0.9.0", default-features = false, features = ["std", 
 # transitively, so version alignment with our cubecl 0.9.0 stack
 # is automatic.
 cubek-attention = { version = "=0.1.1", default-features = false, features = ["std"] }
-# Need the 7.1.x hip-sys API surface for cubecl-hip 0.9.0 to compile;
-# ROCm 7.2.1 reports HIP patch 53211 which is past the 52802 binding
-# cap. Patched locally via `vendor/cubecl-hip-sys-patched` (see
-# [patch.crates-io] below) to alias hip_53211 → bindings_52802.
-cubecl-hip-sys = "=7.1.5280200"
 # Spike: burn-cubecl as smart-runtime over cubecl (real autotune + fusion + lazy eval).
 # Replaces direct cubecl-matmul use — cubecl-matmul has no stable release, only 0.9.0-pre.X.
 burn-cubecl = { version = "=0.20.1", default-features = false, features = ["std", "autotune", "fusion"] }
 burn-tensor = { version = "=0.20.1", default-features = false, features = ["std"] }
-burn-backend = { version = "=0.20.1", default-features = false, features = ["std", "cubecl-wgpu", "cubecl-hip"] }
+burn-backend = { version = "=0.20.1", default-features = false, features = ["std", "cubecl-wgpu"] }
 # M5 — SEV-SNP attestation
 sev = { version = "7", default-features = false, features = ["snp", "crypto_nossl"] }
 x509-cert = { version = "0.2", default-features = false, features = ["std", "pem"] }
 p384 = { version = "0.13", default-features = false, features = ["ecdsa", "pem"] }
-rcgen = { version = "0.13", default-features = false, features = ["pem", "crypto", "aws_lc_rs"] }
+# Crypto backend: `ring` (pure rust-native, builds via `cc`) instead of
+# `aws_lc_rs`. aws-lc-rs pulls aws-lc-sys whose build-dep is the `cmake`
+# crate, which shells out to a `cmake` binary not present on every dev
+# box. `ring` is the only other rcgen crypto backend that needs no cmake.
+# rcgen's test PKI mints P-384 ARK/ASK/VCEK certs; ring 0.17 supports
+# P-384 PKCS8 keygen + signing, so the backend swap is API-transparent.
+rcgen = { version = "0.13", default-features = false, features = ["pem", "crypto", "ring"] }
 hex = "0.4"
 # M5.7 — service runner
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync"] }
@@ -149,12 +144,4 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 toml = "0.8"
 base64 = "0.22"
-
-[patch.crates-io]
-# Local patch: bindings/mod.rs has `hip_53211` aliased to `bindings_52802`
-# so the cubecl-hip-sys build.rs (which auto-detects HIP patch 53211 from
-# our installed ROCm 7.2.1) finds a matching feature flag. Upstream
-# cubecl-hip-sys 7.1.5280200 caps at hip_52802. Remove this patch once
-# cubecl-hip-sys publishes ROCm 7.2 bindings.
-cubecl-hip-sys = { path = "vendor/cubecl-hip-sys-patched" }
 

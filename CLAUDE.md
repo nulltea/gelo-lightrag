@@ -3,6 +3,43 @@
 This file captures project-wide rules that apply regardless of which
 file or crate is being edited. Loaded into context automatically.
 
+## Gelo-LLM main benchmark
+
+The canonical performance benchmark for the GELO LLM serving path is
+the `gelo_llm_prefill_decode_breakdown` test in
+`crates/gelo-gpu-wgpu/tests/qwen3_m1_12_r1_q1_microbench.rs`. It loads
+real Qwen3 weights, runs one prefill of `n` tokens then `K` decode
+steps at batch `B`, and dumps the **full per-op profile** for each
+phase — GPU buckets (`engine:matmul` single-weight O/FfnDown/LM-head,
+`engine:matmul_many` fused QKV + gate∥up) alongside the in-TEE CPU
+buckets (`tee:attn_cached`, `gelo:mask_apply/unapply:*`, shield). It
+profiles the production default (R3 LM-head GPU offload) only.
+
+Canonical invocation (production shape; `--release` is mandatory — a
+debug build pays minute-scale cubecl shader compile/autotune):
+
+```bash
+GELO_BENCH_VARIANT=4b GELO_BENCH_B=8 GELO_BENCH_N=2048 GELO_BENCH_MAX_TOKENS=32 \
+  cargo test --release -p gelo-gpu-wgpu \
+  --test qwen3_m1_12_r1_q1_microbench \
+  gelo_llm_prefill_decode_breakdown -- --ignored --nocapture
+```
+
+Env knobs: `GELO_BENCH_VARIANT` (`1.7B` default, `4b`), `GELO_BENCH_B`
+(default 8), `GELO_BENCH_N` (default 2048), `GELO_BENCH_MAX_TOKENS`
+(default 64). Weights download once to `~/.cache/huggingface`.
+
+Build prerequisites (no apt, no sudo): install the Rust toolchain via
+`rustup`, then build AOCL-BLIS once with
+`scripts/install-aocl-blis.sh` (the `blas` feature is default-on and
+links `vendor/aocl-install/lib/libblis-mt.so`). The wgpu Vulkan engine
+auto-selects the best adapter — the discrete GPU on a dGPU box, the
+iGPU on Strix Halo. No ROCm/HIP is required.
+
+Results live in the perf chronicles under `docs/dev/logs/`:
+`gelo-llm-perf-chronicle.md` (iGPU / Strix Halo) and
+`gelo-llm-perf-chronicle_dgpu.md` (dGPU / Nvidia).
+
 ## HTML docs (`docs/prototype/*.html`)
 
 These are **design + result documents**, not code documentation and
