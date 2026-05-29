@@ -212,11 +212,14 @@ at N=16–64) + the merge (microseconds). Its real cost is *engineering*
 full-cache rewrite-per-step defeats persistence; ORAM-style decoy writes
 are expensive. Tail-in-TEE is the clean fix.
 
-**Consequence for sequencing.** If the threat model includes
-write-observation, **Phase 3 (partial-stats kernel → tail-in-TEE) is
-necessary, not a prefill/perf fast-follow** — it closes a channel that
+**Consequence for sequencing — DECIDED 2026-05-29.** The deployment
+threat model is taken as the **write-observing adversary** (a malicious
+VFIO-passed GPU can log its own VRAM writes — the conservative, realistic
+assumption). Therefore **Phase 3 (partial-stats kernel → tail-in-TEE) is
+MANDATORY, not a prefill/perf fast-follow** — it closes a channel that
 otherwise reads the appended permutation directly, at ~zero (favourable)
-runtime cost.
+runtime cost. Phase 3 is promoted from "gated on security" to a required
+v1 component.
 
 ---
 
@@ -582,12 +585,25 @@ Phase 1 (cover incl. O_v/O_qk, σ=0 parity)  + real-activation capture
    §4.E.3); `/code-review` of the trait change. `kv_attend` still returns
    the full normalised context (partial-stats `(m,l,acc)` is the Phase-3
    kernel); not yet wired into `TrustedExecutor`/forward (Phase 4).
-5. **Phase 3 — production kernel** (gated on the security result):
-   cubecl partial-stats / GQA-aware FlashAttention-D (cubecl-custom vs
-   upstream-burn; both CUDA-capable).
-6. **Phase 4 — decode wire-up** (gated): thread the session through
-   `decoder_block_cached_batched`; prefill builds session, decode
-   appends+attends+merges; in-TEE fallback behind a config flag.
+5. **Phase 3 — partial-stats attend + tail-in-TEE merge** — **MANDATORY**
+   (closes the write-location channel; grill 2026-05-29). Two parts,
+   decided:
+   - **Decode (now): compose partial `(m,l,acc)` from burn ops** —
+     `attend` returns `(m = scores.max, l = Σexp(s−m), acc = exp(s−m)·V)`
+     over the frozen prefix; the TEE attends the in-TEE tail (≤N tokens)
+     and merges (online softmax). **No custom kernel, no `cubek` fork** —
+     upstream-burn `flash_attention` returns normalised output only and
+     can't expose the stats; at decode (n_q=1, scores tiny) the composed
+     ~5-dispatch form is fine (~0.5 ms/step, ≈ the gate-1 resident attend).
+     Neutral-to-faster than tail-on-GPU (drops the append round-trip).
+   - **Prefill (fast-follow): custom single-pass cubecl FlashAttention-D**
+     — needed only to avoid the ~4 GB scores tensor at n_q=2048; cubecl
+     (CUDA+SPIR-V), GQA in-shader. Deferred.
+6. **Phase 4 — decode wire-up** (now unblocked — Phase 3 decode part is
+   composed ops, no security gate left for it): thread the session through
+   `decoder_block_cached_batched`; the TEE applies the cover + holds the
+   ≤N-token tail plaintext; per step `attend → (m,l,acc)` + TEE merge;
+   `kv_refresh_block` at block boundaries; in-TEE fallback behind a flag.
 7. **Acceptance + flip** — the 4-tier gate, then default-on behind the
    c5 AloePri condition (mirrors R3).
 8. **Fast-follows** — prefill FlashAttention-D; NVMe `SpillProvider`.
