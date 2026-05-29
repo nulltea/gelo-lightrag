@@ -650,6 +650,109 @@ fn empirical_direction_recovery_is_bounded() {
     );
 }
 
+/// Gate 2 (the `perm_kv` clock) — σ-vs-N permutation-recovery sweep for
+/// the persistent-K/V design (`docs/plans/perm-attn-gpu-offload.md`).
+///
+/// Holding `perm_kv` fixed across N decode steps removes the
+/// fresh-per-call protection: an attacker who observes the permuted+noised
+/// rows under ONE fixed π can denoise by averaging N observations
+/// (the canonical Hidden-No-More √N mechanism). This sweep measures the
+/// ARROWMATCH cosine-recovery rate vs (σ, N) and, alongside it, the
+/// attention output drift (the quality ceiling) at each σ — so the gate
+/// window [security floor, quality ceiling] is visible in one table.
+///
+/// Two brackets on adversary power (the truth lies between):
+///   * N=1  — the design as specced: K cache uploaded once, noise baked
+///            in, fixed for the block → one noisy observation.
+///   * N>1  — if the N decode steps leak independent noisy views of the
+///            fixed-π positions, the attacker averages → noise ↓ √N.
+///
+/// Reference = cleartext Q (worst-case attacker, per
+/// `empirical_direction_recovery_is_bounded`). NOTE: random activations —
+/// representative for the *direction*-recovery channel; the *content*
+/// channel (gate 3, `O_v` covariance-alignment) is activation-structure
+/// dependent and needs real anisotropic K/V + ICA/JADE (Python harness).
+#[test]
+fn gate2_perm_recovery_vs_sigma_and_n() {
+    let n = 256usize;
+    let d = 128usize; // production head_dim
+    let trials = 8usize;
+    let sigmas = [0.0f32, 0.01, 0.04, 0.08, 0.15, 0.30, 0.60, 1.2, 2.4, 5.0, 10.0];
+    let n_obs = [1usize, 8, 16, 64];
+    let mut rng = ChaCha20Rng::seed_from_u64(0x6A7E2);
+
+    let q = Array2::<f32>::from_shape_fn((n, d), |_| rng.random::<f32>() * 2.0 - 1.0);
+    let q_norms: Vec<f32> = (0..n)
+        .map(|i| q.row(i).iter().map(|v| v * v).sum::<f32>().sqrt())
+        .collect();
+    let normal = StandardNormal;
+
+    // Recovery rate: average N noisy observations of πQ, then argmax-cos
+    // each averaged row back to cleartext Q; fraction matching π.
+    let recover = |sigma: f32, n_avg: usize, rng: &mut ChaCha20Rng| -> f32 {
+        let mut correct = 0usize;
+        for _ in 0..trials {
+            let mut perm: Vec<usize> = (0..n).collect();
+            perm.shuffle(rng);
+            // N noisy observations of the same permuted Q, averaged.
+            let mut acc = Array2::<f32>::zeros((n, d));
+            for (i, &src) in perm.iter().enumerate() {
+                acc.row_mut(i).assign(&q.row(src));
+            }
+            let mut avg = acc.clone();
+            for v in avg.iter_mut() {
+                let mut s = 0.0f32;
+                for _ in 0..n_avg {
+                    let z: f32 = normal.sample(rng);
+                    s += sigma * z;
+                }
+                *v += s / n_avg as f32; // mean of N noise draws → std ↓ √N
+            }
+            for i in 0..n {
+                let obs_norm = avg.row(i).iter().map(|v| v * v).sum::<f32>().sqrt();
+                let (mut best_j, mut best_c) = (0usize, f32::NEG_INFINITY);
+                for j in 0..n {
+                    let dot: f32 = (0..d).map(|t| avg[(i, t)] * q[(j, t)]).sum();
+                    let c = dot / (obs_norm * q_norms[j] + 1e-9);
+                    if c > best_c {
+                        best_c = c;
+                        best_j = j;
+                    }
+                }
+                if best_j == perm[i] {
+                    correct += 1;
+                }
+            }
+        }
+        correct as f32 / (n * trials) as f32
+    };
+
+    // Quality ceiling: attention output drift at each σ (vs plain).
+    let drift_at = |sigma: f32, rng: &mut ChaCha20Rng| -> f32 {
+        let qa = random_matrix(64, d, rng);
+        let ka = random_matrix(64, d, rng);
+        let va = random_matrix(64, d, rng);
+        let plain = attention(qa.view(), ka.view(), va.view());
+        let rec = permutation_shielded_attention(qa.view(), ka.view(), va.view(), sigma, rng);
+        max_abs_diff(plain.view(), rec.view())
+    };
+
+    eprintln!("[gate2] perm_kv σ-vs-N recovery (random Q, cleartext ref, worst case); chance = {:.3}", 1.0 / n as f32);
+    eprintln!("  σ      N=1     N=8     N=16    N=64    | attn-drift");
+    for &sigma in &sigmas {
+        let r: Vec<f32> = n_obs.iter().map(|&m| recover(sigma, m, &mut rng)).collect();
+        let drift = drift_at(sigma, &mut rng);
+        eprintln!(
+            "  {:<6.3} {:<7.3} {:<7.3} {:<7.3} {:<7.3} | {:.4}",
+            sigma, r[0], r[1], r[2], r[3], drift
+        );
+    }
+
+    // Sanity: σ=0 → perfect recovery at any N; recovery is monotone
+    // non-increasing in σ at fixed N, and non-decreasing in N at fixed σ.
+    assert!(recover(0.0, 1, &mut rng) > 0.99, "σ=0 must be fully recoverable");
+}
+
 #[test]
 fn trait_method_cached_sigma_zero_matches_plaintext_executor() {
     // Asymmetric Q × KV at decode shape (n_q=1, q_pos_offset=n_kv-1)
@@ -756,6 +859,7 @@ fn phase_1b_decode_softmax_on_gpu_matches_in_tee() {
             noise_sigma: 0.0,
             causal_mask_neg: 30.0,
             decode_softmax_on_gpu: true,
+            feature_rotation: false,
         });
         let gpu_out = gpu_exec
             .offload_attention_permuted_cached(
@@ -825,6 +929,7 @@ fn phase_1b_prefill_falls_back_to_in_tee_softmax() {
         noise_sigma: 0.0,
         causal_mask_neg: 30.0,
         decode_softmax_on_gpu: true,
+        feature_rotation: false,
     });
     let out_b = b
         .offload_attention_permuted_cached(

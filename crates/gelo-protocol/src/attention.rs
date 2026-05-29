@@ -80,6 +80,19 @@ pub struct PermAttnConfig {
     /// Default `false`.  Prefill always uses the in-TEE-softmax path
     /// regardless of this flag (the F1+ attack does apply at prefill).
     pub decode_softmax_on_gpu: bool,
+    /// **Feature-axis rotation cover** (`docs/plans/perm-attn-gpu-offload.md`).
+    /// When `true`, each head's Q,K are rotated by a fresh orthogonal
+    /// `O_qk` (which cancels in `Q·Kᵀ`, so scores are unchanged) and V by
+    /// an independent `O_v` (corrected by `O_vᵀ` on the recovered output).
+    /// This hides the operands' absolute coordinates from the engine —
+    /// the lever against reference-equipped ARROWMATCH recovery that
+    /// σ-noise cannot provide (see the gate-2 analysis). Exactly
+    /// invertible, so σ=0 parity is preserved.
+    ///
+    /// Sampled fresh per call here; the persistent-K/V session fixes
+    /// `O_v`/`O_qk` at prefill (the cadence is a security-gated knob).
+    /// Default `false` — production cover is unchanged until the gate clears.
+    pub feature_rotation: bool,
 }
 
 impl PermAttnConfig {
@@ -88,6 +101,7 @@ impl PermAttnConfig {
         noise_sigma: 0.0,
         causal_mask_neg: 30.0,
         decode_softmax_on_gpu: false,
+        feature_rotation: false,
     };
 
     /// Hidden No More mitigation level. Default for production.
@@ -95,6 +109,7 @@ impl PermAttnConfig {
         noise_sigma: 0.01,
         causal_mask_neg: 30.0,
         decode_softmax_on_gpu: false,
+        feature_rotation: false,
     };
 
     /// **Phase 1b** — Hidden No More + GPU softmax at decode.  The
@@ -104,6 +119,7 @@ impl PermAttnConfig {
         noise_sigma: 0.01,
         causal_mask_neg: 30.0,
         decode_softmax_on_gpu: true,
+        feature_rotation: false,
     };
 }
 
@@ -385,6 +401,28 @@ pub fn permuted_attention_cached<R: RngCore, E: GpuOffloadEngine + ?Sized>(
         add_gaussian_3d_inplace(k_perm.view_mut(), cfg.noise_sigma, rng);
     }
 
+    // Feature-axis rotation cover. Per head: rotate Q,K by a shared
+    // `O_qk` (cancels in `Q·Kᵀ`, so scores — and the compute below — are
+    // unchanged) and V by an independent `O_v` (undone by `O_vᵀ` on the
+    // recovered output). Hides operand coordinates from the engine.
+    let o_v_heads: Vec<Array2<f32>> = if cfg.feature_rotation {
+        let mut ovs = Vec::with_capacity(num_heads);
+        for h in 0..num_heads {
+            let o_qk = sample_orthogonal(d_head, rng);
+            let o_v = sample_orthogonal(d_head, rng);
+            let qh = q_perm.index_axis(Axis(0), h).dot(&o_qk);
+            q_perm.index_axis_mut(Axis(0), h).assign(&qh);
+            let kh = k_perm.index_axis(Axis(0), h).dot(&o_qk);
+            k_perm.index_axis_mut(Axis(0), h).assign(&kh);
+            let vh = v_perm.index_axis(Axis(0), h).dot(&o_v);
+            v_perm.index_axis_mut(Axis(0), h).assign(&vh);
+            ovs.push(o_v);
+        }
+        ovs
+    } else {
+        Vec::new()
+    };
+
     // Branch on the protocol choice early so the Phase 1b path goes
     // through the **single** `fused_attention_batched` trait call
     // (today's default impl composes the same 3 dispatches, but a
@@ -464,6 +502,16 @@ pub fn permuted_attention_cached<R: RngCore, E: GpuOffloadEngine + ?Sized>(
         })?
     };
 
+    // Undo the V feature-rotation: `(softmax·(V·O_v))·O_vᵀ = softmax·V`.
+    // Feature-axis (`O_vᵀ`) and row-axis (`π_q⁻¹`) recoveries commute.
+    let mut out_perm = out_perm;
+    if cfg.feature_rotation {
+        for h in 0..num_heads {
+            let oh = out_perm.index_axis(Axis(0), h).dot(&o_v_heads[h].t());
+            out_perm.index_axis_mut(Axis(0), h).assign(&oh);
+        }
+    }
+
     // Recovery via π_q⁻¹ on the Q axis.
     let mut out = Array3::<f32>::zeros((num_heads, n_q, d_head));
     for h in 0..num_heads {
@@ -481,6 +529,33 @@ pub(crate) fn sample_permutation<R: RngCore>(n: usize, rng: &mut R) -> Vec<usize
     let mut perm: Vec<usize> = (0..n).collect();
     perm.shuffle(rng);
     perm
+}
+
+/// Sample a fresh `d × d` orthogonal matrix `O` (modified Gram-Schmidt on
+/// a Gaussian matrix → orthonormal rows, so `O·Oᵀ = I`). Used by the
+/// feature-axis rotation cover: an operand row `x` is rotated as `x·O`
+/// and recovered as `(x·O)·Oᵀ = x`. Rotating Q and K by the same `O_qk`
+/// leaves `Q·Kᵀ` invariant; rotating V by an independent `O_v` is undone
+/// by `O_vᵀ` on the output.
+pub(crate) fn sample_orthogonal<R: RngCore>(d: usize, rng: &mut R) -> Array2<f32> {
+    let normal = StandardNormal;
+    let mut m = Array2::<f32>::from_shape_fn((d, d), |_| normal.sample(rng));
+    for i in 0..d {
+        // Orthogonalise row i against rows 0..i.
+        for j in 0..i {
+            let dot: f32 = (0..d).map(|k| m[(i, k)] * m[(j, k)]).sum();
+            for k in 0..d {
+                m[(i, k)] -= dot * m[(j, k)];
+            }
+        }
+        // Normalise row i.
+        let norm: f32 = (0..d).map(|k| m[(i, k)] * m[(i, k)]).sum::<f32>().sqrt();
+        let inv = if norm > 1e-12 { 1.0 / norm } else { 0.0 };
+        for k in 0..d {
+            m[(i, k)] *= inv;
+        }
+    }
+    m
 }
 
 /// Add `N(0, σ²·I)` noise to a 3D view element-wise.
@@ -808,6 +883,70 @@ mod tests {
                 "decode-shape (n_q=1, n_kv={n_kv}) must be bit-exact at σ=0: drift={drift}",
             );
         }
+    }
+
+    #[test]
+    fn feature_rotation_sigma_zero_matches_plain() {
+        // The O_qk/O_v feature-axis rotation cover must be exactly
+        // invertible: at σ=0 the recovered output is bit-exact (f32
+        // floor) to plaintext attention — O_qk cancels in Q·Kᵀ, O_v is
+        // undone by O_vᵀ. Production head_dim d=128 plus a small d.
+        for d in [32usize, 128] {
+            let h = 4;
+            let scale = 1.0 / (d as f32).sqrt();
+            let cfg = PermAttnConfig {
+                feature_rotation: true,
+                ..PermAttnConfig::DISABLED_NOISE
+            };
+            for n_kv in [8usize, 64, 256] {
+                let mut rng = ChaCha20Rng::seed_from_u64(0xF0A7_0000 ^ ((d as u64) << 16) ^ n_kv as u64);
+                let q = random_q3(h, 1, d, &mut rng);
+                let k = random_q3(h, n_kv, d, &mut rng);
+                let v = random_q3(h, n_kv, d, &mut rng);
+                let engine = ReferenceCpuEngine::new();
+                let q_pos_offset = n_kv - 1;
+                let plain = plain_multi_head_attention_cached(
+                    q.view(), k.view(), v.view(), scale, q_pos_offset, true,
+                );
+                let out = permuted_attention_cached(
+                    &engine, q.view(), k.view(), v.view(), scale, q_pos_offset,
+                    AttentionMask::Causal, cfg, &mut rng,
+                )
+                .unwrap();
+                let drift = (&plain - &out).iter().map(|x| x.abs()).fold(0.0f32, f32::max);
+                assert!(
+                    drift < 1e-3,
+                    "feature-rotation must be invertible at σ=0 (d={d}, n_kv={n_kv}): drift={drift}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn feature_rotation_preserves_scores() {
+        // O_qk applied to Q,K must leave Q·Kᵀ (hence softmax, hence the
+        // whole output) invariant — the rotation is invisible to the
+        // computation, visible only to the engine's operand view. At
+        // σ=0, feature_rotation=ON must match feature_rotation=OFF.
+        let h = 4;
+        let d = 128;
+        let n_kv = 64;
+        let scale = 1.0 / (d as f32).sqrt();
+        let q = random_q3(h, 1, d, &mut ChaCha20Rng::seed_from_u64(1));
+        let k = random_q3(h, n_kv, d, &mut ChaCha20Rng::seed_from_u64(2));
+        let v = random_q3(h, n_kv, d, &mut ChaCha20Rng::seed_from_u64(3));
+        let engine = ReferenceCpuEngine::new();
+        let q_pos_offset = n_kv - 1;
+        let run = |rot: bool| {
+            let cfg = PermAttnConfig { feature_rotation: rot, ..PermAttnConfig::DISABLED_NOISE };
+            permuted_attention_cached(
+                &engine, q.view(), k.view(), v.view(), scale, q_pos_offset,
+                AttentionMask::Causal, cfg, &mut ChaCha20Rng::seed_from_u64(42),
+            )
+            .unwrap()
+        };
+        let drift = (&run(false) - &run(true)).iter().map(|x| x.abs()).fold(0.0f32, f32::max);
+        assert!(drift < 1e-3, "feature_rotation must not change the output: drift={drift}");
     }
 
     #[test]

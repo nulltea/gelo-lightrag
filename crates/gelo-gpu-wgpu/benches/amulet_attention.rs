@@ -413,6 +413,81 @@ fn r1_4_bench(c: &mut Criterion) {
             );
         }
 
+        // ─── Variant 4: GPU resident K/V (gate-1 persistent-attn) ────
+        //
+        // Holds k_t/v_t device-resident across iterations (uploaded
+        // once, outside the loop); each iter uploads only Q, runs
+        // softmax(q·kᵀ·scale)·v over the resident cache, reads back the
+        // context. This is Variant 2 MINUS the per-call K/V
+        // upload+convert — the gate-1 measurement from
+        // `docs/plans/perm-attn-gpu-offload.md`. The headline number is
+        // `gpu_resident_b8` vs `in_tee_rayon_b8`; the difference
+        // `gpu_batched_b8_no_mask − gpu_resident_b8` ≈ the upload+convert
+        // cost persistent K/V eliminates (decomposing the 510 ms triage).
+        {
+            let engine = base_engine.clone_shared();
+            let scale = 1.0_f32 / (D_HEAD_4B as f32).sqrt();
+            let (q_st, k_st, v_st) = stack_for_engine(&qs, &ks, &vs);
+            let resident = engine
+                .upload_resident_kv(k_st.view(), v_st.view())
+                .expect("upload_resident_kv");
+
+            group.bench_with_input(
+                BenchmarkId::new("gpu_resident_b8", n_kv),
+                &n_kv,
+                |bencher, _| {
+                    bencher.iter(|| {
+                        let out = engine
+                            .attend_resident(black_box(q_st.view()), &resident, scale)
+                            .expect("attend_resident call");
+                        black_box(out);
+                    });
+                },
+            );
+        }
+
+        // ─── Variant 5: representative decode — per-step append + attend ─
+        //
+        // The optimistic **prefill-only-permute** case (gate 1 of
+        // `docs/plans/perm-attn-gpu-offload.md`): the cover is applied
+        // once at session creation (prefill); each decode step only
+        // *appends* the new token's K/V row to the resident cache and
+        // attends over `[0..len]` — NO per-block re-permute. Prefix =
+        // first `n_kv−1` rows; per iter appends the last token (overwrite
+        // at capacity, holding context = n_kv) then attends. Per-step
+        // cost = append + attend; the delta vs `gpu_resident_b8` is the
+        // append overhead. If even this (re-permute-free) case doesn't
+        // beat `in_tee_rayon_b8`, the approach isn't worth it.
+        {
+            let engine = base_engine.clone_shared();
+            let scale = 1.0_f32 / (D_HEAD_4B as f32).sqrt();
+            let (q_st, k_st, v_st) = stack_for_engine(&qs, &ks, &vs);
+            let n_prefix = n_kv - 1;
+            let k_prefix = k_st.slice(ndarray::s![.., 0..n_prefix, ..]).to_owned();
+            let v_prefix = v_st.slice(ndarray::s![.., 0..n_prefix, ..]).to_owned();
+            let k_row = k_st.slice(ndarray::s![.., n_prefix..n_kv, ..]).to_owned();
+            let v_row = v_st.slice(ndarray::s![.., n_prefix..n_kv, ..]).to_owned();
+            let mut session = engine
+                .create_kv_session(k_prefix.view(), v_prefix.view(), n_kv)
+                .expect("create_kv_session");
+
+            group.bench_with_input(
+                BenchmarkId::new("gpu_resident_append_b8", n_kv),
+                &n_kv,
+                |bencher, _| {
+                    bencher.iter(|| {
+                        engine
+                            .append_kv(&mut session, k_row.view(), v_row.view())
+                            .expect("append_kv");
+                        let out = engine
+                            .attend_session(black_box(q_st.view()), &session, scale)
+                            .expect("attend_session");
+                        black_box(out);
+                    });
+                },
+            );
+        }
+
         group.finish();
     }
 }

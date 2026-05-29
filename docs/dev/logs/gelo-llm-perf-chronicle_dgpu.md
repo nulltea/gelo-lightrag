@@ -353,3 +353,87 @@ round-trip, not the GPU backend.
 
 **Artefacts (B=8):** `/tmp/gelo_b8_n2048.log` (Vulkan cold),
 `/tmp/warm_cuda_b8.log` (CUDA warm).
+
+## 10. Gate-1 persistent-K/V microbench (2026-05-29) — the upload tax is ~100% of it
+
+Per the persistent-attention plan
+([`perm-attn-gpu-offload.md`](../../plans/perm-attn-gpu-offload.md)),
+gate 1 asks: does **device-resident K/V** (upload once; per-step upload
+only Q) beat the in-TEE baseline? Added a `gpu_resident_b8` cell to
+`amulet_attention_r1_4` (engine `upload_resident_kv` / `attend_resident`,
+fp16, Vulkan) alongside the existing in-TEE and full-upload cells.
+
+| n_kv (decode, B=8) | in-TEE rayon | full-upload (no_mask) | **resident** | resident vs in-TEE | resident vs full-upload |
+|---:|---:|---:|---:|---:|---:|
+| 256  | 1.08 ms | 69.8 ms  | **0.30 ms**  | 3.6× faster | 233× |
+| 1024 | 5.28 ms | 271.8 ms | **0.373 ms** | 14× faster  | 728× |
+| 2048 | 11.15 ms| 489 ms   | **0.465 ms** | **24× faster** | 1052× |
+
+**Gate 1 passes by 24× at the production shape.** Two measured findings:
+
+- **The "fixed-overhead-bound" hypothesis is confirmed, not inferred.** At
+  n_kv=2048, full-upload 489 ms − resident 0.465 ms ≈ **99.9%** of the
+  no-mask cost is the per-call K/V upload + f32→f16 convert + staging +
+  blocking sync — the exact term persistent K/V deletes. The 5090's HBM
+  read + kernel is ~0.5 ms; the upload pipeline was ~100% of the §3 triage
+  cost, ~0% the compute. (Corrects §4.2's bandwidth framing definitively.)
+- **The win grows with context** (3.6× → 14× → 24× as n_kv 256 → 2048):
+  resident reads at HBM ~1.8 TB/s while in-TEE scales with DDR5 ~85 GB/s.
+  Resident is sub-linear in n_kv (0.30 → 0.47 ms for 8× the keys) — per-step
+  cost is fixed dispatch / Q-upload / readback, not the HBM read — so it
+  stays cheap into the long-context regime the design targets.
+
+### 10.1 Representative decode — per-step append, prefill-only re-permute
+
+The `gpu_resident_append_b8` cell adds the realistic growing-cache cost:
+the cover is applied **once at prefill** (`create_kv_session`); each step
+*appends* the new token's K/V row (`append_kv`, O(1) `slice_assign`) and
+attends over `[0..len]` (`attend_session`) — **no per-block re-permute**.
+This is the **optimistic prefill-only case** (N = ∞) the security gate
+will later test: we benchmark it first to decide if the approach is worth
+building at all.
+
+| n_kv (decode, B=8) | in-TEE | resident (attend only) | **append + attend** | append overhead | vs in-TEE |
+|---:|---:|---:|---:|---:|---:|
+| 256  | 1.35 ms  | 0.298 ms | **0.500 ms** | +0.20 ms | 2.7× |
+| 1024 | 4.44 ms  | 0.379 ms | **0.572 ms** | +0.19 ms | 7.8× |
+| 2048 | 10.88 ms | 0.463 ms | **0.662 ms** | +0.20 ms | **16.4×** |
+
+- **Append is O(1):** ~0.20 ms *constant* across n_kv → `slice_assign`
+  mutates the resident buffer in place (no O(n) recopy). The growing-cache
+  per-step cost is flat.
+- **Worth it, decisively:** the optimistic prefill-only case, *with* the
+  per-step append, is **16.4× faster than in-TEE at production n=2048**,
+  scaling 2.7× → 16.4× with context. Even the simplest persistent design
+  (zero decode re-permute) is a large win → the approach is worth building.
+  The open question collapses to a security one: does the gate permit
+  prefill-only (this best case), or force periodic re-permute (still a
+  likely win per the §10 upload-optimization model)?
+
+**The re-permute half is conditional.** `no_mask − resident` isolates the
+K/V convert+upload exactly = **~488 ms @ n=2048** on the *current* pipeline
+(GQA-expanded, f32→f16). That is the per-block re-permute *upload* tax;
+amortized over N=16 it is ~30 ms/step — it would **lose** to the 11 ms
+in-TEE baseline. So persistence wins the per-step read unconditionally
+(0.465 ms) but wins the re-permute half **only after** the upload is
+optimized: un-replicated storage (4× less) + bf16-native K/V (no convert)
+→ modeled ~5 ms ÷16 ≈ 0.3 ms/step. That optimization is part of the
+substrate refactor.
+
+**Remaining gaps (after §10.1).** Per-step append is now measured (O(1),
+~0.20 ms). What's left unmodelled is **by design**: the §10.1 cell is the
+optimistic *prefill-only* case (no decode re-permute) — whether that's
+security-achievable is the gate's job, and the re-permute fallback cost is
+the §10 upload-optimization model. Also: no permutation / σ-noise / `O_v`
+in the per-step path (they're prefill-one-time, trivial for Q); full
+softmax over the whole active slice (no prefix/tail merge — a wash);
+GQA-**expanded** K/V (un-replicated is 4× less → faster); fp16 Vulkan
+(CUDA prod kernel ~1.5–1.9× faster, §9).
+
+**Artefacts:** `bench-results/amulet-attn-resident-5090-2026-05-29.log`
+(§10) + `bench-results/amulet-attn-append-5090-2026-05-29.log` (§10.1);
+cells `gpu_resident_b8` / `gpu_resident_append_b8` in
+`crates/gelo-gpu-wgpu/benches/amulet_attention.rs`; engine seams
+`ResidentKvF16` (`upload_resident_kv` / `attend_resident`) and
+`ResidentKvSession` (`create_kv_session` / `append_kv` / `attend_session`)
+in `crates/gelo-gpu-wgpu/src/lib.rs`.

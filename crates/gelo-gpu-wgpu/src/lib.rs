@@ -195,6 +195,145 @@ impl Clone for WgpuVulkanEngine {
     }
 }
 
+/// Device-resident f16 K/V for the gate-1 persistent-attention
+/// microbench (`docs/plans/perm-attn-gpu-offload.md`). Holds the K/V
+/// tensors on the GPU across decode steps so the per-step path uploads
+/// only Q — isolating the resident-read cost from the per-call K/V
+/// upload+convert that dominates `fused_attention_batched`. Seed of the
+/// eventual session-resident K/V API (not the production surface yet).
+pub struct ResidentKvF16 {
+    k_t: Tensor<CubeWgpu16, 3>,
+    v_t: Tensor<CubeWgpu16, 3>,
+}
+
+impl WgpuVulkanEngine {
+    /// Upload + convert K/V to device-resident f16 tensors **once**.
+    /// `k`, `v`: `(B·H, n_kv, d_head)`. fp16 engine only.
+    pub fn upload_resident_kv(
+        &self,
+        k: ArrayView3<'_, f32>,
+        v: ArrayView3<'_, f32>,
+    ) -> Result<ResidentKvF16> {
+        if !self.fp16 {
+            return Err(anyhow!("upload_resident_kv requires the fp16 engine"));
+        }
+        Ok(ResidentKvF16 {
+            k_t: array3_to_tensor_f16(k, &self.device),
+            v_t: array3_to_tensor_f16(v, &self.device),
+        })
+    }
+
+    /// Attention against device-resident K/V: uploads only `q`
+    /// `(B·H, n_q, d_head)`, computes `softmax(q·kᵀ·scale)·v`, reads
+    /// back the context `(B·H, n_q, d_head)`. No mask (decode m=1 causal
+    /// is a no-op). This is `fused_attention_batched` **minus** the
+    /// per-call K/V upload+convert — the gate-1 resident-read
+    /// measurement. fp16 engine only.
+    pub fn attend_resident(
+        &self,
+        q: ArrayView3<'_, f32>,
+        kv: &ResidentKvF16,
+        scale: f32,
+    ) -> Result<Array3<f32>> {
+        if !self.fp16 {
+            return Err(anyhow!("attend_resident requires the fp16 engine"));
+        }
+        let q_t = array3_to_tensor_f16(q, &self.device);
+        let kt = kv.k_t.clone().permute([0, 2, 1]);
+        let scores = q_t.matmul(kt).mul_scalar(scale);
+        let probs = activation::softmax(scores, 2);
+        let out = probs.matmul(kv.v_t.clone());
+        tensor3_to_array_f16(out)
+    }
+}
+
+/// Device-resident **growing** K/V session for the representative
+/// decode microbench (gate 1, `docs/plans/perm-attn-gpu-offload.md`).
+/// Models the **optimistic prefill-only-permute** case: the cover is
+/// applied once at `create_kv_session` (prefill); decode only *appends*
+/// new rows and attends over the active slice — **no per-block
+/// re-permute** (the N=∞ best case the security gate will later test).
+/// K/V are pre-allocated to `capacity` on the n_kv axis so `append_kv`
+/// is an O(1) in-place row write (`slice_assign` on a sole-owner tensor),
+/// not an O(n) recopy.
+pub struct ResidentKvSession {
+    k_t: Tensor<CubeWgpu16, 3>,
+    v_t: Tensor<CubeWgpu16, 3>,
+    len: usize,
+    capacity: usize,
+}
+
+impl WgpuVulkanEngine {
+    /// Prefill: pre-allocate `(B·H, capacity, d_head)` and write the
+    /// (already TEE-permuted/noised) prefix into `[0..n0]`. One-time;
+    /// the per-step decode path never re-touches it. fp16 only.
+    pub fn create_kv_session(
+        &self,
+        k_prefix: ArrayView3<'_, f32>,
+        v_prefix: ArrayView3<'_, f32>,
+        capacity: usize,
+    ) -> Result<ResidentKvSession> {
+        if !self.fp16 {
+            return Err(anyhow!("create_kv_session requires the fp16 engine"));
+        }
+        let (bh, n0, d) = k_prefix.dim();
+        if n0 > capacity {
+            return Err(anyhow!("create_kv_session: prefix {n0} > capacity {capacity}"));
+        }
+        let k_full = Tensor::<CubeWgpu16, 3>::zeros([bh, capacity, d], &self.device);
+        let v_full = Tensor::<CubeWgpu16, 3>::zeros([bh, capacity, d], &self.device);
+        let k_t = k_full.slice_assign([0..bh, 0..n0, 0..d], array3_to_tensor_f16(k_prefix, &self.device));
+        let v_t = v_full.slice_assign([0..bh, 0..n0, 0..d], array3_to_tensor_f16(v_prefix, &self.device));
+        Ok(ResidentKvSession { k_t, v_t, len: n0, capacity })
+    }
+
+    /// Decode append: write one token's `(B·H, 1, d_head)` K/V row at
+    /// the current length (O(1) in-place). At capacity it overwrites the
+    /// last slot (the bench holds context fixed); production grows `len`.
+    pub fn append_kv(
+        &self,
+        session: &mut ResidentKvSession,
+        k_row: ArrayView3<'_, f32>,
+        v_row: ArrayView3<'_, f32>,
+    ) -> Result<()> {
+        let (bh, _one, d) = k_row.dim();
+        let idx = session.len.min(session.capacity - 1);
+        let kr = array3_to_tensor_f16(k_row, &self.device);
+        let vr = array3_to_tensor_f16(v_row, &self.device);
+        // mem::replace so each tensor is the sole owner during
+        // slice_assign → cubecl mutates the resident buffer in place.
+        let dummy = || Tensor::<CubeWgpu16, 3>::zeros([1, 1, 1], &self.device);
+        let k_t = std::mem::replace(&mut session.k_t, dummy());
+        let v_t = std::mem::replace(&mut session.v_t, dummy());
+        session.k_t = k_t.slice_assign([0..bh, idx..idx + 1, 0..d], kr);
+        session.v_t = v_t.slice_assign([0..bh, idx..idx + 1, 0..d], vr);
+        if session.len < session.capacity {
+            session.len += 1;
+        }
+        Ok(())
+    }
+
+    /// Attend over the active `[0..len]` slice: upload only `q`
+    /// `(B·H, n_q, d_head)`, `softmax(q·kᵀ·scale)·v`, read back context.
+    /// The per-step decode read against the growing resident cache.
+    pub fn attend_session(
+        &self,
+        q: ArrayView3<'_, f32>,
+        session: &ResidentKvSession,
+        scale: f32,
+    ) -> Result<Array3<f32>> {
+        let (bh, _nq, d) = q.dim();
+        let q_t = array3_to_tensor_f16(q, &self.device);
+        let k_act = session.k_t.clone().slice([0..bh, 0..session.len, 0..d]);
+        let v_act = session.v_t.clone().slice([0..bh, 0..session.len, 0..d]);
+        let kt = k_act.permute([0, 2, 1]);
+        let scores = q_t.matmul(kt).mul_scalar(scale);
+        let probs = activation::softmax(scores, 2);
+        let out = probs.matmul(v_act);
+        tensor3_to_array_f16(out)
+    }
+}
+
 impl WgpuVulkanEngine {
     /// `true` if this engine handle runs GEMM kernels in f16. Trusted-
     /// side code that needs bit-equal matmul output (e.g. U-Verify) must
